@@ -5,7 +5,7 @@ Regex only short-circuits obvious redirects (saves the LLM call).
 
 Flow:
   1. Mode override (user picked a mode) → skip classification
-  2. Regex redirect check (free, instant) → catches "draft an email", "create opportunity"
+  2. Regex redirect check (free, instant) → catches "draft an email", "schedule a meeting"
   3. Haiku classifies + extracts entities in one call (~1s, ~$0.001)
 """
 
@@ -50,13 +50,11 @@ _MODE_LEVELS = {
 
 _REDIRECT_PATTERNS: list[tuple[re.Pattern, str]] = [
     (re.compile(r"(draft|write|compose|send)\s.*(email|message|letter|note)", re.I), "redirect_drafting"),
-    (re.compile(r"(create|add|update|delete|edit)\s.*(opportunity|contact|account|task)", re.I), "redirect_crm_write"),
     (re.compile(r"(schedule|calendar|meeting|reminder)", re.I), "redirect_calendar"),
 ]
 
 _REDIRECT_TARGETS = {
     "redirect_drafting": ("cowork", "Drafting outreach is a CoWork task. I can pull prospect data for you to bring there."),
-    "redirect_crm_write": ("bedrock_pipeline", "To create or edit CRM records, use the Pipeline page. I'm read-only for CRM data."),
     "redirect_calendar": ("bedrock_priorities", "Check the Priorities page for your calendar and tasks."),
 }
 
@@ -90,8 +88,8 @@ Given a user query, return a single JSON object (no markdown, no explanation):
 }
 
 LEVELS:
-  -1 = redirect (out of scope: email drafting, CRM writes, scheduling, general AI)
-   0 = CRM lookup (contact field, list entities, pipeline value — instant, free)
+  -1 = redirect (out of scope: email drafting, scheduling, general AI)
+   0 = CRM lookup or action (contact field, list entities, pipeline value, create account, create contact — instant, free)
    1 = CRM analysis (summarize relationship, find stale deals — needs LLM synthesis)
   10 = T1 ID & Triage (identify a person, quick public check)
   20 = T2 Structured Intelligence (giving capacity, board positions, affiliations)

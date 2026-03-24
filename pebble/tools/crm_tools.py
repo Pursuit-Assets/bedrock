@@ -141,16 +141,98 @@ CRM_TOOLS: list[dict[str, Any]] = [
 
 
 # ---------------------------------------------------------------------------
+# Write tool schemas (conditionally included based on user permissions)
+# ---------------------------------------------------------------------------
+
+CRM_WRITE_TOOLS: list[dict[str, Any]] = [
+    {
+        "name": "crm_create_account",
+        "description": (
+            "Create a new account (organization) in Salesforce. "
+            "Only call AFTER the user explicitly confirms they want to create this record. "
+            "Returns the new Salesforce record ID on success."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Account/organization name (required)",
+                },
+                "account_type": {
+                    "type": "string",
+                    "description": "Account type (e.g., 'Foundation', 'Corporate', 'Individual')",
+                },
+                "industry": {
+                    "type": "string",
+                    "description": "Industry (e.g., 'Technology', 'Finance', 'Nonprofit')",
+                },
+            },
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "crm_create_contact",
+        "description": (
+            "Create a new contact (person) in Salesforce. "
+            "Only call AFTER the user explicitly confirms they want to create this record. "
+            "Returns the new Salesforce record ID on success."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "first_name": {
+                    "type": "string",
+                    "description": "Contact's first name (required)",
+                },
+                "last_name": {
+                    "type": "string",
+                    "description": "Contact's last name (required)",
+                },
+                "account_id": {
+                    "type": "string",
+                    "description": "Salesforce Account ID to associate with (optional)",
+                },
+                "title": {
+                    "type": "string",
+                    "description": "Job title (optional)",
+                },
+                "email": {
+                    "type": "string",
+                    "description": "Email address (optional)",
+                },
+            },
+            "required": ["first_name", "last_name"],
+        },
+    },
+]
+
+
+# ---------------------------------------------------------------------------
 # Tool executor — dispatches tool calls to crm_bridge methods
 # ---------------------------------------------------------------------------
 
-async def execute_tool(tool_name: str, tool_input: dict, crm_bridge) -> str:
+def _check_write_permission(user_permissions: dict | None) -> bool:
+    """Check if the user has CRM write permission."""
+    if not user_permissions:
+        return False
+    return bool(user_permissions.get("crm_write"))
+
+
+async def execute_tool(
+    tool_name: str, tool_input: dict, crm_bridge,
+    user_permissions: dict | None = None,
+) -> str:
     """Execute a CRM tool and return a JSON string result.
 
     Returns JSON string because Anthropic tool_result content must be a string.
     On failure (bridge returns None), returns a JSON error message so the
     agent can handle it gracefully.
     """
+    # Write tools require explicit permission (defense-in-depth)
+    if tool_name.startswith("crm_create_") and not _check_write_permission(user_permissions):
+        return json.dumps({"error": "CRM write access denied."})
+
     try:
         result = await _dispatch(tool_name, tool_input, crm_bridge)
     except Exception as e:
@@ -159,7 +241,7 @@ async def execute_tool(tool_name: str, tool_input: dict, crm_bridge) -> str:
 
     if result is None:
         return json.dumps(
-            {"error": "CRM lookup failed — the system may be temporarily unavailable."}
+            {"error": "CRM operation failed — the system may be temporarily unavailable."}
         )
 
     return json.dumps(result, default=str)
@@ -188,5 +270,21 @@ async def _dispatch(tool_name: str, tool_input: dict, crm_bridge) -> Any:
     if tool_name == "crm_pipeline":
         stage = tool_input.get("stage")
         return await crm_bridge.get_opportunities(stage=stage)
+
+    if tool_name == "crm_create_account":
+        return await crm_bridge.create_account(
+            name=tool_input.get("name", ""),
+            account_type=tool_input.get("account_type", ""),
+            industry=tool_input.get("industry", ""),
+        )
+
+    if tool_name == "crm_create_contact":
+        return await crm_bridge.create_contact(
+            first_name=tool_input.get("first_name", ""),
+            last_name=tool_input.get("last_name", ""),
+            account_id=tool_input.get("account_id"),
+            title=tool_input.get("title", ""),
+            email=tool_input.get("email", ""),
+        )
 
     raise ValueError(f"Unknown tool: {tool_name}")

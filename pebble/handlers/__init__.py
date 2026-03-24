@@ -44,6 +44,7 @@ async def dispatch_handler(
     crm_bridge,
     conversation_context: Optional[list[dict]] = None,
     client=None,
+    user_permissions: Optional[dict] = None,
 ) -> HandlerResponse:
     """Route a classified query to the appropriate handler.
 
@@ -126,8 +127,10 @@ async def dispatch_handler(
             )
 
         if readiness.status == ReadinessStatus.NEW_ENTITY:
-            # For L0/L1, just note no match; for research tiers, offer options
-            if route.level <= 1:
+            # For L0/L1 read-only, just note no match.
+            # If user has write permissions, let the CRM agent handle it —
+            # the agent can offer to create the record.
+            if route.level <= 1 and not user_permissions:
                 return HandlerResponse(
                     text=f"No matching records found in the CRM for '{search_term}'.",
                     level=route.level,
@@ -152,6 +155,7 @@ async def dispatch_handler(
             from .crm_agent import handle_crm_agent
             response = await handle_crm_agent(
                 route, crm_bridge, search_results, conversation_context, client,
+                user_permissions=user_permissions,
             )
         elif route.level == 0:
             from .level0 import handle_l0

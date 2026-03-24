@@ -37,7 +37,7 @@ from db import init_db, close_db, get_db
 from routes.projects import router as projects_router
 from routes.auth import router as auth_router
 from routes.sf_dependencies import router as sf_deps_router
-from routes.permissions import router as permissions_router, opp_router as opp_lock_router, check_permission, resolve_task_lock
+from routes.permissions import router as permissions_router, opp_router as opp_lock_router, check_permission, check_permission_or_internal, resolve_task_lock
 from routes.opportunities_extra import router as opp_extra_router
 from routes.payment_schedules import router as payment_schedules_router
 from routes.finance import router as finance_router
@@ -401,7 +401,7 @@ async def get_accounts(
 async def create_account(
     account_data: Dict[str, Any],
     client: UnifiedMCPClient = Depends(get_mcp_client),
-    user = Depends(check_permission("create_opportunities"))
+    user = Depends(check_permission_or_internal("create_opportunities"))
 ):
     """Create a new Salesforce account."""
     try:
@@ -462,7 +462,7 @@ async def get_contacts(
 async def create_contact(
     contact_data: Dict[str, Any],
     client: UnifiedMCPClient = Depends(get_mcp_client),
-    user = Depends(check_permission("create_opportunities"))
+    user = Depends(check_permission_or_internal("create_opportunities"))
 ):
     """Create a new Salesforce contact."""
     try:

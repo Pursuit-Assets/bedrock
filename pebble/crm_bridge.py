@@ -173,6 +173,71 @@ async def get_opportunities(
         return None
 
 
+# ---------------------------------------------------------------------------
+# CRM write operations (Pebble → Bedrock → Salesforce)
+# ---------------------------------------------------------------------------
+
+async def create_account(
+    name: str, account_type: str = "", industry: str = "",
+) -> Optional[Dict]:
+    """Create a Salesforce account via Bedrock.
+
+    Returns {"id": "001xx...", "message": "..."} on success, None on failure.
+    """
+    payload: Dict[str, str] = {"Name": name}
+    if account_type:
+        payload["Type"] = account_type
+    if industry:
+        payload["Industry"] = industry
+    try:
+        client = _get_client()
+        resp = await client.post("/api/salesforce/accounts", json=payload)
+        resp.raise_for_status()
+        body = resp.json()
+        return body.get("data")
+    except httpx.TimeoutException:
+        logger.warning("CRM bridge timeout: create_account name=%s", name)
+        return None
+    except httpx.HTTPStatusError as e:
+        logger.warning("CRM bridge HTTP %s: create_account name=%s", e.response.status_code, name)
+        return None
+    except Exception as e:
+        logger.error("CRM bridge error: create_account name=%s: %s", name, e)
+        return None
+
+
+async def create_contact(
+    first_name: str, last_name: str,
+    account_id: Optional[str] = None, title: str = "", email: str = "",
+) -> Optional[Dict]:
+    """Create a Salesforce contact via Bedrock.
+
+    Returns {"id": "003xx...", "message": "..."} on success, None on failure.
+    """
+    payload: Dict[str, str] = {"FirstName": first_name, "LastName": last_name}
+    if account_id:
+        payload["AccountId"] = account_id
+    if title:
+        payload["Title"] = title
+    if email:
+        payload["Email"] = email
+    try:
+        client = _get_client()
+        resp = await client.post("/api/salesforce/contacts", json=payload)
+        resp.raise_for_status()
+        body = resp.json()
+        return body.get("data")
+    except httpx.TimeoutException:
+        logger.warning("CRM bridge timeout: create_contact name=%s %s", first_name, last_name)
+        return None
+    except httpx.HTTPStatusError as e:
+        logger.warning("CRM bridge HTTP %s: create_contact name=%s %s", e.response.status_code, first_name, last_name)
+        return None
+    except Exception as e:
+        logger.error("CRM bridge error: create_contact name=%s %s: %s", first_name, last_name, e)
+        return None
+
+
 async def health() -> bool:
     """Check if the Bedrock API is reachable."""
     try:

@@ -8,7 +8,7 @@ from typing import Optional, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
-from auth import require_auth, decrypt_tokens
+from auth import require_auth, require_auth_or_internal, decrypt_tokens
 from db import get_db
 from security import validate_salesforce_id, escape_soql_string
 
@@ -115,6 +115,28 @@ def check_permission(permission_key: str):
         if not perms.get(permission_key, False):
             raise HTTPException(403, f"Permission denied: {permission_key}")
         # Attach resolved permissions and user data to the user dict
+        user["_permissions"] = perms
+        user["_app_user"] = user_data
+        return user
+    return _check
+
+
+def check_permission_or_internal(permission_key: str):
+    """Like check_permission but also accepts internal API key (service-to-service).
+
+    Used for endpoints that Pebble calls via X-Internal-Key header.
+    Service accounts bypass the per-user permission check.
+    User-initiated requests (JWT) still go through full permission resolution.
+    """
+    async def _check(user=Depends(require_auth_or_internal), db=Depends(get_db)):
+        # Service accounts (internal API key) bypass permission checks
+        if user.get("is_service"):
+            return user
+        email = user.get("email", "")
+        user_data = await get_user_permissions(email, db)
+        perms = user_data.get("permissions") or {}
+        if not perms.get(permission_key, False):
+            raise HTTPException(403, f"Permission denied: {permission_key}")
         user["_permissions"] = perms
         user["_app_user"] = user_data
         return user

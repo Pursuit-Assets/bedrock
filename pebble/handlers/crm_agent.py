@@ -13,7 +13,7 @@ import time
 from typing import Optional
 
 from ..router import RouteResult
-from ..tools.crm_tools import CRM_TOOLS, execute_tool
+from ..tools.crm_tools import CRM_TOOLS, CRM_WRITE_TOOLS, execute_tool
 from . import HandlerResponse
 
 logger = logging.getLogger("pebble.handlers.crm_agent")
@@ -52,6 +52,22 @@ and ask the user to clarify.
 - When listing records, cap at 10 items and note if there are more.
 """
 
+_CRM_AGENT_WRITE_GUIDELINES = """
+
+WRITE GUIDELINES:
+- You have tools to create accounts and contacts in Salesforce.
+- NEVER create a record without explicit user confirmation.
+- Before creating, describe exactly what will be saved and ask: "Shall I save this to Salesforce?"
+- Only proceed when the user clearly confirms ("yes", "go ahead", "do it", etc.).
+- If the user declines ("no", "skip", "nevermind"), acknowledge and move on.
+- After creating a record, report the Salesforce record ID.
+- You can search first to check for duplicates before offering to create.
+"""
+
+_CRM_AGENT_READ_ONLY_NOTE = """
+Note: You are read-only — you cannot create, update, or delete CRM records. \
+If asked to create or modify records, explain that you don't have write access."""
+
 
 # ---------------------------------------------------------------------------
 # Handler
@@ -63,6 +79,7 @@ async def handle_crm_agent(
     search_results: Optional[dict],
     conversation_context: Optional[list[dict]],
     client,
+    user_permissions: Optional[dict] = None,
 ) -> HandlerResponse:
     """Handle T0/T0.5 queries using a Haiku tool-use agent.
 
@@ -72,6 +89,7 @@ async def handle_crm_agent(
         search_results: Pre-fetched CRM search results from disambiguation.
         conversation_context: Recent messages [{"role": ..., "content": ...}].
         client: ModelClient instance.
+        user_permissions: Permission dict (e.g., {"crm_write": True}) or None.
 
     Returns:
         HandlerResponse with natural language answer and structured data.
@@ -80,6 +98,15 @@ async def handle_crm_agent(
     total_cost = 0.0
     tool_call_count = 0
     collected_data: dict = {}
+
+    # Determine write access and build tool list / system prompt
+    has_write = bool(user_permissions and user_permissions.get("crm_write"))
+    if has_write:
+        tools = CRM_TOOLS + CRM_WRITE_TOOLS
+        system = _CRM_AGENT_SYSTEM + _CRM_AGENT_WRITE_GUIDELINES
+    else:
+        tools = CRM_TOOLS
+        system = _CRM_AGENT_SYSTEM + _CRM_AGENT_READ_ONLY_NOTE
 
     messages = _build_initial_messages(route, search_results, conversation_context)
 
@@ -95,8 +122,8 @@ async def handle_crm_agent(
             result = client.complete_with_tools(
                 agent_name="crm_agent",
                 messages=messages,
-                system=_CRM_AGENT_SYSTEM,
-                tools=CRM_TOOLS,
+                system=system,
+                tools=tools,
             )
 
             # Track cost
@@ -152,6 +179,7 @@ async def handle_crm_agent(
 
                     tool_result_str = await execute_tool(
                         block["name"], block["input"], crm_bridge,
+                        user_permissions=user_permissions,
                     )
 
                     # Store structured data for response

@@ -122,6 +122,12 @@ _CHAT_ALLOWED_EMAILS = set(
     if e.strip()
 )
 
+_CHAT_WRITE_EMAILS = set(
+    e.strip()
+    for e in os.getenv("PEBBLE_CHAT_WRITE_EMAILS", "").split(",")
+    if e.strip()
+)
+
 
 @app.post("/api/v1/chat/query", dependencies=[Depends(verify_api_key)])
 @limiter.limit("30/minute")
@@ -183,12 +189,18 @@ async def chat_query(request: Request, body: dict):
             for m in prior[-6:]  # last 3 turns
         ]
 
+    # Resolve write permissions
+    user_permissions = None
+    if req.user_email and req.user_email in _CHAT_WRITE_EMAILS:
+        user_permissions = {"crm_write": True}
+
     # Dispatch to handler
     response = await dispatch_handler(
         route=route,
         crm_bridge=crm_bridge,
         conversation_context=conversation_messages,
         client=client,
+        user_permissions=user_permissions,
     )
 
     elapsed = time.time() - start
