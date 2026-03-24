@@ -42,7 +42,7 @@ def _entity_match_to_option(match: EntityMatch) -> ClarificationOption:
 async def dispatch_handler(
     route: RouteResult,
     crm_bridge,
-    conversation_context: Optional[dict] = None,
+    conversation_context: Optional[list[dict]] = None,
     client=None,
 ) -> HandlerResponse:
     """Route a classified query to the appropriate handler.
@@ -146,12 +146,19 @@ async def dispatch_handler(
             }
 
     # Dispatch to level-specific handler
-    if route.level == 0:
-        from .level0 import handle_l0
-        response = await handle_l0(route, crm_bridge, search_results)
-    elif route.level == 1:
-        from .level1 import handle_l1
-        response = await handle_l1(route, crm_bridge, search_results, client)
+    if route.level in (0, 1):
+        # CRM tool-use agent (requires LLM client)
+        if client is not None:
+            from .crm_agent import handle_crm_agent
+            response = await handle_crm_agent(
+                route, crm_bridge, search_results, conversation_context, client,
+            )
+        elif route.level == 0:
+            from .level0 import handle_l0
+            response = await handle_l0(route, crm_bridge, search_results)
+        else:
+            from .level1 import handle_l1
+            response = await handle_l1(route, crm_bridge, search_results, client)
     elif route.level == 10:
         from .tier1 import handle_t1
         response = await handle_t1(route, crm_bridge, client)
@@ -173,4 +180,4 @@ async def dispatch_handler(
 
 def _level_to_tier(level: int) -> str:
     """Map numeric level to tier string for readiness module."""
-    return {0: "L0", 1: "L1", 10: "T1", 20: "T2", 30: "T3"}.get(level, "L0")
+    return {0: "T0", 1: "T0.5", 10: "T1", 20: "T2", 30: "T3"}.get(level, "T0")

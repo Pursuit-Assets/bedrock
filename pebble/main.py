@@ -168,10 +168,26 @@ async def chat_query(request: Request, body: dict):
     resolved_query = resolve_pronouns(req.query, req.conversation_id)
     route = await classify_query(resolved_query, req.mode, client=client)
 
+    # Stash original query for CRM agent (not on RouteResult by default)
+    route.entities["original_query"] = resolved_query
+
+    # Fetch conversation context for CRM agent (prior messages only)
+    from .storage.db import get_conversation_messages
+    conversation_messages = None
+    raw_msgs = get_conversation_messages(conversation_id, limit=10)
+    if raw_msgs and len(raw_msgs) > 1:
+        # Exclude the current query (last message) to avoid duplication
+        prior = raw_msgs[:-1]
+        conversation_messages = [
+            {"role": m["role"], "content": m["content"]}
+            for m in prior[-6:]  # last 3 turns
+        ]
+
     # Dispatch to handler
     response = await dispatch_handler(
         route=route,
         crm_bridge=crm_bridge,
+        conversation_context=conversation_messages,
         client=client,
     )
 
@@ -191,8 +207,8 @@ async def chat_query(request: Request, body: dict):
     if response.redirect_target:
         metadata["redirect_target"] = response.redirect_target
 
-    tier_label = {-1: "redirect", 0: "L0", 1: "L1", 10: "T1", 20: "T2", 30: "T3"}.get(
-        response.level, f"L{response.level}"
+    tier_label = {-1: "redirect", 0: "T0", 1: "T0.5", 10: "T1", 20: "T2", 30: "T3"}.get(
+        response.level, f"T{response.level}"
     )
     save_chat_message(
         message_id=str(_uuid.uuid4()),

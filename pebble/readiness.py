@@ -151,7 +151,7 @@ def _build_matches(search_results: dict) -> dict[str, list[EntityMatch]]:
 def assess_readiness(
     search_results: dict,
     query_entity_hint: Optional[str] = None,
-    tier: str = "L0",
+    tier: str = "T0",
     has_org_context: bool = True,
 ) -> ReadinessResult:
     """Assess whether a query is ready to proceed or needs disambiguation.
@@ -161,7 +161,7 @@ def assess_readiness(
             {"Contact": [...], "Account": [...], "Opportunity": [...]}
         query_entity_hint: If the query explicitly mentions a type
             (e.g., "contact Jane"), pass "Contact" to filter to that type.
-        tier: Query tier ("L0", "L1", "T1", "T2", "T3") — affects
+        tier: Query tier ("T0", "T0.5", "T1", "T2", "T3") — affects
             identity_risk threshold.
         has_org_context: Whether the query includes an organization name.
             When False and tier is T2/T3, triggers identity risk warning.

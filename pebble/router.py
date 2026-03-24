@@ -23,7 +23,7 @@ logger = logging.getLogger("pebble.router")
 @dataclass
 class RouteResult:
     """Classification result from the query router."""
-    level: int              # -1=redirect, 0=L0, 1=L1, 10=T1, 20=T2, 30=T3
+    level: int              # -1=redirect, 0=T0, 1=T0.5, 10=T1, 20=T2, 30=T3
     intent: str             # e.g., "contact_field_lookup", "research_full"
     entities: dict = field(default_factory=dict)  # {person_name, org_name, field, ...}
     confidence: float = 1.0

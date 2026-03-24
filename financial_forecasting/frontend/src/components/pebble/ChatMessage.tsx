@@ -25,8 +25,8 @@ interface ChatMessageProps {
 }
 
 const TIER_COLORS: Record<string, 'default' | 'primary' | 'secondary' | 'warning' | 'info' | 'success'> = {
-  L0: 'success',
-  L1: 'info',
+  T0: 'success',
+  'T0.5': 'info',
   T1: 'primary',
   T2: 'secondary',
   T3: 'warning',
@@ -60,7 +60,7 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message, onOptionClick }) => 
               label={
                 message.tier +
                 (message.elapsed_seconds != null ? ` \u00b7 ${message.elapsed_seconds.toFixed(1)}s` : '') +
-                (message.cost_usd ? ` \u00b7 $${message.cost_usd.toFixed(3)}` : message.tier === 'L0' ? ' \u00b7 free' : '')
+                (message.cost_usd ? ` \u00b7 $${message.cost_usd.toFixed(3)}` : !message.cost_usd ? ' \u00b7 free' : '')
               }
               size="small"
               color={TIER_COLORS[message.tier] || 'default'}

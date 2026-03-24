@@ -91,9 +91,9 @@ const PebbleChat: React.FC<PebbleChatProps> = ({
             data.level === -1
               ? 'redirect'
               : data.level === 0
-              ? 'L0'
+              ? 'T0'
               : data.level === 1
-              ? 'L1'
+              ? 'T0.5'
               : data.level === 10
               ? 'T1'
               : data.level === 20

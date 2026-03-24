@@ -76,6 +76,7 @@ AGENT_TIERS = {
     # Ask Pebble chat agents
     "query_classifier": ModelTier.WORKER,
     "l1_synthesizer": ModelTier.WORKER,
+    "crm_agent": ModelTier.WORKER,
     "t1_identity_assessor": ModelTier.WORKER,
     "t2_structured_synthesizer": ModelTier.FORAGER,
     "web_search_extractor": ModelTier.WORKER,
@@ -159,6 +160,71 @@ class ModelClient:
         config = get_model_config_by_tier(tier)
         return self._complete_anthropic(agent_name or "escalated", prompt, system, config)
 
+    def complete_with_tools(
+        self,
+        agent_name: str,
+        messages: list[dict],
+        system: str = "",
+        tools: list[dict] | None = None,
+    ) -> dict:
+        """Complete with tool-use support. Anthropic direct only.
+
+        Unlike complete(), this accepts a full messages array (for multi-turn
+        tool-use conversations) and passes tools to the API.
+
+        Returns:
+            {
+                "message": {"role": "assistant", "content": [...]},
+                "stop_reason": "end_turn" | "tool_use",
+                "usage": {"input": int, "output": int},
+            }
+        """
+        config = get_model_config(agent_name)
+
+        kwargs: dict = {
+            "model": config.model_id,
+            "max_tokens": config.max_tokens,
+            "messages": messages,
+            "temperature": config.temperature,
+        }
+        if system:
+            kwargs["system"] = system
+        if tools:
+            kwargs["tools"] = tools
+
+        message = self._client.messages.create(**kwargs)
+
+        self._last_usage = {
+            "input": message.usage.input_tokens,
+            "output": message.usage.output_tokens,
+        }
+        self._last_provider = f"anthropic/{config.model_id}"
+
+        # Serialize content blocks to plain dicts (SDK returns typed objects)
+        content_dicts = []
+        for block in message.content:
+            if block.type == "text":
+                content_dicts.append({"type": "text", "text": block.text})
+            elif block.type == "tool_use":
+                content_dicts.append({
+                    "type": "tool_use",
+                    "id": block.id,
+                    "name": block.name,
+                    "input": block.input,
+                })
+
+        logger.info(
+            "Anthropic %s handled %s with tools (%d in, %d out tokens)",
+            config.model_id, agent_name,
+            self._last_usage["input"], self._last_usage["output"],
+        )
+
+        return {
+            "message": {"role": "assistant", "content": content_dicts},
+            "stop_reason": message.stop_reason,
+            "usage": self._last_usage.copy(),
+        }
+
     def _complete_openrouter(self, model_id: str, prompt: str, system: str, config: ModelConfig, agent_name: str) -> dict:
         messages = []
         if system:
@@ -184,7 +250,7 @@ class ModelClient:
         self._last_provider = f"openrouter/{model_id}"
         logger.info("OpenRouter %s handled %s (%d in, %d out tokens)",
                      model_id, agent_name, usage["input"], usage["output"])
-        return {"content": text, "usage": usage}
+        return {"text": text, "content": text, "usage": usage}
 
     def _complete_anthropic(self, agent_name: str, prompt: str, system: str, config: ModelConfig) -> dict:
         message = self._client.messages.create(
@@ -202,7 +268,7 @@ class ModelClient:
         text = message.content[0].text if message.content else ""
         logger.info("Anthropic %s handled %s (%d in, %d out tokens)",
                      config.model_id, agent_name, self._last_usage["input"], self._last_usage["output"])
-        return {"content": text, "usage": self._last_usage}
+        return {"text": text, "content": text, "usage": self._last_usage}
 
     def get_last_token_count(self) -> dict:
         return self._last_usage.copy()
