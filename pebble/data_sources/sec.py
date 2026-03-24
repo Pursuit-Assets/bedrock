@@ -56,3 +56,35 @@ def search_cik(company_name: str) -> str | None:
         return None
     except (ValueError, KeyError):
         return None
+
+
+def search_person_cik(person_name: str) -> str | None:
+    """Look up CIK for an individual person (not company).
+
+    Uses the EDGAR company/person search endpoint with owner=include.
+    Returns the first matching CIK or None.
+    """
+    import logging
+    logger = logging.getLogger("pebble.data_sources.sec")
+
+    try:
+        r = httpx.get(
+            "https://efts.sec.gov/LATEST/search-index",
+            params={"q": f'"{person_name}"', "dateRange": "custom",
+                    "startdt": "2020-01-01", "forms": "4",
+                    "from": 0, "size": 1},
+            headers=_headers(),
+            timeout=15.0,
+        )
+        r.raise_for_status()
+        data = r.json()
+        hits = data.get("hits", {}).get("hits", [])
+        if hits:
+            ciks = hits[0].get("_source", {}).get("ciks", [])
+            if ciks:
+                return str(ciks[0]).zfill(10)
+    except Exception as e:
+        logger.warning("Person CIK search failed for %s: %s", person_name, e)
+
+    # Fallback: try company_tickers in case person is a well-known company figure
+    return search_cik(person_name)

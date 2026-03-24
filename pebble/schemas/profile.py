@@ -10,6 +10,12 @@ class Claim(BaseModel):
     source_url: str = Field(..., description="Required. Every claim must have a source URL.")
     confidence: str = Field(default="medium", pattern="^(high|medium|low)$")
     temporal_status: str = Field(default="unknown", pattern="^(current|former|unknown)$")
+    data_as_of: str | None = Field(default=None, description="ISO date/year the data reflects, e.g. '2024-03-15' or '2023'")
+    source_currency: str = Field(
+        default="unknown",
+        pattern="^(real_time|near_real_time|quarterly|annual|delayed|unknown)$",
+        description="How current the data source typically is",
+    )
 
 
 class Profile(BaseModel):

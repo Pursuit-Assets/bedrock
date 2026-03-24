@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime, timedelta
 from typing import Optional
 
 from ..router import RouteResult
@@ -260,5 +261,27 @@ def _organize_by_dimension(claims: list[dict]) -> dict[str, list[dict]]:
             dimensions["affiliations"].append(claim)
         else:
             dimensions["affiliations"].append(claim)
+
+    # --- Per-dimension: sort by recency, tag age, cap to 5 ---
+    now = datetime.now()
+    old_cutoff = (now - timedelta(days=3650)).strftime("%Y")      # ~10 years
+    very_old_cutoff = (now - timedelta(days=7300)).strftime("%Y")  # ~20 years
+
+    def _sort_key(claim):
+        """Sort by data_as_of descending. None sorts last."""
+        d = claim.get("data_as_of")
+        return d if d else ""
+
+    for key in dimensions:
+        sorted_claims = sorted(dimensions[key], key=_sort_key, reverse=True)
+        for c in sorted_claims:
+            d = c.get("data_as_of")
+            if d:
+                year = d[:4]
+                if year < very_old_cutoff:
+                    c["data_age"] = "very_old"
+                elif year < old_cutoff:
+                    c["data_age"] = "old"
+        dimensions[key] = sorted_claims[:5]
 
     return dimensions

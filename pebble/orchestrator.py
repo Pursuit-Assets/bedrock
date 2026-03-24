@@ -347,6 +347,12 @@ def score_source_richness(
     usa_data: list | None,
     wiki_data: dict | None,
     oc_data: list | None,
+    *,
+    lda_data: list | None = None,
+    finra_data: list | None = None,
+    federal_register_data: list | None = None,
+    fec_committees_data: list | None = None,
+    insider_data: list | None = None,
 ) -> dict[str, float]:
     """Scout-Recruit: score each source's data richness (waggle dance). Pure Python, no LLM."""
     scores: dict[str, float] = {}
@@ -377,6 +383,13 @@ def score_source_richness(
         scores["wikipedia"] = 1.0 if len(extract) > 200 else (0.5 if extract else 0.0)
     else:
         scores["wikipedia"] = 0.0
+
+    # New sources (Stage B)
+    scores["lda"] = min(1.0, len(lda_data) / 3) if lda_data else 0.0
+    scores["finra"] = min(1.0, len(finra_data) / 2) if finra_data else 0.0
+    scores["federal_register"] = min(1.0, len(federal_register_data) / 3) if federal_register_data else 0.0
+    scores["fec_committees"] = min(1.0, len(fec_committees_data) / 2) if fec_committees_data else 0.0
+    scores["insider_transactions"] = min(1.0, len(insider_data) / 2) if insider_data else 0.0
 
     # Pheromone adjustment: dampen unreliable sources, boost reliable ones.
     # Sources that consistently fail (e.g., OpenCorporates 401s) get dampened toward 0.

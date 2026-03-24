@@ -164,7 +164,9 @@ async def chat_query(request: Request, body: dict):
         from .model_client import ModelClient
         client = ModelClient()
 
-    route = await classify_query(req.query, req.mode, client=client)
+    from .context_resolver import resolve_pronouns
+    resolved_query = resolve_pronouns(req.query, req.conversation_id)
+    route = await classify_query(resolved_query, req.mode, client=client)
 
     # Dispatch to handler
     response = await dispatch_handler(
@@ -180,6 +182,7 @@ async def chat_query(request: Request, body: dict):
         "intent": response.intent,
         "data": response.data,
         "sources": response.sources,
+        "entities": route.entities,
     }
     if response.requires_clarification:
         metadata["clarification_options"] = [
