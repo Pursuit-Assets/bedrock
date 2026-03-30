@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   Dialog,
   DialogTitle,
@@ -113,6 +113,7 @@ const ContactEditDialog: React.FC<ContactEditDialogProps> = ({
   const [editForm, setEditForm] = useState<Record<string, any>>({});
   const [originalRecord, setOriginalRecord] = useState<Record<string, any> | null>(null);
   const [saving, setSaving] = useState(false);
+  const [errors, setErrors] = useState<Record<string, string>>({});
 
   const [users, setUsers] = useState<UserOption[]>([]);
   const [accounts, setAccounts] = useState<AccountOption[]>([]);
@@ -134,6 +135,7 @@ const ContactEditDialog: React.FC<ContactEditDialogProps> = ({
     if (!open || !contactId) {
       setOriginalRecord(null);
       setEditForm({});
+      setErrors({});
       return;
     }
 
@@ -223,17 +225,24 @@ const ContactEditDialog: React.FC<ContactEditDialogProps> = ({
   );
 
   // ── Field change handler ────────────────────────────────────────────────
-  const handleFieldChange = useCallback((field: string, value: any) => {
+  const handleFieldChange = (field: string, value: any) => {
     setEditForm((prev) => ({ ...prev, [field]: value }));
-  }, []);
+    if (errors[field]) {
+      setErrors((prev) => { const next = { ...prev }; delete next[field]; return next; });
+    }
+  };
 
   // ── Save handler ────────────────────────────────────────────────────────
   const handleSave = async () => {
     if (!contactId || !originalRecord) return;
 
     // Required field validation
+    const newErrors: Record<string, string> = {};
     if (!editForm.LastName?.trim()) {
-      toast.error('Last Name is required');
+      newErrors.LastName = 'Last Name is required';
+    }
+    if (Object.keys(newErrors).length > 0) {
+      setErrors(newErrors);
       return;
     }
 
@@ -343,6 +352,8 @@ const ContactEditDialog: React.FC<ContactEditDialogProps> = ({
                   disabled={!canEdit}
                   value={editForm.LastName || ''}
                   onChange={(e) => handleFieldChange('LastName', e.target.value)}
+                  error={!!errors.LastName}
+                  helperText={errors.LastName}
                 />
               </Grid>
               <Grid item xs={12} sm={4}>

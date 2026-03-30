@@ -670,3 +670,285 @@ async def get_batch_prospects(batch_id: str) -> list[dict]:
             item["result"] = None
         results.append(item)
     return results
+
+
+# ---------------------------------------------------------------------------
+# Prospect CRM mapping (M17 — SF field audit + prospect readiness)
+# ---------------------------------------------------------------------------
+
+async def save_prospect_sf_contact(prospect_id: str, data: dict) -> None:
+    """UPSERT structured Contact fields for a prospect.
+
+    Scalar fields (title, email, etc.) use COALESCE — later tiers supersede.
+    notes: appended with '---' separator (research accumulates).
+    sources: merged with dedup (every data source tracked).
+    """
+    async with get_pool().acquire() as conn:
+        await conn.execute(
+            """INSERT INTO bedrock.prospect_sf_contact
+               (prospect_id, last_name, first_name, title, email, phone,
+                department, lead_source, linkedin_url,
+                mailing_street, mailing_city, mailing_state, mailing_postal_code,
+                philanthropic_contact, philanthropy, volunteer,
+                notes, sources, last_enriched_tier, last_enriched_at)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,now())
+               ON CONFLICT (prospect_id) DO UPDATE SET
+                   last_name      = COALESCE(EXCLUDED.last_name, bedrock.prospect_sf_contact.last_name),
+                   first_name     = COALESCE(EXCLUDED.first_name, bedrock.prospect_sf_contact.first_name),
+                   title          = COALESCE(EXCLUDED.title, bedrock.prospect_sf_contact.title),
+                   email          = COALESCE(EXCLUDED.email, bedrock.prospect_sf_contact.email),
+                   phone          = COALESCE(EXCLUDED.phone, bedrock.prospect_sf_contact.phone),
+                   department     = COALESCE(EXCLUDED.department, bedrock.prospect_sf_contact.department),
+                   lead_source    = COALESCE(EXCLUDED.lead_source, bedrock.prospect_sf_contact.lead_source),
+                   linkedin_url   = COALESCE(EXCLUDED.linkedin_url, bedrock.prospect_sf_contact.linkedin_url),
+                   mailing_street = COALESCE(EXCLUDED.mailing_street, bedrock.prospect_sf_contact.mailing_street),
+                   mailing_city   = COALESCE(EXCLUDED.mailing_city, bedrock.prospect_sf_contact.mailing_city),
+                   mailing_state  = COALESCE(EXCLUDED.mailing_state, bedrock.prospect_sf_contact.mailing_state),
+                   mailing_postal_code = COALESCE(EXCLUDED.mailing_postal_code, bedrock.prospect_sf_contact.mailing_postal_code),
+                   philanthropic_contact = COALESCE(EXCLUDED.philanthropic_contact, bedrock.prospect_sf_contact.philanthropic_contact),
+                   philanthropy   = COALESCE(EXCLUDED.philanthropy, bedrock.prospect_sf_contact.philanthropy),
+                   volunteer      = COALESCE(EXCLUDED.volunteer, bedrock.prospect_sf_contact.volunteer),
+                   notes = CASE
+                       WHEN EXCLUDED.notes IS NOT NULL THEN
+                           CASE WHEN bedrock.prospect_sf_contact.notes IS NOT NULL
+                               THEN bedrock.prospect_sf_contact.notes || E'\n---\n' || EXCLUDED.notes
+                               ELSE EXCLUDED.notes END
+                       ELSE bedrock.prospect_sf_contact.notes END,
+                   sources = CASE
+                       WHEN EXCLUDED.sources IS NOT NULL THEN
+                           ARRAY(SELECT DISTINCT unnest(
+                               COALESCE(bedrock.prospect_sf_contact.sources, ARRAY[]::text[])
+                               || EXCLUDED.sources))
+                       ELSE bedrock.prospect_sf_contact.sources END,
+                   last_enriched_tier = EXCLUDED.last_enriched_tier,
+                   last_enriched_at   = now()""",
+            prospect_id,
+            data.get("last_name"), data.get("first_name"),
+            data.get("title"), data.get("email"), data.get("phone"),
+            data.get("department"), data.get("lead_source"), data.get("linkedin_url"),
+            data.get("mailing_street"), data.get("mailing_city"),
+            data.get("mailing_state"), data.get("mailing_postal_code"),
+            data.get("philanthropic_contact"), data.get("philanthropy"),
+            data.get("volunteer"),
+            data.get("notes"), data.get("sources"),
+            data.get("last_enriched_tier"),
+        )
+
+
+async def save_prospect_sf_account(prospect_id: str, data: dict) -> None:
+    """UPSERT structured Account fields for a prospect.
+
+    Same accumulation semantics as save_prospect_sf_contact — see its docstring.
+    """
+    async with get_pool().acquire() as conn:
+        await conn.execute(
+            """INSERT INTO bedrock.prospect_sf_account
+               (prospect_id, name, account_type, industry, website, phone,
+                grantmaker, philanthropy, fee_for_service,
+                annual_revenue, funding_focus,
+                notes, sources, last_enriched_tier, last_enriched_at)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,now())
+               ON CONFLICT (prospect_id) DO UPDATE SET
+                   name            = COALESCE(EXCLUDED.name, bedrock.prospect_sf_account.name),
+                   account_type    = COALESCE(EXCLUDED.account_type, bedrock.prospect_sf_account.account_type),
+                   industry        = COALESCE(EXCLUDED.industry, bedrock.prospect_sf_account.industry),
+                   website         = COALESCE(EXCLUDED.website, bedrock.prospect_sf_account.website),
+                   phone           = COALESCE(EXCLUDED.phone, bedrock.prospect_sf_account.phone),
+                   grantmaker      = COALESCE(EXCLUDED.grantmaker, bedrock.prospect_sf_account.grantmaker),
+                   philanthropy    = COALESCE(EXCLUDED.philanthropy, bedrock.prospect_sf_account.philanthropy),
+                   fee_for_service = COALESCE(EXCLUDED.fee_for_service, bedrock.prospect_sf_account.fee_for_service),
+                   annual_revenue  = COALESCE(EXCLUDED.annual_revenue, bedrock.prospect_sf_account.annual_revenue),
+                   funding_focus   = COALESCE(EXCLUDED.funding_focus, bedrock.prospect_sf_account.funding_focus),
+                   notes = CASE
+                       WHEN EXCLUDED.notes IS NOT NULL THEN
+                           CASE WHEN bedrock.prospect_sf_account.notes IS NOT NULL
+                               THEN bedrock.prospect_sf_account.notes || E'\n---\n' || EXCLUDED.notes
+                               ELSE EXCLUDED.notes END
+                       ELSE bedrock.prospect_sf_account.notes END,
+                   sources = CASE
+                       WHEN EXCLUDED.sources IS NOT NULL THEN
+                           ARRAY(SELECT DISTINCT unnest(
+                               COALESCE(bedrock.prospect_sf_account.sources, ARRAY[]::text[])
+                               || EXCLUDED.sources))
+                       ELSE bedrock.prospect_sf_account.sources END,
+                   last_enriched_tier = EXCLUDED.last_enriched_tier,
+                   last_enriched_at   = now()""",
+            prospect_id,
+            data.get("name"), data.get("account_type"),
+            data.get("industry"), data.get("website"), data.get("phone"),
+            data.get("grantmaker"), data.get("philanthropy"),
+            data.get("fee_for_service"),
+            data.get("annual_revenue"), data.get("funding_focus"),
+            data.get("notes"), data.get("sources"),
+            data.get("last_enriched_tier"),
+        )
+
+
+async def save_prospect_sf_opportunity(prospect_id: str, data: dict) -> None:
+    """UPSERT Opportunity hints derived from prospect research.
+
+    Same accumulation semantics as save_prospect_sf_contact — see its docstring.
+    """
+    async with get_pool().acquire() as conn:
+        await conn.execute(
+            """INSERT INTO bedrock.prospect_sf_opportunity
+               (prospect_id, suggested_name, suggested_amount, suggested_stage,
+                suggested_close_date, suggested_record_type,
+                giving_capacity_estimate, past_giving_history, wealth_indicators,
+                notes, sources, last_enriched_tier, last_enriched_at)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,now())
+               ON CONFLICT (prospect_id) DO UPDATE SET
+                   suggested_name  = COALESCE(EXCLUDED.suggested_name, bedrock.prospect_sf_opportunity.suggested_name),
+                   suggested_amount = COALESCE(EXCLUDED.suggested_amount, bedrock.prospect_sf_opportunity.suggested_amount),
+                   suggested_stage = COALESCE(EXCLUDED.suggested_stage, bedrock.prospect_sf_opportunity.suggested_stage),
+                   suggested_close_date  = COALESCE(EXCLUDED.suggested_close_date, bedrock.prospect_sf_opportunity.suggested_close_date),
+                   suggested_record_type = COALESCE(EXCLUDED.suggested_record_type, bedrock.prospect_sf_opportunity.suggested_record_type),
+                   giving_capacity_estimate = COALESCE(EXCLUDED.giving_capacity_estimate, bedrock.prospect_sf_opportunity.giving_capacity_estimate),
+                   past_giving_history     = COALESCE(EXCLUDED.past_giving_history, bedrock.prospect_sf_opportunity.past_giving_history),
+                   wealth_indicators       = COALESCE(EXCLUDED.wealth_indicators, bedrock.prospect_sf_opportunity.wealth_indicators),
+                   notes = CASE
+                       WHEN EXCLUDED.notes IS NOT NULL THEN
+                           CASE WHEN bedrock.prospect_sf_opportunity.notes IS NOT NULL
+                               THEN bedrock.prospect_sf_opportunity.notes || E'\n---\n' || EXCLUDED.notes
+                               ELSE EXCLUDED.notes END
+                       ELSE bedrock.prospect_sf_opportunity.notes END,
+                   sources = CASE
+                       WHEN EXCLUDED.sources IS NOT NULL THEN
+                           ARRAY(SELECT DISTINCT unnest(
+                               COALESCE(bedrock.prospect_sf_opportunity.sources, ARRAY[]::text[])
+                               || EXCLUDED.sources))
+                       ELSE bedrock.prospect_sf_opportunity.sources END,
+                   last_enriched_tier = EXCLUDED.last_enriched_tier,
+                   last_enriched_at   = now()""",
+            prospect_id,
+            data.get("suggested_name"), data.get("suggested_amount"),
+            data.get("suggested_stage"), data.get("suggested_close_date"),
+            data.get("suggested_record_type"),
+            data.get("giving_capacity_estimate"), data.get("past_giving_history"),
+            data.get("wealth_indicators"),
+            data.get("notes"), data.get("sources"),
+            data.get("last_enriched_tier"),
+        )
+
+
+async def get_prospect_crm_readiness(prospect_id: str) -> dict:
+    """Fetch all prospect CRM sub-objects and compute readiness status.
+
+    Returns a dict with contact, account, opportunity data and a readiness
+    assessment showing which required fields are populated vs missing.
+    """
+    async with get_pool().acquire() as conn:
+        contact_row = await conn.fetchrow(
+            "SELECT * FROM bedrock.prospect_sf_contact WHERE prospect_id = $1",
+            prospect_id,
+        )
+        account_row = await conn.fetchrow(
+            "SELECT * FROM bedrock.prospect_sf_account WHERE prospect_id = $1",
+            prospect_id,
+        )
+        opp_row = await conn.fetchrow(
+            "SELECT * FROM bedrock.prospect_sf_opportunity WHERE prospect_id = $1",
+            prospect_id,
+        )
+        req_rows = await conn.fetch(
+            "SELECT sobject, field_name, field_label FROM bedrock.sf_field_requirements "
+            "WHERE is_required = TRUE AND has_default = FALSE",
+        )
+
+    contact = dict(contact_row) if contact_row else {}
+    account = dict(account_row) if account_row else {}
+    opportunity = dict(opp_row) if opp_row else {}
+
+    # Map SF field names to prospect table columns
+    _sf_to_col = {
+        "Contact": {"LastName": "last_name", "FirstName": "first_name"},
+        "Account": {"Name": "name"},
+        "Opportunity": {
+            "Name": "suggested_name", "StageName": "suggested_stage",
+            "CloseDate": "suggested_close_date",
+        },
+    }
+    readiness: dict[str, dict] = {}
+    for row in req_rows:
+        obj = row["sobject"]
+        fname = row["field_name"]
+        if obj not in _sf_to_col:
+            continue
+        col = _sf_to_col[obj].get(fname)
+        if col is None:
+            continue
+        source = {"Contact": contact, "Account": account, "Opportunity": opportunity}.get(obj, {})
+        readiness.setdefault(obj, {"filled": [], "missing": []})
+        if source.get(col):
+            readiness[obj]["filled"].append(row["field_label"] or fname)
+        else:
+            readiness[obj]["missing"].append(row["field_label"] or fname)
+
+    return {
+        "contact": contact,
+        "account": account,
+        "opportunity": opportunity,
+        "readiness": readiness,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Conflict log & scratchpad persistence (M14, absorbed into M17)
+# ---------------------------------------------------------------------------
+
+async def save_conflicts(
+    session_id: str, contact_id: str, conflicts: list[dict],
+) -> None:
+    """Batch-insert detected data conflicts for a research session."""
+    if not conflicts:
+        return
+    async with get_pool().acquire() as conn:
+        await conn.executemany(
+            """INSERT INTO bedrock.pebble_conflict_log
+               (session_id, contact_id, conflict_type, claim_a, claim_b, description)
+               VALUES ($1, $2, $3, $4, $5, $6)""",
+            [
+                (
+                    session_id, contact_id,
+                    c.get("type", "unknown"),
+                    c.get("claim_a", ""),
+                    c.get("claim_b", ""),
+                    c.get("description", ""),
+                )
+                for c in conflicts
+            ],
+        )
+
+
+async def save_scratchpad(
+    session_id: str,
+    contact_id: str,
+    scratchpad_json: str,
+    status: str = "active",
+) -> None:
+    """UPSERT research scratchpad state for a session."""
+    async with get_pool().acquire() as conn:
+        await conn.execute(
+            """INSERT INTO bedrock.pebble_scratchpad
+               (session_id, contact_id, scratchpad_json, status)
+               VALUES ($1, $2, $3, $4)
+               ON CONFLICT (session_id) DO UPDATE SET
+                   scratchpad_json = EXCLUDED.scratchpad_json,
+                   status = EXCLUDED.status""",
+            session_id, contact_id, scratchpad_json, status,
+        )
+
+
+async def update_scratchpad(
+    session_id: str,
+    scratchpad_json: str,
+    status: str,
+) -> None:
+    """Update an existing scratchpad's state and status."""
+    async with get_pool().acquire() as conn:
+        await conn.execute(
+            """UPDATE bedrock.pebble_scratchpad
+               SET scratchpad_json = $1, status = $2
+               WHERE session_id = $3""",
+            scratchpad_json, status, session_id,
+        )

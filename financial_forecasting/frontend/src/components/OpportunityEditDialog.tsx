@@ -101,6 +101,7 @@ const OpportunityEditDialog: React.FC<OpportunityEditDialogProps> = ({
   const [editForm, setEditForm] = useState<Record<string, any>>({});
   const [originalOpp, setOriginalOpp] = useState<Record<string, any> | null>(null);
   const [saving, setSaving] = useState(false);
+  const [errors, setErrors] = useState<Record<string, string>>({});
 
   const [users, setUsers] = useState<UserOption[]>([]);
   const [accounts, setAccounts] = useState<AccountOption[]>([]);
@@ -123,6 +124,7 @@ const OpportunityEditDialog: React.FC<OpportunityEditDialogProps> = ({
     if (!open || !opportunityId) {
       setOriginalOpp(null);
       setEditForm({});
+      setErrors({});
       return;
     }
 
@@ -204,11 +206,30 @@ const OpportunityEditDialog: React.FC<OpportunityEditDialogProps> = ({
   // ── Field change handler ────────────────────────────────────────────────
   const handleFieldChange = (field: string, value: any) => {
     setEditForm((prev) => ({ ...prev, [field]: value }));
+    if (errors[field]) {
+      setErrors((prev) => { const next = { ...prev }; delete next[field]; return next; });
+    }
   };
 
   // ── Save handler ────────────────────────────────────────────────────────
   const handleSave = async () => {
     if (!opportunityId || !originalOpp) return;
+
+    // Validate SF-required fields before saving
+    const newErrors: Record<string, string> = {};
+    if (!editForm.Name?.toString().trim()) {
+      newErrors.Name = 'Opportunity name is required';
+    }
+    if (!editForm.CloseDate) {
+      newErrors.CloseDate = 'Close date is required';
+    }
+    if (!editForm.StageName) {
+      newErrors.StageName = 'Stage is required';
+    }
+    if (Object.keys(newErrors).length > 0) {
+      setErrors(newErrors);
+      return;
+    }
 
     // Diff: only send changed fields (skip nested relationship objects)
     const updates: Record<string, any> = {};
@@ -309,9 +330,12 @@ const OpportunityEditDialog: React.FC<OpportunityEditDialogProps> = ({
                   label="Name"
                   fullWidth
                   size="small"
+                  required
                   disabled={!canEdit}
                   value={editForm.Name || ''}
                   onChange={(e) => handleFieldChange('Name', e.target.value)}
+                  error={!!errors.Name}
+                  helperText={errors.Name}
                 />
               </Grid>
               <Grid item xs={12} sm={6}>
@@ -320,9 +344,12 @@ const OpportunityEditDialog: React.FC<OpportunityEditDialogProps> = ({
                   fullWidth
                   size="small"
                   select
+                  required
                   disabled={!canEdit}
                   value={editForm.StageName || ''}
                   onChange={(e) => handleFieldChange('StageName', e.target.value)}
+                  error={!!errors.StageName}
+                  helperText={errors.StageName}
                 >
                   {OPPORTUNITY_STAGES.map((stage) => (
                     <MenuItem key={stage} value={stage}>
@@ -363,10 +390,13 @@ const OpportunityEditDialog: React.FC<OpportunityEditDialogProps> = ({
                   fullWidth
                   size="small"
                   type="date"
+                  required
                   disabled={!canEdit}
                   value={editForm.CloseDate || ''}
                   onChange={(e) => handleFieldChange('CloseDate', e.target.value)}
                   InputLabelProps={{ shrink: true }}
+                  error={!!errors.CloseDate}
+                  helperText={errors.CloseDate}
                 />
               </Grid>
               <Grid item xs={12} sm={6}>

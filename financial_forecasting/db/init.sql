@@ -624,7 +624,9 @@ CREATE TABLE IF NOT EXISTS bedrock.pebble_scratchpad (
     created_at      TIMESTAMPTZ DEFAULT now(),
     updated_at      TIMESTAMPTZ DEFAULT now()
 );
-CREATE INDEX IF NOT EXISTS idx_pebble_sp_session ON bedrock.pebble_scratchpad(session_id);
+-- M17: upgrade to UNIQUE for ON CONFLICT support in save_scratchpad()
+DROP INDEX IF EXISTS bedrock.idx_pebble_sp_session;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_pebble_sp_session ON bedrock.pebble_scratchpad(session_id);
 
 -- Per-user daily cost tracking (M12 — Pebble access control)
 CREATE TABLE IF NOT EXISTS bedrock.pebble_daily_usage (
@@ -636,6 +638,173 @@ CREATE TABLE IF NOT EXISTS bedrock.pebble_daily_usage (
     PRIMARY KEY (user_email, date)
 );
 
+-- ─────────────────────────────────────────────────────────────────────────────
+-- M17: SF Field Requirements + Prospect CRM Mapping (absorbs M14)
+-- ─────────────────────────────────────────────────────────────────────────────
+
+-- Reference table: SF field metadata from describe() audit
+CREATE TABLE IF NOT EXISTS bedrock.sf_field_requirements (
+    id              SERIAL PRIMARY KEY,
+    sobject         TEXT NOT NULL,
+    field_name      TEXT NOT NULL,
+    field_label     TEXT,
+    field_type      TEXT,
+    is_required     BOOLEAN DEFAULT FALSE,
+    has_default     BOOLEAN DEFAULT FALSE,
+    default_value   TEXT,
+    is_updateable   BOOLEAN DEFAULT TRUE,
+    pebble_source_tier TEXT,
+    notes           TEXT,
+    last_verified_at TIMESTAMPTZ DEFAULT now(),
+    UNIQUE(sobject, field_name)
+);
+CREATE INDEX IF NOT EXISTS idx_sf_field_req_sobject
+    ON bedrock.sf_field_requirements(sobject);
+
+-- Prospect → SF Contact mapping (typed columns, all nullable for soft enforcement)
+CREATE TABLE IF NOT EXISTS bedrock.prospect_sf_contact (
+    id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    prospect_id         UUID NOT NULL REFERENCES bedrock.pebble_batch_prospects(id) ON DELETE CASCADE,
+    last_name           TEXT,
+    first_name          TEXT,
+    title               TEXT,
+    email               TEXT,
+    phone               TEXT,
+    department          TEXT,
+    lead_source         TEXT,
+    linkedin_url        TEXT,
+    mailing_street      TEXT,
+    mailing_city        TEXT,
+    mailing_state       TEXT,
+    mailing_postal_code TEXT,
+    philanthropic_contact BOOLEAN,
+    philanthropy        BOOLEAN,
+    volunteer           BOOLEAN,
+    notes               TEXT,
+    sources             TEXT[],
+    last_enriched_tier  TEXT,
+    last_enriched_at    TIMESTAMPTZ,
+    created_at          TIMESTAMPTZ DEFAULT now(),
+    updated_at          TIMESTAMPTZ DEFAULT now(),
+    UNIQUE(prospect_id)
+);
+CREATE INDEX IF NOT EXISTS idx_prospect_sf_contact_prospect
+    ON bedrock.prospect_sf_contact(prospect_id);
+
+-- Prospect → SF Account mapping
+CREATE TABLE IF NOT EXISTS bedrock.prospect_sf_account (
+    id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    prospect_id         UUID NOT NULL REFERENCES bedrock.pebble_batch_prospects(id) ON DELETE CASCADE,
+    name                TEXT,
+    account_type        TEXT,
+    industry            TEXT,
+    website             TEXT,
+    phone               TEXT,
+    grantmaker          BOOLEAN,
+    philanthropy        BOOLEAN,
+    fee_for_service     BOOLEAN,
+    annual_revenue      NUMERIC,
+    funding_focus       TEXT,
+    notes               TEXT,
+    sources             TEXT[],
+    last_enriched_tier  TEXT,
+    last_enriched_at    TIMESTAMPTZ,
+    created_at          TIMESTAMPTZ DEFAULT now(),
+    updated_at          TIMESTAMPTZ DEFAULT now(),
+    UNIQUE(prospect_id)
+);
+CREATE INDEX IF NOT EXISTS idx_prospect_sf_account_prospect
+    ON bedrock.prospect_sf_account(prospect_id);
+
+-- Prospect → SF Opportunity hints (research-derived suggestions)
+CREATE TABLE IF NOT EXISTS bedrock.prospect_sf_opportunity (
+    id                      UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    prospect_id             UUID NOT NULL REFERENCES bedrock.pebble_batch_prospects(id) ON DELETE CASCADE,
+    suggested_name          TEXT,
+    suggested_amount        NUMERIC,
+    suggested_stage         TEXT DEFAULT 'Lead Gen',
+    suggested_close_date    DATE,
+    suggested_record_type   TEXT,
+    giving_capacity_estimate NUMERIC,
+    past_giving_history     TEXT,
+    wealth_indicators       TEXT,
+    notes                   TEXT,
+    sources                 TEXT[],
+    last_enriched_tier      TEXT,
+    last_enriched_at        TIMESTAMPTZ,
+    created_at              TIMESTAMPTZ DEFAULT now(),
+    updated_at              TIMESTAMPTZ DEFAULT now(),
+    UNIQUE(prospect_id)
+);
+CREATE INDEX IF NOT EXISTS idx_prospect_sf_opp_prospect
+    ON bedrock.prospect_sf_opportunity(prospect_id);
+
+-- Schema drift detection log (HITL review for SF field changes)
+CREATE TABLE IF NOT EXISTS bedrock.sf_schema_drift_log (
+    id              SERIAL PRIMARY KEY,
+    sobject         TEXT NOT NULL,
+    field_name      TEXT NOT NULL,
+    drift_type      TEXT NOT NULL,
+    old_value       TEXT,
+    new_value       TEXT,
+    detected_at     TIMESTAMPTZ DEFAULT now(),
+    resolved_at     TIMESTAMPTZ,
+    resolved_by     TEXT,
+    action_taken    TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_sf_drift_unresolved
+    ON bedrock.sf_schema_drift_log(resolved_at) WHERE resolved_at IS NULL;
+
+-- Seed sf_field_requirements with describe() audit data (2026-03-30)
+-- Non-boolean required fields (nillable=false, updateable=true, type!=boolean)
+INSERT INTO bedrock.sf_field_requirements (sobject, field_name, field_label, field_type, is_required, has_default, is_updateable, pebble_source_tier, notes)
+VALUES
+    -- Opportunity: required
+    ('Opportunity', 'Name',      'Name',       'string',    TRUE,  FALSE, TRUE, NULL,  'User-provided on create/edit'),
+    ('Opportunity', 'StageName', 'Stage',      'picklist',  TRUE,  FALSE, TRUE, NULL,  'User-selected stage in pipeline'),
+    ('Opportunity', 'CloseDate', 'Close Date', 'date',      TRUE,  FALSE, TRUE, NULL,  'User-provided expected close date'),
+    ('Opportunity', 'OwnerId',   'Owner ID',   'reference', TRUE,  FALSE, TRUE, NULL,  'Auto-populated with current user'),
+    -- Opportunity: key optional (Pebble can inform)
+    ('Opportunity', 'Amount',       'Amount',        'currency',  FALSE, FALSE, TRUE, 'T2', 'Pebble giving capacity estimate'),
+    ('Opportunity', 'AccountId',    'Account ID',    'reference', FALSE, FALSE, TRUE, 'T1', 'Linked via prospect org match'),
+    ('Opportunity', 'Description',  'Description',   'textarea',  FALSE, FALSE, TRUE, 'T3', 'Pebble research summary'),
+    ('Opportunity', 'Type',         'Type',          'picklist',  FALSE, FALSE, TRUE, NULL,  'User-selected'),
+    ('Opportunity', 'Probability',  'Probability',   'percent',   FALSE, FALSE, TRUE, NULL,  'Auto-set from stage'),
+    -- Contact: required
+    ('Contact', 'LastName', 'Last Name', 'string',    TRUE,  FALSE, TRUE, 'T1', 'Extracted from prospect name'),
+    ('Contact', 'OwnerId',  'Owner ID', 'reference', TRUE,  FALSE, TRUE, NULL,  'Auto-populated'),
+    -- Contact: key optional (Pebble populates)
+    ('Contact', 'FirstName',                      'First Name',           'string',    FALSE, FALSE, TRUE, 'T1', 'Extracted from prospect name'),
+    ('Contact', 'Title',                          'Title',                'string',    FALSE, FALSE, TRUE, 'T1', 'From identity card or Wikipedia'),
+    ('Contact', 'Email',                          'Email',                'email',     FALSE, FALSE, TRUE, 'T1', 'From CRM match or web search'),
+    ('Contact', 'Phone',                          'Phone',                'phone',     FALSE, FALSE, TRUE, 'T2', 'From enrichment sources'),
+    ('Contact', 'Department',                     'Department',           'string',    FALSE, FALSE, TRUE, 'T2', 'From affiliations dimension'),
+    ('Contact', 'npsp__Primary_Affiliation__c',   'Primary Affiliation', 'reference', FALSE, FALSE, TRUE, 'T1', 'Account ID from org match'),
+    ('Contact', 'LinkedIn_URL__c',                'LinkedIn URL',         'url',       FALSE, FALSE, TRUE, 'T2', 'From web search'),
+    ('Contact', 'LeadSource',                     'Lead Source',          'picklist',  FALSE, FALSE, TRUE, NULL,  'User-selected'),
+    ('Contact', 'Philanthropic_Contact__c',       'Philanthropic Contact','boolean',   FALSE, TRUE,  TRUE, 'T3', 'From philanthropy forager'),
+    ('Contact', 'Philanthropy__c',                'Philanthropy',         'boolean',   FALSE, TRUE,  TRUE, 'T3', 'From philanthropy forager'),
+    ('Contact', 'Volunteer__c',                   'Volunteer',            'boolean',   FALSE, TRUE,  TRUE, NULL,  'User-set'),
+    -- Account: required
+    ('Account', 'Name',    'Account Name', 'string',    TRUE,  FALSE, TRUE, 'T1', 'From prospect org name'),
+    ('Account', 'OwnerId', 'Owner ID',    'reference', TRUE,  FALSE, TRUE, NULL,  'Auto-populated'),
+    -- Account: key optional (Pebble populates)
+    ('Account', 'Type',                    'Account Type',     'picklist', FALSE, FALSE, TRUE, 'T2', 'From OpenCorporates or Wikipedia'),
+    ('Account', 'Industry',                'Industry',         'picklist', FALSE, FALSE, TRUE, 'T2', 'From Wikipedia or web search'),
+    ('Account', 'Website',                 'Website',          'url',      FALSE, FALSE, TRUE, 'T2', 'From web search or Wikipedia'),
+    ('Account', 'Phone',                   'Phone',            'phone',    FALSE, FALSE, TRUE, 'T2', 'From enrichment sources'),
+    ('Account', 'npsp__Grantmaker__c',     'Grantmaker',       'boolean',  FALSE, TRUE,  TRUE, 'T3', 'From ProPublica 990 data'),
+    ('Account', 'Philanthropy__c',         'Philanthropy',     'boolean',  FALSE, TRUE,  TRUE, 'T3', 'From philanthropy forager'),
+    ('Account', 'Fee_For_Service__c',      'Fee For Service',  'boolean',  FALSE, TRUE,  TRUE, NULL,  'User-set'),
+    ('Account', 'npsp__Funding_Focus__c',  'Funding Focus',    'multipicklist', FALSE, FALSE, TRUE, 'T3', 'From ProPublica program descriptions'),
+    ('Account', 'AnnualRevenue',           'Annual Revenue',   'currency', FALSE, FALSE, TRUE, 'T3', 'From ProPublica 990 or SEC filings'),
+    -- Payment: no non-boolean required fields
+    ('npe01__OppPayment__c', 'npe01__Payment_Amount__c',  'Payment Amount',   'currency', FALSE, FALSE, TRUE, NULL, 'User-provided'),
+    ('npe01__OppPayment__c', 'npe01__Scheduled_Date__c',  'Scheduled Date',   'date',     FALSE, FALSE, TRUE, NULL, 'User-provided'),
+    ('npe01__OppPayment__c', 'npe01__Payment_Date__c',    'Payment Date',     'date',     FALSE, FALSE, TRUE, NULL, 'Set when paid'),
+    ('npe01__OppPayment__c', 'npe01__Payment_Method__c',  'Payment Method',   'picklist', FALSE, FALSE, TRUE, NULL, 'User-selected')
+ON CONFLICT (sobject, field_name) DO NOTHING;
+
 -- Updated-at triggers for pebble tables that have updated_at columns
 DO $$
 DECLARE t TEXT;
@@ -645,7 +814,10 @@ BEGIN
         'pebble_research_batches',
         'pebble_batch_prospects',
         'pebble_scratchpad',
-        'pebble_daily_usage'
+        'pebble_daily_usage',
+        'prospect_sf_contact',
+        'prospect_sf_account',
+        'prospect_sf_opportunity'
     ])
     LOOP
         EXECUTE format(

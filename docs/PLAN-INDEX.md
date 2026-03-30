@@ -2,7 +2,7 @@
 
 Master index of all planned and completed milestones. Unique numbering — no duplicates, no ambiguity.
 
-**Last completed:** M18 (Project Soft-Delete, 2026-03-30)
+**Last completed:** M17 Session 1 (SF Audit + Prospect CRM Schema, 2026-03-30)
 **Last shipped:** M18 (Project Soft-Delete, 2026-03-30)
 
 ---
@@ -22,12 +22,14 @@ M18 ✅  Project Soft-Delete
  ├──► M15 (Chrome Extension) ──────┘    (wiring + regression)
  │    Session 1: Manifest + scripts
  │    Session 2: Popup + flows
- ├──► M17 (SF field validation)       ← 1 session, quick win
- ├──► M19 (Project Ownership)         ← 1 session, deferred from M8
- └──► M14 (Pebble Persistence)       ← BLOCKED on SF field definitions
+ ├──► M17 (SF Audit + Prospect CRM)   ← 3 sessions, absorbs M14
+ │    Session 1: Schema + validation + storage ✅
+ │    Session 2: T1-T3 pipeline + persistence
+ │    Session 3: Drift detection + integration test
+ └──► M19 (Project Ownership)         ← 1 session, deferred from M8
 ```
 
-**M13, M15, and M17 are all unblocked.** M13 and M15 can run in parallel (both depend only on M10 ✅). M16 depends on both M13 + M15. M14 is code-ready but blocked on external SF field definitions from senior devs.
+**M13 and M15 are unblocked** and can run in parallel (both depend only on M10 ✅). M16 depends on both M13 + M15. **M14 has been absorbed into M17** — the SF describe() audit resolved the field definition blocker.
 
 ---
 
@@ -36,10 +38,10 @@ M18 ✅  Project Soft-Delete
 | Milestone | Plan File | Depends On | Size | Status | Summary |
 |-----------|-----------|------------|------|--------|---------|
 | **M13: Activities Timeline + Modals** | `tasks/sprint9-activities-extension-plan.md` (9B section) | M10 ✅ | L (2 sessions) | Ready | **Session 1**: Activity TS types + API methods + ActivityTimeline component. **Session 2**: OpportunityDetailModal + ContactDetailModal + page wiring. |
-| **M14: Pebble Persistence + CRM Bridge** | `tasks/sprint11-pebble-persistence-crm.md` | M11 ✅ | M (~1-2 sessions) | BLOCKED on SF field definitions | Wire conflict_log, scratchpad; PATCH/PUT to CRM bridge. |
+| ~~M14: Pebble Persistence + CRM Bridge~~ | `tasks/sprint11-pebble-persistence-crm.md` | M11 ✅ | — | **Absorbed into M17** | Conflict log, scratchpad, CRM bridge updates moved to M17 Sessions 2-3. |
 | **M15: Activities Chrome Extension** | `tasks/sprint9-activities-extension-plan.md` (9C section) | M10 ✅ | L (2 sessions) | Ready | **Session 1**: Manifest V3 + service worker + content scripts + API client. **Session 2**: Popup UI + OppPicker + CascadeFlow + testing. Parallel with M13 (no frontend dependency). |
 | **M16: Activities Integration + QA** | `tasks/sprint9-activities-extension-plan.md` (9D section) | M13 + M15 | S (1 session) | Planned | Wire modals into pages, global search, full regression. Worktree for safety. |
-| **M17: SF Field Validation** | `tasks/sprint13-sf-audit-ux-polish.md` | M12 ✅ | S (1 session) | Ready | Audit SF required fields via describe(), sync frontend validation rules. (Pebble cost display + failed agents already shipped in M12.) |
+| **M17: SF Audit + Prospect CRM Mapping** | `tasks/sprint13-sf-audit-ux-polish.md` | M12 ✅ | L (3 sessions, absorbs M14) | **Session 1 complete** | SF describe() audit, prospect_sf_* typed tables, sf_field_requirements, schema drift detection, frontend validation, T1-T3 population pipeline, CRM bridge updates. Plan: `.claude/plans/effervescent-coalescing-marble.md`. |
 | **M19: Project Ownership Model** | (plan needed) | M18 ✅ | S-M | Planned | owner_email + contributors, owner-only delete. Deferred from M8 scope. |
 | Bedrock UI Improvements | `tasks/bedrock-ui-improvements.md` | Nothing | Ongoing | Mixed | 5 small, 7 medium, 3 large. Parallel with all tracks. |
 | Google OAuth Setup | (in .cursor/plans/) | Nothing | S | Partially done | FRONTEND_URL env, OAUTH_SPRINT_CHECKLIST, redirect fix. |
@@ -50,7 +52,7 @@ M18 ✅  Project Soft-Delete
 |------|-----------|------------|
 | Serper Integration | `tasks/serper-integration-sprint.md` | Serper.dev API key not configured |
 | OpenCorporates Data | (tracked in `tasks/todo.md`) | OpenCorporates API key not obtained |
-| M14: Pebble Persistence | `tasks/sprint11-pebble-persistence-crm.md` | SF field definitions from senior devs |
+| ~~M14: Pebble Persistence~~ | `tasks/sprint11-pebble-persistence-crm.md` | **Resolved** — absorbed into M17; describe() audit provided field definitions |
 
 ---
 

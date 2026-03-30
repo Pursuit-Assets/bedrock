@@ -377,7 +377,23 @@ updated_at      TIMESTAMPTZ DEFAULT now()
 - **Shared DB, `pebble_` prefix** -- e.g., `bedrock.pebble_profiles`
 - **Fresh start** -- No SQLite data migration. Create empty PostgreSQL tables.
 - **Persist conflict logs + scratchpads** -- For audit trail, debugging, and multi-worker scaling.
-- **Pebble should UPDATE existing SF records** -- Blocked on senior devs defining target SF fields.
+- **Pebble should UPDATE existing SF records** -- RESOLVED in M17: CRM bridge update methods added; field definitions obtained from SF describe() audit.
+
+### Prospect CRM Mapping Tables (M17)
+
+Five new tables added in M17 to support the Pebble prospect → CRM conversion pipeline:
+
+| Table | Purpose |
+|-------|---------|
+| `bedrock.sf_field_requirements` | Reference table: SF field metadata from describe() audit. Tracks which fields are required, their types, defaults, and which Pebble tier can populate them. |
+| `bedrock.prospect_sf_contact` | Typed columns mapping prospect research to SF Contact fields (last_name, first_name, title, email, etc.). All nullable for soft enforcement. |
+| `bedrock.prospect_sf_account` | Typed columns mapping prospect research to SF Account fields (name, industry, type, grantmaker, etc.). |
+| `bedrock.prospect_sf_opportunity` | Research-derived opportunity hints (suggested_name, giving_capacity_estimate, wealth_indicators, etc.). |
+| `bedrock.sf_schema_drift_log` | Tracks detected changes between SF describe() and sf_field_requirements. HITL review before schema updates. |
+
+**Design**: All prospect columns nullable. Readiness computed at read time by checking populated fields against `sf_field_requirements`. Updated-at triggers on all three prospect tables.
+
+Full audit documentation: `product/reference/salesforce-required-fields.md`
 
 ## Sprint Roadmap
 
@@ -389,10 +405,12 @@ See `docs/PLAN-INDEX.md` for current milestone status and execution order.
 ✅ M11: Pebble PostgreSQL Migration (SQLite → asyncpg)
 ✅ M12: Pebble Access Control (RBAC + cost limits)
    M13: Activities Timeline + Modals — 2 sessions (frontend, depends M10)
-   M14: Pebble Persistence + CRM Bridge (BLOCKED on SF field defs)
    M15: Chrome Extension — 2 sessions (depends M10, parallel with M13)
    M16: Integration + QA — 1 session (depends M13 + M15)
-   M17: SF Field Validation — 1 session (depends M12)
+🔧 M17: SF Audit + Prospect CRM Mapping — 3 sessions (absorbs M14)
+        Session 1 ✅: Schema + validation + storage
+        Session 2: T1-T3 pipeline + persistence
+        Session 3: Drift detection + integration test
 ✅ M18: Project Soft-Delete
    M19: Project Ownership Model — 1 session (depends M18)
 ```

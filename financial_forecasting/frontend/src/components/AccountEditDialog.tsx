@@ -122,6 +122,7 @@ const AccountEditDialog: React.FC<AccountEditDialogProps> = ({
   const [editForm, setEditForm] = useState<Record<string, any>>({});
   const [originalRecord, setOriginalRecord] = useState<Record<string, any> | null>(null);
   const [saving, setSaving] = useState(false);
+  const [errors, setErrors] = useState<Record<string, string>>({});
   const [matchingGiftExpanded, setMatchingGiftExpanded] = useState(false);
 
   const [users, setUsers] = useState<UserOption[]>([]);
@@ -146,6 +147,7 @@ const AccountEditDialog: React.FC<AccountEditDialogProps> = ({
     if (!open || !accountId) {
       setOriginalRecord(null);
       setEditForm({});
+      setErrors({});
       return;
     }
 
@@ -236,9 +238,12 @@ const AccountEditDialog: React.FC<AccountEditDialogProps> = ({
   );
 
   // ── Field change handler ────────────────────────────────────────────────
-  const handleFieldChange = useCallback((field: string, value: any) => {
+  const handleFieldChange = (field: string, value: any) => {
     setEditForm((prev) => ({ ...prev, [field]: value }));
-  }, []);
+    if (errors[field]) {
+      setErrors((prev) => { const next = { ...prev }; delete next[field]; return next; });
+    }
+  };
 
   // ── Multipicklist handler (semicolon-separated) ─────────────────────────
   const handleMultipicklistChange = useCallback((field: string, values: string[]) => {
@@ -256,8 +261,12 @@ const AccountEditDialog: React.FC<AccountEditDialogProps> = ({
     if (!accountId || !originalRecord) return;
 
     // Required field validation
+    const newErrors: Record<string, string> = {};
     if (!editForm.Name?.trim()) {
-      toast.error('Account Name is required');
+      newErrors.Name = 'Account Name is required';
+    }
+    if (Object.keys(newErrors).length > 0) {
+      setErrors(newErrors);
       return;
     }
 
@@ -346,6 +355,8 @@ const AccountEditDialog: React.FC<AccountEditDialogProps> = ({
                   disabled={!canEdit}
                   value={editForm.Name || ''}
                   onChange={(e) => handleFieldChange('Name', e.target.value)}
+                  error={!!errors.Name}
+                  helperText={errors.Name}
                 />
               </Grid>
               <Grid item xs={12} sm={6}>
