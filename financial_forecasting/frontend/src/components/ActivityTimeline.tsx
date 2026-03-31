@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useMemo } from 'react';
+import React, { useState, useCallback, useMemo, useEffect } from 'react';
 import {
   Box,
   Typography,
@@ -14,6 +14,16 @@ import {
   CircularProgress,
   Alert,
   InputAdornment,
+  Menu,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
+  Paper,
+  List,
+  ListItem,
+  ListItemIcon,
+  ListItemText,
 } from '@mui/material';
 import type { SelectChangeEvent } from '@mui/material';
 import {
@@ -26,19 +36,29 @@ import {
   ExpandMore as ExpandMoreIcon,
   ExpandLess as ExpandLessIcon,
   Search as SearchIcon,
-  FilterList as FilterListIcon,
   History as HistoryIcon,
   Clear as ClearIcon,
+  MoreVert as MoreVertIcon,
+  Edit as EditIcon,
+  Delete as DeleteIcon,
+  Add as AddIcon,
+  AutoAwesome as AutoAwesomeIcon,
+  FiberManualRecord as BulletIcon,
+  CheckCircleOutline as CheckIcon,
 } from '@mui/icons-material';
-import { format, parseISO, isToday, isYesterday } from 'date-fns';
+import { format, parseISO, isToday, isYesterday, subDays } from 'date-fns';
+import { useQueryClient } from 'react-query';
+import toast from 'react-hot-toast';
 import { useActivities } from '../hooks/useActivities';
-import type { Activity, ActivityType } from '../types/activity';
+import { apiService } from '../services/api';
+import LogActivityDialog from './LogActivityDialog';
+import type { Activity, ActivityType, ActivityInsightsResponse } from '../types/activity';
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-const ACTIVITY_TYPE_CONFIG: Record<ActivityType, { icon: React.ReactElement; color: string; label: string }> = {
+export const ACTIVITY_TYPE_CONFIG: Record<ActivityType, { icon: React.ReactElement; color: string; label: string }> = {
   call: { icon: <PhoneIcon fontSize="small" />, color: 'success.main', label: 'Call' },
   email: { icon: <EmailIcon fontSize="small" />, color: 'info.main', label: 'Email' },
   meeting: { icon: <GroupsIcon fontSize="small" />, color: 'secondary.main', label: 'Meeting' },
@@ -48,6 +68,32 @@ const ACTIVITY_TYPE_CONFIG: Record<ActivityType, { icon: React.ReactElement; col
 };
 
 const ALL_ACTIVITY_TYPES: ActivityType[] = ['call', 'email', 'meeting', 'note', 'slack-message', 'calendar-event'];
+
+const DATE_RANGE_OPTIONS = [
+  { value: '7d' as const, label: 'Last 7 days' },
+  { value: '30d' as const, label: 'Last 30 days' },
+  { value: '90d' as const, label: 'Last 90 days' },
+  { value: 'all' as const, label: 'All time' },
+];
+
+const MOMENTUM_CONFIG: Record<string, { color: 'success' | 'info' | 'error' | 'default'; label: string }> = {
+  increasing: { color: 'success', label: 'Increasing' },
+  stable: { color: 'info', label: 'Stable' },
+  declining: { color: 'error', label: 'Declining' },
+  new: { color: 'default', label: 'New' },
+};
+
+type DateRangeValue = '7d' | '30d' | '90d' | 'all';
+
+/** Extract an array from varying react-query cache shapes (matches GlobalSearch.tsx:93) */
+function toArray(cached: unknown): Record<string, any>[] {
+  if (Array.isArray(cached)) return cached;
+  if (cached && typeof cached === 'object') {
+    const obj = cached as Record<string, any>;
+    return obj.opportunities || obj.data || [];
+  }
+  return [];
+}
 
 // ---------------------------------------------------------------------------
 // Props
@@ -95,14 +141,26 @@ function ActivityCard({
   expanded,
   onToggle,
   currentEntityType,
+  oppNameMap,
+  acctNameMap,
+  onEdit,
+  onDelete,
 }: {
   activity: Activity;
   expanded: boolean;
   onToggle: () => void;
   currentEntityType: 'opportunity' | 'account' | 'contact';
+  oppNameMap: Map<string, string>;
+  acctNameMap: Map<string, string>;
+  onEdit?: (activity: Activity) => void;
+  onDelete?: (activity: Activity) => void;
 }) {
   const config = ACTIVITY_TYPE_CONFIG[activity.type] || ACTIVITY_TYPE_CONFIG.note;
   const activityDate = activity.activity_date ? parseISO(activity.activity_date) : null;
+  const isManual = activity.source === 'manual';
+
+  // 3-dot menu state
+  const [menuAnchorEl, setMenuAnchorEl] = useState<null | HTMLElement>(null);
 
   const hasExpandableContent =
     activity.description ||
@@ -163,6 +221,42 @@ function ActivityCard({
                 {expanded ? <ExpandLessIcon fontSize="small" /> : <ExpandMoreIcon fontSize="small" />}
               </IconButton>
             )}
+            {/* 3-dot menu — only for manual activities */}
+            {isManual && (
+              <>
+                <IconButton
+                  size="small"
+                  sx={{ p: 0.25 }}
+                  onClick={(e) => { e.stopPropagation(); setMenuAnchorEl(e.currentTarget); }}
+                  aria-label="Activity actions"
+                >
+                  <MoreVertIcon fontSize="small" />
+                </IconButton>
+                <Menu
+                  anchorEl={menuAnchorEl}
+                  open={Boolean(menuAnchorEl)}
+                  onClose={() => setMenuAnchorEl(null)}
+                  onClick={(e) => e.stopPropagation()}
+                  anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+                  transformOrigin={{ vertical: 'top', horizontal: 'right' }}
+                >
+                  <MenuItem
+                    onClick={() => { setMenuAnchorEl(null); onEdit?.(activity); }}
+                    sx={{ fontSize: '0.85rem' }}
+                  >
+                    <ListItemIcon sx={{ minWidth: 32 }}><EditIcon fontSize="small" /></ListItemIcon>
+                    Edit
+                  </MenuItem>
+                  <MenuItem
+                    onClick={() => { setMenuAnchorEl(null); onDelete?.(activity); }}
+                    sx={{ fontSize: '0.85rem', color: 'error.main' }}
+                  >
+                    <ListItemIcon sx={{ minWidth: 32 }}><DeleteIcon fontSize="small" color="error" /></ListItemIcon>
+                    Delete
+                  </MenuItem>
+                </Menu>
+              </>
+            )}
           </Box>
         </Box>
 
@@ -184,7 +278,7 @@ function ActivityCard({
           </Typography>
         )}
 
-        {/* Source + related entity chips */}
+        {/* Source + related entity chips (with name resolution) */}
         <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap', mt: 0.5 }}>
           <Chip
             label={activity.source.replace('-', ' ')}
@@ -192,10 +286,20 @@ function ActivityCard({
             sx={{ height: 18, fontSize: '0.6rem', textTransform: 'capitalize' }}
           />
           {activity.opportunity_id && currentEntityType !== 'opportunity' && (
-            <Chip label={`Opp: ${activity.opportunity_id}`} size="small" variant="outlined" sx={{ height: 18, fontSize: '0.6rem' }} />
+            <Chip
+              label={`Opp: ${oppNameMap.get(activity.opportunity_id) || activity.opportunity_id.slice(0, 8) + '...'}`}
+              size="small"
+              variant="outlined"
+              sx={{ height: 18, fontSize: '0.6rem' }}
+            />
           )}
           {activity.account_id && currentEntityType !== 'account' && (
-            <Chip label={`Acct: ${activity.account_id}`} size="small" variant="outlined" sx={{ height: 18, fontSize: '0.6rem' }} />
+            <Chip
+              label={`Acct: ${acctNameMap.get(activity.account_id) || activity.account_id.slice(0, 8) + '...'}`}
+              size="small"
+              variant="outlined"
+              sx={{ height: 18, fontSize: '0.6rem' }}
+            />
           )}
           {activity.logged_by && (
             <Chip label={activity.logged_by} size="small" variant="outlined" sx={{ height: 18, fontSize: '0.6rem' }} />
@@ -317,11 +421,26 @@ const ActivityTimeline: React.FC<ActivityTimelineProps> = ({
   contactId,
   maxHeight = 500,
 }) => {
-  // Filter state
+  const queryClient = useQueryClient();
+
+  // ── Filter state ─────────────────────────────────────────────────────────
   const [typeFilter, setTypeFilter] = useState<ActivityType[]>([]);
   const [searchText, setSearchText] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [dateRange, setDateRange] = useState<DateRangeValue>('all');
+
+  // ── CRUD state ───────────────────────────────────────────────────────────
+  const [logDialogOpen, setLogDialogOpen] = useState(false);
+  const [editTarget, setEditTarget] = useState<Activity | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<Activity | null>(null);
+  const [deleting, setDeleting] = useState(false);
+
+  // ── AI Insights state ────────────────────────────────────────────────────
+  const [insightsOpen, setInsightsOpen] = useState(false);
+  const [insightsData, setInsightsData] = useState<ActivityInsightsResponse | null>(null);
+  const [insightsLoading, setInsightsLoading] = useState(false);
+  const [insightsError, setInsightsError] = useState<string | null>(null);
 
   // Debounce search input
   const searchTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -339,6 +458,28 @@ const ActivityTimeline: React.FC<ActivityTimelineProps> = ({
     ? 'account'
     : 'contact';
 
+  const canShowInsights = !!(opportunityId || accountId);
+
+  // ── Reset insights when entity changes (prevent stale data from previous entity) ──
+  useEffect(() => {
+    setInsightsOpen(false);
+    setInsightsData(null);
+    setInsightsError(null);
+    setInsightsLoading(false);
+  }, [opportunityId, accountId]);
+
+  // ── Date range → startDate/endDate for hook ──────────────────────────────
+  const { startDate, endDate } = useMemo(() => {
+    if (dateRange === 'all') return { startDate: undefined, endDate: undefined };
+    const now = new Date();
+    const days = dateRange === '7d' ? 7 : dateRange === '30d' ? 30 : 90;
+    return {
+      startDate: format(subDays(now, days), 'yyyy-MM-dd'),
+      endDate: format(now, 'yyyy-MM-dd'),
+    };
+  }, [dateRange]);
+
+  // ── Data fetching ────────────────────────────────────────────────────────
   const {
     activities,
     total,
@@ -355,7 +496,23 @@ const ActivityTimeline: React.FC<ActivityTimelineProps> = ({
     contactId,
     type: typeFilter.length === 1 ? typeFilter[0] : undefined,
     search: debouncedSearch || undefined,
+    startDate,
+    endDate,
   });
+
+  // ── Entity name resolution maps ──────────────────────────────────────────
+  const { oppNameMap, acctNameMap } = useMemo(() => {
+    const oppMap = new Map<string, string>();
+    for (const o of toArray(queryClient.getQueryData('opportunities'))) {
+      if (o.Id && o.Name) oppMap.set(o.Id, o.Name);
+    }
+    const acctMap = new Map<string, string>();
+    for (const a of toArray(queryClient.getQueryData('accounts'))) {
+      if (a.Id && a.Name) acctMap.set(a.Id, a.Name);
+    }
+    return { oppNameMap: oppMap, acctNameMap: acctMap };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activities]);
 
   // Client-side multi-type filter (API only supports single type filter)
   const filteredActivities = useMemo(() => {
@@ -366,12 +523,14 @@ const ActivityTimeline: React.FC<ActivityTimelineProps> = ({
   // Group by date
   const dateGroups = useMemo(() => groupByDate(filteredActivities), [filteredActivities]);
 
-  const hasFilters = typeFilter.length > 0 || searchText.length > 0;
+  const hasFilters = typeFilter.length > 0 || searchText.length > 0 || dateRange !== 'all';
 
+  // ── Handlers ─────────────────────────────────────────────────────────────
   const handleClearFilters = useCallback(() => {
     setTypeFilter([]);
     setSearchText('');
     setDebouncedSearch('');
+    setDateRange('all');
   }, []);
 
   const handleTypeChange = useCallback((event: SelectChangeEvent<ActivityType[]>) => {
@@ -383,6 +542,54 @@ const ActivityTimeline: React.FC<ActivityTimelineProps> = ({
     setExpandedId((prev) => (prev === id ? null : id));
   }, []);
 
+  const handleActivitySaved = useCallback(() => {
+    queryClient.invalidateQueries('activities');
+  }, [queryClient]);
+
+  const handleEdit = useCallback((activity: Activity) => {
+    setEditTarget(activity);
+  }, []);
+
+  const handleDelete = useCallback((activity: Activity) => {
+    setDeleteTarget(activity);
+  }, []);
+
+  const handleConfirmDelete = useCallback(async () => {
+    if (!deleteTarget || deleting) return;
+    setDeleting(true);
+    try {
+      await apiService.deleteActivity(deleteTarget.id);
+      queryClient.invalidateQueries('activities');
+      toast.success('Activity deleted');
+      setDeleteTarget(null);
+    } catch (err: any) {
+      toast.error(err.response?.data?.detail || 'Failed to delete activity');
+    } finally {
+      setDeleting(false);
+    }
+  }, [deleteTarget, deleting, queryClient]);
+
+  const handleInsightsToggle = useCallback(async () => {
+    const opening = !insightsOpen;
+    setInsightsOpen(opening);
+    if (opening && !insightsData && !insightsLoading) {
+      setInsightsLoading(true);
+      setInsightsError(null);
+      try {
+        const res = await apiService.activityInsights({
+          opportunity_id: opportunityId,
+          account_id: accountId,
+        });
+        setInsightsData(res.data as ActivityInsightsResponse);
+      } catch (err: any) {
+        setInsightsError(err.response?.data?.detail || 'Failed to generate insights');
+      } finally {
+        setInsightsLoading(false);
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [insightsOpen, insightsData, insightsLoading, opportunityId, accountId]);
+
   // ---------------------------------------------------------------------------
   // Render
   // ---------------------------------------------------------------------------
@@ -391,61 +598,208 @@ const ActivityTimeline: React.FC<ActivityTimelineProps> = ({
     <Box sx={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
       {/* Filter bar */}
       <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', mb: 2, flexWrap: 'wrap' }}>
-        <FormControl size="small" sx={{ minWidth: 140 }}>
-          <InputLabel id="activity-type-filter-label">Type</InputLabel>
-          <Select
-            labelId="activity-type-filter-label"
-            multiple
-            value={typeFilter}
-            onChange={handleTypeChange}
-            label="Type"
-            renderValue={(selected) => (
-              <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap' }}>
-                {selected.map((t) => (
-                  <Chip
-                    key={t}
-                    label={ACTIVITY_TYPE_CONFIG[t]?.label || t}
-                    size="small"
-                    sx={{ height: 20, fontSize: '0.65rem' }}
-                  />
-                ))}
+        {/* LEFT group: filters */}
+        <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', flex: 1, flexWrap: 'wrap', minWidth: 0 }}>
+          {/* Type filter */}
+          <FormControl size="small" sx={{ minWidth: 120 }}>
+            <InputLabel id="activity-type-filter-label">Type</InputLabel>
+            <Select
+              labelId="activity-type-filter-label"
+              multiple
+              value={typeFilter}
+              onChange={handleTypeChange}
+              label="Type"
+              renderValue={(selected) => (
+                <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap' }}>
+                  {selected.map((t) => (
+                    <Chip
+                      key={t}
+                      label={ACTIVITY_TYPE_CONFIG[t]?.label || t}
+                      size="small"
+                      sx={{ height: 20, fontSize: '0.65rem' }}
+                    />
+                  ))}
+                </Box>
+              )}
+            >
+              {ALL_ACTIVITY_TYPES.map((t) => (
+                <MenuItem key={t} value={t}>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                    <Box sx={{ color: ACTIVITY_TYPE_CONFIG[t].color, display: 'flex' }}>
+                      {ACTIVITY_TYPE_CONFIG[t].icon}
+                    </Box>
+                    {ACTIVITY_TYPE_CONFIG[t].label}
+                  </Box>
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+
+          {/* Date range filter */}
+          <FormControl size="small" sx={{ minWidth: 120 }}>
+            <InputLabel id="activity-date-range-label">Date</InputLabel>
+            <Select
+              labelId="activity-date-range-label"
+              value={dateRange}
+              onChange={(e) => setDateRange(e.target.value as DateRangeValue)}
+              label="Date"
+            >
+              {DATE_RANGE_OPTIONS.map((opt) => (
+                <MenuItem key={opt.value} value={opt.value}>
+                  {opt.label}
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+
+          {/* Search */}
+          <TextField
+            size="small"
+            placeholder="Search activities..."
+            value={searchText}
+            onChange={handleSearchChange}
+            sx={{ flex: 1, minWidth: 140 }}
+            InputProps={{
+              startAdornment: (
+                <InputAdornment position="start">
+                  <SearchIcon fontSize="small" color="action" />
+                </InputAdornment>
+              ),
+            }}
+          />
+
+          {hasFilters && (
+            <Button size="small" startIcon={<ClearIcon />} onClick={handleClearFilters} sx={{ textTransform: 'none' }}>
+              Clear
+            </Button>
+          )}
+        </Box>
+
+        {/* RIGHT group: action buttons */}
+        <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center', flexShrink: 0 }}>
+          {canShowInsights && (
+            <Button
+              size="small"
+              variant={insightsOpen ? 'contained' : 'outlined'}
+              startIcon={<AutoAwesomeIcon />}
+              onClick={handleInsightsToggle}
+              sx={{ textTransform: 'none', fontSize: '0.75rem' }}
+            >
+              AI Insights
+            </Button>
+          )}
+          <Button
+            size="small"
+            variant="contained"
+            startIcon={<AddIcon />}
+            onClick={() => setLogDialogOpen(true)}
+            sx={{ textTransform: 'none', fontSize: '0.75rem' }}
+          >
+            Add Activity
+          </Button>
+        </Box>
+      </Box>
+
+      {/* AI Insights panel (collapsible) */}
+      {canShowInsights && (
+        <Collapse in={insightsOpen}>
+          <Paper variant="outlined" sx={{ bgcolor: 'grey.50', p: 2, mb: 2, borderRadius: 1 }}>
+            {/* Loading */}
+            {insightsLoading && (
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, py: 2 }}>
+                <CircularProgress size={20} />
+                <Typography variant="body2" color="text.secondary">
+                  Generating insights...
+                </Typography>
               </Box>
             )}
-          >
-            {ALL_ACTIVITY_TYPES.map((t) => (
-              <MenuItem key={t} value={t}>
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                  <Box sx={{ color: ACTIVITY_TYPE_CONFIG[t].color, display: 'flex' }}>
-                    {ACTIVITY_TYPE_CONFIG[t].icon}
+
+            {/* Error */}
+            {insightsError && !insightsLoading && (
+              <Alert severity="warning" sx={{ mb: 0 }}>
+                {insightsError}
+              </Alert>
+            )}
+
+            {/* No data / low confidence */}
+            {insightsData && insightsData.confidence === 'none' && !insightsLoading && (
+              <Alert severity="info" sx={{ mb: 0 }}>
+                Not enough activity data for meaningful insights.
+              </Alert>
+            )}
+
+            {/* Insights content */}
+            {insightsData && insightsData.confidence !== 'none' && !insightsLoading && (
+              <Box>
+                {/* Momentum chip */}
+                {insightsData.momentum && MOMENTUM_CONFIG[insightsData.momentum] && (
+                  <Box sx={{ mb: 1.5 }}>
+                    <Chip
+                      label={`Momentum: ${MOMENTUM_CONFIG[insightsData.momentum].label}`}
+                      size="small"
+                      color={MOMENTUM_CONFIG[insightsData.momentum].color}
+                    />
                   </Box>
-                  {ACTIVITY_TYPE_CONFIG[t].label}
-                </Box>
-              </MenuItem>
-            ))}
-          </Select>
-        </FormControl>
+                )}
 
-        <TextField
-          size="small"
-          placeholder="Search activities..."
-          value={searchText}
-          onChange={handleSearchChange}
-          sx={{ flex: 1, minWidth: 160 }}
-          InputProps={{
-            startAdornment: (
-              <InputAdornment position="start">
-                <SearchIcon fontSize="small" color="action" />
-              </InputAdornment>
-            ),
-          }}
-        />
+                {/* Summary */}
+                <Typography variant="body2" sx={{ mb: 1.5, lineHeight: 1.6 }}>
+                  {insightsData.summary}
+                </Typography>
 
-        {hasFilters && (
-          <Button size="small" startIcon={<ClearIcon />} onClick={handleClearFilters} sx={{ textTransform: 'none' }}>
-            Clear
-          </Button>
-        )}
-      </Box>
+                {/* Key Findings */}
+                {insightsData.key_findings.length > 0 && (
+                  <Box sx={{ mb: 1.5 }}>
+                    <Typography variant="caption" sx={{ fontWeight: 600, color: 'text.secondary', display: 'block', mb: 0.5 }}>
+                      Key Findings
+                    </Typography>
+                    <List dense disablePadding>
+                      {insightsData.key_findings.map((finding, i) => (
+                        <ListItem key={i} disableGutters sx={{ py: 0.25 }}>
+                          <ListItemIcon sx={{ minWidth: 20 }}>
+                            <BulletIcon sx={{ fontSize: 8, color: 'text.secondary' }} />
+                          </ListItemIcon>
+                          <ListItemText
+                            primary={finding}
+                            primaryTypographyProps={{ variant: 'body2', lineHeight: 1.4 }}
+                          />
+                        </ListItem>
+                      ))}
+                    </List>
+                  </Box>
+                )}
+
+                {/* Action Items */}
+                {insightsData.action_items.length > 0 && (
+                  <Box sx={{ mb: 1 }}>
+                    <Typography variant="caption" sx={{ fontWeight: 600, color: 'text.secondary', display: 'block', mb: 0.5 }}>
+                      Action Items
+                    </Typography>
+                    <List dense disablePadding>
+                      {insightsData.action_items.map((item, i) => (
+                        <ListItem key={i} disableGutters sx={{ py: 0.25 }}>
+                          <ListItemIcon sx={{ minWidth: 24 }}>
+                            <CheckIcon sx={{ fontSize: 16, color: 'success.main' }} />
+                          </ListItemIcon>
+                          <ListItemText
+                            primary={item}
+                            primaryTypographyProps={{ variant: 'body2', lineHeight: 1.4 }}
+                          />
+                        </ListItem>
+                      ))}
+                    </List>
+                  </Box>
+                )}
+
+                {/* Generated timestamp */}
+                <Typography variant="caption" color="text.disabled" sx={{ display: 'block', textAlign: 'right' }}>
+                  Generated {format(parseISO(insightsData.generated_at), 'MMM d, h:mm a')}
+                </Typography>
+              </Box>
+            )}
+          </Paper>
+        </Collapse>
+      )}
 
       {/* Content area */}
       <Box
@@ -535,6 +889,10 @@ const ActivityTimeline: React.FC<ActivityTimelineProps> = ({
                     expanded={expandedId === activity.id}
                     onToggle={() => handleToggleExpand(activity.id)}
                     currentEntityType={currentEntityType}
+                    oppNameMap={oppNameMap}
+                    acctNameMap={acctNameMap}
+                    onEdit={handleEdit}
+                    onDelete={handleDelete}
                   />
                 ))}
               </Box>
@@ -557,6 +915,52 @@ const ActivityTimeline: React.FC<ActivityTimelineProps> = ({
           </>
         )}
       </></Box>
+
+      {/* Log / Edit Activity Dialog */}
+      <LogActivityDialog
+        open={logDialogOpen || !!editTarget}
+        onClose={() => { setLogDialogOpen(false); setEditTarget(null); }}
+        onSaved={handleActivitySaved}
+        editActivity={editTarget}
+        defaultOpportunityId={opportunityId}
+        defaultAccountId={accountId}
+        defaultContactId={contactId}
+      />
+
+      {/* Delete Confirmation Dialog */}
+      <Dialog
+        open={!!deleteTarget}
+        onClose={() => !deleting && setDeleteTarget(null)}
+        maxWidth="xs"
+        fullWidth
+      >
+        <DialogTitle>Delete Activity</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" sx={{ mb: 1 }}>
+            Are you sure you want to delete this activity? This action cannot be undone.
+          </Typography>
+          {deleteTarget && (
+            <Typography variant="body2" sx={{ fontWeight: 600, color: 'text.secondary' }}>
+              &ldquo;{deleteTarget.subject}&rdquo;
+            </Typography>
+          )}
+        </DialogContent>
+        <DialogActions sx={{ px: 3, py: 1.5 }}>
+          <Button size="small" onClick={() => setDeleteTarget(null)} disabled={deleting}>
+            Cancel
+          </Button>
+          <Button
+            size="small"
+            variant="contained"
+            color="error"
+            onClick={handleConfirmDelete}
+            disabled={deleting}
+            startIcon={deleting ? <CircularProgress size={16} /> : <DeleteIcon />}
+          >
+            Delete
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 };
