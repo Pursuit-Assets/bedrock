@@ -1089,3 +1089,29 @@ BEGIN
         );
     END LOOP;
 END $$;
+
+-- ---------------------------------------------------------------------------
+-- Wall of Progress: per-owner annual revenue goals
+-- ---------------------------------------------------------------------------
+-- Goals are scoped by (sf_user_id, fiscal_year). For Pursuit, fiscal_year is
+-- the calendar year (Jan 1 – Dec 31). Edit gated on manage_owner_goals.
+CREATE TABLE IF NOT EXISTS bedrock.owner_goal (
+    id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    sf_user_id      TEXT NOT NULL,
+    fiscal_year     INT  NOT NULL,
+    goal_amount     NUMERIC(14,2) NOT NULL CHECK (goal_amount >= 0 AND goal_amount <= 100000000),
+    notes           TEXT NOT NULL DEFAULT '',
+    created_at      TIMESTAMPTZ DEFAULT now(),
+    updated_at      TIMESTAMPTZ DEFAULT now(),
+    created_by      TEXT,
+    updated_by      TEXT,
+    UNIQUE (sf_user_id, fiscal_year)
+);
+CREATE INDEX IF NOT EXISTS idx_owner_goal_sf_user_id ON bedrock.owner_goal(sf_user_id);
+CREATE INDEX IF NOT EXISTS idx_owner_goal_fiscal_year ON bedrock.owner_goal(fiscal_year);
+
+DO $$ BEGIN
+    DROP TRIGGER IF EXISTS trg_owner_goal_updated_at ON bedrock.owner_goal;
+    CREATE TRIGGER trg_owner_goal_updated_at BEFORE UPDATE ON bedrock.owner_goal
+        FOR EACH ROW EXECUTE FUNCTION bedrock.set_updated_at();
+END $$;

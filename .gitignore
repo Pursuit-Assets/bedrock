@@ -145,6 +145,9 @@ dmypy.json
 
 # MCP Client specific
 config/
+# …but the frontend has a src/config/ directory that holds source code, not credentials
+!financial_forecasting/frontend/src/config/
+!financial_forecasting/frontend/src/config/**
 credentials/
 tokens/
 *.token

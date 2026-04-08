@@ -19,6 +19,9 @@ import {
   Tooltip,
   Button,
   Link,
+  Select,
+  MenuItem,
+  FormControl,
 } from '@mui/material';
 import {
   ExpandMore as ExpandMoreIcon,
@@ -57,6 +60,8 @@ interface Opportunity {
   CloseDate: string;
   LastModifiedDate?: string;
   CreatedDate?: string;
+  OwnerId?: string;
+  Owner?: { Name: string };
 }
 
 interface StageChange {
@@ -64,6 +69,7 @@ interface StageChange {
   OpportunityName: string;
   Amount: number;
   CurrentStage: string;
+  OwnerId?: string;
   OldValue: string;
   NewValue: string;
   CreatedDate: string;
@@ -93,6 +99,10 @@ interface FunnelLayer {
 
 interface PipelineFunnelProps {
   opportunities: Opportunity[];
+  /** Page-level multi-select: when set, restricts the funnel to these owners. */
+  selectedOwnerIds?: string[];
+  /** Legacy single-owner prop, retained for compatibility. Equivalent to passing [ownerId] in selectedOwnerIds. */
+  ownerId?: string;
 }
 
 function isForward(from: string, to: string): boolean {
@@ -205,11 +215,43 @@ function buildSetbackRows(layer: FunnelLayer): FlowRow[] {
   return rows;
 }
 
-const PipelineFunnel: React.FC<PipelineFunnelProps> = ({ opportunities }) => {
+const PipelineFunnel: React.FC<PipelineFunnelProps> = ({ opportunities, selectedOwnerIds, ownerId }) => {
   const [dateRange, setDateRange] = useState<DateRange>('30d');
   const [expandedStage, setExpandedStage] = useState<string | null>(null);
+  // Focus dropdown lets the user narrow the funnel to a single owner from the
+  // current selection without changing the page-level multi-select.
+  const [focusOwnerId, setFocusOwnerId] = useState<string>('all');
 
   const days = DAYS_MAP[dateRange];
+
+  // Owners visible in the focus dropdown are derived from the opportunities prop.
+  // Sorted alphabetically, names resolved from Owner.Name relationship.
+  const availableOwners = useMemo(() => {
+    const seen = new Map<string, string>();
+    for (const opp of opportunities) {
+      if (opp.OwnerId && !seen.has(opp.OwnerId)) {
+        seen.set(opp.OwnerId, opp.Owner?.Name || opp.OwnerId);
+      }
+    }
+    return Array.from(seen, ([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name));
+  }, [opportunities]);
+
+  // If the focused owner falls out of availableOwners (e.g., multi-select changed),
+  // reset focus to "all" so the funnel doesn't appear empty.
+  React.useEffect(() => {
+    if (focusOwnerId !== 'all' && !availableOwners.some((o) => o.id === focusOwnerId)) {
+      setFocusOwnerId('all');
+    }
+  }, [availableOwners, focusOwnerId]);
+
+  // Resolve the effective filter set for both opportunities and history.
+  // Order of precedence: focus dropdown > selectedOwnerIds prop > legacy ownerId prop > none.
+  const effectiveOwnerIds = useMemo<Set<string> | null>(() => {
+    if (focusOwnerId !== 'all') return new Set([focusOwnerId]);
+    if (selectedOwnerIds && selectedOwnerIds.length > 0) return new Set(selectedOwnerIds);
+    if (ownerId) return new Set([ownerId]);
+    return null;
+  }, [focusOwnerId, selectedOwnerIds, ownerId]);
 
   const { data: historyData, isLoading: historyLoading } = useQuery(
     ['stage-history', days],
@@ -220,11 +262,20 @@ const PipelineFunnel: React.FC<PipelineFunnelProps> = ({ opportunities }) => {
     { staleTime: 5 * 60 * 1000 }
   );
 
-  const history = useMemo(() => historyData || [], [historyData]);
+  const history = useMemo(() => {
+    const raw = historyData || [];
+    if (!effectiveOwnerIds) return raw;
+    return raw.filter((h) => h.OwnerId && effectiveOwnerIds.has(h.OwnerId));
+  }, [historyData, effectiveOwnerIds]);
 
   const filteredOpps = useMemo(
-    () => opportunities.filter((opp) => ACTIVE_FUNNEL_STAGES.includes(opp.StageName as any)),
-    [opportunities],
+    () =>
+      opportunities.filter(
+        (opp) =>
+          ACTIVE_FUNNEL_STAGES.includes(opp.StageName as any) &&
+          (!effectiveOwnerIds || (opp.OwnerId && effectiveOwnerIds.has(opp.OwnerId))),
+      ),
+    [opportunities, effectiveOwnerIds],
   );
 
   const funnel = useMemo(() => buildFunnelData(filteredOpps, history), [filteredOpps, history]);
@@ -234,11 +285,30 @@ const PipelineFunnel: React.FC<PipelineFunnelProps> = ({ opportunities }) => {
   const queryClient = useQueryClient();
   const [analysisRequested, setAnalysisRequested] = useState(false);
 
+  // Owner IDs to send to the backend analyze endpoint. Sorted for stable
+  // cache keys (so the same set hashes the same regardless of order).
+  const analysisOwnerIds = useMemo(() => {
+    if (!effectiveOwnerIds) return [] as string[];
+    return Array.from(effectiveOwnerIds).sort();
+  }, [effectiveOwnerIds]);
+
+  const analysisCacheKey = useMemo(
+    () => ['pipeline-analysis', days, analysisOwnerIds.join(',')],
+    [days, analysisOwnerIds],
+  );
+
   const { data: analysisData, isLoading: analysisLoading, isFetching: analysisFetching } = useQuery(
-    ['pipeline-analysis', days],
+    analysisCacheKey,
     async () => {
-      const response = await apiService.analyzePipeline(days);
-      return response.data as { analysis: string; generated_at: string; changes_count: number; days: number };
+      const response = await apiService.analyzePipeline(days, analysisOwnerIds);
+      return response.data as {
+        analysis: string;
+        generated_at: string;
+        changes_count: number;
+        days: number;
+        owner_ids?: string[];
+        owner_names?: string[];
+      };
     },
     {
       enabled: analysisRequested,
@@ -249,12 +319,12 @@ const PipelineFunnel: React.FC<PipelineFunnelProps> = ({ opportunities }) => {
 
   const handleAnalyze = useCallback(() => {
     setAnalysisRequested(true);
-    queryClient.invalidateQueries(['pipeline-analysis', days]);
-  }, [days, queryClient]);
+    queryClient.invalidateQueries(analysisCacheKey);
+  }, [analysisCacheKey, queryClient]);
 
   const handleRegenerate = useCallback(() => {
-    queryClient.invalidateQueries(['pipeline-analysis', days]);
-  }, [days, queryClient]);
+    queryClient.invalidateQueries(analysisCacheKey);
+  }, [analysisCacheKey, queryClient]);
 
   const analysisAge = useMemo(() => {
     if (!analysisData?.generated_at) return '';
@@ -268,21 +338,45 @@ const PipelineFunnel: React.FC<PipelineFunnelProps> = ({ opportunities }) => {
   return (
     <Card sx={{ mb: 2 }}>
       <CardContent sx={{ pb: '16px !important' }}>
-        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
+        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2, gap: 1, flexWrap: 'wrap' }}>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
             <Typography variant="h6" sx={{ fontWeight: 700 }}>Pipeline Flow</Typography>
             {historyLoading && <CircularProgress size={16} />}
           </Box>
-          <ToggleButtonGroup
-            size="small"
-            exclusive
-            value={dateRange}
-            onChange={(_, v) => v && setDateRange(v)}
-          >
-            <ToggleButton value="7d" sx={{ textTransform: 'none', fontSize: '0.75rem', px: 1.5 }}>7d</ToggleButton>
-            <ToggleButton value="30d" sx={{ textTransform: 'none', fontSize: '0.75rem', px: 1.5 }}>30d</ToggleButton>
-            <ToggleButton value="90d" sx={{ textTransform: 'none', fontSize: '0.75rem', px: 1.5 }}>90d</ToggleButton>
-          </ToggleButtonGroup>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            {availableOwners.length >= 2 && (
+              <FormControl size="small">
+                <Select
+                  value={focusOwnerId}
+                  onChange={(e) => setFocusOwnerId(e.target.value as string)}
+                  sx={{
+                    fontSize: '0.75rem',
+                    height: 32,
+                    '& .MuiSelect-select': { py: 0.5, pr: '24px !important', pl: 1.25 },
+                  }}
+                >
+                  <MenuItem value="all" sx={{ fontSize: '0.8rem' }}>
+                    Focus: All ({availableOwners.length})
+                  </MenuItem>
+                  {availableOwners.map((o) => (
+                    <MenuItem key={o.id} value={o.id} sx={{ fontSize: '0.8rem' }}>
+                      Focus: {o.name}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+            )}
+            <ToggleButtonGroup
+              size="small"
+              exclusive
+              value={dateRange}
+              onChange={(_, v) => v && setDateRange(v)}
+            >
+              <ToggleButton value="7d" sx={{ textTransform: 'none', fontSize: '0.75rem', px: 1.5 }}>7d</ToggleButton>
+              <ToggleButton value="30d" sx={{ textTransform: 'none', fontSize: '0.75rem', px: 1.5 }}>30d</ToggleButton>
+              <ToggleButton value="90d" sx={{ textTransform: 'none', fontSize: '0.75rem', px: 1.5 }}>90d</ToggleButton>
+            </ToggleButtonGroup>
+          </Box>
         </Box>
 
         <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
@@ -449,11 +543,18 @@ const PipelineFunnel: React.FC<PipelineFunnelProps> = ({ opportunities }) => {
                         </Typography>
                         <TableContainer component={Paper} variant="outlined" sx={{ mt: 0.5 }}>
                           <Table size="small" sx={{ tableLayout: 'fixed' }}>
+                            <colgroup>
+                              <col style={{ width: '50%' }} />
+                              <col style={{ width: '25%' }} />
+                              <col style={{ width: '20%' }} />
+                              <col style={{ width: '5%' }} />
+                            </colgroup>
                             <TableHead>
                               <TableRow>
                                 <TableCell sx={{ fontSize: '0.7rem', py: 0.5 }}>Opportunity</TableCell>
+                                <TableCell sx={{ fontSize: '0.7rem', py: 0.5 }}>Owner</TableCell>
                                 <TableCell sx={{ fontSize: '0.7rem', py: 0.5 }} align="right">Amount</TableCell>
-                                <TableCell sx={{ fontSize: '0.7rem', py: 0.5, width: 32 }} />
+                                <TableCell sx={{ fontSize: '0.7rem', py: 0.5 }} />
                               </TableRow>
                             </TableHead>
                             <TableBody>
@@ -461,6 +562,9 @@ const PipelineFunnel: React.FC<PipelineFunnelProps> = ({ opportunities }) => {
                                 <TableRow key={opp.Id}>
                                   <TableCell sx={{ fontSize: '0.7rem', py: 0.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                                     {opp.Name}
+                                  </TableCell>
+                                  <TableCell sx={{ fontSize: '0.7rem', py: 0.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'text.secondary' }}>
+                                    {opp.Owner?.Name || '—'}
                                   </TableCell>
                                   <TableCell sx={{ fontSize: '0.7rem', py: 0.5 }} align="right">
                                     {formatDollarMillions(opp.Amount || 0)}

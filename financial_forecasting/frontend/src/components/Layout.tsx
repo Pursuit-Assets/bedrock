@@ -64,8 +64,8 @@ interface LayoutProps {
 }
 
 const ALL_MENU_ITEMS = [
-  { text: 'Priorities', icon: <HomeIcon />, path: '/priorities' },
-  { text: 'Dashboard', icon: <TrendingUpIcon />, path: '/dashboard' },
+  { text: 'Dashboard', icon: <HomeIcon />, path: '/dashboard' },
+  { text: 'Priorities', icon: <TrendingUpIcon />, path: '/priorities' },
   { text: 'Pipeline', icon: <TableChartIcon />, path: '/pipeline' },
   { text: 'Auto Review', icon: <ReviewIcon />, path: '/automation-review' },
   { text: 'Research', icon: <ResearchIcon />, path: '/research' },

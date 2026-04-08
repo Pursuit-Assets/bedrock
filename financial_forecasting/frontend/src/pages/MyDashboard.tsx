@@ -57,6 +57,8 @@ import TaskInbox, { InboxTask } from '../components/TaskInbox';
 import TaskPanel from '../components/TaskPanel';
 import OpportunityEditDialog from '../components/OpportunityEditDialog';
 import GoalTracker from '../components/GoalTracker';
+import { DEFAULT_GOAL } from '../config/goals';
+import { useOwnerGoals } from '../hooks/useOwnerGoals';
 import DateRangeSelector, { type DateRangeValue } from '../components/DateRangeSelector';
 import type { Opportunity } from './Opportunities/helpers';
 
@@ -530,6 +532,8 @@ const MyDashboard: React.FC = () => {
   const theme = useTheme();
   const isDesktop = useMediaQuery(theme.breakpoints.up('md'));
   const { user, logout } = useAuth();
+  const currentFiscalYear = useMemo(() => new Date().getFullYear(), []);
+  const { goals: ownerGoals } = useOwnerGoals(currentFiscalYear);
   const [prefs, setPrefs] = useState<DashboardPrefs>(loadPrefs);
   const [taskPanelOpen, setTaskPanelOpen] = useState(false);
   const [editOpp, setEditOpp] = useState<any>(null);
@@ -1366,7 +1370,7 @@ const MyDashboard: React.FC = () => {
         <Grid container spacing={2}>
           <Grid item xs={12} md={5}>
             <GoalTracker
-              goalAmount={2_000_000}
+              goalAmount={ownerGoals[resolvedFilterId]?.goal_amount ?? DEFAULT_GOAL}
               allOpportunities={allOpportunities}
               filterUserId={resolvedFilterId}
               ownerName={

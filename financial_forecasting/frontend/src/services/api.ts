@@ -93,8 +93,18 @@ export const apiService = {
   getOwnershipHistory: (days: number = 7) =>
     api.get('/api/salesforce/opportunities/ownership-history', { params: { days } }),
 
-  analyzePipeline: (days: number = 30) =>
-    api.post('/api/ai/pipeline-analysis', { days }),
+  analyzePipeline: (days: number = 30, ownerIds: string[] = []) =>
+    api.post('/api/ai/pipeline-analysis', { days, owner_ids: ownerIds }),
+
+  // Owner Goals (Wall of Progress)
+  getOwnerGoals: (fiscalYear: number) =>
+    api.get('/api/owner-goals', { params: { fiscal_year: fiscalYear } }),
+
+  upsertOwnerGoal: (sfUserId: string, payload: { fiscal_year: number; goal_amount: number; notes?: string }) =>
+    api.put(`/api/owner-goals/${sfUserId}`, payload),
+
+  deleteOwnerGoal: (sfUserId: string, fiscalYear: number) =>
+    api.delete(`/api/owner-goals/${sfUserId}`, { params: { fiscal_year: fiscalYear } }),
 
   createOpportunity: (data: OpportunityCreatePayload) =>
     api.post('/api/salesforce/opportunities', data),

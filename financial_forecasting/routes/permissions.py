@@ -15,7 +15,7 @@ from security import validate_salesforce_id, escape_soql_string
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/permissions", tags=["permissions"])
 
-# All 32 permission keys — used for validation
+# All permission keys — used for validation
 PERMISSION_KEYS = [
     "view_opportunities", "edit_own_opportunities", "edit_all_opportunities",
     "create_opportunities", "bulk_update_opportunities", "lock_own_opportunities",
@@ -30,6 +30,7 @@ PERMISSION_KEYS = [
     "match_invoices", "manage_payment_schedules", "generate_financial_reports",
     "use_pebble_chat", "use_pebble_research", "pebble_crm_write",
     "trigger_data_sync", "manage_users_roles", "edit_permission_profiles",
+    "manage_owner_goals",
 ]
 
 

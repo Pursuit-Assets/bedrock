@@ -123,7 +123,7 @@ function App() {
                 element={
                   <ProtectedRoute>
                     <Layout>
-                      <Navigate to="/priorities" replace />
+                      <Navigate to="/dashboard" replace />
                     </Layout>
                   </ProtectedRoute>
                 }

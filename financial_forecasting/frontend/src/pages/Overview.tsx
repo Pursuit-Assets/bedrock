@@ -33,8 +33,14 @@ import {
 import { useQuery } from 'react-query';
 import { apiService } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
+import { usePermissions } from '../contexts/PermissionsContext';
 import { addQuarters, startOfQuarter, endOfQuarter, format, isWithinInterval, differenceInDays, parseISO } from 'date-fns';
 import PipelineFunnel from '../components/PipelineFunnel';
+import OwnerGoalWidget from '../components/OwnerGoalWidget';
+import OwnerSelector, { loadStoredOwnerSelection, OwnerOption } from '../components/OwnerSelector';
+import { DEFAULT_GOAL } from '../config/goals';
+import { useOwnerGoals } from '../hooks/useOwnerGoals';
+import { OPEN_STAGES } from '../types/salesforce';
 import ConnectPrompt from '../components/ConnectPrompt';
 
 const DashboardBelowFoldCharts = lazy(() => import('../components/DashboardBelowFoldCharts'));
@@ -52,7 +58,7 @@ interface Opportunity {
   LastModifiedDate: string;
   Type?: string;
   OwnerId: string;
-  Owner?: { Name: string };
+  Owner?: { Name: string; Id?: string };
   First_Payment_Date__c?: string;
   Payment_Frequency__c?: string;
   Payment_Amount__c?: number;
@@ -60,18 +66,9 @@ interface Opportunity {
   npe01__Payments_Made__c?: number;
 }
 
-const COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884D8'];
+const STORAGE_KEY = 'overview-dashboard';
 
-// Open pipeline stages - anything actively being pursued
-const OPEN_STAGES = [
-  'Lead Gen',
-  'New Lead',
-  'Qualifying',
-  'Design / Proposal Creation',
-  'Proposal Negotiation',
-  'Contract Creation',
-  'Negotiating Contract'
-];
+const COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884D8'];
 
 const CLOSED_WON_STAGES = ['Closed Won', 'Closed / Completed', 'Collecting / In Effect', 'Collecting', 'In Collection', 'In Effect'];
 const CLOSED_LOST_STAGES = ['Closed Lost', 'Withdrawn', 'Did not Fulfill', 'Closed / Did not Fulfill'];
@@ -79,7 +76,17 @@ const CLOSED_LOST_STAGES = ['Closed Lost', 'Withdrawn', 'Did not Fulfill', 'Clos
 const Dashboard: React.FC = () => {
   const navigate = useNavigate();
   const { user } = useAuth();
+  const { sfUserId } = usePermissions();
   const [showBelowFold, setShowBelowFold] = useState(false);
+
+  // Wall of Progress fiscal year — Pursuit's FY = calendar year
+  const currentFiscalYear = useMemo(() => new Date().getFullYear(), []);
+  const { goals: ownerGoals } = useOwnerGoals(currentFiscalYear);
+
+  // Owner multi-select state — initialized lazily once we know the user's sfUserId
+  const [selectedOwnerIds, setSelectedOwnerIds] = useState<string[]>([]);
+  // Track whether we've done first-load initialization (so user clears don't get re-seeded)
+  const [hasInitializedSelection, setHasInitializedSelection] = useState(false);
 
   // Defer below-fold content so Hero/Quarterly/Funnel paint first
   useEffect(() => {
@@ -108,10 +115,59 @@ const Dashboard: React.FC = () => {
     }
   );
 
-  // Ensure opportunities is always an array
-  const opportunities = Array.isArray(opportunitiesData) 
-    ? opportunitiesData 
-    : (opportunitiesData?.opportunities || opportunitiesData?.data || []);
+  // Ensure opportunities is always an array (wrapped in useMemo so referential
+  // identity is stable across renders, preventing dependent useMemos from re-running)
+  const opportunities: Opportunity[] = useMemo(
+    () =>
+      Array.isArray(opportunitiesData)
+        ? opportunitiesData
+        : (opportunitiesData?.opportunities || opportunitiesData?.data || []),
+    [opportunitiesData],
+  );
+
+  // ── Wall of Progress: derive available owners from currently-open opps ──
+  const availableOpenOwners = useMemo<OwnerOption[]>(() => {
+    const seen = new Map<string, string>();
+    for (const opp of opportunities) {
+      if (OPEN_STAGES.includes(opp.StageName as any) && opp.OwnerId && !seen.has(opp.OwnerId)) {
+        seen.set(opp.OwnerId, opp.Owner?.Name || opp.OwnerId);
+      }
+    }
+    return Array.from(seen, ([id, name]) => ({ id, name })).sort((a, b) =>
+      a.name.localeCompare(b.name),
+    );
+  }, [opportunities]);
+
+  // Map sf_user_id → display name for widget rendering
+  const ownerNameMap = useMemo(
+    () => Object.fromEntries(availableOpenOwners.map((o) => [o.id, o.name])),
+    [availableOpenOwners],
+  );
+
+  // First-load initialization of selectedOwnerIds:
+  //   1. localStorage (filtered to currently-available IDs)
+  //   2. current user's sfUserId (if they have open opps)
+  //   3. empty
+  useEffect(() => {
+    if (hasInitializedSelection) return;
+    if (availableOpenOwners.length === 0) return; // wait for opps to load
+
+    const availableIds = new Set(availableOpenOwners.map((o) => o.id));
+    const stored = loadStoredOwnerSelection(STORAGE_KEY, availableIds);
+    if (stored && stored.length > 0) {
+      setSelectedOwnerIds(stored);
+    } else if (sfUserId && availableIds.has(sfUserId)) {
+      setSelectedOwnerIds([sfUserId]);
+    }
+    setHasInitializedSelection(true);
+  }, [availableOpenOwners, hasInitializedSelection, sfUserId]);
+
+  // Opportunities passed to the funnel: filtered by selection (or all if empty)
+  const opportunitiesForFunnel = useMemo(() => {
+    if (selectedOwnerIds.length === 0) return opportunities;
+    const set = new Set(selectedOwnerIds);
+    return opportunities.filter((o) => set.has(o.OwnerId));
+  }, [opportunities, selectedOwnerIds]);
 
   // Extract cash flow summary - API returns {summary, monthly_breakdown, sage_warning} directly
   // Always provide default values so cards show even when Sage is unavailable
@@ -137,7 +193,7 @@ const Dashboard: React.FC = () => {
 
     // Filter open opportunities - only include stages actively being pursued
     const openOpps = opportunities.filter((opp: Opportunity) => {
-      return OPEN_STAGES.includes(opp.StageName);
+      return OPEN_STAGES.includes(opp.StageName as any);
     });
 
     // Total pipeline
@@ -422,10 +478,10 @@ const Dashboard: React.FC = () => {
       {/* Header */}
       <Box sx={{ mb: 4 }}>
         <Typography variant="h4" gutterBottom>
-          Overview
+          Wall of Progress
         </Typography>
         <Typography variant="body2" color="textSecondary">
-          Real-time financial pipeline visibility • Updated: {format(new Date(), 'PPpp')}
+          Team pipeline accountability &middot; Real-time goal tracking per RM &middot; Updated: {format(new Date(), 'PPpp')}
         </Typography>
       </Box>
 
@@ -613,8 +669,52 @@ const Dashboard: React.FC = () => {
       </Card>
 
 
-      {/* Pipeline Health Funnel */}
-      <PipelineFunnel opportunities={opportunities} />
+      {/* ── Wall of Progress: owner selection + per-owner goal widgets ── */}
+      <Box sx={{ mb: 2, mt: 3 }}>
+        <Typography variant="h6" sx={{ fontWeight: 700, mb: 0.5 }}>
+          Individual Progress
+        </Typography>
+        <Typography variant="body2" color="textSecondary" sx={{ mb: 2 }}>
+          Pick one or more Opportunity Owners to see their goal progress and pipeline flow
+        </Typography>
+        <OwnerSelector
+          availableOwners={availableOpenOwners}
+          value={selectedOwnerIds}
+          onChange={setSelectedOwnerIds}
+          storageKey={STORAGE_KEY}
+        />
+      </Box>
+
+      {selectedOwnerIds.length === 0 && (
+        <Alert severity="info" sx={{ mb: 2 }}>
+          Select one or more Opportunity Owners above to see goal progress and a filtered pipeline.
+          The funnel below currently shows the full team.
+        </Alert>
+      )}
+
+      {selectedOwnerIds.map((ownerSfId) => {
+        const ownerName = ownerNameMap[ownerSfId] || ownerSfId;
+        const goalRow = ownerGoals[ownerSfId];
+        const goalAmount = goalRow?.goal_amount ?? DEFAULT_GOAL;
+        return (
+          <OwnerGoalWidget
+            key={ownerSfId}
+            sfUserId={ownerSfId}
+            ownerName={ownerName}
+            goalAmount={goalAmount}
+            hasBackendGoal={Boolean(goalRow)}
+            fiscalYear={currentFiscalYear}
+            allOpportunities={opportunities}
+          />
+        );
+      })}
+
+      {/* Pipeline Health Funnel — driven by the multi-select selection */}
+      <PipelineFunnel
+        opportunities={opportunitiesForFunnel}
+        selectedOwnerIds={selectedOwnerIds}
+      />
+
 
       {/* Below-fold: Cash Flow + charts (lazy-loaded for faster initial paint) */}
       {showBelowFold && (

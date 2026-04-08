@@ -40,7 +40,7 @@ async def get_stage_history(
         salesforce = client.salesforce
         query = f"""
         SELECT OpportunityId, Opportunity.Name, Opportunity.Amount,
-               Opportunity.StageName, OldValue, NewValue, CreatedDate
+               Opportunity.StageName, Opportunity.OwnerId, OldValue, NewValue, CreatedDate
         FROM OpportunityFieldHistory
         WHERE Field = 'StageName'
           AND CreatedDate = LAST_N_DAYS:{days}
@@ -57,6 +57,7 @@ async def get_stage_history(
                 "OpportunityName": opp.get("Name"),
                 "Amount": opp.get("Amount") or 0,
                 "CurrentStage": opp.get("StageName"),
+                "OwnerId": opp.get("OwnerId"),
                 "OldValue": r.get("OldValue"),
                 "NewValue": r.get("NewValue"),
                 "CreatedDate": r.get("CreatedDate"),

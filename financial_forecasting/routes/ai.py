@@ -52,7 +52,11 @@ async def ai_pipeline_analysis(
     client: UnifiedMCPClient = Depends(get_mcp_client),
     user=Depends(require_auth),
 ):
-    """On-demand AI analysis of pipeline stage changes and funnel health."""
+    """On-demand AI analysis of pipeline stage changes and funnel health.
+
+    Optional owner_ids list scopes both the snapshot and history queries to
+    those Salesforce User IDs so the LLM analysis is per-RM (or per subset).
+    """
     if not ANTHROPIC_API_KEY:
         raise HTTPException(
             status_code=503,
@@ -65,26 +69,60 @@ async def ai_pipeline_analysis(
             status_code=400, detail="days must be an integer between 1 and 365"
         )
 
+    raw_owner_ids = payload.get("owner_ids") or []
+    if not isinstance(raw_owner_ids, list):
+        raise HTTPException(
+            status_code=400, detail="owner_ids must be a list of Salesforce User IDs"
+        )
+    owner_ids: List[str] = []
+    for oid in raw_owner_ids:
+        if not isinstance(oid, str):
+            raise HTTPException(status_code=400, detail="owner_ids must be strings")
+        validate_salesforce_id(oid, "owner_id")
+        owner_ids.append(oid)
+
+    owner_filter_clause = ""
+    snapshot_owner_clause = ""
+    owner_names_lookup: Dict[str, str] = {}
+    if owner_ids:
+        # IDs already validated to match the strict SF ID regex, so direct
+        # interpolation is safe (no string escaping needed).
+        id_list = ", ".join(f"'{oid}'" for oid in owner_ids)
+        owner_filter_clause = f" AND Opportunity.OwnerId IN ({id_list})"
+        snapshot_owner_clause = f" AND OwnerId IN ({id_list})"
+
     try:
         import anthropic
 
         salesforce = client.salesforce
+
+        # Resolve owner IDs to display names so the prompt can reference RMs
+        if owner_ids:
+            try:
+                id_list = ", ".join(f"'{oid}'" for oid in owner_ids)
+                users_result = await salesforce.query(
+                    f"SELECT Id, Name FROM User WHERE Id IN ({id_list})"
+                )
+                for u in users_result.get("records", []):
+                    owner_names_lookup[u["Id"]] = u.get("Name") or u["Id"]
+            except Exception as e:
+                logger.warning(f"Failed to resolve owner names for analysis: {e}")
 
         history_query = f"""
         SELECT OpportunityId, Opportunity.Name, Opportunity.Amount,
                Opportunity.StageName, OldValue, NewValue, CreatedDate
         FROM OpportunityFieldHistory
         WHERE Field = 'StageName'
-          AND CreatedDate = LAST_N_DAYS:{days}
+          AND CreatedDate = LAST_N_DAYS:{days}{owner_filter_clause}
         ORDER BY CreatedDate DESC
         """
         history_result = await salesforce.query_all(history_query)
         changes = history_result.get("records", [])
 
-        snapshot_query = """
+        snapshot_query = f"""
         SELECT StageName, COUNT(Id) cnt, SUM(Amount) total
         FROM Opportunity
-        WHERE IsClosed = false
+        WHERE IsClosed = false{snapshot_owner_clause}
         GROUP BY StageName
         ORDER BY StageName
         """
@@ -111,7 +149,15 @@ async def ai_pipeline_analysis(
                 }
             )
 
+        if owner_ids:
+            owner_names = [owner_names_lookup.get(oid, oid) for oid in owner_ids]
+            scope_line = f"SCOPE: This analysis covers {len(owner_ids)} Relationship Manager(s): {', '.join(owner_names)}."
+        else:
+            scope_line = "SCOPE: This analysis covers the entire team's pipeline."
+
         prompt = f"""You are a pipeline analyst for a nonprofit fundraising team managing grant opportunities.
+
+{scope_line}
 
 CURRENT PIPELINE SNAPSHOT (open opportunities by stage):
 {json.dumps(stage_snapshot, indent=1)}
@@ -140,6 +186,8 @@ Be specific — reference actual stage names, counts, and dollar amounts. Keep e
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "changes_count": len(formatted_changes),
             "days": days,
+            "owner_ids": owner_ids,
+            "owner_names": [owner_names_lookup.get(oid, oid) for oid in owner_ids],
         }
 
     except HTTPException:
