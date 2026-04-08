@@ -156,6 +156,13 @@ tokens/
 # Financial Forecasting - Credentials (DO NOT COMMIT)
 financial_forecasting/config.py
 
+# Test artifact: TestInvoiceMatching in test_api_endpoints.py exercises the
+# /api/matching/save-match endpoint, which has a pre-existing path bug — when
+# main.py is imported from tests/, os.path.dirname(os.path.dirname(__file__))
+# resolves to .../tests/ instead of the repo root, so this file gets created
+# during pytest runs. Ignore it here so it doesn't pollute git status.
+financial_forecasting/tests/invoice_opportunity_matches.json
+
 # Test scripts (temporary, root-level only)
 /test_*.py
 demo_*.py

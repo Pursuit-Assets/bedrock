@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo } from 'react';
+import React, { useEffect, useMemo, useRef } from 'react';
 import { Autocomplete, TextField, Chip } from '@mui/material';
 
 export interface OwnerOption {
@@ -51,8 +51,15 @@ const OwnerSelector: React.FC<OwnerSelectorProps> = ({
   onChange,
   storageKey,
 }) => {
-  // Persist to localStorage on every change (when storageKey is provided)
+  // Skip the very first render's localStorage write so we don't clobber the
+  // user's stored selection before the parent has a chance to read it via
+  // useState initializer / first effect. Subsequent value changes are persisted.
+  const isFirstRender = useRef(true);
   useEffect(() => {
+    if (isFirstRender.current) {
+      isFirstRender.current = false;
+      return;
+    }
     if (storageKey) {
       writeStored(storageKey, value);
     }

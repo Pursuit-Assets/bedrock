@@ -8,7 +8,6 @@ Edit: anyone with manage_owner_goals (defaults to Admin only).
 """
 
 import logging
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field

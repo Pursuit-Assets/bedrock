@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Dialog,
   DialogTitle,
@@ -41,13 +41,17 @@ const EditOwnerGoalDialog: React.FC<EditOwnerGoalDialogProps> = ({
   const [notes, setNotes] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
 
-  // Reset form when dialog opens
+  // Reset form ONLY on the closed→open transition. Otherwise a background
+  // React Query refetch while the dialog is open would clobber the user's
+  // in-progress input.
+  const wasOpenRef = useRef(false);
   useEffect(() => {
-    if (open) {
+    if (open && !wasOpenRef.current) {
       setAmountText(String(currentAmount));
       setNotes('');
       setError(null);
     }
+    wasOpenRef.current = open;
   }, [open, currentAmount]);
 
   const handleSave = async () => {
