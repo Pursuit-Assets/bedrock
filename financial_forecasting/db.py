@@ -72,6 +72,48 @@ async def init_db() -> None:
     if _db_init_status != "init_failed":
         _db_init_status = "connected"
 
+    # Step 4: Health check — verify public.org_users has the columns Bedrock
+    # depends on for Phase B-2 (lazy auto-link in routes/permissions.py).
+    # Non-fatal: logs a clear warning if the platform schema is missing or
+    # doesn't have the expected columns. Local-dev databases without the
+    # learning platform schema will see this warning, which is expected.
+    try:
+        async with _pool.acquire() as conn:
+            row = await conn.fetchrow("""
+                SELECT
+                    bool_or(column_name = 'id') AS has_id,
+                    bool_or(column_name = 'email') AS has_email,
+                    bool_or(column_name = 'display_name') AS has_display_name,
+                    bool_or(column_name = 'google_id') AS has_google_id
+                FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = 'org_users'
+            """)
+            if row is None or not row["has_id"]:
+                logger.warning(
+                    "public.org_users not found — Bedrock identity unification (Phase B) "
+                    "will be inactive. Local-dev DBs without the learning platform schema "
+                    "can ignore this; production should investigate."
+                )
+            else:
+                missing = [
+                    col for col, present in (
+                        ("id", row["has_id"]),
+                        ("email", row["has_email"]),
+                        ("display_name", row["has_display_name"]),
+                        ("google_id", row["has_google_id"]),
+                    ) if not present
+                ]
+                if missing:
+                    logger.warning(
+                        f"public.org_users exists but is missing expected column(s): {missing}. "
+                        "Phase B-2 lazy auto-link may not work correctly. "
+                        "Coordinate with the platform team."
+                    )
+                else:
+                    logger.info("public.org_users schema OK — Phase B identity unification active")
+    except Exception as e:
+        logger.warning(f"public.org_users health check failed (continuing): {e}")
+
 
 async def close_db() -> None:
     """Shut down the connection pool."""

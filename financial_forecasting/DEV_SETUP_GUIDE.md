@@ -100,18 +100,44 @@ Note: This token resets every time your password changes or you log in from a ne
 Before deploying to production:
 
 - [ ] **JWT_SECRET_KEY**: Set and at least 32 chars. Generate with `openssl rand -hex 32`. The app fails to start if missing in production.
+- [ ] **ENVIRONMENT=production**: Required to enable strict env-var validation (see "Environment Modes" below).
 - [ ] **ALLOWED_EMAILS**: Recommended. Comma-separated list of allowed login emails.
 - [ ] **FRONTEND_URL**: Must start with `https` for production. Used for OAuth redirect.
 - [ ] **GOOGLE_REDIRECT_URI**: Must match your production backend URL + `/auth/google/callback`. See [OAUTH_SETUP.md](OAUTH_SETUP.md) for Cloud Console steps.
-- [ ] **Dev bypass**: Never set `REACT_APP_DEV_BYPASS=true` in production builds.
 
 ---
 
 ## Security Notes
 
-- **Dev bypass**: `REACT_APP_DEV_BYPASS=true` skips auth on localhost only. It is disabled in production builds (`NODE_ENV=production`).
+- **No dev bypass**: The frontend `REACT_APP_DEV_BYPASS` branch was removed. All environments — including local dev — require real Google OAuth login. If you can't log in locally, check your Google OAuth credentials in `.env`.
 - **Debug endpoint**: `/debug/config` requires authentication in production.
 - **Calendar**: Only the PBD shared calendar is accessible. Personal calendars are blocked.
+
+### Environment Modes
+
+The backend uses an explicit `ENVIRONMENT` variable to decide how strict to be about missing credentials:
+
+| `ENVIRONMENT=` | Behavior on missing required env var |
+|----------------|--------------------------------------|
+| `development` (default) | Logs a warning, app continues |
+| `staging` | Logs a warning, app continues |
+| `production` | **Refuses to start.** Lists every missing/weak var in the error. |
+
+If `ENVIRONMENT` is unset, the app falls back to a heuristic: if `FRONTEND_URL` starts with `https`, treat as production; otherwise development. The explicit var always wins.
+
+**Required vars in production:** `JWT_SECRET_KEY` (≥32 chars, not a template placeholder), `DATABASE_URL`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `FRONTEND_URL`, `SALESFORCE_CLIENT_ID`, `SALESFORCE_CLIENT_SECRET`. If `SAGE_ENABLED=true`, then `SAGE_COMPANY_ID`, `SAGE_USER_ID`, `SAGE_USER_PASSWORD`, `SAGE_SENDER_ID`, `SAGE_SENDER_PASSWORD` are also required. The canonical list lives in `env_validator.py`.
+
+**Local dev tip:** leave `ENVIRONMENT` unset (or set `ENVIRONMENT=development`) so missing vars only warn. You don't need every credential to run the app locally.
+
+### Pre-commit hook against committing `.env` files
+
+Run once after cloning to install a guard that blocks any commit containing a `.env` file:
+
+```bash
+bash scripts/install-git-hooks.sh
+```
+
+The hook is content-blind and pattern-based — it just refuses to commit files matching `.env` or `.env.<anything>` (with `.env.example` and `.env.template` allowed). If you ever absolutely need to bypass it, `git commit --no-verify` will work, but think twice first.
 
 ---
 

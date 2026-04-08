@@ -250,6 +250,37 @@ CREATE TABLE IF NOT EXISTS bedrock.app_user (
     updated_at  TIMESTAMPTZ DEFAULT now()
 );
 
+-- ── Phase B-1 (Claim 3): link bedrock.app_user → public.org_users ──
+-- Other Pursuit internal tools (Product Discovery pd_*, org_activity_log, org_comments)
+-- use public.org_users as the canonical staff identity table. Bedrock historically
+-- maintained its own bedrock.app_user without a link, creating identity drift.
+-- This adds a non-breaking FK so Bedrock can join to platform staff identity by ID.
+-- Auto-populated lazily on each login via routes/permissions.py:get_user_permissions().
+-- ON DELETE SET NULL preserves Bedrock audit trail (locked_by, granted_by, etc.)
+-- when a staff member is removed from public.org_users.
+DO $$ BEGIN
+    ALTER TABLE bedrock.app_user
+        ADD COLUMN IF NOT EXISTS org_user_id UUID NULL;
+EXCEPTION
+    WHEN duplicate_column THEN NULL;
+END $$;
+
+DO $$ BEGIN
+    ALTER TABLE bedrock.app_user
+        ADD CONSTRAINT app_user_org_user_id_fkey
+        FOREIGN KEY (org_user_id) REFERENCES public.org_users(id) ON DELETE SET NULL;
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+    WHEN insufficient_privilege THEN
+        -- public.org_users may not exist on local-dev databases. Log and continue.
+        RAISE NOTICE 'Skipped FK to public.org_users (likely local dev DB without learning platform schema)';
+    WHEN undefined_table THEN
+        RAISE NOTICE 'Skipped FK to public.org_users (table does not exist on this database)';
+END $$;
+
+CREATE INDEX IF NOT EXISTS idx_app_user_org_user_id
+    ON bedrock.app_user(org_user_id) WHERE org_user_id IS NOT NULL;
+
 CREATE TABLE IF NOT EXISTS bedrock.opportunity_lock (
     sf_opportunity_id TEXT PRIMARY KEY,
     locked_by         TEXT NOT NULL,
@@ -835,6 +866,116 @@ CREATE TABLE IF NOT EXISTS bedrock.prospect_sf_account (
 );
 CREATE INDEX IF NOT EXISTS idx_prospect_sf_account_prospect
     ON bedrock.prospect_sf_account(prospect_id);
+
+-- ── Phase 5C (Claim 5): writeback columns for prospect → SF push idempotency ──
+-- After Pebble pushes a prospect to Salesforce, we record the resulting SF ID
+-- so subsequent re-runs of the research pipeline can short-circuit instead of
+-- creating duplicate SF records. Idempotent ALTER TABLE blocks.
+DO $$ BEGIN
+    ALTER TABLE bedrock.prospect_sf_contact
+        ADD COLUMN IF NOT EXISTS sf_contact_id TEXT,
+        ADD COLUMN IF NOT EXISTS sf_pushed_at  TIMESTAMPTZ;
+EXCEPTION
+    WHEN duplicate_column THEN NULL;
+END $$;
+
+DO $$ BEGIN
+    ALTER TABLE bedrock.prospect_sf_account
+        ADD COLUMN IF NOT EXISTS sf_account_id TEXT,
+        ADD COLUMN IF NOT EXISTS sf_pushed_at  TIMESTAMPTZ;
+EXCEPTION
+    WHEN duplicate_column THEN NULL;
+END $$;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_prospect_sf_contact_sf_id
+    ON bedrock.prospect_sf_contact(sf_contact_id) WHERE sf_contact_id IS NOT NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_prospect_sf_account_sf_id
+    ON bedrock.prospect_sf_account(sf_account_id) WHERE sf_account_id IS NOT NULL;
+
+-- ── Source governance (Claim 5 foundation): origin tracking on prospect tables ──
+-- Every Bedrock-created prospect record gets a `source` value so the
+-- platform-side Builder visibility filter can decide whether Builders
+-- should see it. The CHECK constraint enforces the canonical enum from
+-- source_governance.py (Bedrock side) and matches the proposed CHECK on
+-- public.contacts.source / public.companies.source (platform-side ask in
+-- docs/contact-source-governance.md).
+DO $$ BEGIN
+    ALTER TABLE bedrock.prospect_sf_contact
+        ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'pebble_research',
+        ADD COLUMN IF NOT EXISTS enrichment_source TEXT;
+EXCEPTION WHEN duplicate_column THEN NULL;
+END $$;
+
+DO $$ BEGIN
+    ALTER TABLE bedrock.prospect_sf_account
+        ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'pebble_research',
+        ADD COLUMN IF NOT EXISTS enrichment_source TEXT;
+EXCEPTION WHEN duplicate_column THEN NULL;
+END $$;
+
+DO $$ BEGIN
+    ALTER TABLE bedrock.prospect_sf_contact
+        ADD CONSTRAINT prospect_sf_contact_source_chk
+        CHECK (source IN (
+            'linkedin_import', 'clearbit', 'manual', 'sputnik', 'platform_user_added',
+            'salesforce', 'pebble_research', 'bedrock_prospect_import', 'manual_staff'
+        ));
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+
+DO $$ BEGIN
+    ALTER TABLE bedrock.prospect_sf_account
+        ADD CONSTRAINT prospect_sf_account_source_chk
+        CHECK (source IN (
+            'linkedin_import', 'clearbit', 'manual', 'sputnik', 'platform_user_added',
+            'salesforce', 'pebble_research', 'bedrock_prospect_import', 'manual_staff'
+        ));
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+
+-- ── Claim 4 (sf_account_company_map): SF Account ↔ public.companies bridge ──
+-- Bedrock cannot write to public.companies (read-only role on public.*), so
+-- the bridge lives on the Bedrock side. Populated by the matcher service in
+-- services/sf_company_matcher.py, which walks SF Accounts and looks them up
+-- in public.companies by case-insensitive name. ON DELETE SET NULL preserves
+-- the bedrock audit row if the platform deletes a company; the SF Account
+-- stays linked but the platform side becomes orphaned (admin can investigate
+-- via /api/admin/sf-company-match).
+CREATE TABLE IF NOT EXISTS bedrock.sf_account_company_map (
+    id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    sf_account_id       TEXT NOT NULL,
+    public_company_id   INTEGER NULL,
+    confidence          TEXT NOT NULL CHECK (confidence IN (
+        'exact_name',           -- lower(sf_name) = lower(companies.name)
+        'normalized_name',      -- after stripping "The ", "Foundation", "Inc." etc.
+        'domain',               -- matched on email/web domain
+        'manual'                -- human admin confirmed via admin UI
+    )),
+    matched_by          TEXT,
+    matched_at          TIMESTAMPTZ DEFAULT now(),
+    notes               TEXT,
+    UNIQUE(sf_account_id)
+);
+
+DO $$ BEGIN
+    ALTER TABLE bedrock.sf_account_company_map
+        ADD CONSTRAINT sf_account_company_map_company_fkey
+        FOREIGN KEY (public_company_id) REFERENCES public.companies(company_id) ON DELETE SET NULL;
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+    WHEN insufficient_privilege THEN
+        RAISE NOTICE 'Skipped FK to public.companies (likely local-dev DB or restricted role)';
+    WHEN undefined_table THEN
+        RAISE NOTICE 'Skipped FK to public.companies (table does not exist on this database)';
+END $$;
+
+CREATE INDEX IF NOT EXISTS idx_sf_account_map_sf_id
+    ON bedrock.sf_account_company_map(sf_account_id);
+CREATE INDEX IF NOT EXISTS idx_sf_account_map_company_id
+    ON bedrock.sf_account_company_map(public_company_id) WHERE public_company_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_sf_account_map_confidence
+    ON bedrock.sf_account_company_map(confidence);
 
 -- Prospect → SF Opportunity hints (research-derived suggestions)
 CREATE TABLE IF NOT EXISTS bedrock.prospect_sf_opportunity (

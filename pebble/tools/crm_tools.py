@@ -332,6 +332,37 @@ async def execute_tool(
             {"error": "CRM operation failed — the system may be temporarily unavailable."}
         )
 
+    # Phase 5C (Claim 5): writeback SF IDs to prospect_sf_* staging tables
+    # if the caller passed a prospect_id. The chat agent typically does NOT
+    # pass one (it's creating ad-hoc records, not promoting a researched
+    # prospect), but a future "promote prospect" flow can pass it via
+    # tool_input["prospect_id"] so re-runs of the research pipeline can
+    # short-circuit duplicate creates. Failure to write back is non-fatal —
+    # the SF record was already created successfully.
+    prospect_id = tool_input.get("prospect_id")
+    if prospect_id and isinstance(result, dict) and result.get("id"):
+        sf_id = result["id"]
+        try:
+            from ..storage.db import (
+                mark_prospect_contact_pushed,
+                mark_prospect_account_pushed,
+            )
+            if tool_name == "crm_create_contact":
+                await mark_prospect_contact_pushed(prospect_id, sf_id)
+                logger.info(
+                    "Wrote back sf_contact_id=%s for prospect %s", sf_id, prospect_id,
+                )
+            elif tool_name == "crm_create_account":
+                await mark_prospect_account_pushed(prospect_id, sf_id)
+                logger.info(
+                    "Wrote back sf_account_id=%s for prospect %s", sf_id, prospect_id,
+                )
+        except Exception as e:
+            # Non-fatal — the create succeeded, we just couldn't record it.
+            logger.warning(
+                "Failed to write back SF id for prospect %s: %s", prospect_id, e,
+            )
+
     return json.dumps(result, default=str)
 
 

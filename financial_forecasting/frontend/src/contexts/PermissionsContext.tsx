@@ -10,6 +10,10 @@ interface PermissionsData {
   sf_user_id: string | null;
   profile_name: string | null;
   is_active: boolean;
+  /** Phase B-2: link to public.org_users (platform staff identity).
+   *  null means the user exists in Bedrock but not yet in public.org_users —
+   *  Phase B-5 surfaces a soft-block banner so they know to contact platform admin. */
+  org_user_id: string | null;
   permissions: Record<string, boolean>;
 }
 
@@ -20,6 +24,10 @@ interface PermissionsContextValue {
   isAdmin: boolean;
   /** The user's Salesforce user ID (for ownership checks) */
   sfUserId: string | null;
+  /** The user's platform org_users.id, or null if not yet linked. */
+  orgUserId: string | null;
+  /** True when the user exists in Bedrock but not yet in public.org_users. */
+  isPlatformUnlinked: boolean;
   /** The user's profile name */
   profileName: string | null;
   /** Raw permissions map */
@@ -34,6 +42,8 @@ const PermissionsContext = createContext<PermissionsContextValue>({
   can: () => false,  // Deny by default until permissions load
   isAdmin: false,
   sfUserId: null,
+  orgUserId: null,
+  isPlatformUnlinked: false,
   profileName: null,
   permissions: {},
   loading: true,
@@ -87,6 +97,9 @@ export const PermissionsProvider: React.FC<{ children: React.ReactNode }> = ({ c
     can,
     isAdmin: data?.permissions?.manage_users_roles === true,
     sfUserId: data?.sf_user_id || null,
+    orgUserId: data?.org_user_id || null,
+    // Only flag as unlinked once data has loaded — don't false-positive during initial fetch
+    isPlatformUnlinked: !loading && data !== null && data.org_user_id === null,
     profileName: data?.profile_name || null,
     permissions: data?.permissions || {},
     loading,

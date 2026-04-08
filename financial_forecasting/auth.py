@@ -25,10 +25,17 @@ JWT_EXPIRATION_HOURS = 24 * 30  # 30 days
 FRONTEND_URL = os.getenv('FRONTEND_URL') or 'http://localhost:3000'
 IS_PRODUCTION = FRONTEND_URL.startswith('https')
 
-if IS_PRODUCTION:
-    if not os.getenv('JWT_SECRET_KEY') or len(JWT_SECRET_KEY) < 32:
+# Defense-in-depth JWT check at import time. The full env validator runs
+# again at startup_event() in main.py — this earlier check catches the same
+# weakness in any code path that imports auth.py before main.py runs (e.g.
+# tests, scripts, alternate entry points).
+from env_validator import current_environment, validate_jwt_secret_strength, Environment
+
+if current_environment() == Environment.PRODUCTION:
+    _jwt_ok, _jwt_reason = validate_jwt_secret_strength(JWT_SECRET_KEY)
+    if not _jwt_ok:
         raise RuntimeError(
-            "Production requires JWT_SECRET_KEY (min 32 chars). "
+            f"Production requires a strong JWT_SECRET_KEY: {_jwt_reason}. "
             "Generate with: openssl rand -hex 32"
         )
 

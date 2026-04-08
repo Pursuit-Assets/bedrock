@@ -831,6 +831,73 @@ async def save_prospect_sf_opportunity(prospect_id: str, data: dict) -> None:
         )
 
 
+# ---------------------------------------------------------------------------
+# Phase 5C (Claim 5): SF push idempotency
+# ---------------------------------------------------------------------------
+#
+# After Pebble pushes a prospect to Salesforce, the resulting SF Contact/Account
+# IDs are written back to the staging tables so subsequent re-runs of the
+# research pipeline can short-circuit the create_record call instead of
+# duplicating SF records. The schema migration is in init.sql.
+
+
+async def mark_prospect_contact_pushed(prospect_id: str, sf_contact_id: str) -> None:
+    """Record that a prospect's Contact has been successfully pushed to SF.
+
+    Idempotent — re-pushing the same prospect just updates the timestamp.
+    """
+    async with get_pool().acquire() as conn:
+        await conn.execute(
+            """UPDATE bedrock.prospect_sf_contact
+               SET sf_contact_id = $1, sf_pushed_at = now()
+               WHERE prospect_id = $2""",
+            sf_contact_id, prospect_id,
+        )
+
+
+async def mark_prospect_account_pushed(prospect_id: str, sf_account_id: str) -> None:
+    """Record that a prospect's Account has been successfully pushed to SF.
+
+    Idempotent — re-pushing the same prospect just updates the timestamp.
+    """
+    async with get_pool().acquire() as conn:
+        await conn.execute(
+            """UPDATE bedrock.prospect_sf_account
+               SET sf_account_id = $1, sf_pushed_at = now()
+               WHERE prospect_id = $2""",
+            sf_account_id, prospect_id,
+        )
+
+
+async def get_prospect_sf_ids(prospect_id: str) -> dict:
+    """Fetch the SF Contact ID and SF Account ID for a prospect, if pushed.
+
+    Returns:
+        {"sf_contact_id": str | None, "sf_account_id": str | None,
+         "contact_pushed_at": datetime | None, "account_pushed_at": datetime | None}
+
+    Use this to short-circuit a re-push of an already-pushed prospect.
+    """
+    async with get_pool().acquire() as conn:
+        contact_row = await conn.fetchrow(
+            "SELECT sf_contact_id, sf_pushed_at "
+            "FROM bedrock.prospect_sf_contact WHERE prospect_id = $1",
+            prospect_id,
+        )
+        account_row = await conn.fetchrow(
+            "SELECT sf_account_id, sf_pushed_at "
+            "FROM bedrock.prospect_sf_account WHERE prospect_id = $1",
+            prospect_id,
+        )
+
+    return {
+        "sf_contact_id": contact_row["sf_contact_id"] if contact_row else None,
+        "sf_account_id": account_row["sf_account_id"] if account_row else None,
+        "contact_pushed_at": contact_row["sf_pushed_at"] if contact_row else None,
+        "account_pushed_at": account_row["sf_pushed_at"] if account_row else None,
+    }
+
+
 async def get_prospect_crm_readiness(prospect_id: str) -> dict:
     """Fetch all prospect CRM sub-objects and compute readiness status.
 

@@ -46,6 +46,7 @@ import OpportunityEditDialog from './OpportunityEditDialog';
 import AccountEditDialog from './AccountEditDialog';
 import ContactEditDialog from './ContactEditDialog';
 import GlobalSearch from './GlobalSearch';
+import PlatformIdentityBanner from './PlatformIdentityBanner';
 import { InboxTask } from './TaskInbox';
 import { useQuery, useQueryClient } from 'react-query';
 import toast from 'react-hot-toast';
@@ -619,6 +620,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
         }}
       >
         <Toolbar sx={{ minHeight: '48px !important', height: 48 }} />
+        <PlatformIdentityBanner />
         {children}
       </Box>
 

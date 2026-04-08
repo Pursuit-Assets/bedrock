@@ -104,14 +104,26 @@ celerybeat.pid
 # SageMath parsed files
 *.sage.py
 
-# Environments
+# Environments — never commit .env files anywhere in the repo
 .env
+**/.env
+**/.env.local
+**/.env.*.local
+# Re-allow templates that are intentionally tracked
+!**/.env.example
+!**/.env.template
 .venv
-env/
 venv/
 ENV/
+env/
 env.bak/
 venv.bak/
+
+# Defensive: secret-bearing files of any extension
+*.pem
+*.key
+*credentials*.json
+gcp-key*.json
 
 # Spyder project settings
 .spyderproject

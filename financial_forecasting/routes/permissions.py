@@ -49,10 +49,71 @@ def _parse_perms(val) -> dict:
     return {}
 
 
+async def _try_link_org_user(email: str, app_user_id, current_org_user_id, db) -> Optional[Dict[str, Any]]:
+    """Lazily link a bedrock.app_user row to its public.org_users counterpart by email.
+
+    Phase B-2 of Claim 3 (staff identity unification). Other Pursuit internal tools
+    use public.org_users as the canonical staff identity table. We backfill the FK
+    on every login where it's missing so the join is always fresh.
+
+    Returns the platform org_users row dict if a link was found (or already existed),
+    or None if no match. Tolerates the case where public.org_users does not exist
+    (local-dev databases without the learning platform schema).
+    """
+    if current_org_user_id is not None:
+        # Already linked. Fetch the current platform row for backfill (display_name, etc.)
+        try:
+            return dict(await db.fetchrow(
+                "SELECT id, email, display_name, avatar_url, slack_user_id "
+                "FROM public.org_users WHERE id = $1",
+                current_org_user_id,
+            ) or {}) or None
+        except Exception as e:
+            logger.debug(f"Could not refetch public.org_users for {email}: {e}")
+            return None
+
+    try:
+        org_user = await db.fetchrow(
+            "SELECT id, email, display_name, avatar_url, slack_user_id "
+            "FROM public.org_users WHERE LOWER(email) = LOWER($1)",
+            email,
+        )
+    except Exception as e:
+        # public.org_users may not exist on local dev DB, or the role may not have
+        # SELECT on public schema. Either way, we can't link — log and continue.
+        logger.debug(f"Could not query public.org_users for {email}: {e}")
+        return None
+
+    if not org_user:
+        return None
+
+    try:
+        await db.execute(
+            "UPDATE bedrock.app_user SET org_user_id = $1, updated_at = now() "
+            "WHERE id = $2",
+            org_user["id"], app_user_id,
+        )
+        logger.info(
+            f"Linked bedrock.app_user {app_user_id} → public.org_users {org_user['id']} for {email}"
+        )
+    except Exception as e:
+        logger.warning(f"Failed to write back org_user_id link for {email}: {e}")
+
+    return dict(org_user)
+
+
 async def get_user_permissions(email: str, db) -> Dict[str, Any]:
-    """Get resolved permissions for a user. Auto-provisions if needed."""
+    """Get resolved permissions for a user. Auto-provisions if needed.
+
+    Note: this is on the hot path — called by every permission check on every
+    request. It deliberately does NOT do the lazy public.org_users backfill;
+    that happens once per session in the /me endpoint instead. The org_user_id
+    column is read here so callers can check it, but the link backfill is
+    deferred to avoid extra DB round-trips per request.
+    """
     row = await db.fetchrow(
         "SELECT au.id, au.sf_user_id, au.email, au.name, au.is_active, "
+        "au.org_user_id, "
         "pp.permissions, pp.name as profile_name "
         "FROM bedrock.app_user au "
         "LEFT JOIN bedrock.permission_profile pp ON pp.id = au.profile_id "
@@ -216,8 +277,16 @@ async def resolve_task_lock(task_id: str, user: dict, db, salesforce) -> dict:
 
 @router.get("/me")
 async def get_my_permissions(request: Request, user=Depends(require_auth), db=Depends(get_db)):
-    """Get the current user's resolved permissions. Also backfills name/sf_user_id if missing."""
-    user_data = await get_user_permissions(user.get("email", ""), db)
+    """Get the current user's resolved permissions.
+
+    Also backfills name/sf_user_id if missing AND lazily links bedrock.app_user
+    to public.org_users by email (Phase B-2 of Claim 3 — staff identity unification).
+    The link backfill lives here, not in get_user_permissions(), because /me is
+    the natural once-per-session entrypoint and we don't want extra DB calls on
+    every permission check.
+    """
+    email = user.get("email", "")
+    user_data = await get_user_permissions(email, db)
     uid = user_data.get("id")
     if uid:
         updates = {}
@@ -238,7 +307,25 @@ async def get_my_permissions(request: Request, user=Depends(require_auth), db=De
             vals = [uid] + list(updates.values())
             await db.execute(f"UPDATE bedrock.app_user SET {sets}, updated_at = now() WHERE id = $1", *vals)
             user_data.update(updates)
+
+        # Phase B-2: lazy link to public.org_users (once per session, here only)
+        org_user = await _try_link_org_user(
+            email, uid, user_data.get("org_user_id"), db,
+        )
+        if org_user:
+            user_data["org_user_id"] = org_user.get("id") or user_data.get("org_user_id")
+            # Backfill display name from platform if Bedrock has none
+            if not user_data.get("name") and org_user.get("display_name"):
+                try:
+                    await db.execute(
+                        "UPDATE bedrock.app_user SET name = $1 WHERE id = $2",
+                        org_user["display_name"], uid,
+                    )
+                    user_data["name"] = org_user["display_name"]
+                except Exception as e:
+                    logger.debug(f"Failed to backfill display name for {email}: {e}")
     perms = user_data.get("permissions") or {}
+    org_user_id_raw = user_data.get("org_user_id")
     return {
         "success": True,
         "data": {
@@ -248,7 +335,93 @@ async def get_my_permissions(request: Request, user=Depends(require_auth), db=De
             "sf_user_id": user_data.get("sf_user_id"),
             "profile_name": user_data.get("profile_name"),
             "is_active": user_data.get("is_active", True),
+            # Phase B-2: platform staff identity link. None means the user
+            # exists in Bedrock but isn't yet in public.org_users — frontend
+            # surfaces a soft-block banner so they know to contact platform admin.
+            "org_user_id": str(org_user_id_raw) if org_user_id_raw else None,
             "permissions": {k: perms.get(k, False) for k in PERMISSION_KEYS},
+        },
+    }
+
+
+# ── Identity audit (Phase B-4 of Claim 3) ──
+
+
+@router.get("/admin/identity-audit")
+async def identity_audit(user=Depends(require_admin), db=Depends(get_db)):
+    """Audit the bedrock.app_user → public.org_users link health.
+
+    Returns:
+        - summary: total / linked / unlinked / name_drift counts
+        - unlinked: rows in bedrock.app_user with no public.org_users match
+        - name_drift: rows where bedrock.app_user.name differs from
+                      public.org_users.display_name (potential staleness)
+
+    Admin-only. Use after Phase B-3 backfill to confirm coverage and
+    after deploy to monitor identity drift over time.
+    """
+    try:
+        rows = await db.fetch("""
+            SELECT
+                au.id AS bedrock_id,
+                au.email,
+                au.name AS bedrock_name,
+                au.is_active,
+                au.org_user_id,
+                ou.display_name AS org_name,
+                ou.created_at AS org_created
+            FROM bedrock.app_user au
+            LEFT JOIN public.org_users ou ON ou.id = au.org_user_id
+            ORDER BY (au.org_user_id IS NULL) DESC, au.email
+        """)
+    except Exception as e:
+        # public.org_users may not exist on local-dev DB
+        logger.warning(f"identity_audit: cross-schema query failed: {e}")
+        rows = await db.fetch("""
+            SELECT
+                au.id AS bedrock_id,
+                au.email,
+                au.name AS bedrock_name,
+                au.is_active,
+                au.org_user_id,
+                NULL::text AS org_name,
+                NULL::timestamptz AS org_created
+            FROM bedrock.app_user au
+            ORDER BY au.email
+        """)
+
+    def _serialize(r):
+        d = dict(r)
+        # Convert UUIDs and timestamps to strings for JSON
+        if d.get("bedrock_id") is not None:
+            d["bedrock_id"] = str(d["bedrock_id"])
+        if d.get("org_user_id") is not None:
+            d["org_user_id"] = str(d["org_user_id"])
+        if d.get("org_created") is not None:
+            d["org_created"] = d["org_created"].isoformat()
+        return d
+
+    serialized = [_serialize(r) for r in rows]
+    unlinked = [r for r in serialized if r.get("org_user_id") is None]
+    linked = [r for r in serialized if r.get("org_user_id") is not None]
+    name_drift = [
+        r for r in linked
+        if r.get("bedrock_name")
+        and r.get("org_name")
+        and r["bedrock_name"] != r["org_name"]
+    ]
+
+    return {
+        "success": True,
+        "data": {
+            "summary": {
+                "total": len(serialized),
+                "linked": len(linked),
+                "unlinked": len(unlinked),
+                "name_drift_count": len(name_drift),
+            },
+            "unlinked": unlinked,
+            "name_drift": name_drift,
         },
     }
 

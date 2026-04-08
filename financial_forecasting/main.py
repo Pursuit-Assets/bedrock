@@ -49,6 +49,7 @@ from routes.ai import router as ai_router
 from routes.salesforce_search import router as sf_search_router
 from routes.salesforce_schema import router as sf_schema_router
 from routes.admin_sf_drift import router as admin_sf_drift_router
+from routes.admin_company_match import router as admin_company_match_router
 from routes.activities import router as activities_router
 from auth import get_current_user_dep, require_auth, IS_PRODUCTION, JWT_SECRET_KEY
 from security import validate_salesforce_id, escape_soql_string
@@ -122,6 +123,7 @@ app.include_router(ai_router)
 app.include_router(sf_search_router)
 app.include_router(sf_schema_router)
 app.include_router(admin_sf_drift_router)
+app.include_router(admin_company_match_router)
 app.include_router(activities_router)
 
 # Service singletons — shared with dependencies.py so route files can use
@@ -139,6 +141,12 @@ async def startup_event():
     logger.info("  BEDROCK API — main.py (production server)")
     logger.info("  simple_server.py is DEPRECATED — do not use")
     logger.info("=" * 60)
+
+    # Validate required environment variables FIRST.
+    # In production this raises and aborts startup.
+    # In development it logs warnings and continues.
+    from env_validator import validate_required_env, current_environment
+    validate_required_env(current_environment())
 
     # Initialize PostgreSQL (non-blocking — app works without it)
     await init_db()

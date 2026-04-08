@@ -44,7 +44,7 @@ https://www.googleapis.com/auth/drive.readonly
 - Session persistence via JWT (30-day expiration)
 - Google API token encryption (Fernet, derived from JWT_SECRET_KEY)
 - Optional email allowlist via `ALLOWED_EMAILS` env var
-- Dev bypass available via `REACT_APP_DEV_BYPASS=true` (disabled for live testing)
+- ~~Dev bypass available via `REACT_APP_DEV_BYPASS=true`~~ — REMOVED 2026-04-08. All environments require real Google OAuth.
 
 ## For New Developers
 
