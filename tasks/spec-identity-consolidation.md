@@ -25,7 +25,8 @@ Two changes to finish the cross-schema identity layer:
 -- Same pattern as sf_account_company_map. Bedrock cannot write to
 -- public.contacts (read-only on public.*), so the bridge lives here.
 -- Matching logic: linkedin_url, email, or name+company.
--- public.contacts.dedup_key = 'linkedin:{slug}' is the strongest match signal.
+-- NOTE: public.contacts is platform-managed (DDL not in this repo).
+-- Verify available match columns (linkedin_url, email) with platform team before implementing.
 CREATE TABLE IF NOT EXISTS bedrock.sf_contact_map (
     id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     sf_contact_id       TEXT NOT NULL,
@@ -72,7 +73,7 @@ END $$;
 Priority order (same as company matcher):
 1. **LinkedIn URL** (strongest) — SF `Contact.LinkedIn_URL__c` vs `public.contacts.linkedin_url`. Both already store full LinkedIn URLs.
 2. **Email** — SF `Contact.Email` vs `public.contacts.email`.
-3. **Name + company** (weakest) — `lower(first || ' ' || last)` + `lower(current_company)`. Only used as a suggestion, requires manual confirmation.
+3. **Name + company** (weakest) — `lower(first_name || ' ' || last_name)` + company name from SF Contact's Account. Only used as a suggestion, requires manual confirmation. NOTE: The company match uses the SF Contact's Account name (via AccountId), not a column on `public.contacts` — the platform contacts table may lack a company field.
 
 ### Matcher Service
 
@@ -117,11 +118,24 @@ ALTER TABLE public.org_users
 
 -- Step 2: Create bedrock-specific config (replaces app_user)
 CREATE TABLE IF NOT EXISTS bedrock.user_config (
-    org_user_id     UUID PRIMARY KEY REFERENCES public.org_users(id) ON DELETE CASCADE,
+    org_user_id     UUID PRIMARY KEY,
     profile_id      UUID REFERENCES bedrock.permission_profile(id) ON DELETE SET NULL,
     created_at      TIMESTAMPTZ DEFAULT now(),
     updated_at      TIMESTAMPTZ DEFAULT now()
 );
+
+-- Conditional FK to public.org_users (same pattern as app_user.org_user_id, init.sql:268-279)
+DO $$ BEGIN
+    ALTER TABLE bedrock.user_config
+        ADD CONSTRAINT user_config_org_user_fkey
+        FOREIGN KEY (org_user_id) REFERENCES public.org_users(id) ON DELETE CASCADE;
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+    WHEN insufficient_privilege THEN
+        RAISE NOTICE 'Skipped FK to public.org_users (restricted role)';
+    WHEN undefined_table THEN
+        RAISE NOTICE 'Skipped FK to public.org_users (table does not exist)';
+END $$;
 
 CREATE OR REPLACE TRIGGER trg_user_config_updated_at
     BEFORE UPDATE ON bedrock.user_config
@@ -138,6 +152,8 @@ FROM bedrock.app_user au
 WHERE au.org_user_id = ou.id
   AND au.sf_user_id IS NOT NULL
   AND ou.sf_user_id IS NULL;
+-- NOTE: This UPDATE writes to public.org_users — same permission
+-- restriction as Step 1. Must be run by superuser or Jac, not bedrock_user.
 
 -- Step 4: Populate user_config from app_user
 INSERT INTO bedrock.user_config (org_user_id, profile_id)
@@ -168,10 +184,16 @@ ON CONFLICT (org_user_id) DO NOTHING;
 
 ### Permission Note
 
-`bedrock_user` currently has read-only on `public.*`. To ALTER `public.org_users`:
-- Either run the ALTER as the `postgres` superuser or a role with ALTER rights on `public.org_users`
-- Or Jac runs it manually: `ALTER TABLE public.org_users ADD COLUMN sf_user_id TEXT UNIQUE, ADD COLUMN is_active BOOLEAN DEFAULT true;`
-- After that, `bedrock_user` can SELECT the new columns like any other public column
+`bedrock_user` currently has read-only on `public.*`. Steps 1 AND 3 both write to `public.org_users`:
+- **Step 1 (ALTER):** Run as `postgres` superuser or a role with ALTER rights
+- **Step 3 (UPDATE):** Run as `postgres` superuser or a role with UPDATE rights on `public.org_users`
+- Jac runs both manually. Steps 2 and 4 are bedrock-schema-only and can be run by `bedrock_user` or init.sql.
+- After Step 1, `bedrock_user` can SELECT the new columns like any other public column
+
+### Prerequisites
+
+1. **Phase B-3 backfill must run first** — `db/migrations/2026-04-08-backfill-app-user-org-link.sql` populates `app_user.org_user_id` by email match to `public.org_users`. Steps 3-4 read this column to copy data. Without the backfill, most rows will have `org_user_id = NULL` and be silently skipped.
+2. **Identity audit after backfill** — Run `GET /api/permissions/admin/identity-audit` (`routes/permissions.py:351`) to check for unlinked users. Any `app_user` rows with `org_user_id = NULL` after the backfill need manual resolution (platform onboarding or manual link) before proceeding.
 
 ### Rollout Order
 
@@ -179,6 +201,7 @@ ON CONFLICT (org_user_id) DO NOTHING;
 2. Create `bedrock.user_config` table (additive, no impact)
 3. Backfill `sf_user_id` on `org_users` from `app_user` (data migration)
 4. Backfill `user_config` from `app_user` (data migration)
+4b. Run identity audit (`GET /api/permissions/admin/identity-audit`) to verify: all users linked, `sf_user_id` values populated on `org_users`, `user_config` rows match `app_user` count.
 5. Update bedrock code to read from `org_users` + `user_config` (code PR)
 6. Run in parallel: both `app_user` and new tables populated on login (transition period)
 7. Verify parity, then drop `app_user`
