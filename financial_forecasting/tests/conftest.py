@@ -323,7 +323,8 @@ def mock_mcp_client(mock_salesforce_service, mock_sage_service):
         "salesforce": mock_salesforce_service,
         "sage_intacct": mock_sage_service,
     }
-    client._connected_services = {"salesforce", "sage_intacct"}
+    client._connected_services = ["salesforce", "sage_intacct"]
+    client.connected_services = ["salesforce", "sage_intacct"]
     client.salesforce = mock_salesforce_service
     client.sage_intacct = mock_sage_service
     client.disconnect_all = AsyncMock()

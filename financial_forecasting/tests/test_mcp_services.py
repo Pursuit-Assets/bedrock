@@ -191,6 +191,7 @@ class TestSalesforceMCPService:
         defaults.update(kwargs)
         return SalesforceMCPService(client or _make_mock_mcp_client(), **defaults)
 
+    @patch.dict(os.environ, {}, clear=True)
     def test_missing_credentials_raises(self):
         """Constructor raises ValueError when no valid credential set is provided."""
         with pytest.raises(ValueError, match="Salesforce credentials are required"):

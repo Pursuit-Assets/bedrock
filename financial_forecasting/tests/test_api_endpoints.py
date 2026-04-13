@@ -43,7 +43,7 @@ from conftest import (
 # Test user and dependency overrides
 # ---------------------------------------------------------------------------
 
-TEST_USER = {"user_id": "test_user", "name": "Test User", "role": "admin"}
+TEST_USER = {"user_id": "test_user", "email": "test@test.org", "name": "Test User", "role": "admin"}
 
 
 def override_get_current_user():
@@ -161,11 +161,41 @@ def mock_db():
     return db
 
 
+import routes.permissions as _perms_mod
+_original_get_user_permissions = _perms_mod.get_user_permissions
+
+async def _fake_admin_perms(email, db):
+    """Fake get_user_permissions that always returns admin-level access."""
+    return {
+        "id": "test-id", "sf_user_id": "005TESTOWNER00001", "email": email,
+        "name": "Test", "is_active": True, "profile_name": "Admin",
+        "permissions": {
+            "view_opportunities": True, "edit_own_opportunities": True, "edit_all_opportunities": True,
+            "create_opportunities": True, "bulk_update_opportunities": True, "lock_own_opportunities": True,
+            "reassign_opportunities": True,
+            "view_tasks": True, "edit_own_tasks": True, "edit_all_tasks": True, "create_tasks": True,
+            "edit_accounts": True, "create_accounts": True, "edit_contacts": True, "create_contacts": True,
+            "edit_payments": True, "create_payments": True,
+            "view_projects": True, "edit_projects": True,
+            "view_revenue_dashboard": True, "view_cashflow_forecasts": True,
+            "view_sage_invoices_payments": True, "create_sage_invoices": True,
+            "match_invoices": True, "manage_payment_schedules": True, "generate_financial_reports": True,
+            "use_pebble_chat": True, "use_pebble_research": True, "pebble_crm_write": True,
+            "trigger_data_sync": True, "manage_users_roles": True, "edit_permission_profiles": True,
+            "manage_owner_goals": True,
+        },
+    }
+
 @pytest.fixture
 def client(mock_client, mock_engine, mock_sync_service, mock_db):
     """Create a TestClient with all dependencies overridden."""
+    from services.cache import cache
+    from auth import require_auth_or_internal
+    cache.clear()
+    _perms_mod.get_user_permissions = _fake_admin_perms
     app.dependency_overrides[get_current_user] = override_get_current_user
     app.dependency_overrides[require_auth] = override_get_current_user
+    app.dependency_overrides[require_auth_or_internal] = override_get_current_user
     app.dependency_overrides[get_db] = lambda: mock_db
     app.dependency_overrides[get_mcp_client] = lambda: mock_client
     app.dependency_overrides[get_forecasting_engine] = lambda: mock_engine
@@ -175,6 +205,8 @@ def client(mock_client, mock_engine, mock_sync_service, mock_db):
         yield c
 
     app.dependency_overrides.clear()
+    _perms_mod.get_user_permissions = _original_get_user_permissions
+    cache.clear()
 
 
 @pytest.fixture
@@ -225,7 +257,8 @@ def no_services_client():
 class TestHealthEndpoints:
     """Tests for /health and /health/services."""
 
-    def test_health_check_returns_200(self, client):
+    @patch("main.get_db_status", return_value="connected")
+    def test_health_check_returns_200(self, mock_status, client):
         response = client.get("/health")
         assert response.status_code == 200
         body = response.json()

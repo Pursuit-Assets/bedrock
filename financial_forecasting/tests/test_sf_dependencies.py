@@ -25,7 +25,7 @@ app.router.on_shutdown.clear()
 # Auth override
 # ---------------------------------------------------------------------------
 
-TEST_USER = {"user_id": "test_user", "name": "Test User", "role": "admin"}
+TEST_USER = {"user_id": "test_user", "email": "test@test.org", "name": "Test User", "role": "admin"}
 
 
 def override_get_current_user():
@@ -120,8 +120,20 @@ def mock_client(mock_salesforce):
     return client
 
 
+import routes.permissions as _perms_mod
+_original_get_user_permissions = _perms_mod.get_user_permissions
+
+async def _fake_admin_perms(email, db):
+    from routes.permissions import PERMISSION_KEYS
+    return {
+        "id": str(uuid.uuid4()), "sf_user_id": "005TESTSFUSER0001", "email": email,
+        "name": "Test User", "is_active": True, "profile_name": "Admin",
+        "permissions": {k: True for k in PERMISSION_KEYS},
+    }
+
 @pytest.fixture
 def client(mock_db, mock_client):
+    _perms_mod.get_user_permissions = _fake_admin_perms
     app.dependency_overrides[get_current_user] = override_get_current_user
     app.dependency_overrides[require_auth] = override_get_current_user
     app.dependency_overrides[get_db] = lambda: mock_db
@@ -131,6 +143,7 @@ def client(mock_db, mock_client):
         yield c
 
     app.dependency_overrides.clear()
+    _perms_mod.get_user_permissions = _original_get_user_permissions
 
 
 # ===========================================================================

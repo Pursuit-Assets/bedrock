@@ -262,12 +262,14 @@ class TestUpdateProjectTask:
 
 class TestSoftDeleteProject:
     def test_soft_delete_returns_moved_to_trash(self, authed_client, mock_db):
+        mock_db.fetchrow = AsyncMock(return_value=MockDBRow(owner_email="test@pursuit.org"))
         mock_db.execute = AsyncMock(return_value="UPDATE 1")
         resp = authed_client.delete(f"/api/projects/{PROJECT_ID}")
         assert resp.status_code == 200
         assert "moved to trash" in resp.json()["data"]["message"]
 
     def test_soft_delete_uses_update_not_delete(self, authed_client, mock_db):
+        mock_db.fetchrow = AsyncMock(return_value=MockDBRow(owner_email="test@pursuit.org"))
         mock_db.execute = AsyncMock(return_value="UPDATE 1")
         authed_client.delete(f"/api/projects/{PROJECT_ID}")
         # Verify all execute calls use UPDATE (soft-delete), not DELETE
@@ -277,6 +279,7 @@ class TestSoftDeleteProject:
             assert "DELETE" not in sql
 
     def test_soft_delete_cascades_to_children(self, authed_client, mock_db):
+        mock_db.fetchrow = AsyncMock(return_value=MockDBRow(owner_email="test@pursuit.org"))
         mock_db.execute = AsyncMock(return_value="UPDATE 1")
         authed_client.delete(f"/api/projects/{PROJECT_ID}")
         # 4 UPDATEs: project, workstreams, milestones, tasks
@@ -288,6 +291,7 @@ class TestSoftDeleteProject:
         assert resp.status_code == 404
 
     def test_soft_delete_sets_deleted_by(self, authed_client, mock_db):
+        mock_db.fetchrow = AsyncMock(return_value=MockDBRow(owner_email="test@pursuit.org"))
         mock_db.execute = AsyncMock(return_value="UPDATE 1")
         authed_client.delete(f"/api/projects/{PROJECT_ID}")
         first_call = mock_db.execute.call_args_list[0]
@@ -357,7 +361,7 @@ class TestTrashList:
     def test_list_deleted_projects(self, authed_client, mock_db):
         deleted_at = datetime(2026, 3, 28, tzinfo=timezone.utc)
         mock_db.fetch = AsyncMock(return_value=[
-            MockDBRow(id=uuid.UUID(PROJECT_ID), name="Old Project", description="", deleted_at=deleted_at, deleted_by="test@pursuit.org"),
+            MockDBRow(id=uuid.UUID(PROJECT_ID), name="Old Project", description="", owner_email="test@pursuit.org", deleted_at=deleted_at, deleted_by="test@pursuit.org"),
         ])
         resp = authed_client.get("/api/projects/trash")
         assert resp.status_code == 200
@@ -421,7 +425,9 @@ class TestRestoreProject:
 
 class TestPurgeProject:
     def test_purge_hard_deletes(self, admin_client, mock_db):
-        mock_db.fetchrow = AsyncMock(return_value=MockDBRow(id=uuid.UUID(PROJECT_ID)))
+        # deleted_at must be >60 days ago to pass retention check
+        old_deleted = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        mock_db.fetchrow = AsyncMock(return_value=MockDBRow(id=uuid.UUID(PROJECT_ID), deleted_at=old_deleted))
         mock_db.execute = AsyncMock(return_value="DELETE 1")
         resp = admin_client.delete(f"/api/projects/{PROJECT_ID}/purge")
         assert resp.status_code == 200
@@ -553,6 +559,7 @@ class TestProjectPermissions:
         row = _make_perm_user_row(PM_PERMS, "Project Manager", PM_PROFILE_ID)
         new_project = MockDBRow(
             id=PROJECT_ID, name="New Project", description="",
+            owner_email="test@pursuit.org", created_by="test@pursuit.org",
             created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
             updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
         )
