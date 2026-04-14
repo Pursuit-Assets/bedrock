@@ -345,6 +345,27 @@ export function InlineEditable<TValue = unknown>(
           alignItems: 'center',
           gap: 0.25,
           maxWidth: '100%',
+          borderRadius: 1,
+          transition: 'box-shadow 120ms ease, background-color 120ms ease',
+          // Active edit-or-unlock mode — bold blue ring + subtle blue tint
+          // so the targeted cell is unmistakable the instant you click,
+          // even while the unlock dialog is up. Using `mode !== 'display'`
+          // covers both `unlock` and `editing` so the ring doesn't appear
+          // only after dialog confirmation (previously felt like it only
+          // turned on when typing started). Uses box-shadow so nothing
+          // shifts in the grid layout.
+          ...(mode !== 'display' && {
+            boxShadow: '0 0 0 3px #1976d2',
+            bgcolor: 'rgba(25, 118, 210, 0.08)',
+          }),
+          // Display-mode hover when editable — medium inset ring hints
+          // that clicking opens an editor. Suppressed once we enter
+          // edit or unlock so the active ring is the only thing you see.
+          ...(mode === 'display' && canEditAtAll && {
+            '&:hover': {
+              boxShadow: 'inset 0 0 0 2px rgba(25, 118, 210, 0.45)',
+            },
+          }),
         }}
         onClick={mode === 'display' ? handleDisplayClick : undefined}
       >
