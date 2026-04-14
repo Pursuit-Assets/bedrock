@@ -64,7 +64,11 @@ const Opportunities: React.FC = () => {
   const [philanthropyOnly, setPhilanthropyOnly] = useState(false);
   const [pbcOnly, setPbcOnly] = useState(false);
   const [aijiOnly, setAijiOnly] = useState(false);
-  const [initialFilter, setInitialFilter] = useState<'atRisk' | 'stale' | null>(null);
+  // initialFilter values:
+  //   'atRisk'       — set by Dashboard nav: low-prob / early-stage opps in the current quarter.
+  //   'stale'        — set by Dashboard nav OR by clicking the Stale Deals card.
+  //   'closingMonth' — set by clicking the Closing This Month card.
+  const [initialFilter, setInitialFilter] = useState<'atRisk' | 'stale' | 'closingMonth' | null>(null);
   const [dashboardFilterAlert, setDashboardFilterAlert] = useState<string | null>(null);
   const [pipelineFilters, setPipelineFilters] = useState<PipelineFilters>(DEFAULT_FILTERS);
 
@@ -356,6 +360,15 @@ const Opportunities: React.FC = () => {
       const lastMod = opp.LastModifiedDate ? parseISO(opp.LastModifiedDate) : parseISO(opp.CreatedDate);
       return isPastDue || differenceInDays(now, lastMod) > 30;
     });
+  } else if (initialFilter === 'closingMonth') {
+    const now = new Date();
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
+    visibleOpps = visibleOpps.filter((opp) => {
+      if (!opp.CloseDate) return false;
+      const cd = parseISO(opp.CloseDate);
+      return cd >= monthStart && cd <= monthEnd;
+    });
   }
 
   // ---------------------------------------------------------------------------
@@ -423,6 +436,7 @@ const Opportunities: React.FC = () => {
         <Alert severity="warning" sx={{ mb: 3 }} onClose={() => setInitialFilter(null)}>
           {initialFilter === 'atRisk' && <><strong>Showing At-Risk Deals Only:</strong> Current quarter opportunities with low probability (&lt;50%) or early stage.</>}
           {initialFilter === 'stale' && <><strong>Showing Stale Opportunities Only:</strong> Opportunities that are past due or haven't been updated in 30+ days.</>}
+          {initialFilter === 'closingMonth' && <><strong>Showing Opportunities Closing This Month:</strong> Click the card again to clear, or use ✕ to dismiss.</>}
         </Alert>
       )}
 
@@ -443,8 +457,20 @@ const Opportunities: React.FC = () => {
         </Alert>
       )}
 
-      {/* Summary cards */}
-      <SummaryCards viewMode={viewMode} opps={visibleOpps} />
+      {/* Summary cards — Stale / Closing-this-month / Total-pipeline cards
+          double as click-to-filter handles. Toggle: clicking the active card
+          clears the filter. */}
+      <SummaryCards
+        viewMode={viewMode}
+        opps={visibleOpps}
+        activeFilter={initialFilter}
+        onCardClick={(filter) => {
+          setInitialFilter((prev) => (prev === filter ? null : filter));
+          // Clear the dashboard banner — in-page click takes ownership of the
+          // filter state from here.
+          setDashboardFilterAlert(null);
+        }}
+      />
 
       {/* Error */}
       {error && <Alert severity="error" sx={{ mb: 3 }}>Failed to load opportunities. Please check your connection.</Alert>}
