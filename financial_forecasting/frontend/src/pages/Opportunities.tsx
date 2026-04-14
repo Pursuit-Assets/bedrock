@@ -96,8 +96,9 @@ const Opportunities: React.FC = () => {
     users,
     accountMap,
     userMap,
-    openOnlyOpps,
-    paymentOpps,
+    openCount,
+    collectingCount,
+    closedCount,
     isLoading,
     error,
     updateMutation,
@@ -368,16 +369,16 @@ const Opportunities: React.FC = () => {
       <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
         <Box sx={{ display: 'flex', gap: 2, alignItems: 'center' }}>
           <Button variant={viewMode === 'open' ? 'contained' : 'outlined'} onClick={() => setViewMode('open')} sx={{ minWidth: 150 }}>
-            Open Pipeline <Chip label={openOnlyOpps.length} size="small" sx={{ ml: 1, bgcolor: viewMode === 'open' ? 'rgba(255,255,255,0.3)' : 'default' }} />
+            Open Pipeline <Chip label={openCount} size="small" sx={{ ml: 1, bgcolor: viewMode === 'open' ? 'rgba(255,255,255,0.3)' : 'default' }} />
           </Button>
           <Button variant={viewMode === 'collecting' ? 'contained' : 'outlined'} onClick={() => setViewMode('collecting')}
             color={viewMode === 'collecting' ? 'success' : 'inherit'} sx={{ minWidth: 180 }}>
-            Collecting / In Effect <Chip label={paymentOpps.length} size="small" sx={{ ml: 1, bgcolor: viewMode === 'collecting' ? 'rgba(255,255,255,0.3)' : 'default' }} />
+            Collecting / In Effect <Chip label={collectingCount} size="small" sx={{ ml: 1, bgcolor: viewMode === 'collecting' ? 'rgba(255,255,255,0.3)' : 'default' }} />
           </Button>
           <Button variant={viewMode === 'closed' ? 'contained' : 'outlined'} onClick={() => setViewMode('closed')}
             color={viewMode === 'closed' ? 'error' : 'inherit'} sx={{ minWidth: 150 }}>
             Closed
-            <Chip label={opportunities.filter((opp) => (CLOSED_STAGES as readonly string[]).includes(opp.StageName)).length} size="small"
+            <Chip label={closedCount} size="small"
               sx={{ ml: 1, bgcolor: viewMode === 'closed' ? 'rgba(255,255,255,0.3)' : 'default' }} />
           </Button>
         </Box>
