@@ -72,6 +72,8 @@ export function useProjectData(projectId: string | null = AIJI_PROJECT_ID) {
       updateTaskMutation.mutate({ taskId, data }),
     updateMilestoneStatus: (milestoneId, status) =>
       updateMilestoneMutation.mutate({ milestoneId, data: { status } }),
+    updateMilestone: (milestoneId, data) =>
+      updateMilestoneMutation.mutate({ milestoneId, data }),
     addTask: (milestoneId, title) =>
       addTaskMutation.mutate({ milestoneId, title }),
     addMilestone: (workstreamId, title) =>

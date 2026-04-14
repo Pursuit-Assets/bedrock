@@ -68,6 +68,9 @@ export interface ProjectMutations {
   updateTaskDates: (taskId: string, startDate: string | null, deadline: string | null) => void;
   updateTask: (taskId: string, data: Record<string, any>) => void;
   updateMilestoneStatus: (milestoneId: string, status: string) => void;
+  /** Generic milestone update — used by the inline-edit pill cells to
+   *  patch any subset of milestone fields (status, priority, owner, etc.). */
+  updateMilestone: (milestoneId: string, data: Record<string, any>) => void;
   addTask: (milestoneId: string, title: string) => void;
   addMilestone: (workstreamId: string, title: string) => void;
   deleteTask: (taskId: string) => void;

@@ -92,6 +92,7 @@ const FIELD_CLASSIFICATIONS: Record<string, Record<string, FieldClassification>>
     name:                 { sensitivity: 'safe' },
     status:               { sensitivity: 'safe' },
     phase:                { sensitivity: 'safe' },
+    priority:             { sensitivity: 'safe' },
     due_date:             { sensitivity: 'safe' },
     notes:                { sensitivity: 'safe' },
     owner_id:             { sensitivity: 'sensitive',        lockReason: 'Reassigning a milestone changes accountability. Click to confirm.' },
