@@ -28,6 +28,11 @@ interface PhasePillCellProps {
   options?: InlineEditableOption[];
   fieldName?: string;
   objectType?: string;
+  /** Optional record-level lock (e.g. milestone.opportunity lock). Forwarded
+   *  to the primitive so a locked-by-other record is disabled without
+   *  circumventing the sensitivity check. */
+  recordLock?: { locked_by: string; locked_at: string } | null;
+  recordLockedByName?: string | null;
   readOnly?: boolean;
 }
 
@@ -37,6 +42,8 @@ export const PhasePillCell: React.FC<PhasePillCellProps> = ({
   options,
   fieldName = 'priority',
   objectType = 'Milestone',
+  recordLock,
+  recordLockedByName,
   readOnly,
 }) => (
   <InlineEditable<string>
@@ -50,6 +57,8 @@ export const PhasePillCell: React.FC<PhasePillCellProps> = ({
     onSave={onSave}
     pillColor={(v) => PHASE_COLOR[v as string]}
     placeholder="—"
+    recordLock={recordLock}
+    recordLockedByName={recordLockedByName}
     readOnly={readOnly}
   />
 );

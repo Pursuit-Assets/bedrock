@@ -61,6 +61,7 @@ import {
   computeUrgency,
   countOverdueTasks,
 } from '../utils/priorityScoring';
+import { useQuery } from 'react-query';
 import { apiService } from '../services/api';
 import { stageIndex, getStageHexColor } from '../types/salesforce';
 import {
@@ -445,6 +446,41 @@ const PriorityTable: React.FC<PriorityTableProps> = ({ opportunities, onAddTask,
     dir: 'asc',
   });
 
+  // ── Record locks — feed the inline-edit cells so the backend 403
+  //    ("This opportunity is locked by its owner") shows up as a disabled
+  //    cell + lock tooltip instead of letting the user walk through the
+  //    sensitive-field unlock dialog only to have the PATCH fail at the
+  //    server. Query key is shared with useOpportunityData/TaskPanel —
+  //    react-query dedupes, so this is at most one network call.
+  const { data: locksData } = useQuery(
+    'opportunity-locks',
+    async () => {
+      const res = await apiService.getOpportunityLocks();
+      return res.data?.data || [];
+    },
+    { staleTime: 30_000 },
+  );
+
+  const lockMap = useMemo(() => {
+    const map = new Map<string, { locked_by: string; locked_at: string }>();
+    for (const lock of (locksData || [])) {
+      map.set(lock.sf_opportunity_id, { locked_by: lock.locked_by, locked_at: lock.locked_at });
+    }
+    return map;
+  }, [locksData]);
+
+  const userMap = useMemo(() => {
+    const map = new Map<string, { Id: string; Name: string }>();
+    for (const u of (users || [])) map.set(u.Id, u);
+    return map;
+  }, [users]);
+
+  const resolveLockerName = useCallback((oppId: string): string | null => {
+    const lock = lockMap.get(oppId);
+    if (!lock) return null;
+    return userMap.get(lock.locked_by)?.Name ?? null;
+  }, [lockMap, userMap]);
+
   const handleOppSortClick = (field: OppSortField) => {
     setOppSort((prev) => {
       if (prev.field === field) {
@@ -647,7 +683,7 @@ const PriorityTable: React.FC<PriorityTableProps> = ({ opportunities, onAddTask,
   const hasActiveFilters = filters.aijiOnly || filters.stage.length > 0 || filters.closeDateRange !== 'all' || filters.hasTasks !== 'all' || filters.amountMin !== null;
 
   const handleOpenInPipeline = (opp: PriorityOpp) => {
-    window.open(`/pipeline?search=${encodeURIComponent(opp.Name)}`, '_blank');
+    window.open(`/reports?search=${encodeURIComponent(opp.Name)}`, '_blank');
   };
 
   const handleTaskCountClick = (oppId: string) => {
@@ -970,6 +1006,8 @@ const PriorityTable: React.FC<PriorityTableProps> = ({ opportunities, onAddTask,
                       <StageCell
                         value={opp.StageName}
                         onSave={(v) => handleInlineOppSave(opp.Id, 'StageName', v)}
+                        recordLock={lockMap.get(opp.Id) ?? null}
+                        recordLockedByName={resolveLockerName(opp.Id)}
                       />
                     </TableCell>
 
@@ -978,6 +1016,8 @@ const PriorityTable: React.FC<PriorityTableProps> = ({ opportunities, onAddTask,
                       <AmountCell
                         value={opp.Amount}
                         onSave={(v) => handleInlineOppSave(opp.Id, 'Amount', v)}
+                        recordLock={lockMap.get(opp.Id) ?? null}
+                        recordLockedByName={resolveLockerName(opp.Id)}
                       />
                     </TableCell>
 
@@ -988,6 +1028,8 @@ const PriorityTable: React.FC<PriorityTableProps> = ({ opportunities, onAddTask,
                         value={opp.CloseDate || ''}
                         onSave={(v) => handleInlineOppSave(opp.Id, 'CloseDate', v)}
                         displayFormat="MMM d"
+                        recordLock={lockMap.get(opp.Id) ?? null}
+                        recordLockedByName={resolveLockerName(opp.Id)}
                         renderDisplay={(formatted) => (
                           <Typography
                             variant="body2"
@@ -1006,6 +1048,8 @@ const PriorityTable: React.FC<PriorityTableProps> = ({ opportunities, onAddTask,
                       <ProbabilityCell
                         value={opp.Probability}
                         onSave={(v) => handleInlineOppSave(opp.Id, 'Probability', v)}
+                        recordLock={lockMap.get(opp.Id) ?? null}
+                        recordLockedByName={resolveLockerName(opp.Id)}
                       />
                     </TableCell>
 

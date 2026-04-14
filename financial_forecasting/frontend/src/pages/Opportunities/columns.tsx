@@ -31,6 +31,20 @@ import { StageCell } from '../../components/inline-edit/cells/StageCell';
 import { OwnerCell } from '../../components/inline-edit/cells/OwnerCell';
 import { AccountCell } from '../../components/inline-edit/cells/AccountCell';
 import { AmountCell } from '../../components/inline-edit/cells/AmountCell';
+import { DateCell } from '../../components/inline-edit/cells/DateCell';
+
+/**
+ * Look up the display name of the user who holds the record-level lock on
+ * the given opportunity. Returns `null` when the row isn't locked. Passed
+ * into each domain cell so the record-lock tooltip can show a real name
+ * (e.g. "Record locked by Jac.") instead of the generic fallback ("another
+ * user."). Intentionally cheap — two Map lookups per render.
+ */
+function resolveLockerName(cb: ColumnCallbacks, rowId: string): string | null {
+  const lock = cb.lockMap?.get(rowId);
+  if (!lock) return null;
+  return cb.userMap.get(lock.locked_by)?.Name ?? null;
+}
 
 // ---------------------------------------------------------------------------
 // Callbacks the columns need from the parent component
@@ -158,10 +172,24 @@ export function buildPipelineColumns(cb: ColumnCallbacks): GridColDef[] {
       flex: 0.9,
       minWidth: 130,
       type: 'date',
-      editable: true,
+      // DateCell owns the edit flow (sensitive field — requires unlock
+      // confirmation). DataGrid's native date editor bypassed that gate.
+      editable: false,
       filterable: true,
       valueGetter: (params: GridValueGetterParams) => (params.value ? new Date(params.value) : null),
-      valueFormatter: (params) => (!params.value ? '-' : format(new Date(params.value as string), 'MMM dd, yyyy')),
+      renderCell: (params: GridRenderCellParams) => (
+        <DateCell
+          value={(params.row.PaymentDate__c as string) || ''}
+          onSave={async (newDate) => {
+            if (cb.onSaveField) await cb.onSaveField(params.row.Id, 'PaymentDate__c', newDate || null);
+          }}
+          fieldName="PaymentDate__c"
+          objectType="Opportunity"
+          displayFormat="MMM dd, yyyy"
+          recordLock={cb.lockMap?.get(params.row.Id) ?? null}
+          recordLockedByName={resolveLockerName(cb, params.row.Id)}
+        />
+      ),
     },
     lastModifiedColumn(),
     {
@@ -355,6 +383,7 @@ function accountColumn(cb: ColumnCallbacks, opts: { editable: boolean }): GridCo
           if (cb.onSaveField) await cb.onSaveField(params.row.Id, 'AccountId', newId);
         }}
         recordLock={cb.lockMap?.get(params.row.Id) ?? null}
+        recordLockedByName={resolveLockerName(cb, params.row.Id)}
         readOnly={!opts.editable}
       />
     ),
@@ -381,6 +410,7 @@ function ownerColumn(cb: ColumnCallbacks): GridColDef {
           if (cb.onSaveField) await cb.onSaveField(params.row.Id, 'OwnerId', newId);
         }}
         recordLock={cb.lockMap?.get(params.row.Id) ?? null}
+        recordLockedByName={resolveLockerName(cb, params.row.Id)}
       />
     ),
   };
@@ -401,6 +431,7 @@ function stageColumn(cb: ColumnCallbacks): GridColDef {
           cb.onStageChange(params.row.Id, (params.value as string) || '', newStage)
         }
         recordLock={cb.lockMap?.get(params.row.Id) ?? null}
+        recordLockedByName={resolveLockerName(cb, params.row.Id)}
       />
     ),
   };
@@ -424,6 +455,7 @@ function amountColumn(cb: ColumnCallbacks): GridColDef {
           if (cb.onSaveField) await cb.onSaveField(params.row.Id, 'Amount', newAmount);
         }}
         recordLock={cb.lockMap?.get(params.row.Id) ?? null}
+        recordLockedByName={resolveLockerName(cb, params.row.Id)}
       />
     ),
   };

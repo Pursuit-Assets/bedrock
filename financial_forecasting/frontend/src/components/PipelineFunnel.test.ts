@@ -67,4 +67,47 @@ describe('classifyTransition', () => {
       expect(LOST_STAGES.has('Closed / Completed')).toBe(false);
     });
   });
+
+  // Regression guard: a stage that Pursuit adds to Salesforce later but
+  // forgets to add to ACTIVE_FUNNEL_STAGES / WON_STAGES / LOST_STAGES
+  // used to silently render as a "setback" in the funnel. The fallback
+  // still returns 'backward' (for UI stability), but we now log a dev
+  // warning so the omission gets noticed. These cases pin the behavior.
+  describe('unknown stages (future-added / legacy)', () => {
+    let warnSpy: jest.SpyInstance;
+
+    beforeEach(() => {
+      warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    });
+
+    afterEach(() => {
+      warnSpy.mockRestore();
+    });
+
+    it('classifies unknown-from → known-active as forward (treats pre-funnel origin as 0)', () => {
+      expect(classifyTransition('LegacyPreFunnelStage', 'Qualifying')).toBe('forward');
+    });
+
+    it('classifies known-active → unknown-target as backward AND warns in dev', () => {
+      expect(classifyTransition('Qualifying', 'Paused_NewStage')).toBe('backward');
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('Unknown target stage "Paused_NewStage"'),
+      );
+    });
+
+    it('classifies both-unknown as backward AND warns in dev', () => {
+      expect(classifyTransition('LegacyA', 'LegacyB')).toBe('backward');
+      expect(warnSpy).toHaveBeenCalled();
+    });
+
+    it('does not warn when target is a known terminal (won)', () => {
+      classifyTransition('Qualifying', 'Closed / Completed');
+      expect(warnSpy).not.toHaveBeenCalled();
+    });
+
+    it('does not warn when target is a known terminal (lost)', () => {
+      classifyTransition('Qualifying', 'Closed Lost');
+      expect(warnSpy).not.toHaveBeenCalled();
+    });
+  });
 });

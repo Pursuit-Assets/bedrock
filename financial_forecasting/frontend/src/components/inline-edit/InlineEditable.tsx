@@ -166,6 +166,11 @@ export function InlineEditable<TValue = unknown>(
   }, [value]);
 
   const handleSave = useCallback(async () => {
+    // Guard against concurrent invocations. Tab + onBlur, Enter followed by
+    // a blur, or a rapid re-click can all fire handleSave while a prior
+    // await onSave() is still in flight — without this guard, the primitive
+    // would send a duplicate PATCH.
+    if (saving) return;
     if (validate) {
       const err = validate(draft);
       if (err) {
@@ -186,7 +191,7 @@ export function InlineEditable<TValue = unknown>(
     } finally {
       setSaving(false);
     }
-  }, [draft, value, validate, onSave]);
+  }, [draft, value, validate, onSave, saving]);
 
   // ── Display rendering ───────────────────────────────────────────────────
   const renderDisplay = () => {
@@ -233,6 +238,10 @@ export function InlineEditable<TValue = unknown>(
 
   // ── Auto-save helper for select/autocomplete (single-click commit) ───
   const commitNow = useCallback(async (newVal: TValue) => {
+    // Same re-entrancy guard as handleSave — rapid double-clicks on a
+    // Menu/Autocomplete option can otherwise fire commitNow twice before
+    // the Menu unmounts on setMode('display').
+    if (saving) return;
     if (validate) {
       const err = validate(newVal);
       if (err) {
@@ -253,7 +262,7 @@ export function InlineEditable<TValue = unknown>(
     } finally {
       setSaving(false);
     }
-  }, [validate, value, onSave]);
+  }, [validate, value, onSave, saving]);
 
   // ── Inline TextField editor (text / number / date variants) ───────────
   const renderInlineTextEditor = () => {

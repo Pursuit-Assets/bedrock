@@ -21,6 +21,11 @@ interface StatusPillCellProps {
   value: string;
   options: InlineEditableOption[];
   onSave: (newValue: string) => void | Promise<void>;
+  /** Optional record-level lock (e.g. task.opportunity lock). Forwarded to
+   *  the primitive so a locked-by-other record is disabled without
+   *  circumventing the sensitivity check. */
+  recordLock?: { locked_by: string; locked_at: string } | null;
+  recordLockedByName?: string | null;
   readOnly?: boolean;
 }
 
@@ -31,6 +36,8 @@ export const StatusPillCell: React.FC<StatusPillCellProps> = ({
   value,
   options,
   onSave,
+  recordLock,
+  recordLockedByName,
   readOnly,
 }) => (
   <InlineEditable<string>
@@ -42,6 +49,8 @@ export const StatusPillCell: React.FC<StatusPillCellProps> = ({
     display="pill"
     options={options}
     onSave={onSave}
+    recordLock={recordLock}
+    recordLockedByName={recordLockedByName}
     readOnly={readOnly}
   />
 );

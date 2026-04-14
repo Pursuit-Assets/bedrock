@@ -66,6 +66,13 @@ interface Opportunity {
   npe01__Payments_Made__c?: number;
 }
 
+// Pursuit's Salesforce contains BOTH "Closed / Completed" (1,923 live
+// records) AND "Closed Won" (575 live records) as terminal "we won" stages,
+// plus "In Collection" (650) and "Collecting / In Effect" (47) for in-flight
+// collections. The defensive substring match below covers all of them. Do
+// NOT narrow to exact-match on OPPORTUNITY_STAGES — the enum declares 13
+// stages but the live org has 22. See tasks/stage-schema-drift.md for the
+// full gap + deferred fixes pending a glossary conversation.
 const CLOSED_WON_STAGES = ['Closed Won', 'Closed / Completed', 'Collecting / In Effect', 'Collecting', 'In Collection', 'In Effect'];
 const CLOSED_LOST_STAGES = ['Closed Lost', 'Withdrawn', 'Did not Fulfill', 'Closed / Did not Fulfill'];
 

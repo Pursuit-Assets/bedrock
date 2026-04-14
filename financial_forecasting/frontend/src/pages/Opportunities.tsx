@@ -42,7 +42,7 @@ import TaskPanel from '../components/TaskPanel';
 import PipelineFilterBar, { PipelineFilters, DEFAULT_FILTERS } from '../components/PipelineFilterBar';
 import { OPPORTUNITY_STAGES, OPEN_STAGES, CLOSED_STAGES } from '../types/salesforce';
 import type { Opportunity } from './Opportunities/helpers';
-import { useOpportunityData, ViewMode } from './Opportunities/useOpportunityData';
+import { useOpportunityData, ViewMode, oppQueryKey } from './Opportunities/useOpportunityData';
 import { buildPipelineColumns, buildPaymentColumns, ColumnCallbacks } from './Opportunities/columns';
 import { SummaryCards } from './Opportunities/SummaryCards';
 import OpportunityEditDialog from '../components/OpportunityEditDialog';
@@ -217,11 +217,12 @@ const Opportunities: React.FC = () => {
       return;
     }
 
-    // Optimistic update (align with useOpportunityData query key)
-    const currentQueryKey =
-      !philanthropyOnly && !pbcOnly && viewMode === 'open'
-        ? 'opportunities'
-        : ['opportunities', philanthropyOnly, pbcOnly, viewMode];
+    // Optimistic update — MUST use the exact same key the hook feeds from.
+    // Previously this built a 4-element array that didn't match the hook's
+    // 2-element (filtered) or string (unfiltered) key, so the optimistic
+    // write landed in an orphan cache entry and the UI showed no change
+    // until the server round-trip invalidated + refetched.
+    const currentQueryKey = oppQueryKey(philanthropyOnly, pbcOnly);
     const oldData = queryClient.getQueryData(currentQueryKey);
     queryClient.setQueryData(currentQueryKey, (old: any) =>
       old?.map((opp: any) => (opp.Id === oppId ? { ...opp, StageName: newStage } : opp)),
@@ -250,7 +251,12 @@ const Opportunities: React.FC = () => {
     try {
       await apiService.updateOpportunity(oppId, { [field]: newValue });
       toast.success('Saved!', { id: loadingToast, duration: 2000 });
-      setTimeout(() => queryClient.invalidateQueries('opportunities'), 500);
+      // Invalidate immediately — the previous setTimeout(500ms) created a
+      // stale-cache window during which downstream consumers (MyDashboard,
+      // NetworkMap, Leads, AutomationReview, Overview, PaymentProcessing,
+      // etc.) read pre-mutation data, and rapid sequential edits raced
+      // each other's refetch cycles. Mirror handleStageChange's behavior.
+      queryClient.invalidateQueries('opportunities');
     } catch (err: any) {
       toast.error(`Failed: ${err.response?.data?.detail || err.message}`, { id: loadingToast });
       throw err;
@@ -560,7 +566,14 @@ const Opportunities: React.FC = () => {
                   const lock = lockMap.get(params.row.Id)!;
                   if (lock.locked_by !== sfUserId) return false;
                 }
-                return ['Name', 'AccountId', 'OwnerId', 'Amount', 'Probability', 'CloseDate', 'PaymentDate__c'].includes(params.field);
+                // Only list fields that actually use DataGrid's native edit
+                // UI. Fields owned by an inline-edit domain cell (StageCell,
+                // OwnerCell, AccountCell, AmountCell, ProbabilityCell,
+                // DateCell, …) have `editable: false` on the column def and
+                // handle their own save flow — listing them here silently
+                // re-enables DataGrid-native edit alongside the domain cell
+                // if someone ever flips `editable: true` on the column.
+                return ['Name', 'Probability', 'CloseDate'].includes(params.field);
               }}
               sx={{
                 '& .MuiDataGrid-cell:focus': { outline: 'none' },

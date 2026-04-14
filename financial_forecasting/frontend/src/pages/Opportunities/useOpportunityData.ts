@@ -15,6 +15,17 @@ import type { Opportunity } from './helpers';
 
 export type ViewMode = 'open' | 'collecting' | 'closed';
 
+/**
+ * Canonical query key for the opportunities cache. Exported so both the hook
+ * and any external optimistic-update callsite read/write the *same* cache
+ * entry. The key does NOT include `viewMode` — stage filtering happens
+ * client-side on the shared dataset (see `opportunities` memo below).
+ */
+export const oppQueryKey = (philanthropyOnly: boolean, pbcOnly: boolean) =>
+  (philanthropyOnly || pbcOnly)
+    ? ['opportunities', { philanthropyOnly, pbcOnly }]
+    : 'opportunities';
+
 export function useOpportunityData(
   viewMode: ViewMode,
   philanthropyOnly: boolean,
@@ -35,9 +46,7 @@ export function useOpportunityData(
   // Stage-filtering for the visible grid happens client-side below.
   // Share cache with Priorities/Dashboard/etc. when no philanthropy/pbc filter.
   const useFilteredFetch = philanthropyOnly || pbcOnly;
-  const queryKey = useFilteredFetch
-    ? ['opportunities', { philanthropyOnly, pbcOnly }]
-    : 'opportunities';
+  const queryKey = oppQueryKey(philanthropyOnly, pbcOnly);
 
   const { data: opportunitiesData, isLoading, error } = useQuery(
     queryKey,

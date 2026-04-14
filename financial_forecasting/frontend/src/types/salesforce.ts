@@ -74,6 +74,27 @@ export const CLOSED_STAGES: readonly OpportunityStage[] = [
   'Closed / Completed',
 ];
 
+/**
+ * Win/loss sets, derived from the Pursuit custom picklist above. Used by
+ * the pipeline funnel classifier to route stage-history transitions into
+ * won/lost/forward/backward buckets.
+ *
+ * NOTE: `data_sync.py` also queries Salesforce for `StageName = 'Closed Won'`
+ * for Intacct invoicing — that value is NOT in OPPORTUNITY_STAGES. It may
+ * be (a) a legacy picklist value still present on old records, (b) a
+ * parallel SF Opportunity record-type we don't model here, or (c) stale
+ * backend code. Until verified against the live org, do NOT narrow
+ * consumer-side substring matching that defensively also matches
+ * 'Closed Won' (see Overview.tsx, PaymentProcessing.tsx, Accounts.tsx).
+ */
+export const WON_STAGES: readonly OpportunityStage[] = ['Closed / Completed'];
+
+export const LOST_STAGES: readonly OpportunityStage[] = [
+  'Closed Lost',
+  'Withdrawn',
+  'Closed / Did not Fulfill',
+];
+
 // ── Salesforce Object Interfaces ────────────────────────────────────────────
 
 export interface SalesforceOpportunity {

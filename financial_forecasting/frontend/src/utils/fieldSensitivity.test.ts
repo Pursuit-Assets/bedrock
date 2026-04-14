@@ -98,6 +98,39 @@ describe('classifyField', () => {
       expect(c.lockReason).toContain('not classified');
     });
   });
+
+  // Guard against the "silent sensitive fallback" regression: every domain
+  // cell (StageCell, OwnerCell, …) ships with a default (objectType,
+  // fieldName) pair. If that default isn't in FIELD_CLASSIFICATIONS, the
+  // fallback branch returns sensitivity: 'sensitive' with a "not classified"
+  // tooltip — users suddenly need to click-through an unlock dialog for a
+  // field that should have been safe. This test enumerates every default
+  // shipped by the cells in components/inline-edit/cells/ and asserts each
+  // has an explicit entry.
+  //
+  // Updating a cell's default objectType or fieldName: also update this
+  // list AND add/confirm the classification in FIELD_CLASSIFICATIONS.
+  describe('domain-cell default pairs are explicitly classified', () => {
+    const CELL_DEFAULTS: Array<{ cell: string; objectType: string; fieldName: string }> = [
+      { cell: 'StageCell',       objectType: 'Opportunity', fieldName: 'StageName' },
+      { cell: 'OwnerCell',       objectType: 'Opportunity', fieldName: 'OwnerId' },
+      { cell: 'AccountCell',     objectType: 'Opportunity', fieldName: 'AccountId' },
+      { cell: 'AmountCell',      objectType: 'Opportunity', fieldName: 'Amount' },
+      { cell: 'DateCell',        objectType: 'Opportunity', fieldName: 'CloseDate' },
+      { cell: 'ProbabilityCell', objectType: 'Opportunity', fieldName: 'Probability' },
+      { cell: 'PhasePillCell',   objectType: 'Milestone',   fieldName: 'priority' },
+      // StatusPillCell has no default — caller always supplies the pair.
+    ];
+
+    CELL_DEFAULTS.forEach(({ cell, objectType, fieldName }) => {
+      it(`${cell} default (${objectType}.${fieldName}) is explicitly classified`, () => {
+        const c = classifyField(objectType, fieldName);
+        // The fallback message is "<fieldName> is not classified. …".
+        // If we see it, the cell's default pair is missing from the table.
+        expect(c.lockReason ?? '').not.toMatch(/not classified/);
+      });
+    });
+  });
 });
 
 describe('validateDateBounds', () => {

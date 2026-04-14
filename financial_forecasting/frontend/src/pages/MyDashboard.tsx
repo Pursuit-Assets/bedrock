@@ -960,7 +960,7 @@ const MyDashboard: React.FC = () => {
       source += `, ${format(new Date(), 'MMMM yyyy')}`;
     }
 
-    navigate('/pipeline', {
+    navigate('/reports', {
       state: { dashboardFilters: { owners, closeDateStart, closeDateEnd, source } },
     });
   }, [prefs.dateRange, resolvedFilterId, sfUsers, navigate]);

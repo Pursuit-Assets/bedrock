@@ -53,7 +53,11 @@ export const UnlockWarningDialog: React.FC<UnlockWarningDialogProps> = ({
       </Box>
     </DialogContent>
     <DialogActions sx={{ px: 3, pb: 2 }}>
-      <Button onClick={onCancel}>Cancel</Button>
+      {/* autoFocus on Cancel so a muscle-memory Enter press cancels instead
+          of confirming the unlock. The user must either click "Unlock to
+          edit" deliberately or Tab → Enter, which is a two-action affordance
+          matching the "read carefully" intent of the warning. */}
+      <Button onClick={onCancel} autoFocus>Cancel</Button>
       <Button
         onClick={onConfirm}
         variant="contained"

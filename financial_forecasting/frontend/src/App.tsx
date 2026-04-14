@@ -16,7 +16,7 @@ import ErrorBoundary from './components/ErrorBoundary';
 import Layout from './components/Layout';
 import Login from './pages/Login';
 import Overview from './pages/Overview';
-import Pipeline from './pages/Pipeline';
+import Reports from './pages/Reports';
 import Settings from './pages/Settings';
 import SalesforceCallback from './pages/SalesforceCallback';
 import MyDashboard from './pages/MyDashboard';
@@ -164,7 +164,7 @@ function App() {
                 element={
                   <ProtectedRoute>
                     <Layout>
-                      <Pipeline />
+                      <Reports />
                     </Layout>
                   </ProtectedRoute>
                 }
