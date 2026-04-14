@@ -39,7 +39,6 @@ import { parseISO, differenceInDays } from 'date-fns';
 import { apiService } from '../services/api';
 import PaymentScheduleModal from '../components/PaymentScheduleModal';
 import TaskPanel from '../components/TaskPanel';
-import ActivityIntelligencePanel from '../components/ActivityIntelligencePanel';
 import PipelineFilterBar, { PipelineFilters, DEFAULT_FILTERS } from '../components/PipelineFilterBar';
 import { OPPORTUNITY_STAGES, OPEN_STAGES, CLOSED_STAGES } from '../types/salesforce';
 import type { Opportunity } from './Opportunities/helpers';
@@ -85,10 +84,6 @@ const Opportunities: React.FC = () => {
   // Task panel
   const [taskPanelOpen, setTaskPanelOpen] = useState(false);
   const [taskPanelOpp, setTaskPanelOpp] = useState<Opportunity | null>(null);
-
-  // Activity intelligence drawer
-  const [activityPanelOpen, setActivityPanelOpen] = useState(false);
-  const [activityOpp, setActivityOpp] = useState<Opportunity | null>(null);
 
   // Data hook
   const {
@@ -239,12 +234,9 @@ const Opportunities: React.FC = () => {
 
   const columnCallbacks: ColumnCallbacks = useMemo(() => ({
     onTaskPanelOpen: (opp) => { setTaskPanelOpp(opp); setTaskPanelOpen(true); },
-    onActivityPanelOpen: (opp) => { setActivityOpp(opp); setActivityPanelOpen(true); },
     onStageChange: handleStageChange,
     accountMap,
     userMap,
-    activeActivityOppId: activityOpp?.Id,
-    activityPanelOpen,
     lockMap,
     onLockToggle: (oppId, ownerId, isLocked) => {
       if (isLocked) unlockMutation.mutate(oppId);
@@ -253,7 +245,7 @@ const Opportunities: React.FC = () => {
     currentSfUserId: sfUserId,
     canLock: can('lock_own_opportunities'),
     onEditDialogOpen: (opp) => { setSelectedOpp(opp); setEditDialogOpen(true); },
-  }), [accountMap, userMap, activityOpp?.Id, activityPanelOpen, philanthropyOnly, pbcOnly, viewMode, lockMap, sfUserId]);
+  }), [accountMap, userMap, philanthropyOnly, pbcOnly, viewMode, lockMap, sfUserId]);
 
   const pipelineColumns = useMemo(() => buildPipelineColumns(columnCallbacks), [columnCallbacks]);
   const paymentColumns = useMemo(() => buildPaymentColumns(columnCallbacks), [columnCallbacks]);
@@ -529,14 +521,6 @@ const Opportunities: React.FC = () => {
           </Box>
         </CardContent>
       </Card>
-
-      {/* Activity Intelligence Panel */}
-      <ActivityIntelligencePanel
-        open={activityPanelOpen}
-        onClose={() => { setActivityPanelOpen(false); setActivityOpp(null); }}
-        opportunity={activityOpp}
-        accountName={(activityOpp && (accountMap.get(activityOpp.AccountId)?.Name || activityOpp.Account?.Name || activityOpp.Name)) || ''}
-      />
 
       {/* Edit Dialog */}
       <OpportunityEditDialog

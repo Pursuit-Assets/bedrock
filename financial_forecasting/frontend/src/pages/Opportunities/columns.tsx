@@ -16,7 +16,6 @@ import {
   Typography,
 } from '@mui/material';
 import {
-  TipsAndUpdates as IntelligenceIcon,
   Lock as LockIcon,
   LockOpen as LockOpenIcon,
 } from '@mui/icons-material';
@@ -40,12 +39,9 @@ import { AccountEditCell, OwnerEditCell } from './EditCells';
 
 export interface ColumnCallbacks {
   onTaskPanelOpen: (opp: Opportunity) => void;
-  onActivityPanelOpen: (opp: Opportunity) => void;
   onStageChange: (params: GridRenderCellParams, newStage: string) => void;
   accountMap: Map<string, any>;
   userMap: Map<string, any>;
-  activeActivityOppId?: string | null;
-  activityPanelOpen?: boolean;
   // Lock support
   lockMap?: Map<string, { locked_by: string; locked_at: string }>;
   onLockToggle?: (oppId: string, ownerId: string, isLocked: boolean) => void;
@@ -111,7 +107,6 @@ export function buildPipelineColumns(cb: ColumnCallbacks): GridColDef[] {
   return [
     lockColumn(cb),
     taskColumn(cb),
-    intelColumn(cb),
     {
       field: 'Name',
       headerName: 'Opportunity Name',
@@ -187,7 +182,6 @@ export function buildPipelineColumns(cb: ColumnCallbacks): GridColDef[] {
 export function buildPaymentColumns(cb: ColumnCallbacks): GridColDef[] {
   return [
     taskColumn(cb),
-    intelColumn(cb),
     {
       field: 'Name',
       headerName: 'Grant Name',
@@ -329,32 +323,6 @@ function taskColumn(cb: ColumnCallbacks): GridColDef {
       >
         Tasks
       </Button>
-    ),
-  };
-}
-
-function intelColumn(cb: ColumnCallbacks): GridColDef {
-  return {
-    field: 'activity',
-    headerName: 'Intel',
-    width: 70,
-    sortable: false,
-    filterable: false,
-    disableColumnMenu: true,
-    renderCell: (params: GridRenderCellParams) => (
-      <Tooltip title="View activity intelligence">
-        <IconButton
-          size="small"
-          onClick={(e) => { e.stopPropagation(); cb.onActivityPanelOpen(params.row); }}
-          sx={{
-            color: cb.activeActivityOppId === params.row.Id && cb.activityPanelOpen ? 'primary.main' : 'text.secondary',
-            bgcolor: cb.activeActivityOppId === params.row.Id && cb.activityPanelOpen ? 'primary.50' : 'transparent',
-            '&:hover': { bgcolor: 'primary.50' },
-          }}
-        >
-          <IntelligenceIcon sx={{ fontSize: 18 }} />
-        </IconButton>
-      </Tooltip>
     ),
   };
 }

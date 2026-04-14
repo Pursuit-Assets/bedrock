@@ -597,181 +597,19 @@ async def get_account_drive_activity(
 
 
 # ---------------------------------------------------------------------------
-# Activity Intelligence — unified aggregator
+# Activity Intelligence — unified aggregator (REMOVED — see audit notes)
 # ---------------------------------------------------------------------------
-
-@router.get("/api/activity-intelligence/{account_name}")
-async def get_activity_intelligence(
-    account_name: str,
-    force_refresh: bool = Query(False),
-    opportunity_name: Optional[str] = None,
-    user=Depends(require_auth),
-    client: UnifiedMCPClient = Depends(get_mcp_client),
-):
-    """Aggregate activity data from all sources into a unified timeline."""
-    activities: List[Dict[str, Any]] = []
-    errors: List[str] = []
-
-    # Fan out to all available services
-    service_calls: List[tuple] = []
-
-    # Slack
-    slack_service = client.services.get("slack")
-    if slack_service and slack_service.is_authenticated:
-        service_calls.append(("slack", _fetch_slack_activity(slack_service, account_name)))
-
-    # Fireflies
-    ff_service = client.services.get("fireflies")
-    if ff_service and ff_service.is_authenticated:
-        service_calls.append(("fireflies", _fetch_fireflies_activity(ff_service, account_name)))
-
-    # Gmail
-    gmail_service = client.services.get("gmail")
-    if gmail_service and gmail_service.is_authenticated:
-        service_calls.append(("gmail", _fetch_gmail_activity(gmail_service, account_name)))
-
-    # Google Calendar
-    cal_service = client.services.get("google_calendar")
-    if cal_service and cal_service.is_authenticated:
-        service_calls.append(("calendar", _fetch_calendar_activity(cal_service, account_name)))
-
-    # Google Drive
-    drive_service = client.services.get("google_drive")
-    if drive_service and drive_service.is_authenticated:
-        service_calls.append(("drive", _fetch_drive_activity(drive_service, account_name, opportunity_name)))
-
-    if not service_calls:
-        return ApiResponse(
-            success=True,
-            data={"activities": [], "summary": {"total": 0, "sources": {}}},
-            meta={"account": account_name, "message": "No data sources connected"},
-        )
-
-    # Execute all calls concurrently
-    results = await asyncio.gather(
-        *[coro for _, coro in service_calls],
-        return_exceptions=True,
-    )
-
-    source_counts: Dict[str, int] = {}
-    for (source_name, _), result in zip(service_calls, results):
-        if isinstance(result, Exception):
-            errors.append(f"{source_name}: {result}")
-            source_counts[source_name] = 0
-        else:
-            activities.extend(result)
-            source_counts[source_name] = len(result)
-
-    # Sort by timestamp (most recent first)
-    activities.sort(
-        key=lambda a: a.get("date", a.get("timestamp", "")),
-        reverse=True,
-    )
-
-    return ApiResponse(
-        success=True,
-        data={
-            "activities": activities,
-            "summary": {"total": len(activities), "sources": source_counts},
-        },
-        meta={"account": account_name, "errors": errors if errors else None},
-    )
-
-
-# ---------------------------------------------------------------------------
-# Helper coroutines for activity intelligence fan-out
-# ---------------------------------------------------------------------------
-
-async def _fetch_slack_activity(service: Any, account_name: str) -> List[Dict]:
-    results = await service.search_messages(account_name, count=20)
-    messages = (
-        results.get("messages", {}).get("matches", [])
-        if isinstance(results, dict)
-        else []
-    )
-    return [
-        {
-            "type": "slack_message",
-            "title": msg.get("text", "")[:100],
-            "date": msg.get("ts", ""),
-            "source": "slack",
-            "detail": msg.get("text", ""),
-            "channel": (
-                msg.get("channel", {}).get("name", "")
-                if isinstance(msg.get("channel"), dict)
-                else ""
-            ),
-        }
-        for msg in messages
-    ]
-
-
-async def _fetch_fireflies_activity(service: Any, account_name: str) -> List[Dict]:
-    meetings = await service.get_account_meetings(account_name, limit=20)
-    return [
-        {
-            "type": "meeting",
-            "title": m.get("title", ""),
-            "date": m.get("date", ""),
-            "source": "fireflies",
-            "detail": m.get("summary", ""),
-            "participants": m.get("participants", []),
-        }
-        for m in meetings
-    ]
-
-
-async def _fetch_gmail_activity(service: Any, account_name: str) -> List[Dict]:
-    emails = await service.get_account_activity(account_name, limit=20)
-    return [
-        {
-            "type": "email",
-            "title": e.get("subject", ""),
-            "date": e.get("date", ""),
-            "source": "gmail",
-            "detail": e.get("snippet", ""),
-            "from": e.get("from", ""),
-        }
-        for e in emails
-    ]
-
-
-async def _fetch_calendar_activity(service: Any, account_name: str) -> List[Dict]:
-    events = await service.get_account_activity(account_name, limit=20)
-    return [
-        {
-            "type": "calendar_event",
-            "title": e.get("title", ""),
-            "date": e.get("start", ""),
-            "source": "google_calendar",
-            "detail": e.get("location", ""),
-            "attendees": e.get("attendees", []),
-        }
-        for e in events
-    ]
-
-
-async def _fetch_drive_activity(
-    service: Any,
-    account_name: str,
-    opportunity_name: Optional[str] = None,
-) -> List[Dict]:
-    query = f"name contains '{account_name}'"
-    if opportunity_name:
-        query += f" or name contains '{opportunity_name}'"
-    try:
-        result = await service.list_files(query=query, page_size=20)
-        files = result.get("files", [])
-        return [
-            {
-                "type": "document",
-                "title": f.get("name", ""),
-                "date": f.get("modifiedTime", ""),
-                "source": "google_drive",
-                "detail": f.get("mimeType", ""),
-                "file_id": f.get("id", ""),
-            }
-            for f in files
-        ]
-    except Exception:
-        return []
+# Historical note: this file previously exposed GET /api/activity-intelligence/
+# {account_name} — a fan-out aggregator over Slack/Fireflies/Gmail/Calendar/
+# Drive that returned a flat activity list. The corresponding frontend panel
+# (ActivityIntelligencePanel) was built against an older spec living in
+# simple_server.py.deprecated that produced AI-summarized output with
+# relevance scores. The shapes never matched; the panel always rendered
+# "No activity data found" in production. Additionally, the fan-out used
+# singleton service-account tokens for Gmail/Calendar/Drive, creating a
+# cross-user data-leakage risk if the frontend had worked.
+#
+# Endpoint + helpers removed 2026-04-14 as part of Bug 9 cleanup. See the
+# audit report in the PR description for full context. If we revisit this
+# feature, rebuild it behind per-user OAuth with a real LLM orchestration
+# layer — do not restore this code from git history.

@@ -11,6 +11,7 @@ import {
   ListItemIcon,
   ListItemText,
   Toolbar,
+  Tooltip,
   Typography,
   useTheme,
   useMediaQuery,
@@ -63,15 +64,45 @@ interface LayoutProps {
   children: React.ReactNode;
 }
 
+// Each nav item carries a short `subtitle` used in two places:
+//   1. Sidebar tooltip on hover (discoverable on first scan)
+//   2. Page header subtitle, rendered by Layout above page content (reinforces
+//      what the page is and what it's for).
+// Keep them scannable, ~60-110 chars, sentence case.
 const ALL_MENU_ITEMS = [
-  { text: 'Dashboard', icon: <HomeIcon />, path: '/dashboard' },
-  { text: 'Priorities', icon: <TrendingUpIcon />, path: '/priorities' },
-  { text: 'Pipeline', icon: <TableChartIcon />, path: '/pipeline' },
-  { text: 'Projects', icon: <ProjectsIcon />, path: '/projects' },
-  { text: 'Settings', icon: <SettingsIcon />, path: '/settings' },
+  {
+    text: 'Dashboard',
+    subtitle: 'Wall of Progress — team targets, wins closed, and pipeline rollup.',
+    icon: <HomeIcon />,
+    path: '/dashboard',
+  },
+  {
+    text: 'Priorities',
+    subtitle: 'Your weekly action list — opportunities and tasks that need attention now.',
+    icon: <TrendingUpIcon />,
+    path: '/priorities',
+  },
+  {
+    text: 'Reports',
+    subtitle: 'Configurable inline-editable tables for Opportunities, Accounts, Contacts, Leads, and Tasks.',
+    icon: <TableChartIcon />,
+    path: '/reports',
+  },
+  {
+    text: 'Projects',
+    subtitle: 'Workstream milestones and tasks — list, Kanban, and Gantt views.',
+    icon: <ProjectsIcon />,
+    path: '/projects',
+  },
+  {
+    text: 'Settings',
+    subtitle: 'Targets, users, permissions, and integrations.',
+    icon: <SettingsIcon />,
+    path: '/settings',
+  },
 ];
 
-const MVP_PATHS = new Set(['/priorities', '/dashboard', '/pipeline', '/projects', '/settings']);
+const MVP_PATHS = new Set(['/priorities', '/dashboard', '/reports', '/projects', '/settings']);
 
 // Map nav paths to required permissions (undefined = no permission needed)
 const NAV_PERMISSIONS: Record<string, string | ((can: (k: string) => boolean) => boolean) | undefined> = {
@@ -90,7 +121,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
 
   const [mobileOpen, setMobileOpen] = useState(false);
 
-  // MVP nav: show Priorities, Dashboard, Pipeline, Settings. Set REACT_APP_NAV_PHASE=FULL for all pages.
+  // MVP nav: show Priorities, Dashboard, Reports, Settings. Set REACT_APP_NAV_PHASE=FULL for all pages.
   const navPhase = process.env.REACT_APP_NAV_PHASE || 'MVP';
   const menuItems = useMemo(() => {
     let items = ALL_MENU_ITEMS;
@@ -105,6 +136,16 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
       return can(perm);
     });
   }, [navPhase, can]);
+
+  // Current nav item drives the page-identity header (title + subtitle).
+  // We match against ALL_MENU_ITEMS (not the permission-filtered `menuItems`)
+  // so the header still renders on pages the user can navigate to directly by
+  // URL even if the item is hidden from their sidebar. We also handle the
+  // legacy /pipeline alias so the redirect target still matches Reports.
+  const currentMenuItem = useMemo(() => {
+    const path = location.pathname === '/pipeline' ? '/reports' : location.pathname;
+    return ALL_MENU_ITEMS.find((item) => item.path === path);
+  }, [location.pathname]);
 
   // Prefetch CRM data when authenticated so search + edit dialogs have warm cache
   useEffect(() => {
@@ -326,45 +367,52 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
       </Toolbar>
       <Divider />
       <List>
-        {menuItems.map((item) => (
-          <ListItem key={item.text} disablePadding>
-            <ListItemButton
-              selected={location.pathname === item.path}
-              onClick={() => handleMenuClick(item.path)}
-              sx={{
-                justifyContent: isExpanded ? 'initial' : 'center',
-                px: 1.5,
-                py: 0.75,
-                '&.Mui-selected': {
-                  backgroundColor: theme.palette.primary.main + '20',
-                  borderRight: `3px solid ${theme.palette.primary.main}`,
-                  '& .MuiListItemIcon-root': {
-                    color: theme.palette.primary.main,
-                  },
-                  '& .MuiListItemText-primary': {
-                    color: theme.palette.primary.main,
-                    fontWeight: 600,
-                  },
-                },
-              }}
-            >
-              <ListItemIcon
-                sx={{
-                  minWidth: 0,
-                  mr: isExpanded ? 2 : 'auto',
-                  justifyContent: 'center',
-                  '& .MuiSvgIcon-root': { fontSize: 20 },
-                }}
-              >
-                {item.icon}
-              </ListItemIcon>
-              <ListItemText 
-                primary={item.text} 
-                sx={{ display: isExpanded ? 'block' : 'none' }}
-              />
-            </ListItemButton>
-          </ListItem>
-        ))}
+        {menuItems.map((item) => {
+          // Tooltip is only useful when the rail is collapsed — when expanded,
+          // the nav label is already visible so the tooltip would duplicate it.
+          const tooltipTitle = isExpanded ? '' : `${item.text} — ${item.subtitle}`;
+          return (
+            <ListItem key={item.text} disablePadding>
+              <Tooltip title={tooltipTitle} placement="right" arrow disableInteractive>
+                <ListItemButton
+                  selected={location.pathname === item.path}
+                  onClick={() => handleMenuClick(item.path)}
+                  sx={{
+                    justifyContent: isExpanded ? 'initial' : 'center',
+                    px: 1.5,
+                    py: 0.75,
+                    '&.Mui-selected': {
+                      backgroundColor: theme.palette.primary.main + '20',
+                      borderRight: `3px solid ${theme.palette.primary.main}`,
+                      '& .MuiListItemIcon-root': {
+                        color: theme.palette.primary.main,
+                      },
+                      '& .MuiListItemText-primary': {
+                        color: theme.palette.primary.main,
+                        fontWeight: 600,
+                      },
+                    },
+                  }}
+                >
+                  <ListItemIcon
+                    sx={{
+                      minWidth: 0,
+                      mr: isExpanded ? 2 : 'auto',
+                      justifyContent: 'center',
+                      '& .MuiSvgIcon-root': { fontSize: 20 },
+                    }}
+                  >
+                    {item.icon}
+                  </ListItemIcon>
+                  <ListItemText
+                    primary={item.text}
+                    sx={{ display: isExpanded ? 'block' : 'none' }}
+                  />
+                </ListItemButton>
+              </Tooltip>
+            </ListItem>
+          );
+        })}
       </List>
     </div>
   );
@@ -395,7 +443,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
           </IconButton>
           
           <Typography variant="h6" noWrap component="div" sx={{ fontSize: '0.95rem', mr: 1 }}>
-            {menuItems.find(item => item.path === location.pathname)?.text || 'Overview'}
+            {currentMenuItem?.text || 'Overview'}
           </Typography>
 
           <Box sx={{ flexGrow: 1 }} />
@@ -613,6 +661,20 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
       >
         <Toolbar sx={{ minHeight: '48px !important', height: 48 }} />
         <PlatformIdentityBanner />
+        {/* Page identity header — single source of truth from ALL_MENU_ITEMS.
+            Renders title + subtitle on every top-level page so users always
+            know what page they're on and what it's for. Pages keep their own
+            section-specific headers below (e.g. date ranges, project names). */}
+        {currentMenuItem && (
+          <Box sx={{ mb: 2 }}>
+            <Typography variant="h5" sx={{ fontWeight: 600, lineHeight: 1.2 }}>
+              {currentMenuItem.text}
+            </Typography>
+            <Typography variant="body2" color="text.secondary" sx={{ mt: 0.25 }}>
+              {currentMenuItem.subtitle}
+            </Typography>
+          </Box>
+        )}
         {children}
       </Box>
 

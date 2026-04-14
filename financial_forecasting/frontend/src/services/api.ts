@@ -403,14 +403,6 @@ export const apiService = {
     api.get('/api/drive/health'),
 
   // AI-Powered Activity Intelligence (unified)
-  getActivityIntelligence: (accountName: string, forceRefresh: boolean = false, opportunityName?: string) =>
-    api.get(`/api/activity-intelligence/${encodeURIComponent(accountName)}`, {
-      timeout: 120000,
-      params: {
-        ...(forceRefresh ? { force_refresh: true } : {}),
-        ...(opportunityName ? { opportunity_name: opportunityName } : {}),
-      },
-    }),
 
   // Payment Schedule Management
   parsePaymentSchedule: (opportunityId: string, data: {

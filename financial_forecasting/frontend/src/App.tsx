@@ -160,7 +160,7 @@ function App() {
                 }
               />
               <Route
-                path="/pipeline"
+                path="/reports"
                 element={
                   <ProtectedRoute>
                     <Layout>
@@ -169,6 +169,9 @@ function App() {
                   </ProtectedRoute>
                 }
               />
+              {/* Back-compat: old /pipeline links still resolve. Safe to drop
+                  after one release cycle once no bookmarks / shared URLs point here. */}
+              <Route path="/pipeline" element={<Navigate to="/reports" replace />} />
               <Route
                 path="/automation-review"
                 element={
