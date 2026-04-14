@@ -109,25 +109,61 @@ function formatTime(dateStr: string): string {
   catch { return ''; }
 }
 
-// Time-axis constants
-const DAY_START = 8;  // 8 AM
-const DAY_END = 20;   // 8 PM
-const HOURS = Array.from({ length: DAY_END - DAY_START + 1 }, (_, i) => DAY_START + i);
+// Default visible window: 8 AM – 8 PM. Expands dynamically to fit the
+// current week's earliest/latest events; clamped to [6 AM, midnight] so a
+// stray overnight event doesn't blow out the layout.
+const DEFAULT_DAY_START = 8;
+const DEFAULT_DAY_END = 20;
+const MIN_DAY_START = 6;
+const MAX_DAY_END = 24;
 
-function getTimeTop(dateStr: string): number {
+interface DayBounds { start: number; end: number; }
+
+/**
+ * Compute the effective day bounds for a given event list. Default window is
+ * 8 AM – 8 PM; we *expand* down to fit earlier events (floor 6 AM) and up to
+ * fit later events (ceiling midnight). We never *shrink* the window.
+ */
+function computeDayBounds(events: CalendarEvent[]): DayBounds {
+  let earliest = DEFAULT_DAY_START;
+  let latest = DEFAULT_DAY_END;
+  for (const ev of events) {
+    try {
+      const s = parseISO(ev.start);
+      const sh = s.getHours() + s.getMinutes() / 60;
+      if (sh < earliest) earliest = sh;
+      const endStr = ev.end || ev.start;
+      const e = parseISO(endStr);
+      // Round up so an event ending at 9:05 PM shows the 9 PM line; prefer
+      // the fractional end to let the event box land correctly.
+      const eh = e.getHours() + e.getMinutes() / 60;
+      const ceilingEh = Math.ceil(eh);
+      if (ceilingEh > latest) latest = ceilingEh;
+    } catch {
+      // Malformed dates fall back to defaults — they'll be clamped at render.
+    }
+  }
+  return {
+    start: Math.max(MIN_DAY_START, Math.min(DEFAULT_DAY_START, Math.floor(earliest))),
+    end: Math.min(MAX_DAY_END, Math.max(DEFAULT_DAY_END, latest)),
+  };
+}
+
+function getTimeTop(dateStr: string, bounds: DayBounds): number {
   try {
     const d = parseISO(dateStr);
     const hours = d.getHours() + d.getMinutes() / 60;
-    const clamped = Math.max(DAY_START, Math.min(DAY_END, hours));
-    return ((clamped - DAY_START) / (DAY_END - DAY_START)) * 100;
+    const clamped = Math.max(bounds.start, Math.min(bounds.end, hours));
+    return ((clamped - bounds.start) / (bounds.end - bounds.start)) * 100;
   } catch { return 0; }
 }
 
-function getEventHeight(startStr: string, endStr?: string): number {
-  if (!endStr) return (0.5 / (DAY_END - DAY_START)) * 100; // 30min default
-  const startPct = getTimeTop(startStr);
-  const endPct = getTimeTop(endStr);
-  return Math.max(endPct - startPct, (0.25 / (DAY_END - DAY_START)) * 100); // min 15min
+function getEventHeight(startStr: string, endStr: string | undefined, bounds: DayBounds): number {
+  const span = bounds.end - bounds.start;
+  if (!endStr) return (0.5 / span) * 100; // 30min default
+  const startPct = getTimeTop(startStr, bounds);
+  const endPct = getTimeTop(endStr, bounds);
+  return Math.max(endPct - startPct, (0.25 / span) * 100); // min 15min
 }
 
 function formatHourLabel(hour: number): string {
@@ -146,15 +182,15 @@ interface MeetingLayout {
   height: number;
 }
 
-function layoutMeetings(meetings: CalendarEvent[]): MeetingLayout[] {
+function layoutMeetings(meetings: CalendarEvent[], bounds: DayBounds): MeetingLayout[] {
   if (meetings.length === 0) return [];
 
   // Compute position for each meeting (already sorted by start time)
   const items = meetings.map((ev) => ({
     event: ev,
-    top: getTimeTop(ev.start),
-    bottom: getTimeTop(ev.start) + getEventHeight(ev.start, ev.end),
-    height: getEventHeight(ev.start, ev.end),
+    top: getTimeTop(ev.start, bounds),
+    bottom: getTimeTop(ev.start, bounds) + getEventHeight(ev.start, ev.end, bounds),
+    height: getEventHeight(ev.start, ev.end, bounds),
     column: 0,
   }));
 
@@ -270,6 +306,13 @@ const WeeklyCalendar: React.FC<WeeklyCalendarProps> = ({
       return src ? enabledSet.has(src.id) : true;
     });
   }, [events, sources, enabledSet]);
+
+  // Time axis — expands dynamically to fit the week's events (no clipping).
+  const dayBounds = useMemo(() => computeDayBounds(filteredEvents), [filteredEvents]);
+  const hours = useMemo(
+    () => Array.from({ length: dayBounds.end - dayBounds.start + 1 }, (_, i) => dayBounds.start + i),
+    [dayBounds],
+  );
 
   const days = useMemo(() => {
     const today = new Date();
@@ -667,7 +710,7 @@ const WeeklyCalendar: React.FC<WeeklyCalendarProps> = ({
           >
             {/* Hour labels column — sticky left during horizontal scroll */}
             <Box sx={{ position: 'sticky', left: 0, zIndex: 2, bgcolor: 'background.paper', pt: 0.5 }}>
-              {HOURS.map((hour) => (
+              {hours.map((hour) => (
                 <Box
                   key={hour}
                   sx={{
@@ -698,16 +741,16 @@ const WeeklyCalendar: React.FC<WeeklyCalendarProps> = ({
                     position: 'relative',
                     borderLeft: '1px solid',
                     borderColor: 'divider',
-                    height: HOURS.length * 40,
+                    height: hours.length * 40,
                   }}
                 >
                   {/* Horizontal grid lines */}
-                  {HOURS.map((hour) => (
+                  {hours.map((hour) => (
                     <Box
                       key={hour}
                       sx={{
                         position: 'absolute',
-                        top: `${((hour - DAY_START) / (DAY_END - DAY_START)) * 100}%`,
+                        top: `${((hour - dayBounds.start) / (dayBounds.end - dayBounds.start)) * 100}%`,
                         left: 0,
                         right: 0,
                         borderTop: '1px solid',
@@ -723,7 +766,7 @@ const WeeklyCalendar: React.FC<WeeklyCalendarProps> = ({
                       data-now-line
                       sx={{
                         position: 'absolute',
-                        top: `${getTimeTop(new Date().toISOString())}%`,
+                        top: `${getTimeTop(new Date().toISOString(), dayBounds)}%`,
                         left: 0,
                         right: 0,
                         height: 2,
@@ -744,7 +787,7 @@ const WeeklyCalendar: React.FC<WeeklyCalendarProps> = ({
                   )}
 
                   {/* Meeting blocks — side-by-side when overlapping */}
-                  {layoutMeetings(meetings).map((layout, i) => {
+                  {layoutMeetings(meetings, dayBounds).map((layout, i) => {
                     const { event: ev, column, totalColumns, top, height } = layout;
                     const colWidth = 100 / totalColumns;
                     const leftPct = column * colWidth;
