@@ -4,7 +4,7 @@
  * Wires together sub-components extracted into the Opportunities/ directory:
  *   - useOpportunityData: data fetching, mutations, derived state
  *   - columns:            DataGrid column definitions
- *   - EditCells:          Autocomplete edit cells for Account / Owner
+ *   - inline-edit/cells:  Domain cells (StageCell, OwnerCell, AccountCell, AmountCell)
  *   - SummaryCards:       metric cards above the grid
  *   - helpers:            pure functions + Opportunity interface
  */
@@ -93,6 +93,7 @@ const Opportunities: React.FC = () => {
   const {
     opportunities,
     users,
+    accounts,
     accountMap,
     userMap,
     openCount,
@@ -195,18 +196,23 @@ const Opportunities: React.FC = () => {
     }
   };
 
-  const handleStageChange = (params: GridRenderCellParams, newStage: string) => {
-    if (newStage === params.value) return;
+  /**
+   * Stage change handler — special-cased because transitioning to
+   * "Collecting / In Effect" navigates the user to the payment-schedule
+   * page. Other stages go through the generic optimistic-update path.
+   */
+  const handleStageChange = (oppId: string, oldStage: string, newStage: string) => {
+    if (newStage === oldStage) return;
     const loadingToast = toast.loading('Updating stage...');
 
     const closedStages = ['Withdrawn', 'Closed Lost', 'Closed / Did not Fulfill', 'Closed / Completed'];
-    if (closedStages.includes(newStage)) markRecentlyChanged(params.row.Id);
+    if (closedStages.includes(newStage)) markRecentlyChanged(oppId);
 
     if (newStage === 'Collecting / In Effect') {
       toast.dismiss(loadingToast);
       toast('Please review and confirm payment schedule', { icon: '\uD83D\uDCB0', duration: 3000 });
-      navigate(`/payment-schedule/${params.row.Id}`, {
-        state: { fromStageChange: true, targetStage: newStage, opportunityId: params.row.Id },
+      navigate(`/payment-schedule/${oppId}`, {
+        state: { fromStageChange: true, targetStage: newStage, opportunityId: oppId },
       });
       return;
     }
@@ -218,19 +224,37 @@ const Opportunities: React.FC = () => {
         : ['opportunities', philanthropyOnly, pbcOnly, viewMode];
     const oldData = queryClient.getQueryData(currentQueryKey);
     queryClient.setQueryData(currentQueryKey, (old: any) =>
-      old?.map((opp: any) => (opp.Id === params.row.Id ? { ...opp, StageName: newStage } : opp)),
+      old?.map((opp: any) => (opp.Id === oppId ? { ...opp, StageName: newStage } : opp)),
     );
 
-    apiService.updateOpportunity(params.row.Id, { StageName: newStage })
+    apiService.updateOpportunity(oppId, { StageName: newStage })
       .then(() => {
         toast.success('Stage updated!', { id: loadingToast });
         queryClient.invalidateQueries('opportunities');
       })
       .catch((err: any) => {
         queryClient.setQueryData(currentQueryKey, oldData);
-        clearRecentlyChanged(params.row.Id);
+        clearRecentlyChanged(oppId);
         toast.error(`Failed: ${err.response?.data?.detail || err.message}`, { id: loadingToast });
       });
+  };
+
+  /**
+   * Generic per-field save used by the inline-edit domain cells
+   * (AccountCell, OwnerCell, AmountCell). Sends a patch, invalidates the
+   * cache, and surfaces toasts. Throws on failure so the primitive can
+   * surface an error in the cell.
+   */
+  const handleFieldSave = async (oppId: string, field: string, newValue: any) => {
+    const loadingToast = toast.loading('Saving...');
+    try {
+      await apiService.updateOpportunity(oppId, { [field]: newValue });
+      toast.success('Saved!', { id: loadingToast, duration: 2000 });
+      setTimeout(() => queryClient.invalidateQueries('opportunities'), 500);
+    } catch (err: any) {
+      toast.error(`Failed: ${err.response?.data?.detail || err.message}`, { id: loadingToast });
+      throw err;
+    }
   };
 
   // ---------------------------------------------------------------------------
@@ -240,8 +264,11 @@ const Opportunities: React.FC = () => {
   const columnCallbacks: ColumnCallbacks = useMemo(() => ({
     onTaskPanelOpen: (opp) => { setTaskPanelOpp(opp); setTaskPanelOpen(true); },
     onStageChange: handleStageChange,
+    onSaveField: handleFieldSave,
     accountMap,
     userMap,
+    users,
+    accounts,
     lockMap,
     onLockToggle: (oppId, ownerId, isLocked) => {
       if (isLocked) unlockMutation.mutate(oppId);
@@ -250,7 +277,7 @@ const Opportunities: React.FC = () => {
     currentSfUserId: sfUserId,
     canLock: can('lock_own_opportunities'),
     onEditDialogOpen: (opp) => { setSelectedOpp(opp); setEditDialogOpen(true); },
-  }), [accountMap, userMap, philanthropyOnly, pbcOnly, viewMode, lockMap, sfUserId]);
+  }), [accountMap, userMap, users, accounts, philanthropyOnly, pbcOnly, viewMode, lockMap, sfUserId]);
 
   const pipelineColumns = useMemo(() => buildPipelineColumns(columnCallbacks), [columnCallbacks]);
   const paymentColumns = useMemo(() => buildPaymentColumns(columnCallbacks), [columnCallbacks]);

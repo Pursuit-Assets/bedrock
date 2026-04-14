@@ -10,8 +10,6 @@ import {
   Button,
   Chip,
   IconButton,
-  Select,
-  MenuItem,
   Tooltip,
   Typography,
 } from '@mui/material';
@@ -23,15 +21,16 @@ import EditRowButton from '../../components/EditRowButton';
 import {
   GridColDef,
   GridRenderCellParams,
-  GridRenderEditCellParams,
   GridValueGetterParams,
 } from '@mui/x-data-grid';
 import { format } from 'date-fns';
 import { formatDollarMillions } from '../../utils/formatters';
-import { OPPORTUNITY_STAGES, getStageHexColor } from '../../types/salesforce';
 import { getStageColor, getProbabilityColor, calculatePaymentDate } from './helpers';
 import type { Opportunity } from './helpers';
-import { AccountEditCell, OwnerEditCell } from './EditCells';
+import { StageCell } from '../../components/inline-edit/cells/StageCell';
+import { OwnerCell } from '../../components/inline-edit/cells/OwnerCell';
+import { AccountCell } from '../../components/inline-edit/cells/AccountCell';
+import { AmountCell } from '../../components/inline-edit/cells/AmountCell';
 
 // ---------------------------------------------------------------------------
 // Callbacks the columns need from the parent component
@@ -39,9 +38,25 @@ import { AccountEditCell, OwnerEditCell } from './EditCells';
 
 export interface ColumnCallbacks {
   onTaskPanelOpen: (opp: Opportunity) => void;
-  onStageChange: (params: GridRenderCellParams, newStage: string) => void;
+  /**
+   * Stage change handler. Signature chosen to decouple from MUI DataGrid's
+   * GridRenderCellParams so the domain StageCell can call it cleanly.
+   * Special-cased: transitioning to "Collecting / In Effect" navigates to
+   * the payment-schedule page; other stages use the generic optimistic path.
+   */
+  onStageChange: (oppId: string, oldStage: string, newStage: string) => void;
+  /**
+   * Generic per-field save used by the domain cells (AccountCell,
+   * OwnerCell, AmountCell). Invalidates the opportunities cache on success;
+   * throws on failure so the cell can surface an error.
+   */
+  onSaveField?: (oppId: string, field: string, newValue: any) => Promise<void>;
   accountMap: Map<string, any>;
   userMap: Map<string, any>;
+  /** Raw user list used by OwnerCell's autocomplete options. */
+  users?: Array<{ Id: string; Name: string; IsActive?: boolean }>;
+  /** Raw account list used by AccountCell's autocomplete options. */
+  accounts?: Array<{ Id: string; Name: string }>;
   // Lock support
   lockMap?: Map<string, { locked_by: string; locked_at: string }>;
   onLockToggle?: (oppId: string, ownerId: string, isLocked: boolean) => void;
@@ -118,16 +133,7 @@ export function buildPipelineColumns(cb: ColumnCallbacks): GridColDef[] {
     accountColumn(cb, { editable: true }),
     ownerColumn(cb),
     stageColumn(cb),
-    {
-      field: 'Amount',
-      headerName: 'Amount',
-      flex: 0.8,
-      minWidth: 120,
-      type: 'number',
-      editable: true,
-      filterable: true,
-      valueFormatter: (params) => formatDollarMillions(params.value as number),
-    },
+    amountColumn(cb),
     {
       field: 'Probability',
       headerName: 'Probability',
@@ -333,17 +339,25 @@ function accountColumn(cb: ColumnCallbacks, opts: { editable: boolean }): GridCo
     headerName: 'Funder/Account',
     flex: 1.5,
     minWidth: 180,
-    editable: opts.editable,
+    // DataGrid editing is disabled — the AccountCell manages its own edit
+    // flow (including the sensitive-field unlock confirmation).
+    editable: false,
     filterable: true,
     valueGetter: (params: GridValueGetterParams) => {
       const account = cb.accountMap.get(params.row.AccountId);
       return account?.Name || params.row.Account?.Name || 'Unknown';
     },
-    renderCell: (params: GridRenderCellParams) => {
-      const account = cb.accountMap.get(params.row.AccountId);
-      return account?.Name || params.row.Account?.Name || 'Unknown';
-    },
-    ...(opts.editable ? { renderEditCell: (params: GridRenderEditCellParams) => <AccountEditCell {...params} /> } : {}),
+    renderCell: (params: GridRenderCellParams) => (
+      <AccountCell
+        value={params.row.AccountId}
+        accounts={cb.accounts || []}
+        onSave={async (newId) => {
+          if (cb.onSaveField) await cb.onSaveField(params.row.Id, 'AccountId', newId);
+        }}
+        recordLock={cb.lockMap?.get(params.row.Id) ?? null}
+        readOnly={!opts.editable}
+      />
+    ),
   };
 }
 
@@ -353,17 +367,22 @@ function ownerColumn(cb: ColumnCallbacks): GridColDef {
     headerName: 'Owner',
     flex: 1,
     minWidth: 150,
-    editable: true,
+    editable: false,
     filterable: true,
     valueGetter: (params: GridValueGetterParams) => {
       const user = cb.userMap.get(params.row.OwnerId);
       return user?.Name || params.row.Owner?.Name || 'Unassigned';
     },
-    renderCell: (params: GridRenderCellParams) => {
-      const user = cb.userMap.get(params.row.OwnerId);
-      return user?.Name || params.row.Owner?.Name || 'Unassigned';
-    },
-    renderEditCell: (params: GridRenderEditCellParams) => <OwnerEditCell {...params} />,
+    renderCell: (params: GridRenderCellParams) => (
+      <OwnerCell
+        value={params.row.OwnerId}
+        users={cb.users || []}
+        onSave={async (newId) => {
+          if (cb.onSaveField) await cb.onSaveField(params.row.Id, 'OwnerId', newId);
+        }}
+        recordLock={cb.lockMap?.get(params.row.Id) ?? null}
+      />
+    ),
   };
 }
 
@@ -376,30 +395,36 @@ function stageColumn(cb: ColumnCallbacks): GridColDef {
     editable: false,
     filterable: true,
     renderCell: (params: GridRenderCellParams) => (
-      <Select
-        value={params.value || ''}
-        onChange={(e) => cb.onStageChange(params, e.target.value as string)}
-        size="small"
-        variant="standard"
-        sx={{
-          width: '100%',
-          '& .MuiSelect-select': { padding: '4px 8px', fontSize: '0.875rem' },
-          '&:before': { borderBottom: 'none' },
-          '&:hover:not(.Mui-disabled):before': { borderBottom: 'none' },
-          '&:after': { borderBottom: 'none' },
+      <StageCell
+        value={(params.value as string) || ''}
+        onSave={(newStage) =>
+          cb.onStageChange(params.row.Id, (params.value as string) || '', newStage)
+        }
+        recordLock={cb.lockMap?.get(params.row.Id) ?? null}
+      />
+    ),
+  };
+}
+
+function amountColumn(cb: ColumnCallbacks): GridColDef {
+  return {
+    field: 'Amount',
+    headerName: 'Amount',
+    flex: 0.8,
+    minWidth: 120,
+    type: 'number',
+    // DataGrid native edit disabled; AmountCell owns the edit flow (includes
+    // unlock confirmation for this sensitive field).
+    editable: false,
+    filterable: true,
+    renderCell: (params: GridRenderCellParams) => (
+      <AmountCell
+        value={(params.value as number | null) ?? null}
+        onSave={async (newAmount) => {
+          if (cb.onSaveField) await cb.onSaveField(params.row.Id, 'Amount', newAmount);
         }}
-        renderValue={(value) => (
-          <Chip
-            label={value}
-            size="small"
-            sx={{ bgcolor: getStageHexColor(value as string), color: '#fff', fontWeight: 600 }}
-          />
-        )}
-      >
-        {OPPORTUNITY_STAGES.map((stage) => (
-          <MenuItem key={stage} value={stage}>{stage}</MenuItem>
-        ))}
-      </Select>
+        recordLock={cb.lockMap?.get(params.row.Id) ?? null}
+      />
     ),
   };
 }
