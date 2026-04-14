@@ -1,0 +1,430 @@
+/**
+ * <InlineEditable> — the framework-agnostic inline-edit primitive that all
+ * domain cells (StageCell, OwnerCell, etc.) compose on top of.
+ *
+ *   - Pure React + MUI; no DataGrid coupling. To use inside MUI DataGrid
+ *     `renderCell`, wrap with `<DataGridInlineCell>` (sibling file, lands
+ *     in the Reports migration PR).
+ *   - Variants: 'select' | 'autocomplete' | 'text' | 'number' | 'date'.
+ *   - Display modes: 'pill' (chip-style) | 'inline' (plain text).
+ *   - Click → opens an inline editor (popover for select/autocomplete/date,
+ *     inline TextField for text/number).
+ *   - Saves on blur or Enter; Escape cancels and reverts.
+ *   - Sensitivity-aware: consumes useFieldPermission so devs can't bypass
+ *     the lock check by reaching around the primitive. Sensitive fields
+ *     show a lock icon on hover; click → UnlockWarningDialog → unlock for
+ *     one edit; re-locks on save/blur.
+ *
+ * Adding a new field: add it to utils/fieldSensitivity.ts FIRST, then the
+ * primitive will gate edit behavior automatically.
+ */
+import React, { useState, useRef, useCallback, useEffect } from 'react';
+import {
+  Box,
+  Chip,
+  Typography,
+  TextField,
+  MenuItem,
+  Menu,
+  Autocomplete,
+  Popover,
+  IconButton,
+  Tooltip,
+} from '@mui/material';
+import { Lock as LockIcon } from '@mui/icons-material';
+import {
+  useFieldPermission,
+  UseFieldPermissionArgs,
+} from '../../hooks/useFieldPermission';
+import { UnlockWarningDialog } from './UnlockWarningDialog';
+
+export type InlineEditVariant = 'select' | 'autocomplete' | 'text' | 'number' | 'date';
+export type InlineEditDisplay = 'pill' | 'inline';
+
+export interface InlineEditableOption {
+  value: string;
+  label: string;
+  /** Optional color for the option (used in pill display + dropdown swatch). */
+  color?: string;
+  /** Optional grouping key — for grouped autocompletes (e.g. Active vs Inactive owners). */
+  group?: string;
+}
+
+export interface InlineEditableProps<TValue = unknown>
+  extends Omit<UseFieldPermissionArgs, 'recordLockedByName'> {
+  /** Current value. May be string, number, Date, or null. */
+  value: TValue;
+  /** Editor variant. Determines what control opens on click. */
+  variant: InlineEditVariant;
+  /** Pre-defined options for select/autocomplete. */
+  options?: InlineEditableOption[];
+  /** Display style. `pill` shows a chip; `inline` shows a plain text span. */
+  display?: InlineEditDisplay;
+  /** Save handler — return a Promise; primitive awaits before re-locking. */
+  onSave: (newValue: TValue) => void | Promise<void>;
+  /** Optional formatter for the display value (e.g. format dollars, dates). */
+  formatDisplay?: (value: TValue) => React.ReactNode;
+  /** Optional client-side validator. Return an error message or null. */
+  validate?: (value: TValue) => string | null;
+  /** Resolves a per-value pill color (overrides `option.color`). */
+  pillColor?: (value: TValue) => string | undefined;
+  /** Display when value is empty/null. Defaults to '—'. */
+  placeholder?: string;
+  /** Display name used in the unlock dialog header. Defaults to fieldName. */
+  fieldLabel?: string;
+  /** Display name of the user holding a record-level lock (for tooltip). */
+  recordLockedByName?: string | null;
+  /** When true, the edit affordance is suppressed entirely (read-only mode). */
+  readOnly?: boolean;
+}
+
+const HOVER_LOCK_SX = {
+  // Show the lock icon on cell hover; hide it otherwise so display mode
+  // stays clean. Targeted via a parent class so we don't need React state.
+  visibility: 'hidden',
+  '.inline-editable-host:hover &': { visibility: 'visible' },
+};
+
+export function InlineEditable<TValue = unknown>(
+  props: InlineEditableProps<TValue>,
+): React.ReactElement {
+  const {
+    objectType,
+    fieldName,
+    fieldLabel,
+    value,
+    variant,
+    options,
+    display = 'inline',
+    onSave,
+    formatDisplay,
+    validate,
+    pillColor,
+    placeholder = '—',
+    recordLock,
+    recordLockedByName,
+    readOnly,
+  } = props;
+
+  const permission = useFieldPermission({
+    objectType,
+    fieldName,
+    recordLock,
+    recordLockedByName,
+  });
+
+  // Editor state: which mode we're in right now.
+  //   - 'display'  : showing the value (default)
+  //   - 'editing'  : the inline editor is open
+  //   - 'unlock'   : the unlock-confirmation dialog is open
+  type Mode = 'display' | 'editing' | 'unlock';
+  const [mode, setMode] = useState<Mode>('display');
+  const [draft, setDraft] = useState<TValue>(value);
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const anchorRef = useRef<HTMLDivElement>(null);
+
+  // Reset draft if `value` changes from outside while we're in display mode.
+  useEffect(() => {
+    if (mode === 'display') setDraft(value);
+  }, [value, mode]);
+
+  // ── Computed permission flags ───────────────────────────────────────────
+  const lockedFromRecord = permission.recordLockedByOther;
+  const canEditAtAll = !readOnly && !lockedFromRecord && (
+    permission.sensitivity === 'safe' || permission.canUnlock
+  );
+  const requiresUnlock = !readOnly && permission.requiresUnlock && permission.canUnlock;
+
+  // ── Click on display mode ───────────────────────────────────────────────
+  const handleDisplayClick = useCallback(() => {
+    if (!canEditAtAll) return;
+    if (requiresUnlock) {
+      setMode('unlock');
+    } else {
+      setDraft(value);
+      setError(null);
+      setMode('editing');
+    }
+  }, [canEditAtAll, requiresUnlock, value]);
+
+  const handleUnlockConfirm = useCallback(() => {
+    setDraft(value);
+    setError(null);
+    setMode('editing');
+  }, [value]);
+
+  const handleUnlockCancel = useCallback(() => {
+    setMode('display');
+  }, []);
+
+  // ── Save / cancel from edit mode ────────────────────────────────────────
+  const handleCancel = useCallback(() => {
+    setDraft(value);
+    setError(null);
+    setMode('display');
+  }, [value]);
+
+  const handleSave = useCallback(async () => {
+    if (validate) {
+      const err = validate(draft);
+      if (err) {
+        setError(err);
+        return;
+      }
+    }
+    if (draft === value) {
+      setMode('display');
+      return;
+    }
+    setSaving(true);
+    try {
+      await onSave(draft);
+      setMode('display');
+    } catch (err: any) {
+      setError(err?.message || 'Save failed');
+    } finally {
+      setSaving(false);
+    }
+  }, [draft, value, validate, onSave]);
+
+  // ── Display rendering ───────────────────────────────────────────────────
+  const renderDisplay = () => {
+    const formatted = formatDisplay
+      ? formatDisplay(value)
+      : value == null || value === ''
+        ? placeholder
+        : String(value);
+
+    if (display === 'pill') {
+      const color =
+        (pillColor && pillColor(value)) ||
+        options?.find((o) => o.value === String(value))?.color ||
+        '#9e9e9e';
+      return (
+        <Chip
+          label={formatted}
+          size="small"
+          sx={{
+            bgcolor: `${color}20`,
+            color,
+            border: `1px solid ${color}`,
+            fontWeight: 600,
+            cursor: canEditAtAll ? 'pointer' : 'default',
+            '&:hover': canEditAtAll ? { bgcolor: `${color}33` } : undefined,
+          }}
+        />
+      );
+    }
+    return (
+      <Typography
+        variant="body2"
+        component="span"
+        sx={{
+          cursor: canEditAtAll ? 'pointer' : 'default',
+          color: value == null || value === '' ? 'text.disabled' : 'text.primary',
+          '&:hover': canEditAtAll ? { textDecoration: 'underline dotted' } : undefined,
+        }}
+      >
+        {formatted}
+      </Typography>
+    );
+  };
+
+  // ── Auto-save helper for select/autocomplete (single-click commit) ───
+  const commitNow = useCallback(async (newVal: TValue) => {
+    if (validate) {
+      const err = validate(newVal);
+      if (err) {
+        setError(err);
+        return;
+      }
+    }
+    if (newVal === value) {
+      setMode('display');
+      return;
+    }
+    setSaving(true);
+    try {
+      await onSave(newVal);
+      setMode('display');
+    } catch (err: any) {
+      setError(err?.message || 'Save failed');
+    } finally {
+      setSaving(false);
+    }
+  }, [validate, value, onSave]);
+
+  // ── Inline TextField editor (text / number / date variants) ───────────
+  const renderInlineTextEditor = () => {
+    const inputType = variant === 'date' ? 'date' : variant === 'number' ? 'number' : 'text';
+    return (
+      <TextField
+        type={inputType}
+        value={(draft as unknown as string) ?? ''}
+        autoFocus
+        onChange={(e) => {
+          const raw = e.target.value;
+          const next = (variant === 'number' ? (raw === '' ? '' : Number(raw)) : raw) as unknown as TValue;
+          setDraft(next);
+        }}
+        onBlur={handleSave}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            handleSave();
+          } else if (e.key === 'Escape') {
+            handleCancel();
+          }
+        }}
+        size="small"
+        sx={{ minWidth: 140 }}
+        InputLabelProps={inputType === 'date' ? { shrink: true } : undefined}
+        error={!!error}
+        helperText={error || undefined}
+        disabled={saving}
+      />
+    );
+  };
+
+  // ── Lock icon (hover-only when sensitive; always when locked-by-other) ──
+  const renderLockBadge = () => {
+    if (lockedFromRecord) {
+      return (
+        <Tooltip title={permission.lockTooltip} arrow>
+          <LockIcon sx={{ fontSize: 14, color: 'text.disabled', ml: 0.5 }} />
+        </Tooltip>
+      );
+    }
+    if (!permission.requiresUnlock) return null;
+    return (
+      <Tooltip title={permission.lockTooltip} arrow>
+        <span>
+          <IconButton
+            size="small"
+            sx={{
+              ml: 0.25,
+              p: 0.25,
+              ...HOVER_LOCK_SX,
+              color: permission.canUnlock ? 'text.secondary' : 'text.disabled',
+            }}
+            onClick={(e) => {
+              e.stopPropagation();
+              if (permission.canUnlock) setMode('unlock');
+            }}
+          >
+            <LockIcon sx={{ fontSize: 14 }} />
+          </IconButton>
+        </span>
+      </Tooltip>
+    );
+  };
+
+  // ── Render shell ────────────────────────────────────────────────────────
+  // The .inline-editable-host class is the hover target for HOVER_LOCK_SX.
+  // Display mode is always rendered (it doubles as the anchor for popovers);
+  // text-style editors replace it inline; menu/autocomplete float over it.
+  const editingTextStyle = mode === 'editing' && (variant === 'text' || variant === 'number' || variant === 'date');
+
+  return (
+    <>
+      <Box
+        ref={anchorRef}
+        className="inline-editable-host"
+        sx={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 0.25,
+          maxWidth: '100%',
+        }}
+        onClick={mode === 'display' ? handleDisplayClick : undefined}
+      >
+        {editingTextStyle ? renderInlineTextEditor() : renderDisplay()}
+        {mode === 'display' && renderLockBadge()}
+      </Box>
+
+      {/* Select editor — Menu anchored to the display element */}
+      {mode === 'editing' && variant === 'select' && (
+        <Menu
+          open
+          anchorEl={anchorRef.current}
+          onClose={handleCancel}
+          anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
+          transformOrigin={{ vertical: 'top', horizontal: 'left' }}
+        >
+          {(options || []).map((o) => (
+            <MenuItem
+              key={o.value}
+              selected={o.value === String(draft)}
+              onClick={() => commitNow(o.value as unknown as TValue)}
+              dense
+            >
+              {o.color && (
+                <Box
+                  component="span"
+                  sx={{
+                    display: 'inline-block',
+                    width: 8,
+                    height: 8,
+                    borderRadius: '50%',
+                    bgcolor: o.color,
+                    mr: 1,
+                  }}
+                />
+              )}
+              {o.label}
+            </MenuItem>
+          ))}
+        </Menu>
+      )}
+
+      {/* Autocomplete editor — Popover anchored to display */}
+      {mode === 'editing' && variant === 'autocomplete' && (
+        <Popover
+          open
+          anchorEl={anchorRef.current}
+          onClose={handleCancel}
+          anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
+        >
+          <Box sx={{ p: 1, minWidth: 260 }}>
+            <Autocomplete
+              options={options || []}
+              getOptionLabel={(o) => o.label}
+              value={(options || []).find((o) => o.value === String(draft)) || null}
+              onChange={(_e, newOption) => {
+                const newVal = (newOption?.value ?? null) as unknown as TValue;
+                commitNow(newVal);
+              }}
+              openOnFocus
+              groupBy={(o) => o.group || ''}
+              isOptionEqualToValue={(a, b) => a.value === b.value}
+              size="small"
+              sx={{ minWidth: 240 }}
+              renderInput={(params) => (
+                <TextField
+                  {...params}
+                  autoFocus
+                  onKeyDown={(e) => {
+                    if (e.key === 'Escape') handleCancel();
+                  }}
+                  error={!!error}
+                  helperText={error || undefined}
+                />
+              )}
+            />
+          </Box>
+        </Popover>
+      )}
+
+      <UnlockWarningDialog
+        open={mode === 'unlock'}
+        fieldLabel={fieldLabel || fieldName}
+        reason={permission.lockTooltip}
+        onConfirm={handleUnlockConfirm}
+        onCancel={handleUnlockCancel}
+      />
+    </>
+  );
+}
+
+export default InlineEditable;
