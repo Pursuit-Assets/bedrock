@@ -35,7 +35,6 @@ import {
 import {
   AddTask as AddTaskIcon,
   OpenInNew as OpenInNewIcon,
-  Warning as WarningIcon,
   ExpandMore as ExpandMoreIcon,
   ExpandLess as ExpandLessIcon,
   CheckCircle as CheckCircleIcon,
@@ -43,6 +42,15 @@ import {
   Flag as FlagIcon,
   OpenInFull as OpenInFullIcon,
   Add as AddIcon,
+  // Alert-row icons — one per AlertKind. Keep in sync with ALERT_DEFS below.
+  Error as AlertOverdueIcon,
+  AccessTime as AlertClosingIcon,
+  HourglassEmpty as AlertStaleIcon,
+  AssignmentLate as AlertOverdueTasksIcon,
+  Assignment as AlertNoTasksIcon,
+  Event as AlertMeetingIcon,
+  Autorenew as AlertRenewalIcon,
+  InfoOutlined as InfoIcon,
 } from '@mui/icons-material';
 import { format, parseISO, differenceInDays, isBefore, startOfDay } from 'date-fns';
 import { formatDollarMillions } from '../utils/formatters';
@@ -55,9 +63,49 @@ import {
 } from '../utils/priorityScoring';
 import { apiService } from '../services/api';
 import { getStageHexColor, stageIndex, OPPORTUNITY_STAGES } from '../types/salesforce';
+import {
+  AlertKind,
+  ALERT_LABELS,
+  groupReasonsByKind,
+} from '../utils/priorityAlertClassifier';
 import toast from 'react-hot-toast';
 
 export type { PriorityOpp };
+
+// Icon + color per alert category. Pairs with the classifier in
+// utils/priorityAlertClassifier.ts — adding a new AlertKind requires a new
+// entry here. Colors line up with the rest of the table's severity palette
+// (#d32f2f red, #f57c00 orange, #1976d2 blue, #2e7d32 green, #9e9e9e gray).
+const ALERT_DEFS: Record<AlertKind, { Icon: React.ElementType; color: string }> = {
+  overdue:      { Icon: AlertOverdueIcon,      color: '#d32f2f' },
+  overdueTasks: { Icon: AlertOverdueTasksIcon, color: '#d32f2f' },
+  stale:        { Icon: AlertStaleIcon,        color: '#f57c00' },
+  closing:      { Icon: AlertClosingIcon,      color: '#f57c00' },
+  meeting:      { Icon: AlertMeetingIcon,      color: '#1976d2' },
+  renewal:      { Icon: AlertRenewalIcon,      color: '#2e7d32' },
+  noTasks:      { Icon: AlertNoTasksIcon,      color: '#9e9e9e' },
+};
+
+/** Render the legend popover content shown when hovering the (?) in the
+ *  Alerts column header. Lists every category with its icon + color so users
+ *  can decode the row icons at a glance.
+ */
+const AlertLegend: React.FC = () => (
+  <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5, py: 0.5 }}>
+    <Typography variant="caption" sx={{ fontWeight: 600, mb: 0.25 }}>
+      Alert types
+    </Typography>
+    {(Object.keys(ALERT_DEFS) as AlertKind[]).map((kind) => {
+      const def = ALERT_DEFS[kind];
+      return (
+        <Box key={kind} sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
+          <def.Icon sx={{ fontSize: 14, color: def.color }} />
+          <Typography variant="caption">{ALERT_LABELS[kind]}</Typography>
+        </Box>
+      );
+    })}
+  </Box>
+);
 
 type OppSortField = 'name' | 'stage' | 'amount' | 'close' | 'prob' | 'tasks' | null;
 type SortDir = 'asc' | 'desc';
@@ -727,15 +775,6 @@ const PriorityTable: React.FC<PriorityTableProps> = ({ opportunities, onAddTask,
     return 'grey.400';
   };
 
-  /** Alert chip colors by type */
-  const alertChipColor = (reason: string) => {
-    if (/overdue/i.test(reason)) return '#e65100';
-    if (/closing in/i.test(reason)) return '#2e7d32';
-    if (/quiet/i.test(reason)) return '#e65100';
-    if (/renewal|upsell/i.test(reason)) return '#2e7d32';
-    return '#1565c0';
-  };
-
   const hasActiveFilters = filters.aijiOnly || filters.stage.length > 0 || filters.closeDateRange !== 'all' || filters.hasTasks !== 'all' || filters.amountMin !== null;
 
   const handleOpenInPipeline = (opp: PriorityOpp) => {
@@ -927,7 +966,7 @@ const PriorityTable: React.FC<PriorityTableProps> = ({ opportunities, onAddTask,
           <TableHead>
             <TableRow>
               <TableCell sx={{ width: '3%', px: 1 }}>#</TableCell>
-              <TableCell sx={{ width: oppNameWidth !== null ? oppNameWidth : '20%' }}>
+              <TableCell sx={{ width: oppNameWidth !== null ? oppNameWidth : '30%' }}>
                 <TableSortLabel
                   active={oppSort.field === 'name'}
                   direction={oppSort.field === 'name' ? oppSort.dir : 'asc'}
@@ -948,7 +987,7 @@ const PriorityTable: React.FC<PriorityTableProps> = ({ opportunities, onAddTask,
                   }}
                 />
               </TableCell>
-              <TableCell sx={{ width: '14%' }}>
+              <TableCell sx={{ width: '16%' }}>
                 <TableSortLabel
                   active={oppSort.field === 'stage'}
                   direction={oppSort.field === 'stage' ? oppSort.dir : 'asc'}
@@ -957,7 +996,7 @@ const PriorityTable: React.FC<PriorityTableProps> = ({ opportunities, onAddTask,
                   Stage
                 </TableSortLabel>
               </TableCell>
-              <TableCell align="right" sx={{ width: '8%' }}>
+              <TableCell align="right" sx={{ width: '9%' }}>
                 <TableSortLabel
                   active={oppSort.field === 'amount'}
                   direction={oppSort.field === 'amount' ? oppSort.dir : 'asc'}
@@ -966,7 +1005,7 @@ const PriorityTable: React.FC<PriorityTableProps> = ({ opportunities, onAddTask,
                   Amount
                 </TableSortLabel>
               </TableCell>
-              <TableCell sx={{ width: '7%' }}>
+              <TableCell sx={{ width: '8%' }}>
                 <TableSortLabel
                   active={oppSort.field === 'close'}
                   direction={oppSort.field === 'close' ? oppSort.dir : 'asc'}
@@ -984,8 +1023,15 @@ const PriorityTable: React.FC<PriorityTableProps> = ({ opportunities, onAddTask,
                   Prob
                 </TableSortLabel>
               </TableCell>
-              <TableCell sx={{ width: '30%' }}>Alerts</TableCell>
-              <TableCell align="center" sx={{ width: '5%' }}>
+              <TableCell sx={{ width: '12%' }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                  <span>Alerts</span>
+                  <Tooltip title={<AlertLegend />} arrow placement="bottom">
+                    <InfoIcon sx={{ fontSize: 13, color: 'text.secondary', cursor: 'help' }} />
+                  </Tooltip>
+                </Box>
+              </TableCell>
+              <TableCell align="center" sx={{ width: '6%' }}>
                 <TableSortLabel
                   active={oppSort.field === 'tasks'}
                   direction={oppSort.field === 'tasks' ? oppSort.dir : 'asc'}
@@ -994,14 +1040,13 @@ const PriorityTable: React.FC<PriorityTableProps> = ({ opportunities, onAddTask,
                   Tasks
                 </TableSortLabel>
               </TableCell>
-              <TableCell align="center" sx={{ width: '8%' }}>Actions</TableCell>
+              <TableCell align="center" sx={{ width: '11%' }}>Actions</TableCell>
             </TableRow>
           </TableHead>
           <TableBody>
             {displayed.map(({ opp, urgency, overdueTasks, totalTasks }, idx) => {
               const isOverdue = opp.CloseDate && isBefore(parseISO(opp.CloseDate), startOfDay(new Date()));
-              const alertsToShow = urgency.reasons.slice(0, 2);
-              const overflowCount = urgency.reasons.length - 2;
+              const alertGroups = groupReasonsByKind(urgency.reasons);
               const isExpanded = expandedOppId === opp.Id;
               const allTasks = opp.tasks || [];
               const pendingTasks = sortTasks(allTasks.filter((t) => t.Status !== 'Completed'));
@@ -1104,30 +1149,27 @@ const PriorityTable: React.FC<PriorityTableProps> = ({ opportunities, onAddTask,
                       </Typography>
                     </TableCell>
 
-                    {/* Alerts */}
+                    {/* Alerts — one icon per category, deduped + severity-sorted.
+                        Hover any icon for the underlying reason(s); hover the (?) in
+                        the column header for the legend. */}
                     <TableCell>
-                      <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap' }}>
-                        {alertsToShow.map((reason, i) => (
-                          <Chip
-                            key={i}
-                            icon={<WarningIcon sx={{ fontSize: '12px !important' }} />}
-                            label={reason}
-                            size="small"
-                            variant="outlined"
-                            sx={{
-                              height: 20, fontSize: '0.65rem', maxWidth: 180,
-                              borderColor: alertChipColor(reason),
-                              color: alertChipColor(reason),
-                              '& .MuiChip-icon': { color: 'inherit' },
-                            }}
-                          />
-                        ))}
-                        {overflowCount > 0 && (
-                          <Tooltip title={urgency.reasons.slice(2).join(', ')}>
-                            <Chip label={`+${overflowCount}`} size="small" sx={{ height: 20, fontSize: '0.65rem' }} />
-                          </Tooltip>
-                        )}
-                      </Box>
+                      {alertGroups.length === 0 ? (
+                        <Box component="span" sx={{ color: 'text.disabled' }}>—</Box>
+                      ) : (
+                        <Box sx={{ display: 'flex', gap: 0.4, alignItems: 'center', flexWrap: 'wrap' }}>
+                          {alertGroups.map(([kind, reasons]) => {
+                            const def = ALERT_DEFS[kind];
+                            const tooltipTitle = reasons.length > 1
+                              ? reasons.join(' · ')
+                              : reasons[0];
+                            return (
+                              <Tooltip key={kind} title={tooltipTitle} arrow>
+                                <def.Icon sx={{ fontSize: 16, color: def.color }} />
+                              </Tooltip>
+                            );
+                          })}
+                        </Box>
+                      )}
                     </TableCell>
 
                     {/* Tasks count — clickable */}
