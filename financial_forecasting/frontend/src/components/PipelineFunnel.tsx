@@ -35,21 +35,17 @@ import { formatDollarMillions } from '../utils/formatters';
 import { getStageHexColor } from '../types/salesforce';
 import { apiService } from '../services/api';
 
-const ACTIVE_FUNNEL_STAGES = [
-  'Lead Gen',
-  'New Lead',
-  'Qualifying',
-  'Design / Proposal Creation',
-  'Proposal Negotiation',
-  'Contract Creation',
-  'Negotiating Contract',
-  'Collecting / In Effect',
-] as const;
+import {
+  ACTIVE_FUNNEL_STAGES,
+  STAGE_IDX,
+  WON_STAGES,
+  LOST_STAGES,
+  classifyTransition,
+  TransitionKind,
+} from './pipelineFunnelTransitions';
 
 type DateRange = '7d' | '30d' | '90d';
 const DAYS_MAP: Record<DateRange, number> = { '7d': 7, '30d': 30, '90d': 90 };
-
-const STAGE_IDX = new Map<string, number>(ACTIVE_FUNNEL_STAGES.map((s, i) => [s, i]));
 
 interface Opportunity {
   Id: string;
@@ -81,7 +77,7 @@ interface StageMovement {
   amount: number;
   fromStage: string;
   toStage: string;
-  direction: 'forward' | 'backward';
+  direction: TransitionKind;
   changedDate: string;
 }
 
@@ -93,6 +89,8 @@ interface FunnelLayer {
   retreatedIn: StageMovement[];
   advancedOut: StageMovement[];
   retreatedOut: StageMovement[];
+  wonOut: StageMovement[];
+  lostOut: StageMovement[];
   throughput: number;
   stagnation: number;
 }
@@ -103,12 +101,6 @@ interface PipelineFunnelProps {
   selectedOwnerIds?: string[];
   /** Legacy single-owner prop, retained for compatibility. Equivalent to passing [ownerId] in selectedOwnerIds. */
   ownerId?: string;
-}
-
-function isForward(from: string, to: string): boolean {
-  const fi = STAGE_IDX.get(from) ?? -1;
-  const ti = STAGE_IDX.get(to) ?? -1;
-  return ti > fi;
 }
 
 function formatChangeDate(iso: string): string {
@@ -124,10 +116,16 @@ function buildFunnelData(opps: Opportunity[], history: StageChange[]): FunnelLay
     count: number; total: number;
     advancedIn: StageMovement[]; retreatedIn: StageMovement[];
     advancedOut: StageMovement[]; retreatedOut: StageMovement[];
+    wonOut: StageMovement[]; lostOut: StageMovement[];
   }>();
 
   for (const stage of ACTIVE_FUNNEL_STAGES) {
-    stageMap.set(stage, { count: 0, total: 0, advancedIn: [], retreatedIn: [], advancedOut: [], retreatedOut: [] });
+    stageMap.set(stage, {
+      count: 0, total: 0,
+      advancedIn: [], retreatedIn: [],
+      advancedOut: [], retreatedOut: [],
+      wonOut: [], lostOut: [],
+    });
   }
 
   for (const opp of opps) {
@@ -144,32 +142,42 @@ function buildFunnelData(opps: Opportunity[], history: StageChange[]): FunnelLay
     if (seen.has(key)) continue;
     seen.add(key);
 
-    const forward = isForward(change.OldValue, change.NewValue);
+    const kind = classifyTransition(change.OldValue, change.NewValue);
     const movement: StageMovement = {
       opportunityId: change.OpportunityId,
       opportunityName: change.OpportunityName || 'Unknown',
       amount: change.Amount || 0,
       fromStage: change.OldValue,
       toStage: change.NewValue,
-      direction: forward ? 'forward' : 'backward',
+      direction: kind,
       changedDate: change.CreatedDate || '',
     };
 
     const fromEntry = stageMap.get(change.OldValue);
     const toEntry = stageMap.get(change.NewValue);
 
-    if (forward) {
+    if (kind === 'forward') {
       if (fromEntry) fromEntry.advancedOut.push(movement);
       if (toEntry) toEntry.advancedIn.push(movement);
-    } else {
+    } else if (kind === 'backward') {
       if (fromEntry) fromEntry.retreatedOut.push(movement);
       if (toEntry) toEntry.retreatedIn.push(movement);
+    } else if (kind === 'won') {
+      // Register the win on the layer the opp was in before closing.
+      // No incoming side — terminal stage has no layer in the active funnel.
+      if (fromEntry) fromEntry.wonOut.push(movement);
+    } else {
+      // Loss: same model as won — terminal, recorded on the from-layer only.
+      if (fromEntry) fromEntry.lostOut.push(movement);
     }
   }
 
   return ACTIVE_FUNNEL_STAGES.map((stage) => {
     const e = stageMap.get(stage)!;
-    const totalActivity = e.advancedIn.length + e.advancedOut.length + e.retreatedIn.length + e.retreatedOut.length;
+    const totalActivity =
+      e.advancedIn.length + e.advancedOut.length +
+      e.retreatedIn.length + e.retreatedOut.length +
+      e.wonOut.length + e.lostOut.length;
     return {
       stage,
       count: e.count,
@@ -178,7 +186,9 @@ function buildFunnelData(opps: Opportunity[], history: StageChange[]): FunnelLay
       retreatedIn: e.retreatedIn,
       advancedOut: e.advancedOut,
       retreatedOut: e.retreatedOut,
-      throughput: e.advancedOut.length,
+      wonOut: e.wonOut,
+      lostOut: e.lostOut,
+      throughput: e.advancedOut.length + e.wonOut.length,
       stagnation: e.count > 0 && totalActivity === 0 ? e.count : 0,
     };
   });
@@ -213,6 +223,28 @@ function buildSetbackRows(layer: FunnelLayer): FlowRow[] {
     rows.push({ opportunityId: m.opportunityId, opportunityName: m.opportunityName, amount: m.amount, label: 'Fell back to', stage: m.toStage, changedDate: m.changedDate });
   }
   return rows;
+}
+
+function buildWinRows(layer: FunnelLayer): FlowRow[] {
+  return layer.wonOut.map((m) => ({
+    opportunityId: m.opportunityId,
+    opportunityName: m.opportunityName,
+    amount: m.amount,
+    label: 'Closed to',
+    stage: m.toStage,
+    changedDate: m.changedDate,
+  }));
+}
+
+function buildLossRows(layer: FunnelLayer): FlowRow[] {
+  return layer.lostOut.map((m) => ({
+    opportunityId: m.opportunityId,
+    opportunityName: m.opportunityName,
+    amount: m.amount,
+    label: 'Lost to',
+    stage: m.toStage,
+    changedDate: m.changedDate,
+  }));
 }
 
 const PipelineFunnel: React.FC<PipelineFunnelProps> = ({ opportunities, selectedOwnerIds, ownerId }) => {
@@ -386,11 +418,15 @@ const PipelineFunnel: React.FC<PipelineFunnelProps> = ({ opportunities, selected
             const color = getStageHexColor(layer.stage);
             const progressingCount = layer.advancedIn.length + layer.advancedOut.length;
             const setbackCount = layer.retreatedIn.length + layer.retreatedOut.length;
-            const hasActivity = progressingCount + setbackCount > 0;
-            const net = progressingCount - setbackCount;
+            const wonCount = layer.wonOut.length;
+            const lostCount = layer.lostOut.length;
+            const hasActivity = progressingCount + setbackCount + wonCount + lostCount > 0;
+            const net = progressingCount + wonCount - setbackCount - lostCount;
 
             const progressingRows = isExpanded ? buildProgressingRows(layer) : [];
             const setbackRows = isExpanded ? buildSetbackRows(layer) : [];
+            const winRows = isExpanded ? buildWinRows(layer) : [];
+            const lossRows = isExpanded ? buildLossRows(layer) : [];
             const oppsInStage = isExpanded ? filteredOpps.filter((o) => o.StageName === layer.stage) : [];
             const now = new Date();
             const isStagnant = (opp: Opportunity) => {
@@ -463,7 +499,17 @@ const PipelineFunnel: React.FC<PipelineFunnelProps> = ({ opportunities, selected
                           </Typography>
                         </Tooltip>
                       )}
-                      {progressingCount > 0 && setbackCount > 0 && (
+                      {progressingCount > 0 && wonCount > 0 && (
+                        <Typography variant="caption" sx={{ color: 'text.disabled' }}>·</Typography>
+                      )}
+                      {wonCount > 0 && (
+                        <Tooltip title={`${wonCount} opp${wonCount !== 1 ? 's' : ''} closed as Won from ${layer.stage} in the last ${days}d`} arrow>
+                          <Typography variant="caption" sx={{ color: '#1b5e20', fontWeight: 700, fontSize: '0.7rem', whiteSpace: 'nowrap', cursor: 'default' }}>
+                            {wonCount} won
+                          </Typography>
+                        </Tooltip>
+                      )}
+                      {(progressingCount > 0 || wonCount > 0) && setbackCount > 0 && (
                         <Typography variant="caption" sx={{ color: 'text.disabled' }}>·</Typography>
                       )}
                       {setbackCount > 0 && (
@@ -473,8 +519,18 @@ const PipelineFunnel: React.FC<PipelineFunnelProps> = ({ opportunities, selected
                           </Typography>
                         </Tooltip>
                       )}
+                      {(progressingCount > 0 || wonCount > 0 || setbackCount > 0) && lostCount > 0 && (
+                        <Typography variant="caption" sx={{ color: 'text.disabled' }}>·</Typography>
+                      )}
+                      {lostCount > 0 && (
+                        <Tooltip title={`${lostCount} opp${lostCount !== 1 ? 's' : ''} closed as Lost or Withdrawn from ${layer.stage} in the last ${days}d`} arrow>
+                          <Typography variant="caption" sx={{ color: 'text.secondary', fontWeight: 600, fontSize: '0.7rem', whiteSpace: 'nowrap', cursor: 'default' }}>
+                            {lostCount} lost
+                          </Typography>
+                        </Tooltip>
+                      )}
                       {hasActivity && (
-                        <Tooltip title={`Net = ${progressingCount} progressing − ${setbackCount} setbacks`} arrow>
+                        <Tooltip title={`Net = (${progressingCount} progressing + ${wonCount} won) − (${setbackCount} setbacks + ${lostCount} lost)`} arrow>
                           <Box
                             sx={{
                               display: 'inline-flex',
@@ -527,8 +583,17 @@ const PipelineFunnel: React.FC<PipelineFunnelProps> = ({ opportunities, selected
                       </Box>
                     )}
 
-                    {setbackRows.length > 0 && (
+                    {winRows.length > 0 && (
                       <Box sx={{ mt: progressingRows.length > 0 ? 1.5 : 0 }}>
+                        <Typography variant="caption" sx={{ fontWeight: 700, color: '#1b5e20' }}>
+                          Wins ({winRows.length})
+                        </Typography>
+                        <FlowTable rows={winRows} />
+                      </Box>
+                    )}
+
+                    {setbackRows.length > 0 && (
+                      <Box sx={{ mt: progressingRows.length > 0 || winRows.length > 0 ? 1.5 : 0 }}>
                         <Typography variant="caption" sx={{ fontWeight: 700, color: '#d32f2f' }}>
                           Setbacks ({setbackRows.length})
                         </Typography>
@@ -536,8 +601,17 @@ const PipelineFunnel: React.FC<PipelineFunnelProps> = ({ opportunities, selected
                       </Box>
                     )}
 
+                    {lossRows.length > 0 && (
+                      <Box sx={{ mt: progressingRows.length > 0 || winRows.length > 0 || setbackRows.length > 0 ? 1.5 : 0 }}>
+                        <Typography variant="caption" sx={{ fontWeight: 700, color: 'text.secondary' }}>
+                          Lost / Withdrawn ({lossRows.length})
+                        </Typography>
+                        <FlowTable rows={lossRows} />
+                      </Box>
+                    )}
+
                     {oppsInStage.length > 0 && (
-                      <Box sx={{ mt: progressingRows.length > 0 || setbackRows.length > 0 ? 1.5 : 0 }}>
+                      <Box sx={{ mt: progressingRows.length > 0 || winRows.length > 0 || setbackRows.length > 0 || lossRows.length > 0 ? 1.5 : 0 }}>
                         <Typography variant="caption" sx={{ fontWeight: 700, color: 'text.secondary' }}>
                           In this stage ({oppsInStage.length})
                         </Typography>
