@@ -62,12 +62,16 @@ import {
   countOverdueTasks,
 } from '../utils/priorityScoring';
 import { apiService } from '../services/api';
-import { getStageHexColor, stageIndex, OPPORTUNITY_STAGES } from '../types/salesforce';
+import { stageIndex, getStageHexColor } from '../types/salesforce';
 import {
   AlertKind,
   ALERT_LABELS,
   groupReasonsByKind,
 } from '../utils/priorityAlertClassifier';
+import { StageCell } from './inline-edit/cells/StageCell';
+import { AmountCell } from './inline-edit/cells/AmountCell';
+import { DateCell } from './inline-edit/cells/DateCell';
+import { ProbabilityCell } from './inline-edit/cells/ProbabilityCell';
 import toast from 'react-hot-toast';
 
 export type { PriorityOpp };
@@ -422,147 +426,12 @@ const AddTaskRow: React.FC<AddTaskRowProps> = ({ oppId, users, onCreated }) => {
   );
 };
 
-// ── Opp-level inline edit cell ──
-
-interface OppEditableCellProps {
-  value: string | number | null;
-  oppId: string;
-  field: string;
-  type?: 'text' | 'date' | 'currency' | 'stage';
-  onSave: (oppId: string, field: string, value: string | number | null) => void;
-  renderDisplay?: (value: string | number | null) => React.ReactNode;
-}
-
-const OppEditableCell: React.FC<OppEditableCellProps> = ({ value, oppId, field, type = 'text', onSave, renderDisplay }) => {
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState<string>(value != null ? String(value) : '');
-  const inputRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => { setDraft(value != null ? String(value) : ''); }, [value]);
-  useEffect(() => {
-    if (editing && inputRef.current) inputRef.current.focus();
-  }, [editing]);
-
-  const commit = useCallback(() => {
-    setEditing(false);
-    const original = value != null ? String(value) : '';
-    if (draft !== original) {
-      if (type === 'currency') {
-        const parsed = parseFloat(draft.replace(/[,$]/g, ''));
-        onSave(oppId, field, isNaN(parsed) ? null : parsed);
-      } else {
-        onSave(oppId, field, draft || null);
-      }
-    }
-  }, [draft, value, oppId, field, onSave, type]);
-
-  const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
-    if (e.key === 'Enter') commit();
-    if (e.key === 'Escape') { setDraft(value != null ? String(value) : ''); setEditing(false); }
-  }, [commit, value]);
-
-  // Stage field uses select
-  if (type === 'stage') {
-    return (
-      <Select
-        size="small"
-        value={value || ''}
-        onChange={(e) => onSave(oppId, field, e.target.value)}
-        variant="standard"
-        disableUnderline
-        sx={{
-          fontSize: '0.7rem',
-          '& .MuiSelect-select': {
-            py: 0,
-            px: 0.5,
-            bgcolor: getStageHexColor(String(value || '')),
-            color: '#fff',
-            fontWeight: 600,
-            borderRadius: 1,
-          },
-        }}
-      >
-        {OPPORTUNITY_STAGES.filter(s => s !== '--None--').map((s) => (
-          <MenuItem key={s} value={s} sx={{ fontSize: '0.75rem' }}>
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-              <Box sx={{ width: 8, height: 8, borderRadius: '50%', bgcolor: getStageHexColor(s) }} />
-              {s}
-            </Box>
-          </MenuItem>
-        ))}
-      </Select>
-    );
-  }
-
-  if (!editing) {
-    return (
-      <Box
-        onClick={() => setEditing(true)}
-        sx={{
-          cursor: 'pointer',
-          borderRadius: 0.5,
-          px: 0.5,
-          '&:hover': { bgcolor: 'action.hover' },
-          minHeight: 20,
-        }}
-      >
-        {renderDisplay ? renderDisplay(value) : (
-          <Typography variant="body2" sx={{ fontSize: '0.8rem' }}>
-            {value != null ? String(value) : '-'}
-          </Typography>
-        )}
-      </Box>
-    );
-  }
-
-  if (type === 'date') {
-    return (
-      <TextField
-        inputRef={inputRef}
-        size="small"
-        type="date"
-        value={draft}
-        onChange={(e) => setDraft(e.target.value)}
-        onBlur={commit}
-        onKeyDown={handleKeyDown}
-        variant="standard"
-        InputProps={{ disableUnderline: false, sx: { fontSize: '0.8rem' } }}
-        InputLabelProps={{ shrink: true }}
-        sx={{ minWidth: 120 }}
-      />
-    );
-  }
-
-  if (type === 'currency') {
-    return (
-      <TextField
-        inputRef={inputRef}
-        size="small"
-        value={draft}
-        onChange={(e) => setDraft(e.target.value)}
-        onBlur={commit}
-        onKeyDown={handleKeyDown}
-        variant="standard"
-        InputProps={{ disableUnderline: false, sx: { fontSize: '0.8rem' } }}
-        sx={{ minWidth: 80 }}
-      />
-    );
-  }
-
-  return (
-    <TextField
-      inputRef={inputRef}
-      size="small"
-      value={draft}
-      onChange={(e) => setDraft(e.target.value)}
-      onBlur={commit}
-      onKeyDown={handleKeyDown}
-      variant="standard"
-      InputProps={{ disableUnderline: false, sx: { fontSize: '0.8rem' } }}
-      sx={{ minWidth: 80 }}
-    />
-  );
-};
+// Bug 4.3 (2026-04-14) — the in-file OppEditableCell was replaced by the
+// shared inline-edit primitive. Stage / Amount / CloseDate / Probability
+// columns now compose StageCell / AmountCell / DateCell / ProbabilityCell
+// from components/inline-edit/cells/. Sensitive fields (Stage, Amount,
+// Probability) gain a lock-on-hover unlock confirmation. Date stays safe
+// with a 1970→+10yr sanity bound.
 
 // ── Main Component ──
 
@@ -1096,57 +965,48 @@ const PriorityTable: React.FC<PriorityTableProps> = ({ opportunities, onAddTask,
                       </Typography>
                     </TableCell>
 
-                    {/* Stage — editable */}
+                    {/* Stage — sensitive, unlock-on-edit via StageCell */}
                     <TableCell>
-                      <OppEditableCell
+                      <StageCell
                         value={opp.StageName}
-                        oppId={opp.Id}
-                        field="StageName"
-                        type="stage"
-                        onSave={handleInlineOppSave}
+                        onSave={(v) => handleInlineOppSave(opp.Id, 'StageName', v)}
                       />
                     </TableCell>
 
-                    {/* Amount — editable */}
+                    {/* Amount — sensitive, unlock-on-edit via AmountCell */}
                     <TableCell align="right">
-                      <OppEditableCell
+                      <AmountCell
                         value={opp.Amount}
-                        oppId={opp.Id}
-                        field="Amount"
-                        type="currency"
-                        onSave={handleInlineOppSave}
-                        renderDisplay={(v) => (
-                          <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                            {v ? formatDollarMillions(v as number) : '-'}
-                          </Typography>
-                        )}
+                        onSave={(v) => handleInlineOppSave(opp.Id, 'Amount', v)}
                       />
                     </TableCell>
 
-                    {/* Close date — editable */}
+                    {/* Close date — safe (with bounds) via DateCell.
+                        Custom display preserves the existing red-on-overdue color. */}
                     <TableCell>
-                      <OppEditableCell
+                      <DateCell
                         value={opp.CloseDate || ''}
-                        oppId={opp.Id}
-                        field="CloseDate"
-                        type="date"
-                        onSave={handleInlineOppSave}
-                        renderDisplay={(v) => (
+                        onSave={(v) => handleInlineOppSave(opp.Id, 'CloseDate', v)}
+                        displayFormat="MMM d"
+                        renderDisplay={(formatted) => (
                           <Typography
                             variant="body2"
                             sx={{ color: isOverdue ? '#e65100' : 'text.primary', fontWeight: isOverdue ? 600 : 400 }}
                           >
-                            {v ? format(parseISO(String(v)), 'MMM d') : '-'}
+                            {formatted}
                           </Typography>
                         )}
                       />
                     </TableCell>
 
-                    {/* Probability */}
+                    {/* Probability — sensitive, unlock-on-edit via ProbabilityCell.
+                        Note: SF auto-calculates from stage; manual edits override
+                        until the next stage change. */}
                     <TableCell align="right">
-                      <Typography variant="body2">
-                        {opp.Probability != null ? `${opp.Probability}%` : '-'}
-                      </Typography>
+                      <ProbabilityCell
+                        value={opp.Probability}
+                        onSave={(v) => handleInlineOppSave(opp.Id, 'Probability', v)}
+                      />
                     </TableCell>
 
                     {/* Alerts — one icon per category, deduped + severity-sorted.
