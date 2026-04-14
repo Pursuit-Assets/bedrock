@@ -424,6 +424,13 @@ const Accounts: React.FC = () => {
 
   // Assemble the final columns: computed columns + schema columns + edit action
   const columns = useMemo(() => {
+    // Dim dash for 0-valued aggregations. Keeps the column sortable (sortComparator
+    // still sees the underlying 0) while visually breaking the sea of zeros that
+    // dominates the grid when households without opportunities are in the list.
+    const zeroDash = (
+      <Box component="span" sx={{ color: 'text.disabled' }}>—</Box>
+    );
+
     const computed: GridColDef[] = [
       {
         field: 'totalOpportunities',
@@ -435,6 +442,9 @@ const Accounts: React.FC = () => {
         valueGetter: (params: GridValueGetterParams) => {
           return getAccountMetrics(params.row.id || params.row.Id).totalOpportunities;
         },
+        renderCell: (params: GridRenderCellParams) => (
+          (params.value as number) > 0 ? <span>{params.value as number}</span> : zeroDash
+        ),
       },
       {
         field: 'openOpportunities',
@@ -447,11 +457,9 @@ const Accounts: React.FC = () => {
           return getAccountMetrics(params.row.id || params.row.Id).openOpportunities;
         },
         renderCell: (params: GridRenderCellParams) => (
-          <Chip
-            label={params.value}
-            color={params.value > 0 ? 'primary' : 'default'}
-            size="small"
-          />
+          (params.value as number) > 0
+            ? <Chip label={params.value} color="primary" size="small" />
+            : zeroDash
         ),
       },
       {
@@ -465,11 +473,9 @@ const Accounts: React.FC = () => {
           return getAccountMetrics(params.row.id || params.row.Id).wonOpportunities;
         },
         renderCell: (params: GridRenderCellParams) => (
-          <Chip
-            label={params.value}
-            color={params.value > 0 ? 'success' : 'default'}
-            size="small"
-          />
+          (params.value as number) > 0
+            ? <Chip label={params.value} color="success" size="small" />
+            : zeroDash
         ),
       },
       {
@@ -483,9 +489,9 @@ const Accounts: React.FC = () => {
           return getAccountMetrics(params.row.id || params.row.Id).openPipelineValue;
         },
         renderCell: (params: GridRenderCellParams) => (
-          <Box sx={{ color: 'primary.main', fontWeight: 600 }}>
-            {formatDollarMillions(params.value as number)}
-          </Box>
+          (params.value as number) > 0
+            ? <Box sx={{ color: 'primary.main', fontWeight: 600 }}>{formatDollarMillions(params.value as number)}</Box>
+            : zeroDash
         ),
       },
       {
@@ -499,9 +505,9 @@ const Accounts: React.FC = () => {
           return getAccountMetrics(params.row.id || params.row.Id).wonValue;
         },
         renderCell: (params: GridRenderCellParams) => (
-          <Box sx={{ color: 'success.main', fontWeight: 600 }}>
-            {formatDollarMillions(params.value as number)}
-          </Box>
+          (params.value as number) > 0
+            ? <Box sx={{ color: 'success.main', fontWeight: 600 }}>{formatDollarMillions(params.value as number)}</Box>
+            : zeroDash
         ),
       },
       {
@@ -515,9 +521,9 @@ const Accounts: React.FC = () => {
           return getAccountMetrics(params.row.id || params.row.Id).totalPaid;
         },
         renderCell: (params: GridRenderCellParams) => (
-          <Box sx={{ color: 'success.main', fontWeight: 600 }}>
-            {formatDollarMillions(params.value as number)}
-          </Box>
+          (params.value as number) > 0
+            ? <Box sx={{ color: 'success.main', fontWeight: 600 }}>{formatDollarMillions(params.value as number)}</Box>
+            : zeroDash
         ),
       },
       {
@@ -531,9 +537,9 @@ const Accounts: React.FC = () => {
           return getAccountMetrics(params.row.id || params.row.Id).outstanding;
         },
         renderCell: (params: GridRenderCellParams) => (
-          <Box sx={{ color: (params.value as number) > 0 ? 'warning.main' : 'text.secondary', fontWeight: 600 }}>
-            {formatDollarMillions(params.value as number)}
-          </Box>
+          (params.value as number) > 0
+            ? <Box sx={{ color: 'warning.main', fontWeight: 600 }}>{formatDollarMillions(params.value as number)}</Box>
+            : zeroDash
         ),
       },
     ];
@@ -743,8 +749,11 @@ const Accounts: React.FC = () => {
                 pagination: {
                   paginationModel: { pageSize: 100, page: 0 },
                 },
+                // Default to "most active first" so accounts with real pipeline
+                // surface above the sea of dormant household records. Users can
+                // click any column header (incl. Name) to re-sort.
                 sorting: {
-                  sortModel: [{ field: 'Name', sort: 'asc' }],
+                  sortModel: [{ field: 'openPipelineValue', sort: 'desc' }],
                 },
                 ...(searchFromUrl ? {
                   filter: { filterModel: { items: [], quickFilterValues: [searchFromUrl] } },
