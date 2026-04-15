@@ -39,7 +39,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { usePermissions } from '../contexts/PermissionsContext';
 import { addQuarters, startOfQuarter, endOfQuarter, format, isWithinInterval, differenceInDays, parseISO } from 'date-fns';
 import PipelineFunnel from '../components/PipelineFunnel';
-import { OwnerOption } from '../components/OwnerSelector';
+import OwnerSelector, { OwnerOption, loadStoredOwnerSelection } from '../components/OwnerSelector';
 import { useOwnerGoals } from '../hooks/useOwnerGoals';
 import { OPEN_STAGES } from '../types/salesforce';
 import ConnectPrompt from '../components/ConnectPrompt';
@@ -82,14 +82,14 @@ const Progress: React.FC = () => {
   const { sfUserId } = usePermissions();
   // Wall of Progress fiscal year — Pursuit's FY = calendar year
   const currentFiscalYear = useMemo(() => new Date().getFullYear(), []);
-  const { goals: ownerGoals } = useOwnerGoals(currentFiscalYear);
+  const { goals: ownerGoals, isLoading: goalsLoading } = useOwnerGoals(currentFiscalYear);
 
   const [selectedOwnerIds, setSelectedOwnerIds] = useState<string[]>([]);
   const [hasInitializedSelection, setHasInitializedSelection] = useState(false);
   const [expandedOwnerId, setExpandedOwnerId] = useState<string | null>(null);
 
   // Fetch opportunities
-  const { data: opportunitiesData, isLoading } = useQuery(
+  const { data: opportunitiesData, isLoading: oppsLoading } = useQuery(
     'opportunities',
     async () => {
       const response = await apiService.getOpportunities();
@@ -111,7 +111,7 @@ const Progress: React.FC = () => {
   // The override lives in bedrock.progress_tracked_override and is managed by
   // admins in Settings → Progress Visibility. Untoggled users default to
   // tracked (visible). See routes/progress_tracking.py.
-  const { data: progressUsersData } = useQuery(
+  const { data: progressUsersData, isLoading: usersLoading } = useQuery(
     'progress-tracked-users',
     async () => (await apiService.getProgressTrackedUsers()).data,
     { staleTime: 300000 },
@@ -154,15 +154,6 @@ const Progress: React.FC = () => {
       a.name.localeCompare(b.name),
     );
   }, [opportunities]);
-
-  // Initialize selected owner for pipeline funnel
-  useEffect(() => {
-    if (hasInitializedSelection || availableOpenOwners.length === 0) return;
-    if (sfUserId && availableOpenOwners.some((o) => o.id === sfUserId)) {
-      setSelectedOwnerIds([sfUserId]);
-    }
-    setHasInitializedSelection(true);
-  }, [availableOpenOwners, hasInitializedSelection, sfUserId]);
 
   // Opportunities passed to the funnel: filtered by selection (or all if empty)
   const opportunitiesForFunnel = useMemo(() => {
@@ -567,6 +558,33 @@ const Progress: React.FC = () => {
     });
   }, [ownerGoals, opportunities, GOAL_STAGES, activeUsers, allUsers, availableOpenOwners, ownerIdsWithOpps, goalHoldersWithAmount]);
 
+  // Seed the Pipeline Flow multi-select. Precedence:
+  //   1. localStorage selection from a prior session (filtered to the current
+  //      available-owner pool so dormant IDs drop out automatically)
+  //   2. Individual Goals & Pipelines table (ownerProgress ∩ open-owner pool)
+  //   3. [] — triggers the "No targets set" banner when ownerProgress is empty
+  // Only runs once per mount, after all three upstream queries (opps,
+  // progress-users, goals) have resolved. Before that we can't distinguish
+  // "no goals set" from "goals still loading" and would race with the banner.
+  useEffect(() => {
+    if (hasInitializedSelection) return;
+    if (oppsLoading || usersLoading || goalsLoading) return;
+    const openIds = new Set(availableOpenOwners.map((o) => o.id));
+    const stored = loadStoredOwnerSelection('progress-pipeline-owners', openIds);
+    const seeded = stored && stored.length > 0
+      ? stored
+      : ownerProgress.map((r) => r.sfId).filter((id) => openIds.has(id));
+    setSelectedOwnerIds(seeded);
+    setHasInitializedSelection(true);
+  }, [
+    hasInitializedSelection,
+    oppsLoading,
+    usersLoading,
+    goalsLoading,
+    availableOpenOwners,
+    ownerProgress,
+  ]);
+
   // Count of users who SHOULD have a target but don't. Definition:
   // active (SF IsActive + visible via override) AND owns at least one
   // opportunity AND does NOT have a goal set. Service accounts (no opps)
@@ -599,7 +617,7 @@ const Progress: React.FC = () => {
     return `${value.toFixed(1)}%`;
   };
 
-  if (isLoading) {
+  if (oppsLoading) {
     return (
       <Box sx={{ width: '100%', mt: 4 }}>
         <LinearProgress />
@@ -1031,6 +1049,23 @@ const Progress: React.FC = () => {
           </Table>
         </TableContainer>
       )}
+
+      {/* Pipeline Flow owner filter — seeded from the Individual Goals &
+          Pipelines table above, editable via Autocomplete chips. */}
+      <Box sx={{ mb: 2, display: 'flex', flexDirection: 'column', gap: 0.5 }}>
+        <OwnerSelector
+          availableOwners={availableOpenOwners}
+          value={selectedOwnerIds}
+          onChange={setSelectedOwnerIds}
+          storageKey="progress-pipeline-owners"
+        />
+        {hasInitializedSelection && !goalsLoading && ownerProgress.length === 0 && (
+          <Typography variant="caption" sx={{ color: 'warning.main' }}>
+            No targets set — showing everyone with open pipeline. Set targets in
+            the Individual Goals & Pipelines table above to filter.
+          </Typography>
+        )}
+      </Box>
 
       {/* Pipeline Health Funnel — driven by the multi-select selection */}
       <PipelineFunnel
