@@ -450,11 +450,22 @@ const Progress: React.FC = () => {
     };
   }, [opportunities]);
 
-  // Per-owner progress for targets table. Builds a row for the UNION of
-  // (active Salesforce users) ∪ (users with a goal set) so every active
-  // team member appears on the table even if their FY target hasn't been
-  // entered in Settings → Targets yet. Rows without a goal render with
-  // `hasTarget=false` and a "Not set" affordance instead of a progress bar.
+  // Per-owner progress for targets table. Shows ONLY users who match all
+  // three criteria (set by JP + Jac 2026-04-15):
+  //   (a) FY revenue target set in Settings → Targets
+  //   (b) IsActive=true in Salesforce AND visible via Bedrock override
+  //       (Settings → Progress Visibility)
+  //   (c) Owns at least one opportunity in Salesforce
+  // Users missing a target are counted separately (see `missingTargetCount`
+  // below) and surfaced as a caption under the section header so admins know
+  // how many targets still need setting — without filling the table with
+  // "Target not set" placeholder rows.
+  const ownerIdsWithOpps = useMemo(() => {
+    const ids = new Set<string>();
+    for (const o of opportunities) if (o.OwnerId) ids.add(o.OwnerId);
+    return ids;
+  }, [opportunities]);
+
   const GOAL_STAGES = useMemo(() => ['Collecting / In Effect', 'Closed / Completed'], []);
   const ownerProgress = useMemo(() => {
     if (!opportunities.length) return [];
@@ -463,12 +474,21 @@ const Progress: React.FC = () => {
     const fyEnd = new Date(now.getFullYear(), 11, 31, 23, 59, 59, 999);
     const yearPct = Math.max(0, Math.min(1, (now.getTime() - fyStart.getTime()) / (fyEnd.getTime() - fyStart.getTime())));
 
-    // Union of IDs: active users + anyone who has a goal set (covers users
-    // whose SF IsActive flag is false but who still carry a target for
-    // historical reporting)
+    // Build the eligible set: active + visible + has-opps users. Cross with
+    // the set of users who have a goal set. Users without a goal don't
+    // appear on the table (they show up in the "X users lack a target"
+    // counter instead). Users with a goal but no longer active — historical
+    // holders — are included only if they still own opportunities, matching
+    // the "still relevant to track" definition.
     const ids = new Set<string>();
-    for (const u of activeUsers) ids.add(u.Id);
-    if (ownerGoals) for (const sfId of Object.keys(ownerGoals)) ids.add(sfId);
+    for (const u of activeUsers) {
+      if (ownerIdsWithOpps.has(u.Id) && ownerGoals?.[u.Id]) ids.add(u.Id);
+    }
+    if (ownerGoals) {
+      for (const sfId of Object.keys(ownerGoals)) {
+        if (ownerIdsWithOpps.has(sfId)) ids.add(sfId);
+      }
+    }
 
     const nameById = (sfId: string) =>
       allUsers.find((u) => u.Id === sfId)?.Name
@@ -531,13 +551,23 @@ const Progress: React.FC = () => {
       if (a.hasTarget) return b.pct - a.pct;
       return a.ownerName.localeCompare(b.ownerName);
     });
-  }, [ownerGoals, opportunities, GOAL_STAGES, activeUsers, allUsers, availableOpenOwners]);
+  }, [ownerGoals, opportunities, GOAL_STAGES, activeUsers, allUsers, availableOpenOwners, ownerIdsWithOpps]);
+
+  // Count of users who SHOULD have a target but don't. Definition:
+  // active (SF IsActive + visible via override) AND owns at least one
+  // opportunity AND does NOT have a goal set. Service accounts (no opps)
+  // and hidden users don't count — only "real revenue-tracked staff
+  // who we haven't onboarded to targets yet".
+  const missingTargetCount = useMemo(() => {
+    return activeUsers.filter(
+      (u) => ownerIdsWithOpps.has(u.Id) && !ownerGoals?.[u.Id],
+    ).length;
+  }, [activeUsers, ownerIdsWithOpps, ownerGoals]);
 
   // Aggregate totals for the "Team total" row at the top of Individual
-  // Goals & Pipelines. Wins and projected sum across ALL rows (targeted
-  // and untargeted contribute both since they reflect real pipeline);
-  // remaining + target only sum targeted users — users without a goal
-  // don't have a "remaining" or "target" to count toward the team number.
+  // Goals & Pipelines. Since the table now only contains targeted users
+  // (filter above), wins/remaining/projected/target all sum across every
+  // visible row — no need to split targeted/untargeted.
   const teamTotals = useMemo(() => {
     const targeted = ownerProgress.filter((r) => r.hasTarget);
     const totalTarget = targeted.reduce((s, r) => s + r.target, 0);
@@ -704,7 +734,7 @@ const Progress: React.FC = () => {
       </TableContainer>
 
 
-      {/* ── Individual Goals & Pipelines — one row per active team member ── */}
+      {/* ── Individual Goals & Pipelines — one row per targeted team member ── */}
       <Box sx={{ mb: 1, mt: 2 }}>
         <Typography variant="h6" sx={{ fontWeight: 700, mb: 0.25 }}>
           Individual Goals &amp; Pipelines
@@ -712,11 +742,16 @@ const Progress: React.FC = () => {
         <Typography variant="body2" color="textSecondary">
           FY{currentFiscalYear.toString().slice(-2)} revenue goal vs. actuals per team member.
         </Typography>
+        {missingTargetCount > 0 && (
+          <Typography variant="caption" color="text.disabled" sx={{ display: 'block', mt: 0.5 }}>
+            {missingTargetCount} active SF user{missingTargetCount === 1 ? '' : 's'} lack a target. Clean up in Bulk Edit page (coming soon).
+          </Typography>
+        )}
       </Box>
 
       {ownerProgress.length === 0 ? (
         <Alert severity="info" sx={{ mb: 2 }}>
-          No active team members found. Add users in Settings &rarr; User Management.
+          No FY{currentFiscalYear} targets set yet. Add targets in Settings &rarr; Targets.
         </Alert>
       ) : (
         <TableContainer component={Paper} variant="outlined" sx={{ mb: 3 }}>
