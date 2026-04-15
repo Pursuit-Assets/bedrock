@@ -562,9 +562,9 @@ const Progress: React.FC = () => {
           source of truth). Previous in-page H4 "Wall of Progress" +
           "Team pipeline accountability · …" duplicated that header. */}
 
-      {/* Current FY Progress Overview — team-wide wins + open pipeline table */}
+      {/* Current FY Overview — team-wide wins + open pipeline table */}
       <Box sx={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', flexWrap: 'wrap', gap: 1, mb: 0.25 }}>
-        <Typography variant="h6" sx={{ fontWeight: 700 }}>Current FY Progress Overview</Typography>
+        <Typography variant="h6" sx={{ fontWeight: 700 }}>Current FY Overview</Typography>
         <Typography variant="caption" color="text.secondary">
           Updated {format(new Date(), 'PPp')}
         </Typography>
@@ -686,10 +686,10 @@ const Progress: React.FC = () => {
       </TableContainer>
 
 
-      {/* ── Individual Progress — one row per active team member ── */}
+      {/* ── Individual Goals & Pipelines — one row per active team member ── */}
       <Box sx={{ mb: 1, mt: 2 }}>
         <Typography variant="h6" sx={{ fontWeight: 700, mb: 0.25 }}>
-          Individual Progress
+          Individual Goals &amp; Pipelines
         </Typography>
         <Typography variant="body2" color="textSecondary">
           FY{currentFiscalYear.toString().slice(-2)} revenue goal vs. actuals per team member.
