@@ -93,21 +93,12 @@ describe('AuthProvider', () => {
     });
   });
 
-  it('falls back to dev user on localhost when API fails', async () => {
-    Object.defineProperty(window, 'location', {
-      writable: true,
-      value: { hostname: 'localhost', href: '' },
-    });
-    mockApiService.getCurrentUser.mockRejectedValue(new Error('Unauthorized'));
-
-    render(
-      <AuthProvider>
-        <AuthConsumer />
-      </AuthProvider>,
-    );
-
-    await waitFor(() => {
-      expect(screen.getByText('user:Dev User')).toBeInTheDocument();
-    });
-  });
+  // The `REACT_APP_DEV_BYPASS` / localhost dev-user fallback branch was
+  // removed from AuthContext.tsx on 2026-04-08 (see tasks/lessons.md →
+  // "Production-Grade Security MVP" entry). All environments, including
+  // local dev, now require real Google OAuth — so the previous
+  // "falls back to dev user on localhost when API fails" test would
+  // exercise a code path that no longer exists. Removed intentionally;
+  // the "sets user to null on API error" test above covers the current
+  // contract (no fallback, localhost or otherwise).
 });

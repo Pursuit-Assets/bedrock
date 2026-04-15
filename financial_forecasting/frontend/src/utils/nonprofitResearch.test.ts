@@ -282,6 +282,13 @@ describe('batchEnrich', () => {
   });
 
   it('processes multiple leads and calls onProgress', async () => {
+    // Use real timers for this test — batchEnrich awaits setTimeout for the
+    // rate-limit delay, and the fake-timer approach (advanceTimersByTime +
+    // Promise.resolve) doesn't reliably flush the intermediate async/await
+    // microtasks under jest, causing a 5000ms test timeout. The real wait is
+    // only ~200ms per inter-lead delay, well within a reasonable budget.
+    jest.useRealTimers();
+
     // Lead A (institutional): search + org lookup
     mockFetchResponse(MOCK_SEARCH_RESPONSE);
     mockFetchResponse(MOCK_ORG_RESPONSE);
@@ -306,13 +313,7 @@ describe('batchEnrich', () => {
 
     const onProgress = jest.fn();
 
-    const promise = batchEnrich([leadA, leadB], onProgress);
-
-    // Advance past the 200ms rate-limit delay between leads
-    jest.advanceTimersByTime(300);
-    await Promise.resolve();
-
-    const results = await promise;
+    const results = await batchEnrich([leadA, leadB], onProgress);
 
     expect(results).toHaveLength(2);
     expect(onProgress).toHaveBeenCalledWith(1, 2);

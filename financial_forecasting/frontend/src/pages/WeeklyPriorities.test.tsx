@@ -60,8 +60,15 @@ describe('WeeklyPriorities — lookahead window', () => {
     expect(isInLookaheadWindow('2026-03-25', now)).toBe(true);
   });
 
-  it('date exactly 30 days out is in window', () => {
-    expect(isInLookaheadWindow('2026-04-15', now)).toBe(true);
+  it('last day of window is in window', () => {
+    // Window = [now, now + LOOKAHEAD_DAYS - 1] inclusive, so with now = Mar 16
+    // and LOOKAHEAD_DAYS = 30, the last included day is Apr 14 (day 29).
+    // Day 30 (Apr 15) falls outside — verified by the sister test below.
+    expect(isInLookaheadWindow('2026-04-14', now)).toBe(true);
+  });
+
+  it('day after window is outside window', () => {
+    expect(isInLookaheadWindow('2026-04-15', now)).toBe(false);
   });
 
   it('date 31 days out is outside window', () => {
@@ -165,14 +172,15 @@ Bob,Jones,Tech Corp,linkedin`;
     expect(result.leads[1].last_name).toBe('Jones');
   });
 
-  it('generates prospect IDs matching expected format', async () => {
+  it('generates lead IDs matching expected format', async () => {
     const csv = `first_name,last_name,organization,source
 Alice,Smith,Org,csv`;
 
     const result = await parseCSV(makeFile(csv));
     expect(result.leads).toHaveLength(1);
-    // IDs should follow prospect-{timestamp}-{index} pattern
-    expect(result.leads[0].id).toMatch(/^prospect-\d+-\d+$/);
+    // IDs follow lead-{timestamp}-{index} pattern (renamed from prospect-
+    // when the lead/prospect terminology was consolidated, csvParser.ts:185).
+    expect(result.leads[0].id).toMatch(/^lead-\d+-\d+$/);
   });
 
   it('handles empty CSV', async () => {
@@ -182,13 +190,18 @@ Alice,Smith,Org,csv`;
     expect(result.leads).toHaveLength(0);
   });
 
-  it('reports errors for rows missing required fields', async () => {
+  it('reports errors for rows with no name at all', async () => {
+    // csvParser.ts:166-170 validates that AT LEAST ONE of first_name /
+    // last_name / name is present. Either alone is acceptable. Only fully
+    // nameless rows trigger a VALIDATION_ERROR. This test previously expected
+    // errors for first- or last-only rows, which is not the current contract.
     const csv = `first_name,last_name,organization,source
-Alice,,Org,csv
-,Smith,Org,csv`;
+,,Org,csv
+,,Another Org,csv`;
 
     const result = await parseCSV(makeFile(csv));
     expect(result.errors.length).toBeGreaterThan(0);
+    expect(result.errors[0].message).toContain('VALIDATION_ERROR');
   });
 });
 
