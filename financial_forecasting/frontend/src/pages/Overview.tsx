@@ -466,6 +466,22 @@ const Progress: React.FC = () => {
     return ids;
   }, [opportunities]);
 
+  // Canonical "has a target" set: goal record exists AND amount > 0. A
+  // $0-amount goal (e.g. accidentally saved from the Targets dialog) is
+  // NOT a target — treating it as one produced a ghost row previously
+  // (row appeared but rendered "Target not set" because the display check
+  // used goal_amount > 0 while the filter only truthy-checked the goal
+  // record). Normalizing through this one memo eliminates the drift.
+  const goalHoldersWithAmount = useMemo(() => {
+    const ids = new Set<string>();
+    if (ownerGoals) {
+      for (const [sfId, goal] of Object.entries(ownerGoals)) {
+        if (goal.goal_amount > 0) ids.add(sfId);
+      }
+    }
+    return ids;
+  }, [ownerGoals]);
+
   const GOAL_STAGES = useMemo(() => ['Collecting / In Effect', 'Closed / Completed'], []);
   const ownerProgress = useMemo(() => {
     if (!opportunities.length) return [];
@@ -474,19 +490,17 @@ const Progress: React.FC = () => {
     const fyEnd = new Date(now.getFullYear(), 11, 31, 23, 59, 59, 999);
     const yearPct = Math.max(0, Math.min(1, (now.getTime() - fyStart.getTime()) / (fyEnd.getTime() - fyStart.getTime())));
 
-    // Build the eligible set: active + visible + has-opps users. Cross with
-    // the set of users who have a goal set. Users without a goal don't
-    // appear on the table (they show up in the "X users lack a target"
-    // counter instead). Users with a goal but no longer active — historical
-    // holders — are included only if they still own opportunities, matching
-    // the "still relevant to track" definition.
+    // Build the eligible set: user must pass ALL THREE checks per the
+    // JP + Jac alignment on 2026-04-15 — IsActive=true in SF (covered by
+    // the `activeUsers` query + Bedrock override), owns ≥1 opportunity
+    // (`ownerIdsWithOpps`), and has a target with amount > 0
+    // (`goalHoldersWithAmount`). No historical-holder fallback — if a
+    // user is IsActive=false in SF they don't appear here, regardless of
+    // whether they still carry a target or opps (HR source of truth).
     const ids = new Set<string>();
     for (const u of activeUsers) {
-      if (ownerIdsWithOpps.has(u.Id) && ownerGoals?.[u.Id]) ids.add(u.Id);
-    }
-    if (ownerGoals) {
-      for (const sfId of Object.keys(ownerGoals)) {
-        if (ownerIdsWithOpps.has(sfId)) ids.add(sfId);
+      if (ownerIdsWithOpps.has(u.Id) && goalHoldersWithAmount.has(u.Id)) {
+        ids.add(u.Id);
       }
     }
 
@@ -551,7 +565,7 @@ const Progress: React.FC = () => {
       if (a.hasTarget) return b.pct - a.pct;
       return a.ownerName.localeCompare(b.ownerName);
     });
-  }, [ownerGoals, opportunities, GOAL_STAGES, activeUsers, allUsers, availableOpenOwners, ownerIdsWithOpps]);
+  }, [ownerGoals, opportunities, GOAL_STAGES, activeUsers, allUsers, availableOpenOwners, ownerIdsWithOpps, goalHoldersWithAmount]);
 
   // Count of users who SHOULD have a target but don't. Definition:
   // active (SF IsActive + visible via override) AND owns at least one
@@ -560,9 +574,9 @@ const Progress: React.FC = () => {
   // who we haven't onboarded to targets yet".
   const missingTargetCount = useMemo(() => {
     return activeUsers.filter(
-      (u) => ownerIdsWithOpps.has(u.Id) && !ownerGoals?.[u.Id],
+      (u) => ownerIdsWithOpps.has(u.Id) && !goalHoldersWithAmount.has(u.Id),
     ).length;
-  }, [activeUsers, ownerIdsWithOpps, ownerGoals]);
+  }, [activeUsers, ownerIdsWithOpps, goalHoldersWithAmount]);
 
   // Aggregate totals for the "Team total" row at the top of Individual
   // Goals & Pipelines. Since the table now only contains targeted users
