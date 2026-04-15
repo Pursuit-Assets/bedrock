@@ -309,4 +309,4 @@ The near-term targets: Bedrock as the primary pipeline tool, at least one retire
 - AI portfolio intelligence: who should own which opportunities, based on relationship history, workload, and funder fit
 - Bedrock merges into Pursuit's unified AI-native learning platform — one login, one system
 
-*For the full vision, Pebble architecture, permission details, progressive workflows, and sprint plan, see the [Addendum](ONBOARDING-ADDENDUM.md).*
+*For the full vision, Pebble architecture, permission details, progressive workflows, sprint plan, and the Opportunity stage glossary (what each stage means and how it maps to wins / losses / revenue), see the [Addendum](ONBOARDING-ADDENDUM.md).*
