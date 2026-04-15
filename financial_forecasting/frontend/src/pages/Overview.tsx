@@ -107,6 +107,22 @@ const Progress: React.FC = () => {
     [opportunitiesData],
   );
 
+  // Fetch Salesforce users so Individual Progress can default to all active
+  // team members (even those without open opps or set revenue targets).
+  const { data: usersData } = useQuery(
+    'users',
+    async () => (await apiService.getUsers({ limit: 1000 })).data,
+    { staleTime: 300000 },
+  );
+  const allUsers = useMemo<Array<{ Id: string; Name: string; IsActive?: boolean }>>(
+    () => (Array.isArray(usersData) ? usersData : (usersData as any)?.users ?? []),
+    [usersData],
+  );
+  const activeUsers = useMemo(
+    () => allUsers.filter((u) => u.IsActive !== false),
+    [allUsers],
+  );
+
   // ── Wall of Progress: derive available owners from currently-open opps ──
   const availableOpenOwners = useMemo<OwnerOption[]>(() => {
     const seen = new Map<string, string>();
@@ -415,18 +431,37 @@ const Progress: React.FC = () => {
     };
   }, [opportunities]);
 
-  // Per-owner progress for targets table
+  // Per-owner progress for targets table. Builds a row for the UNION of
+  // (active Salesforce users) ∪ (users with a goal set) so every active
+  // team member appears on the table even if their FY target hasn't been
+  // entered in Settings → Targets yet. Rows without a goal render with
+  // `hasTarget=false` and a "Not set" affordance instead of a progress bar.
   const GOAL_STAGES = useMemo(() => ['Collecting / In Effect', 'Closed / Completed'], []);
   const ownerProgress = useMemo(() => {
-    if (!ownerGoals || !opportunities.length) return [];
+    if (!opportunities.length) return [];
     const now = new Date();
     const fyStart = new Date(now.getFullYear(), 0, 1);
     const fyEnd = new Date(now.getFullYear(), 11, 31, 23, 59, 59, 999);
+    const yearPct = Math.max(0, Math.min(1, (now.getTime() - fyStart.getTime()) / (fyEnd.getTime() - fyStart.getTime())));
 
-    return Object.entries(ownerGoals).map(([sfId, goal]) => {
-      const target = goal.goal_amount;
+    // Union of IDs: active users + anyone who has a goal set (covers users
+    // whose SF IsActive flag is false but who still carry a target for
+    // historical reporting)
+    const ids = new Set<string>();
+    for (const u of activeUsers) ids.add(u.Id);
+    if (ownerGoals) for (const sfId of Object.keys(ownerGoals)) ids.add(sfId);
 
-      // Wins: closed/collecting in FY, owned by this user
+    const nameById = (sfId: string) =>
+      allUsers.find((u) => u.Id === sfId)?.Name
+      || availableOpenOwners.find((o) => o.id === sfId)?.name
+      || opportunities.find((o) => o.OwnerId === sfId)?.Owner?.Name
+      || sfId;
+
+    return Array.from(ids).map((sfId) => {
+      const goal = ownerGoals?.[sfId];
+      const hasTarget = !!goal && goal.goal_amount > 0;
+      const target = hasTarget ? goal.goal_amount : 0;
+
       const wonOpps = opportunities.filter((o) =>
         o.OwnerId === sfId &&
         GOAL_STAGES.includes(o.StageName) &&
@@ -434,32 +469,50 @@ const Progress: React.FC = () => {
       );
       const wins = wonOpps.reduce((s, o) => s + (o.Amount || 0), 0);
 
-      // Open pipeline for this user
       const openOpps = opportunities.filter((o) =>
         o.OwnerId === sfId && OPEN_STAGES.includes(o.StageName as any)
       );
       const pipeline = openOpps.reduce((s, o) => s + (o.Amount || 0), 0);
       const weighted = openOpps.reduce((s, o) => s + ((o.Amount || 0) * (o.Probability || 0)) / 100, 0);
 
-      // Projection: wins so far annualized
-      const elapsed = Math.max(1, (now.getTime() - fyStart.getTime()) / (fyEnd.getTime() - fyStart.getTime()) * 12);
-      const projected = (wins / elapsed) * 12;
+      // Projection: wins so far annualized (FY-linear). Useful even without
+      // a target — shows the run-rate trajectory.
+      const elapsedMonths = Math.max(1, (now.getTime() - fyStart.getTime()) / (fyEnd.getTime() - fyStart.getTime()) * 12);
+      const projected = (wins / elapsedMonths) * 12;
 
-      const remaining = Math.max(0, target - wins);
-      const pct = target > 0 ? Math.min(1, wins / target) : 0;
+      const remaining = hasTarget ? Math.max(0, target - wins) : 0;
+      const pct = hasTarget ? Math.min(1, wins / target) : 0;
+      const onTrack: 'ahead' | 'close' | 'behind' | 'none' = !hasTarget
+        ? 'none'
+        : pct >= yearPct ? 'ahead'
+        : pct >= yearPct * 0.75 ? 'close'
+        : 'behind';
 
-      // How far through the FY are we (0..1)
-      const yearPct = Math.max(0, Math.min(1, (now.getTime() - fyStart.getTime()) / (fyEnd.getTime() - fyStart.getTime())));
-      // On track = wins % >= year % (or close to it)
-      const onTrack = pct >= yearPct ? 'ahead' : pct >= yearPct * 0.75 ? 'close' : 'behind';
-
-      const ownerName = availableOpenOwners.find((o) => o.id === sfId)?.name
-        || opportunities.find((o) => o.OwnerId === sfId)?.Owner?.Name
-        || sfId;
-
-      return { sfId, ownerName, target, wins, remaining, projected, pct, yearPct, onTrack, pipeline, weighted, wonOpps, openOpps };
-    }).sort((a, b) => b.pct - a.pct);
-  }, [ownerGoals, opportunities, GOAL_STAGES, availableOpenOwners]);
+      return {
+        sfId,
+        ownerName: nameById(sfId),
+        hasTarget,
+        target,
+        wins,
+        remaining,
+        projected,
+        pct,
+        yearPct,
+        onTrack,
+        pipeline,
+        weighted,
+        wonOpps,
+        openOpps,
+      };
+    }).sort((a, b) => {
+      // Users with targets first (by pct desc), users without targets
+      // grouped at the bottom alphabetically — keeps the "needs attention"
+      // info high on the page.
+      if (a.hasTarget !== b.hasTarget) return a.hasTarget ? -1 : 1;
+      if (a.hasTarget) return b.pct - a.pct;
+      return a.ownerName.localeCompare(b.ownerName);
+    });
+  }, [ownerGoals, opportunities, GOAL_STAGES, activeUsers, allUsers, availableOpenOwners]);
 
   const formatPercent = (value: number) => {
     return `${value.toFixed(1)}%`;
@@ -470,7 +523,7 @@ const Progress: React.FC = () => {
       <Box sx={{ width: '100%', mt: 4 }}>
         <LinearProgress />
         <Typography align="center" sx={{ mt: 2 }}>
-          Loading dashboard...
+          Loading progress...
         </Typography>
       </Box>
     );
@@ -479,10 +532,7 @@ const Progress: React.FC = () => {
   if (!metrics || (!user?.salesforce_connected && opportunities.length === 0)) {
     return (
       <Box>
-        <Box sx={{ mb: 4 }}>
-          <Typography variant="h4" gutterBottom>Overview</Typography>
-        </Box>
-        <ConnectPrompt service="Salesforce" message="Connect Salesforce in Settings to see your pipeline overview." />
+        <ConnectPrompt service="Salesforce" message="Connect Salesforce in Settings to see team progress." />
       </Box>
     );
   }
@@ -494,14 +544,14 @@ const Progress: React.FC = () => {
           "Team pipeline accountability · …" duplicated that header. */}
 
       {/* Pipeline Summary Table */}
-      <Box sx={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', flexWrap: 'wrap', gap: 1, mb: 0.5 }}>
+      <Box sx={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', flexWrap: 'wrap', gap: 1, mb: 0.25 }}>
         <Typography variant="h6" sx={{ fontWeight: 700 }}>Pipeline</Typography>
         <Typography variant="caption" color="text.secondary">
-          Updated: {format(new Date(), 'PPpp')}
+          Updated {format(new Date(), 'PPp')}
         </Typography>
       </Box>
-      <Typography variant="body2" color="textSecondary" sx={{ mb: 2 }}>
-        Wins + open pipeline ({metrics.totalDeals} active opps) &middot; Probability-weighted scenarios
+      <Typography variant="body2" color="textSecondary" sx={{ mb: 1.5 }}>
+        Quarterly wins and open pipeline &middot; {metrics.totalDeals} active deals &middot; probability-weighted
       </Typography>
 
       <TableContainer component={Paper} variant="outlined" sx={{ mb: 3 }}>
@@ -617,19 +667,19 @@ const Progress: React.FC = () => {
       </TableContainer>
 
 
-      {/* ── Individual Progress — targets table with expandable detail ── */}
-      <Box sx={{ mb: 2, mt: 3 }}>
-        <Typography variant="h6" sx={{ fontWeight: 700, mb: 0.5 }}>
+      {/* ── Individual Progress — one row per active team member ── */}
+      <Box sx={{ mb: 1, mt: 2 }}>
+        <Typography variant="h6" sx={{ fontWeight: 700, mb: 0.25 }}>
           Individual Progress
         </Typography>
-        <Typography variant="body2" color="textSecondary" sx={{ mb: 2 }}>
-          FY{currentFiscalYear.toString().slice(-2)} revenue targets &middot; Click a row to see pipeline detail
+        <Typography variant="body2" color="textSecondary">
+          FY{currentFiscalYear.toString().slice(-2)} revenue goal vs. actuals per team member.
         </Typography>
       </Box>
 
       {ownerProgress.length === 0 ? (
         <Alert severity="info" sx={{ mb: 2 }}>
-          No revenue targets set for FY{currentFiscalYear}. Add targets in Settings &rarr; Targets.
+          No active team members found. Add users in Settings &rarr; User Management.
         </Alert>
       ) : (
         <TableContainer component={Paper} variant="outlined" sx={{ mb: 3 }}>
@@ -665,65 +715,84 @@ const Progress: React.FC = () => {
                         <Typography variant="body2" sx={{ fontWeight: 600 }}>{row.ownerName}</Typography>
                       </TableCell>
                       <TableCell>
-                        <Box sx={{ position: 'relative' }}>
-                          <LinearProgress
-                            variant="determinate"
-                            value={Math.min(100, row.pct * 100)}
-                            color={statusColor as any}
-                            sx={{ height: 18, borderRadius: 1, bgcolor: 'grey.100' }}
-                          />
-                          {/* Year-progress marker */}
-                          <MuiTooltip title={`Today: ${(row.yearPct * 100).toFixed(0)}% through FY`} arrow placement="top">
-                            <Box
-                              sx={{
-                                position: 'absolute',
-                                left: `${row.yearPct * 100}%`,
-                                top: -2,
-                                bottom: -2,
-                                width: 2,
-                                bgcolor: 'text.primary',
-                                opacity: 0.7,
-                                zIndex: 1,
-                                '&::after': {
-                                  content: '""',
+                        {row.hasTarget ? (
+                          <Box sx={{ position: 'relative' }}>
+                            <LinearProgress
+                              variant="determinate"
+                              value={Math.min(100, row.pct * 100)}
+                              color={statusColor as any}
+                              sx={{ height: 18, borderRadius: 1, bgcolor: 'grey.100' }}
+                            />
+                            {/* Year-progress marker */}
+                            <MuiTooltip title={`Today: ${(row.yearPct * 100).toFixed(0)}% through FY`} arrow placement="top">
+                              <Box
+                                sx={{
                                   position: 'absolute',
-                                  top: -3,
-                                  left: -3,
-                                  width: 8,
-                                  height: 8,
-                                  borderRadius: '50%',
+                                  left: `${row.yearPct * 100}%`,
+                                  top: -2,
+                                  bottom: -2,
+                                  width: 2,
                                   bgcolor: 'text.primary',
                                   opacity: 0.7,
-                                },
-                              }}
-                            />
-                          </MuiTooltip>
-                          {/* Percentage label */}
-                          <Typography
-                            variant="caption"
-                            sx={{ position: 'absolute', left: '50%', top: '50%', transform: 'translate(-50%, -50%)', fontWeight: 700, fontSize: '0.65rem', color: row.pct > 0.35 ? 'white' : 'text.primary', zIndex: 2 }}
-                          >
-                            {(row.pct * 100).toFixed(0)}%
+                                  zIndex: 1,
+                                  '&::after': {
+                                    content: '""',
+                                    position: 'absolute',
+                                    top: -3,
+                                    left: -3,
+                                    width: 8,
+                                    height: 8,
+                                    borderRadius: '50%',
+                                    bgcolor: 'text.primary',
+                                    opacity: 0.7,
+                                  },
+                                }}
+                              />
+                            </MuiTooltip>
+                            {/* Percentage label */}
+                            <Typography
+                              variant="caption"
+                              sx={{ position: 'absolute', left: '50%', top: '50%', transform: 'translate(-50%, -50%)', fontWeight: 700, fontSize: '0.65rem', color: row.pct > 0.35 ? 'white' : 'text.primary', zIndex: 2 }}
+                            >
+                              {(row.pct * 100).toFixed(0)}%
+                            </Typography>
+                          </Box>
+                        ) : (
+                          <Typography variant="caption" color="text.disabled" sx={{ fontStyle: 'italic' }}>
+                            Target not set
                           </Typography>
-                        </Box>
+                        )}
                       </TableCell>
                       <TableCell align="right">
-                        <Typography variant="body2" sx={{ fontWeight: 600, color: 'success.main' }}>
-                          {formatDollarMillions(row.wins)}
+                        <Typography variant="body2" sx={{ fontWeight: 600, color: row.wins > 0 ? 'success.main' : 'text.disabled' }}>
+                          {row.wins > 0 ? formatDollarMillions(row.wins) : '—'}
                         </Typography>
                       </TableCell>
                       <TableCell align="right">
-                        <Typography variant="body2" color={row.remaining > 0 ? 'text.primary' : 'success.main'}>
-                          {row.remaining > 0 ? formatDollarMillions(row.remaining) : 'Met'}
+                        {row.hasTarget ? (
+                          <Typography variant="body2" color={row.remaining > 0 ? 'text.primary' : 'success.main'}>
+                            {row.remaining > 0 ? formatDollarMillions(row.remaining) : 'Met'}
+                          </Typography>
+                        ) : (
+                          <Typography variant="body2" color="text.disabled">—</Typography>
+                        )}
+                      </TableCell>
+                      <TableCell align="right">
+                        <Typography
+                          variant="body2"
+                          sx={{ color: row.hasTarget
+                            ? (row.projected >= row.target ? 'success.main' : 'warning.main')
+                            : 'text.secondary' }}
+                        >
+                          {row.projected > 0 ? formatDollarMillions(row.projected) : '—'}
                         </Typography>
                       </TableCell>
                       <TableCell align="right">
-                        <Typography variant="body2" sx={{ color: row.projected >= row.target ? 'success.main' : 'warning.main' }}>
-                          {formatDollarMillions(row.projected)}
-                        </Typography>
-                      </TableCell>
-                      <TableCell align="right">
-                        <Typography variant="body2" sx={{ fontWeight: 500 }}>{formatDollarMillions(row.target)}</Typography>
+                        {row.hasTarget ? (
+                          <Typography variant="body2" sx={{ fontWeight: 500 }}>{formatDollarMillions(row.target)}</Typography>
+                        ) : (
+                          <Typography variant="body2" color="text.disabled" sx={{ fontStyle: 'italic' }}>Not set</Typography>
+                        )}
                       </TableCell>
                     </TableRow>
 
