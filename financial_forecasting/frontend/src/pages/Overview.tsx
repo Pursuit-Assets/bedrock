@@ -76,7 +76,7 @@ interface Opportunity {
 const CLOSED_WON_STAGES = ['Closed Won', 'Closed / Completed', 'Collecting / In Effect', 'Collecting', 'In Collection', 'In Effect'];
 const CLOSED_LOST_STAGES = ['Closed Lost', 'Withdrawn', 'Did not Fulfill', 'Closed / Did not Fulfill'];
 
-const Dashboard: React.FC = () => {
+const Progress: React.FC = () => {
   const navigate = useNavigate();
   const { user } = useAuth();
   const { sfUserId } = usePermissions();
@@ -489,18 +489,17 @@ const Dashboard: React.FC = () => {
 
   return (
     <Box>
-      {/* Header */}
-      <Box sx={{ mb: 4 }}>
-        <Typography variant="h4" gutterBottom>
-          Wall of Progress
-        </Typography>
-        <Typography variant="body2" color="textSecondary">
-          Team pipeline accountability &middot; Real-time goal tracking per RM &middot; Updated: {format(new Date(), 'PPpp')}
-        </Typography>
-      </Box>
+      {/* Page title + subtitle come from Layout's ALL_MENU_ITEMS (single
+          source of truth). Previous in-page H4 "Wall of Progress" +
+          "Team pipeline accountability · …" duplicated that header. */}
 
       {/* Pipeline Summary Table */}
-      <Typography variant="h6" sx={{ fontWeight: 700, mb: 0.5 }}>Pipeline</Typography>
+      <Box sx={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', flexWrap: 'wrap', gap: 1, mb: 0.5 }}>
+        <Typography variant="h6" sx={{ fontWeight: 700 }}>Pipeline</Typography>
+        <Typography variant="caption" color="text.secondary">
+          Updated: {format(new Date(), 'PPpp')}
+        </Typography>
+      </Box>
       <Typography variant="body2" color="textSecondary" sx={{ mb: 2 }}>
         Wins + open pipeline ({metrics.totalDeals} active opps) &middot; Probability-weighted scenarios
       </Typography>
@@ -835,4 +834,4 @@ const Dashboard: React.FC = () => {
   );
 };
 
-export default Dashboard;
+export default Progress;

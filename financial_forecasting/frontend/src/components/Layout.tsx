@@ -71,8 +71,8 @@ interface LayoutProps {
 // Keep them scannable, ~60-110 chars, sentence case.
 const ALL_MENU_ITEMS = [
   {
-    text: 'Dashboard',
-    subtitle: 'Wall of Progress — team targets, wins closed, and pipeline rollup.',
+    text: 'Progress',
+    subtitle: 'Team pipeline accountability — real-time goal tracking per RM.',
     icon: <HomeIcon />,
     path: '/dashboard',
   },
@@ -121,7 +121,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
 
   const [mobileOpen, setMobileOpen] = useState(false);
 
-  // MVP nav: show Priorities, Dashboard, Reports, Settings. Set REACT_APP_NAV_PHASE=FULL for all pages.
+  // MVP nav: show Priorities, Progress, Reports, Projects, Settings. Set REACT_APP_NAV_PHASE=FULL for all pages.
   const navPhase = process.env.REACT_APP_NAV_PHASE || 'MVP';
   const menuItems = useMemo(() => {
     let items = ALL_MENU_ITEMS;
