@@ -17,6 +17,16 @@ import type {
   ActivitySearchParams,
 } from '../types/activity';
 
+/** Request body for POST /api/ai/pipeline-analysis.
+ *  Either `days` (preset lookback, 1..365) OR `start`+`end` (YYYY-MM-DD, within
+ *  the last 365 days). `days` and start/end are mutually exclusive server-side. */
+export interface PipelineAnalysisBody {
+  days?: number;
+  start?: string;
+  end?: string;
+  owner_ids?: string[];
+}
+
 // Create axios instance with default config
 const api: AxiosInstance = axios.create({
   baseURL: process.env.REACT_APP_API_URL || 'http://localhost:8000',
@@ -93,8 +103,8 @@ export const apiService = {
   getOwnershipHistory: (days: number = 7) =>
     api.get('/api/salesforce/opportunities/ownership-history', { params: { days } }),
 
-  analyzePipeline: (days: number = 30, ownerIds: string[] = []) =>
-    api.post('/api/ai/pipeline-analysis', { days, owner_ids: ownerIds }),
+  analyzePipeline: (body: PipelineAnalysisBody) =>
+    api.post('/api/ai/pipeline-analysis', body),
 
   // Owner Goals (Wall of Progress)
   getOwnerGoals: (fiscalYear: number) =>

@@ -5,8 +5,6 @@ import {
   Card,
   CardContent,
   Collapse,
-  ToggleButton,
-  ToggleButtonGroup,
   Table,
   TableBody,
   TableCell,
@@ -33,7 +31,12 @@ import { useQuery, useQueryClient } from 'react-query';
 import { format, parseISO, formatDistanceToNow, differenceInDays } from 'date-fns';
 import { formatDollarMillions } from '../utils/formatters';
 import { getStageHexColor } from '../types/salesforce';
-import { apiService } from '../services/api';
+import { apiService, PipelineAnalysisBody } from '../services/api';
+import LookbackRangeSelector, {
+  LookbackValue,
+  lookbackToDays,
+  formatLookbackLabel,
+} from './LookbackRangeSelector';
 
 import {
   ACTIVE_FUNNEL_STAGES,
@@ -43,9 +46,6 @@ import {
   classifyTransition,
   TransitionKind,
 } from './pipelineFunnelTransitions';
-
-type DateRange = '7d' | '30d' | '90d';
-const DAYS_MAP: Record<DateRange, number> = { '7d': 7, '30d': 30, '90d': 90 };
 
 interface Opportunity {
   Id: string;
@@ -248,13 +248,17 @@ function buildLossRows(layer: FunnelLayer): FlowRow[] {
 }
 
 const PipelineFunnel: React.FC<PipelineFunnelProps> = ({ opportunities, selectedOwnerIds, ownerId }) => {
-  const [dateRange, setDateRange] = useState<DateRange>('30d');
+  const [lookback, setLookback] = useState<LookbackValue>({ preset: 'last30d' });
   const [expandedStage, setExpandedStage] = useState<string | null>(null);
   // Focus dropdown lets the user narrow the funnel to a single owner from the
   // current selection without changing the page-level multi-select.
   const [focusOwnerId, setFocusOwnerId] = useState<string>('all');
 
-  const days = DAYS_MAP[dateRange];
+  // `days` drives the /stage-history fetch (endpoint accepts only days int).
+  // For custom ranges this is a superset window; the overlay is then
+  // client-filtered to [rangeStart, rangeEnd] below.
+  const days = lookbackToDays(lookback);
+  const rangeLabel = useMemo(() => formatLookbackLabel(lookback), [lookback]);
 
   // Owners visible in the focus dropdown are derived from the opportunities prop.
   // Sorted alphabetically, names resolved from Owner.Name relationship.
@@ -295,10 +299,28 @@ const PipelineFunnel: React.FC<PipelineFunnelProps> = ({ opportunities, selected
   );
 
   const history = useMemo(() => {
-    const raw = historyData || [];
-    if (!effectiveOwnerIds) return raw;
-    return raw.filter((h) => h.OwnerId && effectiveOwnerIds.has(h.OwnerId));
-  }, [historyData, effectiveOwnerIds]);
+    let out = historyData || [];
+    if (effectiveOwnerIds) {
+      out = out.filter((h) => h.OwnerId && effectiveOwnerIds.has(h.OwnerId));
+    }
+    // Client-side date narrowing only for custom ranges — presets are already
+    // filtered exactly by the backend via LAST_N_DAYS:n. SF CreatedDate comes
+    // back like "2026-04-01T10:00:00.000+0000"; parseISO handles the +0000
+    // suffix (lexical compare against a "…Z" ISO string would break).
+    if (lookback.preset === 'custom') {
+      const rsMs = new Date(`${lookback.start}T00:00:00.000Z`).getTime();
+      const reMs = new Date(`${lookback.end}T23:59:59.999Z`).getTime();
+      out = out.filter((h) => {
+        try {
+          const t = parseISO(h.CreatedDate).getTime();
+          return t >= rsMs && t <= reMs;
+        } catch {
+          return false;
+        }
+      });
+    }
+    return out;
+  }, [historyData, effectiveOwnerIds, lookback]);
 
   const filteredOpps = useMemo(
     () =>
@@ -324,20 +346,39 @@ const PipelineFunnel: React.FC<PipelineFunnelProps> = ({ opportunities, selected
     return Array.from(effectiveOwnerIds).sort();
   }, [effectiveOwnerIds]);
 
-  const analysisCacheKey = useMemo(
-    () => ['pipeline-analysis', days, analysisOwnerIds.join(',')],
-    [days, analysisOwnerIds],
-  );
+  // Request body for /api/ai/pipeline-analysis. Custom ranges send explicit
+  // start/end (so the AI sees exactly what the overlay shows); presets send
+  // days (so the server uses LAST_N_DAYS:n and hits the shared cache path).
+  const analysisBody = useMemo<PipelineAnalysisBody>(() => {
+    if (lookback.preset === 'custom') {
+      return {
+        start: lookback.start,
+        end: lookback.end,
+        owner_ids: analysisOwnerIds,
+      };
+    }
+    return { days: lookbackToDays(lookback), owner_ids: analysisOwnerIds };
+  }, [lookback, analysisOwnerIds]);
+
+  const analysisCacheKey = useMemo(() => {
+    const rangeKey =
+      lookback.preset === 'custom'
+        ? `custom:${lookback.start}:${lookback.end}`
+        : `days:${lookbackToDays(lookback)}`;
+    return ['pipeline-analysis', rangeKey, analysisOwnerIds.join(',')];
+  }, [lookback, analysisOwnerIds]);
 
   const { data: analysisData, isLoading: analysisLoading, isFetching: analysisFetching } = useQuery(
     analysisCacheKey,
     async () => {
-      const response = await apiService.analyzePipeline(days, analysisOwnerIds);
+      const response = await apiService.analyzePipeline(analysisBody);
       return response.data as {
         analysis: string;
         generated_at: string;
         changes_count: number;
         days: number;
+        start?: string | null;
+        end?: string | null;
         owner_ids?: string[];
         owner_names?: string[];
       };
@@ -398,16 +439,7 @@ const PipelineFunnel: React.FC<PipelineFunnelProps> = ({ opportunities, selected
                 </Select>
               </FormControl>
             )}
-            <ToggleButtonGroup
-              size="small"
-              exclusive
-              value={dateRange}
-              onChange={(_, v) => v && setDateRange(v)}
-            >
-              <ToggleButton value="7d" sx={{ textTransform: 'none', fontSize: '0.75rem', px: 1.5 }}>7d</ToggleButton>
-              <ToggleButton value="30d" sx={{ textTransform: 'none', fontSize: '0.75rem', px: 1.5 }}>30d</ToggleButton>
-              <ToggleButton value="90d" sx={{ textTransform: 'none', fontSize: '0.75rem', px: 1.5 }}>90d</ToggleButton>
-            </ToggleButtonGroup>
+            <LookbackRangeSelector value={lookback} onChange={setLookback} />
           </Box>
         </Box>
 
@@ -493,7 +525,7 @@ const PipelineFunnel: React.FC<PipelineFunnelProps> = ({ opportunities, selected
 
                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, borderLeft: '1px solid', borderColor: 'divider', pl: 1, ml: 0.5 }}>
                       {progressingCount > 0 && (
-                        <Tooltip title={`${progressingCount} opps advanced forward or entered from an earlier stage in the last ${days}d`} arrow>
+                        <Tooltip title={`${progressingCount} opps advanced forward or entered from an earlier stage ${rangeLabel}`} arrow>
                           <Typography variant="caption" sx={{ color: '#2e7d32', fontWeight: 600, fontSize: '0.7rem', whiteSpace: 'nowrap', cursor: 'default' }}>
                             {progressingCount} progressing
                           </Typography>
@@ -503,7 +535,7 @@ const PipelineFunnel: React.FC<PipelineFunnelProps> = ({ opportunities, selected
                         <Typography variant="caption" sx={{ color: 'text.disabled' }}>·</Typography>
                       )}
                       {wonCount > 0 && (
-                        <Tooltip title={`${wonCount} opp${wonCount !== 1 ? 's' : ''} closed as Won from ${layer.stage} in the last ${days}d`} arrow>
+                        <Tooltip title={`${wonCount} opp${wonCount !== 1 ? 's' : ''} closed as Won from ${layer.stage} ${rangeLabel}`} arrow>
                           <Typography variant="caption" sx={{ color: '#1b5e20', fontWeight: 700, fontSize: '0.7rem', whiteSpace: 'nowrap', cursor: 'default' }}>
                             {wonCount} won
                           </Typography>
@@ -513,7 +545,7 @@ const PipelineFunnel: React.FC<PipelineFunnelProps> = ({ opportunities, selected
                         <Typography variant="caption" sx={{ color: 'text.disabled' }}>·</Typography>
                       )}
                       {setbackCount > 0 && (
-                        <Tooltip title={`${setbackCount} opps regressed backward or fell back to an earlier stage in the last ${days}d`} arrow>
+                        <Tooltip title={`${setbackCount} opps regressed backward or fell back to an earlier stage ${rangeLabel}`} arrow>
                           <Typography variant="caption" sx={{ color: '#d32f2f', fontWeight: 600, fontSize: '0.7rem', whiteSpace: 'nowrap', cursor: 'default' }}>
                             {setbackCount} setback{setbackCount !== 1 ? 's' : ''}
                           </Typography>
@@ -523,7 +555,7 @@ const PipelineFunnel: React.FC<PipelineFunnelProps> = ({ opportunities, selected
                         <Typography variant="caption" sx={{ color: 'text.disabled' }}>·</Typography>
                       )}
                       {lostCount > 0 && (
-                        <Tooltip title={`${lostCount} opp${lostCount !== 1 ? 's' : ''} closed as Lost or Withdrawn from ${layer.stage} in the last ${days}d`} arrow>
+                        <Tooltip title={`${lostCount} opp${lostCount !== 1 ? 's' : ''} closed as Lost or Withdrawn from ${layer.stage} ${rangeLabel}`} arrow>
                           <Typography variant="caption" sx={{ color: 'text.secondary', fontWeight: 600, fontSize: '0.7rem', whiteSpace: 'nowrap', cursor: 'default' }}>
                             {lostCount} lost
                           </Typography>
@@ -560,7 +592,7 @@ const PipelineFunnel: React.FC<PipelineFunnelProps> = ({ opportunities, selected
                         </Tooltip>
                       )}
                       {!hasActivity && layer.stagnation > 0 && (
-                        <Tooltip title={`${layer.count} opps with no stage movement in the last ${days}d`} arrow>
+                        <Tooltip title={`${layer.count} opps with no stage movement ${rangeLabel}`} arrow>
                           <StagnantIcon sx={{ fontSize: 15, color: '#ed6c02' }} />
                         </Tooltip>
                       )}
@@ -660,12 +692,12 @@ const PipelineFunnel: React.FC<PipelineFunnelProps> = ({ opportunities, selected
 
                     {!hasActivity && oppsInStage.length > 0 && (
                       <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1 }}>
-                        No stage movements in the last {days} days.
+                        No stage movements {rangeLabel}.
                       </Typography>
                     )}
                     {!hasActivity && oppsInStage.length === 0 && (
                       <Typography variant="caption" color="text.secondary">
-                        No stage movements in the last {days} days.
+                        No stage movements {rangeLabel}.
                       </Typography>
                     )}
                   </Box>
