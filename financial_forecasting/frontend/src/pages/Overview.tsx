@@ -533,6 +533,24 @@ const Progress: React.FC = () => {
     });
   }, [ownerGoals, opportunities, GOAL_STAGES, activeUsers, allUsers, availableOpenOwners]);
 
+  // Aggregate totals for the "Team total" row at the top of Individual
+  // Goals & Pipelines. Wins and projected sum across ALL rows (targeted
+  // and untargeted contribute both since they reflect real pipeline);
+  // remaining + target only sum targeted users — users without a goal
+  // don't have a "remaining" or "target" to count toward the team number.
+  const teamTotals = useMemo(() => {
+    const targeted = ownerProgress.filter((r) => r.hasTarget);
+    const totalTarget = targeted.reduce((s, r) => s + r.target, 0);
+    const totalTargetedWins = targeted.reduce((s, r) => s + r.wins, 0);
+    return {
+      wins: ownerProgress.reduce((s, r) => s + r.wins, 0),
+      remaining: targeted.reduce((s, r) => s + r.remaining, 0),
+      projected: ownerProgress.reduce((s, r) => s + r.projected, 0),
+      target: totalTarget,
+      pct: totalTarget > 0 ? Math.min(1, totalTargetedWins / totalTarget) : 0,
+    };
+  }, [ownerProgress]);
+
   const formatPercent = (value: number) => {
     return `${value.toFixed(1)}%`;
   };
@@ -565,8 +583,8 @@ const Progress: React.FC = () => {
       {/* Current FY Overview — team-wide wins + open pipeline table */}
       <Box sx={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', flexWrap: 'wrap', gap: 1, mb: 0.25 }}>
         <Typography variant="h6" sx={{ fontWeight: 700 }}>Current FY Overview</Typography>
-        <Typography variant="caption" color="text.secondary">
-          Updated {format(new Date(), 'PPp')}
+        <Typography variant="caption" color="text.disabled">
+          Updated {format(new Date(), 'p')}
         </Typography>
       </Box>
       <Typography variant="body2" color="textSecondary" sx={{ mb: 1.5 }}>
@@ -715,6 +733,55 @@ const Progress: React.FC = () => {
               </TableRow>
             </TableHead>
             <TableBody>
+              {/* Team total — aggregate of all visible rows. Non-expandable
+                  (no chevron / no onClick) and visually weightier than body
+                  rows so it reads as the summary line. */}
+              <TableRow sx={{ bgcolor: 'grey.50', '& td': { fontWeight: 700 } }}>
+                <TableCell sx={{ width: 32 }} />
+                <TableCell>
+                  <Typography variant="body2" sx={{ fontWeight: 700 }}>Team total</Typography>
+                </TableCell>
+                <TableCell>
+                  <Box sx={{ position: 'relative' }}>
+                    <LinearProgress
+                      variant="determinate"
+                      value={Math.min(100, teamTotals.pct * 100)}
+                      sx={{ height: 18, borderRadius: 1, bgcolor: 'grey.200' }}
+                    />
+                    <Typography
+                      variant="caption"
+                      sx={{
+                        position: 'absolute', left: '50%', top: '50%',
+                        transform: 'translate(-50%, -50%)',
+                        fontWeight: 700, fontSize: '0.65rem',
+                        color: teamTotals.pct > 0.35 ? 'white' : 'text.primary',
+                      }}
+                    >
+                      {(teamTotals.pct * 100).toFixed(0)}%
+                    </Typography>
+                  </Box>
+                </TableCell>
+                <TableCell align="right">
+                  <Typography variant="body2" sx={{ fontWeight: 700, color: teamTotals.wins > 0 ? 'success.main' : 'text.disabled' }}>
+                    {teamTotals.wins > 0 ? formatDollarMillions(teamTotals.wins) : '—'}
+                  </Typography>
+                </TableCell>
+                <TableCell align="right">
+                  <Typography variant="body2" sx={{ fontWeight: 700, color: teamTotals.remaining > 0 ? 'text.primary' : 'success.main' }}>
+                    {teamTotals.remaining > 0 ? formatDollarMillions(teamTotals.remaining) : 'Met'}
+                  </Typography>
+                </TableCell>
+                <TableCell align="right">
+                  <Typography variant="body2" sx={{ fontWeight: 700 }}>
+                    {teamTotals.projected > 0 ? formatDollarMillions(teamTotals.projected) : '—'}
+                  </Typography>
+                </TableCell>
+                <TableCell align="right">
+                  <Typography variant="body2" sx={{ fontWeight: 700 }}>
+                    {teamTotals.target > 0 ? formatDollarMillions(teamTotals.target) : '—'}
+                  </Typography>
+                </TableCell>
+              </TableRow>
               {ownerProgress.map((row) => {
                 const isExpanded = expandedOwnerId === row.sfId;
                 const statusColor = row.onTrack === 'ahead' ? 'success' : row.onTrack === 'close' ? 'warning' : 'error';
@@ -722,7 +789,14 @@ const Progress: React.FC = () => {
                   <React.Fragment key={row.sfId}>
                     <TableRow
                       hover
-                      sx={{ cursor: 'pointer', '& > td': { borderBottom: isExpanded ? 'none' : undefined } }}
+                      sx={{
+                        cursor: 'pointer',
+                        // De-emphasize untargeted users — keeps the "needs
+                        // attention" (targeted) rows visually dominant so
+                        // eyes don't have to compete with the dim rows.
+                        opacity: row.hasTarget ? 1 : 0.55,
+                        '& > td': { borderBottom: isExpanded ? 'none' : undefined },
+                      }}
                       onClick={() => setExpandedOwnerId(isExpanded ? null : row.sfId)}
                     >
                       <TableCell sx={{ px: 0.5 }}>
