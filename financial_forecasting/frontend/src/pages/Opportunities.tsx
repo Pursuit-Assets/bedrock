@@ -573,7 +573,7 @@ const Opportunities: React.FC = () => {
                 // handle their own save flow — listing them here silently
                 // re-enables DataGrid-native edit alongside the domain cell
                 // if someone ever flips `editable: true` on the column.
-                return ['Name', 'Probability', 'CloseDate'].includes(params.field);
+                return ['Name', 'CloseDate'].includes(params.field);
               }}
               sx={{
                 '& .MuiDataGrid-cell:focus': { outline: 'none' },

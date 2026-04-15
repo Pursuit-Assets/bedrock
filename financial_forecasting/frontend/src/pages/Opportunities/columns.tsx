@@ -32,6 +32,7 @@ import { OwnerCell } from '../../components/inline-edit/cells/OwnerCell';
 import { AccountCell } from '../../components/inline-edit/cells/AccountCell';
 import { AmountCell } from '../../components/inline-edit/cells/AmountCell';
 import { DateCell } from '../../components/inline-edit/cells/DateCell';
+import { ProbabilityCell } from '../../components/inline-edit/cells/ProbabilityCell';
 
 /**
  * Look up the display name of the user who holds the record-level lock on
@@ -154,14 +155,20 @@ export function buildPipelineColumns(cb: ColumnCallbacks): GridColDef[] {
       flex: 0.7,
       minWidth: 110,
       type: 'number',
-      editable: true,
+      // DataGrid native edit disabled; ProbabilityCell owns the edit flow
+      // (sensitive field — requires unlock confirmation per the Apr-14
+      // adversarial review C1 finding). getProbabilityColor was the only
+      // caller of the inline Chip; ProbabilityCell handles its own display.
+      editable: false,
       filterable: true,
       renderCell: (params: GridRenderCellParams) => (
-        <Chip
-          label={`${params.value}%`}
-          color={getProbabilityColor(params.value as number)}
-          size="small"
-          variant="outlined"
+        <ProbabilityCell
+          value={(params.value as number | null) ?? null}
+          onSave={async (v) => {
+            if (cb.onSaveField) await cb.onSaveField(params.row.Id, 'Probability', v);
+          }}
+          recordLock={cb.lockMap?.get(params.row.Id) ?? null}
+          recordLockedByName={resolveLockerName(cb, params.row.Id)}
         />
       ),
     },
