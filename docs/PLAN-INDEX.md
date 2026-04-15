@@ -2,9 +2,9 @@
 
 Master index of all planned and completed milestones. Unique numbering — no duplicates, no ambiguity.
 
-**Last completed:** M19 (Project Ownership Model, 2026-03-31)
-**Last shipped:** Sprint A (Permission Profiles + Nav Gating, PR #94, 2026-03-31) + M19 (Project Ownership, 2026-03-31)
-**Next up:** M20 (Task Requests) + Sprint B
+**Last completed:** Progress Page series + Pipeline Flow rework (PRs #104–#129, 2026-04-14 to 2026-04-15)
+**Last shipped:** M19 (Project Ownership, 2026-03-31). **28 commits accumulated on `dev` since**, not yet promoted to `main` — PR #126 (dev→main) intentionally closed to batch, plus PR #129 still open on top.
+**Next up:** Fundraising glossary conversation → F1/F2/F3 stage-schema-drift fixes → M20 (Task Requests) + Sprint B
 
 ---
 
@@ -87,6 +87,10 @@ M18 ✅  Project Soft-Delete
 | M12: Pebble Access Control — RBAC, cost limits, budget chip | 2026-03-29 |
 | M11: Pebble PostgreSQL Migration — SQLite → asyncpg/psycopg2 | 2026-03-30 |
 | M18: Project Soft-Delete — cascade soft-delete, trash UI, restore & purge | 2026-03-30 |
+| Adversarial-review follow-up (16 findings, C2–H7, M1p/M2/M3/M5) | 2026-04-14 |
+| Inline-edit foundation (sensitivity table, permission hook, primitive) + migrations (Reports, Projects, Priorities) | 2026-04-14 |
+| Progress page rebrand (Dashboard → Progress) + visibility override + Individual Goals filter | 2026-04-15 |
+| Pipeline Flow rework — Selected Users default + Lookback picker + exact-range Analyze (PR #129, in review) | 2026-04-15 |
 
 ## Superseded
 
