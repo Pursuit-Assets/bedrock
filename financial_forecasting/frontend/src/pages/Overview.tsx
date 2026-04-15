@@ -562,9 +562,9 @@ const Progress: React.FC = () => {
           source of truth). Previous in-page H4 "Wall of Progress" +
           "Team pipeline accountability · …" duplicated that header. */}
 
-      {/* Pipeline Summary Table */}
+      {/* Current FY Progress Overview — team-wide wins + open pipeline table */}
       <Box sx={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', flexWrap: 'wrap', gap: 1, mb: 0.25 }}>
-        <Typography variant="h6" sx={{ fontWeight: 700 }}>Pipeline</Typography>
+        <Typography variant="h6" sx={{ fontWeight: 700 }}>Current FY Progress Overview</Typography>
         <Typography variant="caption" color="text.secondary">
           Updated {format(new Date(), 'PPp')}
         </Typography>
