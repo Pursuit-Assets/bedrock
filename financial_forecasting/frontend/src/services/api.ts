@@ -257,6 +257,15 @@ export const apiService = {
   getUsers: (params?: { limit?: number }) =>
     api.get('/api/salesforce/users', { params }),
 
+  // Progress-page visibility override (Settings → Progress Visibility)
+  // GET returns active SF users enriched with the Bedrock `is_tracked` flag;
+  // PUT upserts the admin override row for a single SF User Id.
+  getProgressTrackedUsers: () =>
+    api.get('/api/progress-tracking/users'),
+
+  setProgressTrackedOverride: (sfUserId: string, isTracked: boolean) =>
+    api.put(`/api/progress-tracking/overrides/${sfUserId}`, { is_tracked: isTracked }),
+
   // Sage Intacct - Invoices
   getInvoices: (params?: { customer_id?: string; limit?: number }) =>
     api.get('/api/intacct/invoices', { params }),

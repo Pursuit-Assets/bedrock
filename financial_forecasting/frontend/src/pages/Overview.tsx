@@ -107,19 +107,38 @@ const Progress: React.FC = () => {
     [opportunitiesData],
   );
 
-  // Fetch Salesforce users so Individual Progress can default to all active
-  // team members (even those without open opps or set revenue targets).
-  const { data: usersData } = useQuery(
-    'users',
-    async () => (await apiService.getUsers({ limit: 1000 })).data,
+  // Fetch active SF users enriched with the Bedrock "progress-tracked" override.
+  // The override lives in bedrock.progress_tracked_override and is managed by
+  // admins in Settings → Progress Visibility. Untoggled users default to
+  // tracked (visible). See routes/progress_tracking.py.
+  const { data: progressUsersData } = useQuery(
+    'progress-tracked-users',
+    async () => (await apiService.getProgressTrackedUsers()).data,
     { staleTime: 300000 },
   );
-  const allUsers = useMemo<Array<{ Id: string; Name: string; IsActive?: boolean }>>(
-    () => (Array.isArray(usersData) ? usersData : (usersData as any)?.users ?? []),
-    [usersData],
+
+  // Normalize to the {Id, Name, IsActive} shape the rest of this component
+  // already uses (leftovers from when we hit /api/salesforce/users); carry
+  // is_tracked through for the filter below.
+  const allUsers = useMemo<
+    Array<{ Id: string; Name: string; IsActive: boolean; is_tracked: boolean }>
+  >(
+    () =>
+      (Array.isArray(progressUsersData) ? progressUsersData : []).map((u: any) => ({
+        Id: u.sf_user_id,
+        Name: u.name,
+        IsActive: u.is_active !== false,
+        is_tracked: u.is_tracked !== false,
+      })),
+    [progressUsersData],
   );
+
+  // IsActive is guaranteed true by the backend (WHERE IsActive=true) but we
+  // keep the check as belt-and-suspenders. The load-bearing filter here is
+  // is_tracked — admins toggle this via Settings to hide bots / ex-employees
+  // from the Progress page without touching Salesforce.
   const activeUsers = useMemo(
-    () => allUsers.filter((u) => u.IsActive !== false),
+    () => allUsers.filter((u) => u.IsActive && u.is_tracked),
     [allUsers],
   );
 
