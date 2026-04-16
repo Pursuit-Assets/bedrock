@@ -17,6 +17,16 @@ describe('classifyTransition', () => {
     it('classifies Lead Gen → Closed / Completed as won (instant close)', () => {
       expect(classifyTransition('Lead Gen', 'Closed / Completed')).toBe('won');
     });
+
+    it('classifies any stage → Closed Won as won (Donorbox philanthropy)', () => {
+      expect(classifyTransition('Qualifying', 'Closed Won')).toBe('won');
+      expect(classifyTransition('Lead Gen', 'Closed Won')).toBe('won');
+    });
+
+    it('classifies any stage → Collecting / In Effect as won (signed contract = 100% prob)', () => {
+      expect(classifyTransition('Proposal Negotiation', 'Collecting / In Effect')).toBe('won');
+      expect(classifyTransition('Lead Gen', 'Collecting / In Effect')).toBe('won');
+    });
   });
 
   describe('losses', () => {
@@ -38,8 +48,8 @@ describe('classifyTransition', () => {
       expect(classifyTransition('Qualifying', 'Proposal Negotiation')).toBe('forward');
     });
 
-    it('classifies Lead Gen → Collecting / In Effect as forward (skipping stages)', () => {
-      expect(classifyTransition('Lead Gen', 'Collecting / In Effect')).toBe('forward');
+    it('classifies Lead Gen → Contract Creation as forward (skipping stages)', () => {
+      expect(classifyTransition('Lead Gen', 'Contract Creation')).toBe('forward');
     });
   });
 
@@ -54,8 +64,10 @@ describe('classifyTransition', () => {
   });
 
   describe('terminal-state registry', () => {
-    it('treats Closed / Completed as the only win stage', () => {
+    it('treats Collecting / In Effect, Closed / Completed, and Closed Won as win stages', () => {
+      expect(WON_STAGES.has('Collecting / In Effect')).toBe(true);
       expect(WON_STAGES.has('Closed / Completed')).toBe(true);
+      expect(WON_STAGES.has('Closed Won')).toBe(true);
       expect(WON_STAGES.has('Closed Lost')).toBe(false);
       expect(WON_STAGES.has('Withdrawn')).toBe(false);
     });
@@ -65,6 +77,7 @@ describe('classifyTransition', () => {
       expect(LOST_STAGES.has('Withdrawn')).toBe(true);
       expect(LOST_STAGES.has('Closed / Did not Fulfill')).toBe(true);
       expect(LOST_STAGES.has('Closed / Completed')).toBe(false);
+      expect(LOST_STAGES.has('Closed Won')).toBe(false);
     });
   });
 
@@ -100,8 +113,18 @@ describe('classifyTransition', () => {
       expect(warnSpy).toHaveBeenCalled();
     });
 
-    it('does not warn when target is a known terminal (won)', () => {
+    it('does not warn when target is a known terminal (won: Closed / Completed)', () => {
       classifyTransition('Qualifying', 'Closed / Completed');
+      expect(warnSpy).not.toHaveBeenCalled();
+    });
+
+    it('does not warn when target is Closed Won (Donorbox philanthropy, known win)', () => {
+      classifyTransition('Qualifying', 'Closed Won');
+      expect(warnSpy).not.toHaveBeenCalled();
+    });
+
+    it('does not warn when target is Collecting / In Effect (known win)', () => {
+      classifyTransition('Lead Gen', 'Collecting / In Effect');
       expect(warnSpy).not.toHaveBeenCalled();
     });
 

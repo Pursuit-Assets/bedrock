@@ -25,8 +25,14 @@ export const OPPORTUNITY_STAGES = [
 
 export type OpportunityStage = (typeof OPPORTUNITY_STAGES)[number];
 
-/** Per-stage colors: blue (early) → teal → green (closing) → dark green (won) → maroon (lost). */
-export const STAGE_COLORS: Record<OpportunityStage, string> = {
+/**
+ * Per-stage colors: blue (early) → teal → green (closing) → dark green (won) → maroon (lost).
+ *
+ * Includes 'Closed Won' (Donorbox-auto-populated philanthropy stage, not in
+ * OPPORTUNITY_STAGES) so Donorbox records render the same terminal-won green
+ * as 'Closed / Completed'.
+ */
+export const STAGE_COLORS: Readonly<Record<OpportunityStage | 'Closed Won', string>> = {
   '--None--':                    '#9E9E9E',
   'Lead Gen':                    '#5c6bc0',
   'New Lead':                    '#42a5f5',
@@ -40,6 +46,7 @@ export const STAGE_COLORS: Record<OpportunityStage, string> = {
   'Closed / Completed':          '#1b5e20',
   'Closed Lost':                 '#7b1a2c',
   'Withdrawn':                   '#8d6e63',
+  'Closed Won':                  '#1b5e20',
 };
 
 /** Pipeline-order index for sorting stages (lower = earlier in pipeline). */
@@ -50,7 +57,7 @@ export function stageIndex(stage: string): number {
 
 /** Get the hex color for a stage name; falls back to grey for unknown stages. */
 export function getStageHexColor(stage: string): string {
-  return STAGE_COLORS[stage as OpportunityStage] || '#9E9E9E';
+  return STAGE_COLORS[stage as OpportunityStage | 'Closed Won'] || '#9E9E9E';
 }
 
 export const OPEN_STAGES: readonly OpportunityStage[] = [
@@ -75,25 +82,37 @@ export const CLOSED_STAGES: readonly OpportunityStage[] = [
 ];
 
 /**
- * Win/loss sets, derived from the Pursuit custom picklist above. Used by
- * the pipeline funnel classifier to route stage-history transitions into
- * won/lost/forward/backward buckets.
+ * Win / loss / payment / collecting bucket sets used by the Pipeline Funnel
+ * classifier and downstream reporting. Membership includes stage strings
+ * outside the tight `OpportunityStage` union — notably `'Closed Won'`, the
+ * Donorbox-auto-populated philanthropy donation stage (~575 live records,
+ * Campaign.Name = 'Online Donations'). String-typed `ReadonlySet<string>`
+ * admits values outside the 13-stage enum without widening the enum itself.
  *
- * NOTE: `data_sync.py` also queries Salesforce for `StageName = 'Closed Won'`
- * for Intacct invoicing — that value is NOT in OPPORTUNITY_STAGES. It may
- * be (a) a legacy picklist value still present on old records, (b) a
- * parallel SF Opportunity record-type we don't model here, or (c) stale
- * backend code. Until verified against the live org, do NOT narrow
- * consumer-side substring matching that defensively also matches
- * 'Closed Won' (see Overview.tsx, PaymentProcessing.tsx, Accounts.tsx).
+ * See tasks/f1-stage-buckets-plan.md and tasks/stage-schema-drift.md.
+ *
+ * `OPEN_STAGES`, `COLLECTING_STAGES`, `CLOSED_STAGES` stay as
+ * `readonly OpportunityStage[]` — all their members are in the 13-stage enum
+ * and multiple consumers rely on array semantics (`.includes`, spread).
  */
-export const WON_STAGES: readonly OpportunityStage[] = ['Closed / Completed'];
+export const WON_STAGES: ReadonlySet<string> = new Set([
+  'Collecting / In Effect',
+  'Closed / Completed',
+  'Closed Won',  // Donorbox philanthropy donations — not in OPPORTUNITY_STAGES
+]);
 
-export const LOST_STAGES: readonly OpportunityStage[] = [
+export const LOST_STAGES: ReadonlySet<string> = new Set([
   'Closed Lost',
   'Withdrawn',
   'Closed / Did not Fulfill',
-];
+]);
+
+/** Stages where money has been received (as distinct from COLLECTING_STAGES, where a signed
+ *  contract is in-flight and payments are still arriving). ⊂ WON_STAGES. */
+export const PAYMENT_RECEIVED_STAGES: ReadonlySet<string> = new Set([
+  'Closed / Completed',
+  'Closed Won',
+]);
 
 // ── Salesforce Object Interfaces ────────────────────────────────────────────
 
