@@ -2,9 +2,9 @@
 
 Master index of all planned and completed milestones. Unique numbering — no duplicates, no ambiguity.
 
-**Last completed:** Progress Page series + Pipeline Flow rework (PRs #104–#129, 2026-04-14 to 2026-04-15)
-**Last shipped:** M19 (Project Ownership, 2026-03-31). **28 commits accumulated on `dev` since**, not yet promoted to `main` — PR #126 (dev→main) intentionally closed to batch, plus PR #129 still open on top.
-**Next up:** Fundraising glossary conversation → F1/F2/F3 stage-schema-drift fixes → M20 (Task Requests) + Sprint B
+**Last completed:** Progress Page series + Pipeline Flow rework + frontend test hygiene (PRs #104–#131, 2026-04-14 to 2026-04-15)
+**Last shipped:** M19 (Project Ownership, 2026-03-31). **27 commits accumulated on `dev` since**, not yet promoted to `main` — PR #126 (dev→main) intentionally closed to batch. All PRs through #131 merged.
+**Next up:** F1 bucket sets + Intacct kill switch (`tasks/f1-stage-buckets-plan.md`, branch `plan/f1-stage-buckets` pushed) → fundraising glossary conversation → F2/F3 stage-schema-drift bundle → M20 (Task Requests) + Sprint B
 
 ---
 
@@ -90,7 +90,9 @@ M18 ✅  Project Soft-Delete
 | Adversarial-review follow-up (16 findings, C2–H7, M1p/M2/M3/M5) | 2026-04-14 |
 | Inline-edit foundation (sensitivity table, permission hook, primitive) + migrations (Reports, Projects, Priorities) | 2026-04-14 |
 | Progress page rebrand (Dashboard → Progress) + visibility override + Individual Goals filter | 2026-04-15 |
-| Pipeline Flow rework — Selected Users default + Lookback picker + exact-range Analyze (PR #129, in review) | 2026-04-15 |
+| Pipeline Flow rework — Selected Users default + Lookback picker + exact-range Analyze (PR #129) | 2026-04-15 |
+| Frontend test hygiene — 11 pre-existing failures resolved, 345/345 passing (PR #131) | 2026-04-15 |
+| Docs refresh + Opportunity stage glossary skeleton (PR #130) | 2026-04-15 |
 
 ## Superseded
 

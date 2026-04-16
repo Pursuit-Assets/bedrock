@@ -37,13 +37,13 @@
 | Domain | Tables | Purpose |
 |--------|--------|---------|
 | A: Project Management | 8 | Projects, workstreams, milestones, tasks, SF task bridging |
-| B: Auth & Identity | 4 | Permission profiles, user records, Opp locks, unlock requests |
+| B: Auth & Identity | 5 | Permission profiles, user records, user config, Opp locks, unlock requests |
 | C: Activities | 1 | Mirror of SF Tasks + Events + manual/extension entries (30 columns) |
 | D: Pebble Research | 13 | Research pipeline, chat, batches, conflict tracking, daily usage |
 | E: Prospect to SF Mapping | 5 | Field requirements, contact/account/opportunity mapping, schema drift |
 | F: Company Bridge | 1 | SF Account to public.companies identity link |
 | G: Wall of Progress | 1 | Per-owner annual revenue goals |
-| **Total** | **33** | |
+| **Total** | **34** | |
 
 ### Data Flow Summary
 
