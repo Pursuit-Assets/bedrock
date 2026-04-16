@@ -27,6 +27,11 @@ Tighten whitespace on Dashboard page. Quarterly view has the most wasted space. 
 Add to every Pebble research output: cost, number of agents that ran, quick log of work done. Make scratchpad viewable via click-through on the detailed log. (Partially addressed in Sprint 13 UX polish — cost display + failed agents. This extends it with full agent log.)
 - **Files**: `Pebble.tsx`, research result display components
 
+### S6. Favicon PNG assets (deferred from PR 10)
+PR 10 shipped the custom Bedrock mountain+city SVG in sidebar + `manifest.json` name update, but left favicon PNGs missing. Browser tab shows default Vite icon.
+- **Files**: `financial_forecasting/frontend/public/favicon.ico` (16x16 + 32x32), `financial_forecasting/frontend/public/logo192.png`, `financial_forecasting/frontend/public/logo512.png` (optional)
+- **Source**: `BedrockLogo.tsx` SVG — render at target sizes and export.
+
 ---
 
 ## Medium (own branch + PR, brief plan-mode pass)
@@ -65,6 +70,25 @@ Filter Priority Opportunities to show only AIJI-related opportunities. Check if 
 Replace Projects page content with Johnny's latest AIJI tracker data. Update the local project/workstream/milestone/task database — don't touch Salesforce. The data import path is the existing Projects API.
 - **Requires**: The AIJI tracker file/spreadsheet from Johnny
 - **Files**: `db/seed.sql` or a data import script, Projects page components
+
+### M8. Calendar meeting overlap detection (deferred from PR 5)
+PR 5 shipped the time-axis hourly grid + all-day row + current-time indicator, but overlap detection was deferred. Currently overlapping events stack vertically instead of rendering side-by-side like GCal.
+- **Files**: `WeeklyCalendar.tsx` — layout algorithm to detect overlapping intervals per day, compute column width + horizontal offset, render blocks with CSS `left`/`width`.
+- **Why**: Matches GCal behavior; avoids visual confusion when two meetings run in the same time slot.
+
+### M9. Task Inbox backend persistence (deferred from PR 6)
+PR 6 shipped the Task Inbox UI (Urgent + Assigned sections, filters, sort, expanded detail). Backend persistence was deferred:
+- `is_urgent` flag lives in `localStorage` only — doesn't sync across devices or with the team.
+- No Salesforce write-back for urgent toggling.
+- No toggle API endpoint.
+- **Backend changes**: `PUT /api/salesforce/tasks/{id}` should accept `is_urgent`. If SF doesn't have a native field, store locally in a bedrock table + merge with SF data in GET response.
+- **Files**: `routes/salesforce_tasks.py` (or equivalent), `TaskInbox.tsx`, `services/api.ts`.
+
+### M10. Pipeline Cleanup Tool (stale-opportunity hygiene)
+From `tasks/todo.md` Future Considerations: dedicated cleanup feature for stale opportunities (past close date or no updates in 30+ days). Was removed from the Overview dashboard — belongs as its own tool, not on the main Progress page.
+- **Scope**: list stale opps grouped by owner + stage, bulk actions (update stage, close, reassign), filter by last-activity date.
+- **Files**: new `pages/PipelineCleanup.tsx`, backend query endpoint for staleness.
+- **Depends on**: clear "stale" definition from Scope Constitution (`product/crm-architecture/canonical-definitions.md` §4 — 30-day activity + stage gap).
 
 ---
 
