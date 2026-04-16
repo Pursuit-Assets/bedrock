@@ -29,6 +29,7 @@ from models import (
     OpportunityUpdateRequest, InvoiceCreationRequest, ForecastingDashboardData,
     OpportunityStage, PaymentTerms, InvoiceStatus,
     OPEN_STAGES, CLOSED_STAGES, COLLECTING_STAGES,
+    WON_STAGES_SET, LOST_STAGES_SET,
     ApiResponse,
 )
 from forecasting_engine import ForecastingEngine
@@ -293,8 +294,11 @@ async def services_health_check(
 
 # Salesforce endpoints
 
-# Valid stages derived from the OpportunityStage enum — single source of truth
-VALID_STAGES = {s.value for s in OpportunityStage}
+# Valid stages admit the 13-stage OpportunityStage enum values PLUS the F1 bucket-set
+# members that live outside the enum (notably "Closed Won", the Donorbox-auto-populated
+# philanthropy stage). Callers passing stages=['Closed Won'] were silently dropped before
+# this widened — see tasks/stage-schema-drift.md § "Known pre-existing defects" item 3.
+VALID_STAGES = {s.value for s in OpportunityStage} | WON_STAGES_SET | LOST_STAGES_SET
 
 
 @app.get("/api/salesforce/opportunities")

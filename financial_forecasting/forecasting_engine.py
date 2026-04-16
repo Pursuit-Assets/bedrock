@@ -13,8 +13,9 @@ from models import (
     SalesforceOpportunity, SalesforceAccount, IntacctInvoice, IntacctPayment,
     PaymentForecast, CashFlowProjection, ForecastingMetrics, ForecastingReport,
     ForecastScenario, ForecastingDashboardData, OpportunityStage, PaymentTerms,
-    OPEN_STAGES, CLOSED_STAGES,
+    OPEN_STAGES, CLOSED_STAGES, WON_STAGES_SET, LOST_STAGES_SET,
 )
+from security import escape_soql_string
 
 logger = logging.getLogger(__name__)
 
@@ -171,12 +172,13 @@ class ForecastingEngine:
             
             # Get closed opportunities from last 2 years for historical analysis
             two_years_ago = (date.today() - timedelta(days=730)).strftime('%Y-%m-%d')
-            
+            closed_list = ", ".join(f"'{escape_soql_string(s)}'" for s in sorted(WON_STAGES_SET | LOST_STAGES_SET))
+
             closed_opps_query = f"""
             SELECT Id, AccountId, Name, StageName, Amount, Probability, CloseDate,
                    CreatedDate, Payment_Terms__c, Contract_Start_Date__c
             FROM Opportunity
-            WHERE CloseDate >= {two_years_ago} AND StageName IN ('Closed / Completed', 'Closed / Did not Fulfill', 'Closed Lost', 'Withdrawn')
+            WHERE CloseDate >= {two_years_ago} AND StageName IN ({closed_list})
             ORDER BY CloseDate DESC
             LIMIT 1000
             """
@@ -227,11 +229,12 @@ class ForecastingEngine:
             # Get open opportunities
             salesforce = self.mcp_client.salesforce
             
+            closed_list = ", ".join(f"'{escape_soql_string(s)}'" for s in sorted(WON_STAGES_SET | LOST_STAGES_SET))
             open_opps_query = f"""
-            SELECT Id, AccountId, Account.Name, Name, StageName, Amount, Probability, 
+            SELECT Id, AccountId, Account.Name, Name, StageName, Amount, Probability,
                    CloseDate, Payment_Terms__c, Contract_Start_Date__c
             FROM Opportunity
-            WHERE StageName NOT IN ('Closed / Completed', 'Closed / Did not Fulfill', 'Closed Lost', 'Withdrawn') 
+            WHERE StageName NOT IN ({closed_list})
             AND Probability >= {min_probability}
             AND CloseDate <= {(date.today() + timedelta(days=days_ahead)).strftime('%Y-%m-%d')}
             ORDER BY CloseDate ASC
@@ -350,7 +353,7 @@ class ForecastingEngine:
             if len(account_opps) < 3:  # Need at least 3 data points
                 return None
             
-            won_count = sum(1 for opp in account_opps if opp.get("StageName") == "Closed / Completed")
+            won_count = sum(1 for opp in account_opps if opp.get("StageName") in WON_STAGES_SET)
             return won_count / len(account_opps)
             
         except Exception as e:
@@ -532,10 +535,11 @@ class ForecastingEngine:
             # Get current opportunities
             salesforce = self.mcp_client.salesforce
             
-            pipeline_query = """
+            closed_list = ", ".join(f"'{escape_soql_string(s)}'" for s in sorted(WON_STAGES_SET | LOST_STAGES_SET))
+            pipeline_query = f"""
             SELECT Id, Amount, Probability, StageName, CloseDate, CreatedDate
             FROM Opportunity
-            WHERE StageName NOT IN ('Closed / Completed', 'Closed / Did not Fulfill', 'Closed Lost', 'Withdrawn')
+            WHERE StageName NOT IN ({closed_list})
             """
             
             pipeline_result = await salesforce.query(pipeline_query)
@@ -555,15 +559,15 @@ class ForecastingEngine:
             
             # Average deal size
             won_amounts = [
-                Decimal(str(opp.get("Amount", 0))) 
-                for opp in closed_opps 
-                if opp.get("StageName") == "Closed / Completed" and opp.get("Amount")
+                Decimal(str(opp.get("Amount", 0)))
+                for opp in closed_opps
+                if opp.get("StageName") in WON_STAGES_SET and opp.get("Amount")
             ]
             avg_deal_size = sum(won_amounts) / len(won_amounts) if won_amounts else Decimal('0')
-            
+
             # Win rate
             total_closed = len(closed_opps)
-            won_count = sum(1 for opp in closed_opps if opp.get("StageName") == "Closed / Completed")
+            won_count = sum(1 for opp in closed_opps if opp.get("StageName") in WON_STAGES_SET)
             win_rate = won_count / total_closed if total_closed > 0 else 0.0
             
             # Sales cycle (simplified calculation)

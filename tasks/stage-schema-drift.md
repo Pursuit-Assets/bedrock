@@ -147,14 +147,11 @@ Depends on: PBC-variant classifications from fundraising-team glossary session (
 
 Uncovered during the 2026-04-16 audit. Documented here; fixes live in follow-up PRs.
 
-1. **`forecasting_engine.py:179, 234, 538`** — SOQL queries hardcode the terminal-closed stage list as `{'Closed / Completed', 'Closed / Did not Fulfill', 'Closed Lost', 'Withdrawn'}`. Does NOT include `Closed Won`. Effect:
-   - L179 (historical analysis): 575 Donorbox records excluded from the 2-year closed-opportunity history.
-   - L234, L538 (open-pipeline forecasting): 575 Donorbox records included as "open" (because they're `NOT IN` the hardcoded closed list), inflating open-pipeline counts and skewing payment forecasts.
-   - **Recommended fix:** follow-up PR replacing literals with `WON_STAGES_SET ∪ LOST_STAGES_SET` references from F1 shipped sets.
+1. **`forecasting_engine.py:179, 234, 538` (SOQL) + `:353, 560, 566` (Python filters)** — ✅ **RESOLVED 2026-04-16** (branch `feat/forecasting-engine-stage-buckets`). Three SOQL queries hardcoded `{'Closed / Completed', 'Closed / Did not Fulfill', 'Closed Lost', 'Withdrawn'}` (missing `Closed Won` + `Collecting / In Effect`), and three Python cache-filters hardcoded `StageName == "Closed / Completed"`. Breadth scan during the fix surfaced the 3 Python filters — fixing only the SOQL would have made `win_rate` strictly worse (denominator grows by 575 Donorbox records, numerator unchanged). All 6 sites replaced with `WON_STAGES_SET | LOST_STAGES_SET` interpolation (SOQL) and `opp.get("StageName") in WON_STAGES_SET` (Python). Also closed the latent `main.py:297` VALID_STAGES gap (item 3 below) in the same PR. 7 new tests in `tests/test_forecasting_stage_buckets.py`.
 
 2. **RecordType filtering audit.** Frontend opportunity fetchers other than `useOpportunityData.ts` may not pass `record_type='Philanthropy'` (which the backend endpoint at `main.py:305` supports). Any that don't filter are showing ISA + PBC records mixed into philanthropy views (Overview, Progress, Accounts). Inventory + systematic filter addition is a separate PR.
 
-3. **`main.py:342–345` stage param validation** — `if s in VALID_STAGES` filters incoming stage filters against the 13-stage enum. If a caller passes `stages=['Closed Won']`, it's silently dropped. Currently no caller does this; document as latent bug.
+3. **`main.py:297, 342–345` stage param validation** — ✅ **RESOLVED 2026-04-16** (same PR as item 1). `VALID_STAGES` widened from `{s.value for s in OpportunityStage}` (13 values) to `{s.value for s in OpportunityStage} | WON_STAGES_SET | LOST_STAGES_SET` (14 values, adding `Closed Won`). Callers passing `stages=['Closed Won']` are no longer silently dropped.
 
 4. **Consumer stage-list drift.** Multiple frontend files have hardcoded stage arrays that mirror but desync from `types/salesforce.ts` buckets:
    - `Overview.tsx:76` `CLOSED_WON_STAGES` (6-entry defensive substring list — actively correct; keep)
