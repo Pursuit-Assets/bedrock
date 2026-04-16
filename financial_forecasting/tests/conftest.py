@@ -324,6 +324,13 @@ def mock_mcp_client(mock_salesforce_service, mock_sage_service):
         "sage_intacct": mock_sage_service,
     }
     client._connected_services = {"salesforce", "sage_intacct"}
+    # Public alias — data_sync._intacct_available / _salesforce_available read
+    # the public `connected_services` property (see unified_client.py:303).
+    # Without this, MagicMock auto-generates a child mock whose __contains__
+    # returns False, causing 15 integration tests to silently early-return
+    # at the availability check. Keep _connected_services for callers that
+    # use the private attr directly (main.py, dependencies.py, etc.).
+    client.connected_services = {"salesforce", "sage_intacct"}
     client.salesforce = mock_salesforce_service
     client.sage_intacct = mock_sage_service
     client.disconnect_all = AsyncMock()

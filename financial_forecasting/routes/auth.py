@@ -22,7 +22,6 @@ from auth import (
     FRONTEND_URL,
 )
 from security import validate_salesforce_id
-from config import SALESFORCE_CONFIG
 
 logger = logging.getLogger(__name__)
 
@@ -286,8 +285,8 @@ async def auth_salesforce(request: Request):
     if not user:
         raise HTTPException(status_code=401, detail="Login with Google first")
 
-    sf_domain = SALESFORCE_CONFIG.get('DOMAIN', 'login')
-    client_id = SALESFORCE_CONFIG['CLIENT_ID']
+    sf_domain = os.getenv('SALESFORCE_DOMAIN', 'login')
+    client_id = os.getenv('SALESFORCE_CLIENT_ID', '')
     redirect_uri = _get_sf_callback_uri()
 
     auth_url = (
@@ -313,7 +312,7 @@ async def auth_salesforce_callback(request: Request, code: str = None, error: st
     if not user:
         return RedirectResponse(url=f"{FRONTEND_URL}/login?error=not_authenticated")
 
-    sf_domain = SALESFORCE_CONFIG.get('DOMAIN', 'login')
+    sf_domain = os.getenv('SALESFORCE_DOMAIN', 'login')
     token_url = f"https://{sf_domain}.salesforce.com/services/oauth2/token"
     redirect_uri = _get_sf_callback_uri()
 
@@ -322,8 +321,8 @@ async def auth_salesforce_callback(request: Request, code: str = None, error: st
             resp = await client.post(token_url, data={
                 "grant_type": "authorization_code",
                 "code": code,
-                "client_id": SALESFORCE_CONFIG['CLIENT_ID'],
-                "client_secret": SALESFORCE_CONFIG['CLIENT_SECRET'],
+                "client_id": os.getenv('SALESFORCE_CLIENT_ID', ''),
+                "client_secret": os.getenv('SALESFORCE_CLIENT_SECRET', ''),
                 "redirect_uri": redirect_uri,
             })
 
@@ -377,14 +376,14 @@ async def auth_salesforce_callback(request: Request, code: str = None, error: st
 async def _refresh_sf_token(refresh_token: str) -> Optional[dict]:
     """Refresh an expired Salesforce access token."""
     try:
-        sf_domain = SALESFORCE_CONFIG.get('DOMAIN', 'login')
+        sf_domain = os.getenv('SALESFORCE_DOMAIN', 'login')
         token_url = f"https://{sf_domain}.salesforce.com/services/oauth2/token"
 
         async with httpx.AsyncClient() as client:
             resp = await client.post(token_url, data={
                 "grant_type": "refresh_token",
-                "client_id": SALESFORCE_CONFIG['CLIENT_ID'],
-                "client_secret": SALESFORCE_CONFIG['CLIENT_SECRET'],
+                "client_id": os.getenv('SALESFORCE_CLIENT_ID', ''),
+                "client_secret": os.getenv('SALESFORCE_CLIENT_SECRET', ''),
                 "refresh_token": refresh_token,
             })
 

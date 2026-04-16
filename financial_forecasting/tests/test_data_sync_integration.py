@@ -33,6 +33,16 @@ from conftest import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _enable_intacct_auto_invoice(monkeypatch):
+    """These integration tests exercise the live Intacct invoice paths — flip
+    the kill switch on for the file's duration. Production default is off
+    (data_sync._intacct_auto_invoice_enabled reads the env var at call time).
+    Individual tests can override via their own monkeypatch.setenv/delenv
+    call (later calls win within the same fixture lifecycle)."""
+    monkeypatch.setenv("INTACCT_AUTO_INVOICE_ENABLED", "true")
+
+
 # ===========================================================================
 # 1. Full sync cycle: customer mapping -> invoicing -> payment update
 # ===========================================================================
@@ -888,3 +898,56 @@ class TestStageChangeHandler:
 
         sf.get_record.assert_not_called()
         intacct.create_invoice.assert_not_called()
+
+
+# ===========================================================================
+# Kill switch: INTACCT_AUTO_INVOICE_ENABLED=false short-circuits gated paths
+# ===========================================================================
+class TestIntacctAutoInvoiceKillSwitch:
+    """The autouse fixture sets INTACCT_AUTO_INVOICE_ENABLED=true for this file's
+    duration. These tests re-patch to "false" to verify the kill-switch
+    short-circuits both gated paths before any SF or Intacct writes happen."""
+
+    @pytest.mark.asyncio
+    async def test_sync_opportunity_invoicing_noop_when_disabled(
+        self, data_sync_service, mock_mcp_client, monkeypatch, caplog
+    ):
+        import logging
+        monkeypatch.setenv("INTACCT_AUTO_INVOICE_ENABLED", "false")
+        sf = mock_mcp_client.services["salesforce"]
+        intacct = mock_mcp_client.services["sage_intacct"]
+        sf.query = AsyncMock()
+        intacct.create_invoice = AsyncMock()
+
+        with caplog.at_level(logging.INFO):
+            await data_sync_service.sync_opportunity_invoicing()
+
+        sf.query.assert_not_called()
+        intacct.create_invoice.assert_not_called()
+        assert any(
+            "INTACCT_AUTO_INVOICE_ENABLED=false" in m
+            for m in caplog.messages
+        )
+
+    @pytest.mark.asyncio
+    async def test_handle_opportunity_stage_change_noop_when_disabled(
+        self, data_sync_service, mock_mcp_client, monkeypatch, caplog
+    ):
+        import logging
+        monkeypatch.setenv("INTACCT_AUTO_INVOICE_ENABLED", "false")
+        sf = mock_mcp_client.services["salesforce"]
+        intacct = mock_mcp_client.services["sage_intacct"]
+        sf.get_record = AsyncMock()
+        intacct.create_invoice = AsyncMock()
+
+        with caplog.at_level(logging.INFO):
+            await data_sync_service.handle_opportunity_stage_change(
+                "006TESTOFF01", "Closed Won", "Contract Creation"
+            )
+
+        sf.get_record.assert_not_called()
+        intacct.create_invoice.assert_not_called()
+        assert any(
+            "INTACCT_AUTO_INVOICE_ENABLED=false" in m
+            for m in caplog.messages
+        )
