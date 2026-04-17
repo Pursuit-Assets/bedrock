@@ -69,6 +69,7 @@ def mock_client(mock_salesforce):
     client.salesforce = mock_salesforce
     client.services = {"salesforce": mock_salesforce}
     client._connected_services = {"salesforce"}
+    client.connected_services = {"salesforce"}  # public alias — see conftest.py:326-333
     return client
 
 

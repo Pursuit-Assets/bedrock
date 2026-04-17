@@ -469,7 +469,15 @@ async def update_opportunity(
 
 @app.get("/api/salesforce/accounts")
 async def get_accounts(
-    limit: int = Query(2000, le=5000),
+    # Cap matches GET /api/salesforce/opportunities (main.py:308) at le=2000.
+    # Security-positive vs the prior le=5000: shrinks the max data pull on a
+    # compromised or misbehaving client. All frontend callers use the default
+    # or a lower explicit value, so no caller regresses.
+    # NOTE: this endpoint uses salesforce.query() (single-page), not
+    # query_all(). If Pursuit's real Account row count ever exceeds 2000,
+    # results get silently truncated. Tracked separately in
+    # tasks/accounts-endpoint-pagination-followup.md.
+    limit: int = Query(2000, le=2000),
     client: UnifiedMCPClient = Depends(get_mcp_client),
     user = Depends(require_auth)
 ):
