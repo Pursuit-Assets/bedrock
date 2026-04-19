@@ -11,6 +11,9 @@ import {
   OPEN_STAGES,
   COLLECTING_STAGES,
   CLOSED_STAGES,
+  WON_STAGES,
+  LOST_STAGES,
+  PAYMENT_RECEIVED_STAGES,
 } from './salesforce';
 
 // ---------------------------------------------------------------------------
@@ -74,6 +77,94 @@ describe('stage groups', () => {
       expect(seen.has(stage)).toBe(false);
       seen.add(stage);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Win / loss / payment bucket memberships
+//
+// WON_STAGES and LOST_STAGES intentionally admit stage strings outside the
+// 13-stage OpportunityStage enum — notably 'Closed Won' (Donorbox philanthropy,
+// ~575 live records). See types/salesforce.ts for the canonical sets.
+// ---------------------------------------------------------------------------
+describe('win / loss / payment bucket memberships', () => {
+  it('WON_STAGES includes Collecting / In Effect, Closed / Completed, and Closed Won', () => {
+    expect(WON_STAGES.has('Collecting / In Effect')).toBe(true);
+    expect(WON_STAGES.has('Closed / Completed')).toBe(true);
+    expect(WON_STAGES.has('Closed Won')).toBe(true);
+  });
+
+  it('WON_STAGES excludes losses, open stages, and unknown strings', () => {
+    expect(WON_STAGES.has('Closed Lost')).toBe(false);
+    expect(WON_STAGES.has('Withdrawn')).toBe(false);
+    expect(WON_STAGES.has('Closed / Did not Fulfill')).toBe(false);
+    expect(WON_STAGES.has('Qualifying')).toBe(false);
+    expect(WON_STAGES.size).toBe(3);
+  });
+
+  it('LOST_STAGES includes Closed Lost, Withdrawn, Closed / Did not Fulfill', () => {
+    expect(LOST_STAGES.has('Closed Lost')).toBe(true);
+    expect(LOST_STAGES.has('Withdrawn')).toBe(true);
+    expect(LOST_STAGES.has('Closed / Did not Fulfill')).toBe(true);
+  });
+
+  it('LOST_STAGES excludes wins and open stages', () => {
+    expect(LOST_STAGES.has('Closed / Completed')).toBe(false);
+    expect(LOST_STAGES.has('Closed Won')).toBe(false);
+    expect(LOST_STAGES.has('Qualifying')).toBe(false);
+    expect(LOST_STAGES.size).toBe(3);
+  });
+
+  it('PAYMENT_RECEIVED_STAGES is {Closed / Completed, Closed Won}', () => {
+    expect(PAYMENT_RECEIVED_STAGES.has('Closed / Completed')).toBe(true);
+    expect(PAYMENT_RECEIVED_STAGES.has('Closed Won')).toBe(true);
+    expect(PAYMENT_RECEIVED_STAGES.has('Collecting / In Effect')).toBe(false);
+    expect(PAYMENT_RECEIVED_STAGES.size).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Bucket invariants (tested here so a future bucket-set edit can't silently
+// break the set-algebra relationships the rest of the app depends on).
+// ---------------------------------------------------------------------------
+describe('bucket invariants', () => {
+  it('PAYMENT_RECEIVED_STAGES ⊂ WON_STAGES', () => {
+    PAYMENT_RECEIVED_STAGES.forEach((stage) => {
+      expect(WON_STAGES.has(stage)).toBe(true);
+    });
+  });
+
+  it('COLLECTING_STAGES ⊂ WON_STAGES', () => {
+    COLLECTING_STAGES.forEach((stage) => {
+      expect(WON_STAGES.has(stage)).toBe(true);
+    });
+  });
+
+  it('PAYMENT_RECEIVED_STAGES ∩ COLLECTING_STAGES = ∅', () => {
+    const collecting = COLLECTING_STAGES as readonly string[];
+    PAYMENT_RECEIVED_STAGES.forEach((stage) => {
+      expect(collecting.includes(stage)).toBe(false);
+    });
+  });
+
+  it('WON_STAGES ∩ LOST_STAGES = ∅', () => {
+    WON_STAGES.forEach((stage) => {
+      expect(LOST_STAGES.has(stage)).toBe(false);
+    });
+  });
+
+  it('WON_STAGES ∩ OPEN_STAGES = ∅', () => {
+    const open = OPEN_STAGES as readonly string[];
+    WON_STAGES.forEach((stage) => {
+      expect(open.includes(stage)).toBe(false);
+    });
+  });
+
+  it('LOST_STAGES ∩ OPEN_STAGES = ∅', () => {
+    const open = OPEN_STAGES as readonly string[];
+    LOST_STAGES.forEach((stage) => {
+      expect(open.includes(stage)).toBe(false);
+    });
   });
 });
 

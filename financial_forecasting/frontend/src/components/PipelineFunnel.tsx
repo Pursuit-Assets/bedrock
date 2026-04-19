@@ -5,8 +5,6 @@ import {
   Card,
   CardContent,
   Collapse,
-  ToggleButton,
-  ToggleButtonGroup,
   Table,
   TableBody,
   TableCell,
@@ -33,23 +31,21 @@ import { useQuery, useQueryClient } from 'react-query';
 import { format, parseISO, formatDistanceToNow, differenceInDays } from 'date-fns';
 import { formatDollarMillions } from '../utils/formatters';
 import { getStageHexColor } from '../types/salesforce';
-import { apiService } from '../services/api';
+import { apiService, PipelineAnalysisBody } from '../services/api';
+import LookbackRangeSelector, {
+  LookbackValue,
+  lookbackToDays,
+  formatLookbackLabel,
+} from './LookbackRangeSelector';
 
-const ACTIVE_FUNNEL_STAGES = [
-  'Lead Gen',
-  'New Lead',
-  'Qualifying',
-  'Design / Proposal Creation',
-  'Proposal Negotiation',
-  'Contract Creation',
-  'Negotiating Contract',
-  'Collecting / In Effect',
-] as const;
-
-type DateRange = '7d' | '30d' | '90d';
-const DAYS_MAP: Record<DateRange, number> = { '7d': 7, '30d': 30, '90d': 90 };
-
-const STAGE_IDX = new Map<string, number>(ACTIVE_FUNNEL_STAGES.map((s, i) => [s, i]));
+import {
+  ACTIVE_FUNNEL_STAGES,
+  STAGE_IDX,
+  WON_STAGES,
+  LOST_STAGES,
+  classifyTransition,
+  TransitionKind,
+} from './pipelineFunnelTransitions';
 
 interface Opportunity {
   Id: string;
@@ -81,7 +77,7 @@ interface StageMovement {
   amount: number;
   fromStage: string;
   toStage: string;
-  direction: 'forward' | 'backward';
+  direction: TransitionKind;
   changedDate: string;
 }
 
@@ -93,6 +89,8 @@ interface FunnelLayer {
   retreatedIn: StageMovement[];
   advancedOut: StageMovement[];
   retreatedOut: StageMovement[];
+  wonOut: StageMovement[];
+  lostOut: StageMovement[];
   throughput: number;
   stagnation: number;
 }
@@ -103,12 +101,6 @@ interface PipelineFunnelProps {
   selectedOwnerIds?: string[];
   /** Legacy single-owner prop, retained for compatibility. Equivalent to passing [ownerId] in selectedOwnerIds. */
   ownerId?: string;
-}
-
-function isForward(from: string, to: string): boolean {
-  const fi = STAGE_IDX.get(from) ?? -1;
-  const ti = STAGE_IDX.get(to) ?? -1;
-  return ti > fi;
 }
 
 function formatChangeDate(iso: string): string {
@@ -124,10 +116,16 @@ function buildFunnelData(opps: Opportunity[], history: StageChange[]): FunnelLay
     count: number; total: number;
     advancedIn: StageMovement[]; retreatedIn: StageMovement[];
     advancedOut: StageMovement[]; retreatedOut: StageMovement[];
+    wonOut: StageMovement[]; lostOut: StageMovement[];
   }>();
 
   for (const stage of ACTIVE_FUNNEL_STAGES) {
-    stageMap.set(stage, { count: 0, total: 0, advancedIn: [], retreatedIn: [], advancedOut: [], retreatedOut: [] });
+    stageMap.set(stage, {
+      count: 0, total: 0,
+      advancedIn: [], retreatedIn: [],
+      advancedOut: [], retreatedOut: [],
+      wonOut: [], lostOut: [],
+    });
   }
 
   for (const opp of opps) {
@@ -144,32 +142,42 @@ function buildFunnelData(opps: Opportunity[], history: StageChange[]): FunnelLay
     if (seen.has(key)) continue;
     seen.add(key);
 
-    const forward = isForward(change.OldValue, change.NewValue);
+    const kind = classifyTransition(change.OldValue, change.NewValue);
     const movement: StageMovement = {
       opportunityId: change.OpportunityId,
       opportunityName: change.OpportunityName || 'Unknown',
       amount: change.Amount || 0,
       fromStage: change.OldValue,
       toStage: change.NewValue,
-      direction: forward ? 'forward' : 'backward',
+      direction: kind,
       changedDate: change.CreatedDate || '',
     };
 
     const fromEntry = stageMap.get(change.OldValue);
     const toEntry = stageMap.get(change.NewValue);
 
-    if (forward) {
+    if (kind === 'forward') {
       if (fromEntry) fromEntry.advancedOut.push(movement);
       if (toEntry) toEntry.advancedIn.push(movement);
-    } else {
+    } else if (kind === 'backward') {
       if (fromEntry) fromEntry.retreatedOut.push(movement);
       if (toEntry) toEntry.retreatedIn.push(movement);
+    } else if (kind === 'won') {
+      // Register the win on the layer the opp was in before closing.
+      // No incoming side — terminal stage has no layer in the active funnel.
+      if (fromEntry) fromEntry.wonOut.push(movement);
+    } else {
+      // Loss: same model as won — terminal, recorded on the from-layer only.
+      if (fromEntry) fromEntry.lostOut.push(movement);
     }
   }
 
   return ACTIVE_FUNNEL_STAGES.map((stage) => {
     const e = stageMap.get(stage)!;
-    const totalActivity = e.advancedIn.length + e.advancedOut.length + e.retreatedIn.length + e.retreatedOut.length;
+    const totalActivity =
+      e.advancedIn.length + e.advancedOut.length +
+      e.retreatedIn.length + e.retreatedOut.length +
+      e.wonOut.length + e.lostOut.length;
     return {
       stage,
       count: e.count,
@@ -178,7 +186,9 @@ function buildFunnelData(opps: Opportunity[], history: StageChange[]): FunnelLay
       retreatedIn: e.retreatedIn,
       advancedOut: e.advancedOut,
       retreatedOut: e.retreatedOut,
-      throughput: e.advancedOut.length,
+      wonOut: e.wonOut,
+      lostOut: e.lostOut,
+      throughput: e.advancedOut.length + e.wonOut.length,
       stagnation: e.count > 0 && totalActivity === 0 ? e.count : 0,
     };
   });
@@ -215,14 +225,40 @@ function buildSetbackRows(layer: FunnelLayer): FlowRow[] {
   return rows;
 }
 
+function buildWinRows(layer: FunnelLayer): FlowRow[] {
+  return layer.wonOut.map((m) => ({
+    opportunityId: m.opportunityId,
+    opportunityName: m.opportunityName,
+    amount: m.amount,
+    label: 'Closed to',
+    stage: m.toStage,
+    changedDate: m.changedDate,
+  }));
+}
+
+function buildLossRows(layer: FunnelLayer): FlowRow[] {
+  return layer.lostOut.map((m) => ({
+    opportunityId: m.opportunityId,
+    opportunityName: m.opportunityName,
+    amount: m.amount,
+    label: 'Lost to',
+    stage: m.toStage,
+    changedDate: m.changedDate,
+  }));
+}
+
 const PipelineFunnel: React.FC<PipelineFunnelProps> = ({ opportunities, selectedOwnerIds, ownerId }) => {
-  const [dateRange, setDateRange] = useState<DateRange>('30d');
+  const [lookback, setLookback] = useState<LookbackValue>({ preset: 'last30d' });
   const [expandedStage, setExpandedStage] = useState<string | null>(null);
   // Focus dropdown lets the user narrow the funnel to a single owner from the
   // current selection without changing the page-level multi-select.
   const [focusOwnerId, setFocusOwnerId] = useState<string>('all');
 
-  const days = DAYS_MAP[dateRange];
+  // `days` drives the /stage-history fetch (endpoint accepts only days int).
+  // For custom ranges this is a superset window; the overlay is then
+  // client-filtered to [rangeStart, rangeEnd] below.
+  const days = lookbackToDays(lookback);
+  const rangeLabel = useMemo(() => formatLookbackLabel(lookback), [lookback]);
 
   // Owners visible in the focus dropdown are derived from the opportunities prop.
   // Sorted alphabetically, names resolved from Owner.Name relationship.
@@ -263,10 +299,28 @@ const PipelineFunnel: React.FC<PipelineFunnelProps> = ({ opportunities, selected
   );
 
   const history = useMemo(() => {
-    const raw = historyData || [];
-    if (!effectiveOwnerIds) return raw;
-    return raw.filter((h) => h.OwnerId && effectiveOwnerIds.has(h.OwnerId));
-  }, [historyData, effectiveOwnerIds]);
+    let out = historyData || [];
+    if (effectiveOwnerIds) {
+      out = out.filter((h) => h.OwnerId && effectiveOwnerIds.has(h.OwnerId));
+    }
+    // Client-side date narrowing only for custom ranges — presets are already
+    // filtered exactly by the backend via LAST_N_DAYS:n. SF CreatedDate comes
+    // back like "2026-04-01T10:00:00.000+0000"; parseISO handles the +0000
+    // suffix (lexical compare against a "…Z" ISO string would break).
+    if (lookback.preset === 'custom') {
+      const rsMs = new Date(`${lookback.start}T00:00:00.000Z`).getTime();
+      const reMs = new Date(`${lookback.end}T23:59:59.999Z`).getTime();
+      out = out.filter((h) => {
+        try {
+          const t = parseISO(h.CreatedDate).getTime();
+          return t >= rsMs && t <= reMs;
+        } catch {
+          return false;
+        }
+      });
+    }
+    return out;
+  }, [historyData, effectiveOwnerIds, lookback]);
 
   const filteredOpps = useMemo(
     () =>
@@ -292,20 +346,39 @@ const PipelineFunnel: React.FC<PipelineFunnelProps> = ({ opportunities, selected
     return Array.from(effectiveOwnerIds).sort();
   }, [effectiveOwnerIds]);
 
-  const analysisCacheKey = useMemo(
-    () => ['pipeline-analysis', days, analysisOwnerIds.join(',')],
-    [days, analysisOwnerIds],
-  );
+  // Request body for /api/ai/pipeline-analysis. Custom ranges send explicit
+  // start/end (so the AI sees exactly what the overlay shows); presets send
+  // days (so the server uses LAST_N_DAYS:n and hits the shared cache path).
+  const analysisBody = useMemo<PipelineAnalysisBody>(() => {
+    if (lookback.preset === 'custom') {
+      return {
+        start: lookback.start,
+        end: lookback.end,
+        owner_ids: analysisOwnerIds,
+      };
+    }
+    return { days: lookbackToDays(lookback), owner_ids: analysisOwnerIds };
+  }, [lookback, analysisOwnerIds]);
+
+  const analysisCacheKey = useMemo(() => {
+    const rangeKey =
+      lookback.preset === 'custom'
+        ? `custom:${lookback.start}:${lookback.end}`
+        : `days:${lookbackToDays(lookback)}`;
+    return ['pipeline-analysis', rangeKey, analysisOwnerIds.join(',')];
+  }, [lookback, analysisOwnerIds]);
 
   const { data: analysisData, isLoading: analysisLoading, isFetching: analysisFetching } = useQuery(
     analysisCacheKey,
     async () => {
-      const response = await apiService.analyzePipeline(days, analysisOwnerIds);
+      const response = await apiService.analyzePipeline(analysisBody);
       return response.data as {
         analysis: string;
         generated_at: string;
         changes_count: number;
         days: number;
+        start?: string | null;
+        end?: string | null;
         owner_ids?: string[];
         owner_names?: string[];
       };
@@ -366,16 +439,7 @@ const PipelineFunnel: React.FC<PipelineFunnelProps> = ({ opportunities, selected
                 </Select>
               </FormControl>
             )}
-            <ToggleButtonGroup
-              size="small"
-              exclusive
-              value={dateRange}
-              onChange={(_, v) => v && setDateRange(v)}
-            >
-              <ToggleButton value="7d" sx={{ textTransform: 'none', fontSize: '0.75rem', px: 1.5 }}>7d</ToggleButton>
-              <ToggleButton value="30d" sx={{ textTransform: 'none', fontSize: '0.75rem', px: 1.5 }}>30d</ToggleButton>
-              <ToggleButton value="90d" sx={{ textTransform: 'none', fontSize: '0.75rem', px: 1.5 }}>90d</ToggleButton>
-            </ToggleButtonGroup>
+            <LookbackRangeSelector value={lookback} onChange={setLookback} />
           </Box>
         </Box>
 
@@ -386,11 +450,15 @@ const PipelineFunnel: React.FC<PipelineFunnelProps> = ({ opportunities, selected
             const color = getStageHexColor(layer.stage);
             const progressingCount = layer.advancedIn.length + layer.advancedOut.length;
             const setbackCount = layer.retreatedIn.length + layer.retreatedOut.length;
-            const hasActivity = progressingCount + setbackCount > 0;
-            const net = progressingCount - setbackCount;
+            const wonCount = layer.wonOut.length;
+            const lostCount = layer.lostOut.length;
+            const hasActivity = progressingCount + setbackCount + wonCount + lostCount > 0;
+            const net = progressingCount + wonCount - setbackCount - lostCount;
 
             const progressingRows = isExpanded ? buildProgressingRows(layer) : [];
             const setbackRows = isExpanded ? buildSetbackRows(layer) : [];
+            const winRows = isExpanded ? buildWinRows(layer) : [];
+            const lossRows = isExpanded ? buildLossRows(layer) : [];
             const oppsInStage = isExpanded ? filteredOpps.filter((o) => o.StageName === layer.stage) : [];
             const now = new Date();
             const isStagnant = (opp: Opportunity) => {
@@ -457,24 +525,44 @@ const PipelineFunnel: React.FC<PipelineFunnelProps> = ({ opportunities, selected
 
                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, borderLeft: '1px solid', borderColor: 'divider', pl: 1, ml: 0.5 }}>
                       {progressingCount > 0 && (
-                        <Tooltip title={`${progressingCount} opps advanced forward or entered from an earlier stage in the last ${days}d`} arrow>
+                        <Tooltip title={`${progressingCount} opps advanced forward or entered from an earlier stage ${rangeLabel}`} arrow>
                           <Typography variant="caption" sx={{ color: '#2e7d32', fontWeight: 600, fontSize: '0.7rem', whiteSpace: 'nowrap', cursor: 'default' }}>
                             {progressingCount} progressing
                           </Typography>
                         </Tooltip>
                       )}
-                      {progressingCount > 0 && setbackCount > 0 && (
+                      {progressingCount > 0 && wonCount > 0 && (
+                        <Typography variant="caption" sx={{ color: 'text.disabled' }}>·</Typography>
+                      )}
+                      {wonCount > 0 && (
+                        <Tooltip title={`${wonCount} opp${wonCount !== 1 ? 's' : ''} closed as Won from ${layer.stage} ${rangeLabel}`} arrow>
+                          <Typography variant="caption" sx={{ color: '#1b5e20', fontWeight: 700, fontSize: '0.7rem', whiteSpace: 'nowrap', cursor: 'default' }}>
+                            {wonCount} won
+                          </Typography>
+                        </Tooltip>
+                      )}
+                      {(progressingCount > 0 || wonCount > 0) && setbackCount > 0 && (
                         <Typography variant="caption" sx={{ color: 'text.disabled' }}>·</Typography>
                       )}
                       {setbackCount > 0 && (
-                        <Tooltip title={`${setbackCount} opps regressed backward or fell back to an earlier stage in the last ${days}d`} arrow>
+                        <Tooltip title={`${setbackCount} opps regressed backward or fell back to an earlier stage ${rangeLabel}`} arrow>
                           <Typography variant="caption" sx={{ color: '#d32f2f', fontWeight: 600, fontSize: '0.7rem', whiteSpace: 'nowrap', cursor: 'default' }}>
                             {setbackCount} setback{setbackCount !== 1 ? 's' : ''}
                           </Typography>
                         </Tooltip>
                       )}
+                      {(progressingCount > 0 || wonCount > 0 || setbackCount > 0) && lostCount > 0 && (
+                        <Typography variant="caption" sx={{ color: 'text.disabled' }}>·</Typography>
+                      )}
+                      {lostCount > 0 && (
+                        <Tooltip title={`${lostCount} opp${lostCount !== 1 ? 's' : ''} closed as Lost or Withdrawn from ${layer.stage} ${rangeLabel}`} arrow>
+                          <Typography variant="caption" sx={{ color: 'text.secondary', fontWeight: 600, fontSize: '0.7rem', whiteSpace: 'nowrap', cursor: 'default' }}>
+                            {lostCount} lost
+                          </Typography>
+                        </Tooltip>
+                      )}
                       {hasActivity && (
-                        <Tooltip title={`Net = ${progressingCount} progressing − ${setbackCount} setbacks`} arrow>
+                        <Tooltip title={`Net = (${progressingCount} progressing + ${wonCount} won) − (${setbackCount} setbacks + ${lostCount} lost)`} arrow>
                           <Box
                             sx={{
                               display: 'inline-flex',
@@ -504,7 +592,7 @@ const PipelineFunnel: React.FC<PipelineFunnelProps> = ({ opportunities, selected
                         </Tooltip>
                       )}
                       {!hasActivity && layer.stagnation > 0 && (
-                        <Tooltip title={`${layer.count} opps with no stage movement in the last ${days}d`} arrow>
+                        <Tooltip title={`${layer.count} opps with no stage movement ${rangeLabel}`} arrow>
                           <StagnantIcon sx={{ fontSize: 15, color: '#ed6c02' }} />
                         </Tooltip>
                       )}
@@ -527,8 +615,17 @@ const PipelineFunnel: React.FC<PipelineFunnelProps> = ({ opportunities, selected
                       </Box>
                     )}
 
-                    {setbackRows.length > 0 && (
+                    {winRows.length > 0 && (
                       <Box sx={{ mt: progressingRows.length > 0 ? 1.5 : 0 }}>
+                        <Typography variant="caption" sx={{ fontWeight: 700, color: '#1b5e20' }}>
+                          Wins ({winRows.length})
+                        </Typography>
+                        <FlowTable rows={winRows} />
+                      </Box>
+                    )}
+
+                    {setbackRows.length > 0 && (
+                      <Box sx={{ mt: progressingRows.length > 0 || winRows.length > 0 ? 1.5 : 0 }}>
                         <Typography variant="caption" sx={{ fontWeight: 700, color: '#d32f2f' }}>
                           Setbacks ({setbackRows.length})
                         </Typography>
@@ -536,8 +633,17 @@ const PipelineFunnel: React.FC<PipelineFunnelProps> = ({ opportunities, selected
                       </Box>
                     )}
 
+                    {lossRows.length > 0 && (
+                      <Box sx={{ mt: progressingRows.length > 0 || winRows.length > 0 || setbackRows.length > 0 ? 1.5 : 0 }}>
+                        <Typography variant="caption" sx={{ fontWeight: 700, color: 'text.secondary' }}>
+                          Lost / Withdrawn ({lossRows.length})
+                        </Typography>
+                        <FlowTable rows={lossRows} />
+                      </Box>
+                    )}
+
                     {oppsInStage.length > 0 && (
-                      <Box sx={{ mt: progressingRows.length > 0 || setbackRows.length > 0 ? 1.5 : 0 }}>
+                      <Box sx={{ mt: progressingRows.length > 0 || winRows.length > 0 || setbackRows.length > 0 || lossRows.length > 0 ? 1.5 : 0 }}>
                         <Typography variant="caption" sx={{ fontWeight: 700, color: 'text.secondary' }}>
                           In this stage ({oppsInStage.length})
                         </Typography>
@@ -586,12 +692,12 @@ const PipelineFunnel: React.FC<PipelineFunnelProps> = ({ opportunities, selected
 
                     {!hasActivity && oppsInStage.length > 0 && (
                       <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1 }}>
-                        No stage movements in the last {days} days.
+                        No stage movements {rangeLabel}.
                       </Typography>
                     )}
                     {!hasActivity && oppsInStage.length === 0 && (
                       <Typography variant="caption" color="text.secondary">
-                        No stage movements in the last {days} days.
+                        No stage movements {rangeLabel}.
                       </Typography>
                     )}
                   </Box>

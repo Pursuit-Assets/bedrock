@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import os
 from typing import Any, Dict, List, Optional, Set
 from datetime import datetime, date, timedelta, timezone
 from decimal import Decimal
@@ -12,6 +13,25 @@ from models import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _intacct_auto_invoice_enabled() -> bool:
+    """Kill switch for Sage Intacct auto-invoicing. Default: disabled.
+
+    When False (default), sync_opportunity_invoicing and
+    handle_opportunity_stage_change short-circuit without writing to Intacct.
+    Flip to True via env only after the F2 bundle ships (expanded stage filter
+    + Donorbox exclusion + RecordType filter + date guard + pre-flight
+    cleanup + HITL review + finance onboarding — see
+    tasks/f1-stage-buckets-plan.md §5.3).
+
+    Strict parse: only literal "true" (case-insensitive after strip) enables.
+    "1", "yes", "TRUE" before lower — all fail-safe to False.
+
+    Read at call time (not a module constant) so tests can flip the value
+    with monkeypatch.setenv("INTACCT_AUTO_INVOICE_ENABLED", "true").
+    """
+    return os.getenv("INTACCT_AUTO_INVOICE_ENABLED", "false").strip().lower() == "true"
 
 
 class DataSyncService:
@@ -547,6 +567,12 @@ class DataSyncService:
 
     async def sync_opportunity_invoicing(self):
         """Sync opportunities that are ready for invoicing."""
+        if not _intacct_auto_invoice_enabled():
+            logger.info(
+                "Skipping opportunity invoicing — INTACCT_AUTO_INVOICE_ENABLED=false "
+                "(F2 bundle not yet shipped — see tasks/f1-stage-buckets-plan.md)"
+            )
+            return
         if not self._intacct_available():
             logger.debug("Skipping opportunity invoicing — Sage Intacct not connected")
             return
@@ -909,6 +935,14 @@ class DataSyncService:
 
     async def handle_opportunity_stage_change(self, opportunity_id: str, new_stage: str, old_stage: str):
         """Handle opportunity stage changes for automated invoicing."""
+        if not _intacct_auto_invoice_enabled():
+            logger.info(
+                "Skipping stage-change invoice trigger for %s — "
+                "INTACCT_AUTO_INVOICE_ENABLED=false "
+                "(F2 bundle not yet shipped — see tasks/f1-stage-buckets-plan.md)",
+                opportunity_id,
+            )
+            return
         try:
             logger.info(f"Handling stage change for opportunity {opportunity_id}: {old_stage} -> {new_stage}")
             

@@ -14,18 +14,20 @@
 
 ## Ship Order
 
+> **Note (2026-04-16):** Detailed PR plan files (pr-01 through pr-10) archived to `docs/archive/2026-04-16-cleanup/`. Deferred items migrated to `tasks/bedrock-ui-improvements.md` (M8 calendar overlap detection, M9 task backend persistence, S6 favicon PNGs).
+
 | # | PR | Status | Size | Depends On | Remaining |
 |---|-----|--------|------|------------|-----------|
-| 1 | [Ranking Stability Bug Fix](prs/pr-01-ranking-stability.md) | `done` | S | — | Tiebreaker is deterministic (`Id.localeCompare`); no code changes needed |
-| 2 | [Stage Colors & Ordering](prs/pr-02-stage-colors.md) | `done` | M | — | Colored dots added to PriorityTable stage filter + PipelineFilterBar stage Autocomplete |
-| 3 | [Column Sorting](prs/pr-03-column-sorting.md) | `done` | M | PR 1 | — |
-| 4 | [Revenue Snapshot Filter](prs/pr-04-revenue-snapshot-filter.md) | `done` | S | — | — |
-| 5 | [Calendar Expansion + Toggles](prs/pr-05-calendar-expansion.md) | `done` | L | — | Time-axis grid with hourly layout (7am–8pm), current-time indicator, all-day task row; overlap detection deferred |
-| 6 | [Task Inbox](prs/pr-06-task-inbox.md) | `done` | L | — | Urgent toggle persisted in localStorage; SOQL includes CreatedBy.Name + Owner.Name; backend persistence deferred |
-| 7 | [Home Page Layout](prs/pr-07-home-layout.md) | `skip` | M | PR 5, PR 6 | Current resizable-panel layout is functional; not in MVP scope |
-| 8 | [Pipeline Funnel Accountability](prs/pr-08-pipeline-funnel.md) | `done` | L | — | — |
-| 9 | [Projects Page](prs/pr-09-projects-page.md) | `done` | XL | — | M7 shipped: multi-project, sidebar, CSV import, Opp linking, CRUD. Bug fixes: race condition in auto-select, PascalCase search key. Next: delete-safety (ownership, trash bin) |
-| 10 | [Logo Redesign](prs/pr-10-logo.md) | `done` | S | — | SVG + sidebar + manifest done; favicon PNGs missing (optional) |
+| 1 | Ranking Stability Bug Fix | `done` | S | — | Tiebreaker is deterministic (`Id.localeCompare`); no code changes needed |
+| 2 | Stage Colors & Ordering | `done` | M | — | Colored dots added to PriorityTable stage filter + PipelineFilterBar stage Autocomplete |
+| 3 | Column Sorting | `done` | M | PR 1 | — |
+| 4 | Revenue Snapshot Filter | `done` | S | — | — |
+| 5 | Calendar Expansion + Toggles | `done` | L | — | Time-axis grid + current-time indicator shipped; **overlap detection deferred** (see bedrock-ui-improvements M8) |
+| 6 | Task Inbox | `done` | L | — | UI + urgent toggle (localStorage) + SOQL fields shipped; **backend persistence deferred** (see bedrock-ui-improvements M9) |
+| 7 | Home Page Layout | `skip` | M | PR 5, PR 6 | Current resizable-panel layout is functional; not in MVP scope |
+| 8 | Pipeline Funnel Accountability | `done` | L | — | — |
+| 9 | Projects Page | `done` | XL | — | M7 shipped: multi-project, sidebar, CSV import, Opp linking, CRUD. Next: delete-safety (shipped in M18/M19) |
+| 10 | Logo Redesign | `done` | S | — | SVG + sidebar + manifest done; **favicon PNGs missing** (see bedrock-ui-improvements S6) |
 
 ## Status Legend
 

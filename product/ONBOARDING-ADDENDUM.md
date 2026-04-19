@@ -468,6 +468,8 @@ A $20M deal with no alerts still ranks #1 — it's your biggest opportunity. But
 
 ## I. Glossary
 
+### General terms
+
 | Term | Definition |
 |------|-----------|
 | **Opportunity** | A specific fundraising deal — a grant application, a contract, a sponsorship |
@@ -488,3 +490,54 @@ A $20M deal with no alerts still ranks #1 — it's your biggest opportunity. But
 | **CoWork** | Pursuit's Claude-powered AI workspace for drafting, analysis, and general tasks. Pebble handles research and CRM intelligence; CoWork handles everything else |
 | **Tiered Research** | Pebble's progressive approach — quick identity check (T1), structured intelligence across 5 dimensions (T2), full verified research brief (T3). Each tier requires your approval before spending |
 | **CRM Bridge** | The connection between Pebble and Bedrock that lets Pebble query Salesforce data directly for instant answers about contacts, accounts, and opportunities |
+
+### Opportunity stages — decision matrix
+
+Pursuit's live Salesforce org carries **22 distinct StageName values** on Opportunity records (verified 2026-04-14 via SOQL against prod). Of those, **13 are declared in our code enums** (`frontend/src/types/salesforce.ts:OPPORTUNITY_STAGES` + `financial_forecasting/models.py:OpportunityStage`) and **9 are not** — meaning code branches that assume the enum can silently misbehave on ~1,300 live records. Full drift analysis in `tasks/stage-schema-drift.md`; active implementation plan in `tasks/f1-stage-buckets-plan.md`.
+
+**Status (2026-04-16):** 2 of 10 rows resolved via SOQL investigation (see "Resolved" row notes below). 8 remain pending the fundraising-team glossary session.
+
+**Key JP directive (2026-04-16):** SF stages are sacred. Never hide, deprecate, or reclassify them in code. Build `Set<string>` bucket sets on top for reporting semantics. No `LEGACY_STAGES` flag. All stages show in edit dropdowns when the enum eventually widens.
+
+**Bucket categories (not stage classifications):**
+
+- **`OPEN_STAGES`** — deal in progress, appears in Pipeline Flow funnel bars
+- **`WON_STAGES`** — terminal-won at 100% probability (contract signed or better); counts toward FY wins and Individual Goals
+- **`COLLECTING_STAGES`** — subset of `WON_STAGES`; deal signed, revenue being received over time
+- **`PAYMENT_RECEIVED_STAGES`** — subset of `WON_STAGES`; all scheduled payments complete
+- **`LOST_STAGES`** — deal closed without revenue; counts against conversion but not toward goals
+- Not-in-philanthropy-scope (ISA / PBC) — excluded from all philanthropy buckets; handled elsewhere
+
+A stage may belong to multiple buckets (e.g., `Closed / Completed` ∈ `WON_STAGES` ∩ `PAYMENT_RECEIVED_STAGES`).
+
+**The 13 already in the enum** are bucketed in `frontend/src/types/salesforce.ts` (see `tasks/f1-stage-buckets-plan.md` §2 for finalized memberships). Not in scope for this conversation.
+
+**The 10 NOT in the enum:**
+
+| Stage | Live count | Best-guess category | Questions for fundraising | Pursuit decision (2026-04-16) |
+|---|---:|---|---|---|
+| `In Collection` | 650 | won-collecting (alias for `Collecting / In Effect`?) | Is this functionally identical to `Collecting / In Effect`, or different? Are new records still being created with it, or only legacy? | **RESOLVED** — ISA RecordType (Pursuit Bond, Income Share Agreement), 2019–2020 cohort legacy. Out of philanthropy MVP scope. Tracked elsewhere for Bond collection/enforcement. Excluded from all philanthropy buckets. |
+| `Closed Won` | 575 | won (legacy) — parallel to `Closed / Completed` | Any operational difference vs `Closed / Completed`, or pure legacy naming? Should Intacct auto-invoice fire on these? | **RESOLVED** — Donorbox-auto-populated philanthropy donations (Campaign.Name = 'Online Donations', `Donorbox` in Opp name, `LeadSource` null). Actively flowing 2019 → 2026-04-04. Money received via Donorbox's Stripe payment processor. Goes in `WON_STAGES` + `PAYMENT_RECEIVED_STAGES`. **Critical F2 note:** Intacct auto-invoice must EXCLUDE Donorbox records — they're already-paid receipts, not invoice-eligible. |
+| `Close/Unknown` | 68 | dirty data | Recoverable, or truly unknown? Worth a data-cleanup pass to move these to a real stage? | _TBD — park for future PBC + Bulk Edit sprint_ |
+| `Closed / Full-Time or Successful Conversion` | 14 | won (PBC variant) | Is this specifically a PBC outcome where a Fellow converted to full-time? Does it generate billable revenue? | _TBD — park for future PBC sprint_ |
+| `Closed / Temporary Hire` | 5 | won (PBC variant) | PBC-specific? Revenue-producing? | _TBD — park for future PBC sprint_ |
+| `Closed / Fulfilled` | 5 | won (probably) — which program? | Which Pursuit program uses "Fulfilled"? Corporate partnerships? | _TBD — park for future PBC sprint_ |
+| `Closed / Contract or Agreement But No Fellows Hired` | 4 | lost (contract signed, zero revenue) | Confirm: a PBC contract that didn't produce fellow placements is counted as lost? | _TBD — park for future PBC sprint_ |
+| `Contract Signing` | 3 | active (late-funnel, pre-close) | Sits between `Contract Creation` and `Collecting / In Effect`? | _TBD — park for future sprint_ |
+| `Closed / Sourcing` | 2 | TBD — misleading name | Name suggests active (sourcing candidates), but prefixed `Closed /`. Which is it? | _TBD — park for future PBC sprint_ |
+| `Verbal Commitment` | 1 | active (pre-contract) | Where in the funnel — before `Contract Creation`? Or is it post-proposal and pre-contract specifically? | _TBD — park for future sprint_ |
+
+**Questions for the meeting (on the 8 remaining TBD stages):**
+
+1. **The 4 PBC-prefixed stages** (`Full-Time or Successful Conversion`, `Temporary Hire`, `Contract or Agreement But No Fellows Hired`, `Sourcing`) — do any generate billable revenue? Is "Contract or Agreement But No Fellows Hired" a loss even though a contract was signed? PBC as a revenue stream is a separate sprint from philanthropy MVP; these stages can be parked.
+2. **Intacct auto-invoicing** — currently gated off entirely via feature flag (`tasks/f1-stage-buckets-plan.md` PR 2). When F2 is ready to re-enable, which philanthropy stages SHOULD trigger an Intacct invoice draft? Confirmed scope so far: `Closed / Completed` (grants received) + `Collecting / In Effect` (grants mid-collection). Explicitly **NOT** `Closed Won` (Donorbox — already paid, not invoice-eligible).
+3. **`Close/Unknown` cleanup (68 records)** — is the intent to migrate these to real stages, or leave as historical dirty data? Affects whether we need a Bulk Edit sprint before F2 ships.
+4. **Edit-UI surfacing** — when the enum eventually widens to all 22 stages (deferred to post-MVP PBC + Bulk Edit sprint), all stages appear in dropdowns. Per JP directive, no `LEGACY_STAGES` flag or UI hiding — stages are sacred. Confirm no objection.
+
+**What changes once the remaining 8 decisions are made:**
+
+- **F1 (ships before the glossary session)** — `WON_STAGES` / `LOST_STAGES` / `COLLECTING_STAGES` / new `PAYMENT_RECEIVED_STAGES` in `frontend/src/types/salesforce.ts` widened to `ReadonlySet<string>` with the 2 resolved classifications. Backend Python `frozenset[str]` mirrors in `financial_forecasting/models.py`. See `tasks/f1-stage-buckets-plan.md` §3.
+- **F2 (deferred bundle, 7 rails)** — `data_sync.py:565, 916` expanded stage filter, Donorbox exclusion, RecordType filter, date guard, pre-flight cleanup, HITL review queue, finance onboarding. Flipped on by flipping `INTACCT_AUTO_INVOICE_ENABLED=true` in prod `.env` once all rails ship.
+- **F3 (deferred to post-MVP PBC + Bulk Edit sprint)** — widen `OPPORTUNITY_STAGES` enum and `OpportunityStage` Python enum to include the remaining stages once fundraising classifies them. No `LEGACY_STAGES` flag; all stages appear in edit dropdowns.
+
+F1 + kill-switch ship immediately. F2 and F3 ship when prerequisites are in place.

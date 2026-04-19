@@ -221,7 +221,7 @@ const NewOpportunity: React.FC = () => {
       onSuccess: () => {
         queryClient.invalidateQueries('opportunities');
         toast.success('Opportunity created successfully!');
-        navigate('/pipeline');
+        navigate('/reports');
       },
       onError: (error: any) => {
         toast.error(error.response?.data?.detail || 'Failed to create opportunity');
@@ -370,7 +370,7 @@ const NewOpportunity: React.FC = () => {
   };
 
   const handleCancel = () => {
-    navigate('/pipeline');
+    navigate('/reports');
   };
 
   const handleCreateAccount = () => {

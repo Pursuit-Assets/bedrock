@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from fastapi.testclient import TestClient
 
 from main import app, get_current_user, get_mcp_client, get_forecasting_engine, get_data_sync_service, _sync_lock, startup_event, shutdown_event
-from auth import require_auth
+from auth import require_auth, require_auth_or_internal
 from db import get_db
 
 # Disable startup/shutdown events that try to connect to real services
@@ -104,6 +104,13 @@ def mock_client(mock_salesforce, mock_sage):
         "sage_intacct": mock_sage,
     }
     client._connected_services = {"salesforce", "sage_intacct"}
+    # Public alias — main.py endpoints check `client.connected_services`
+    # (the @property on UnifiedMCPClient at unified_client.py:303). Without
+    # this, MagicMock auto-generates a child mock whose __contains__ returns
+    # False, silently short-circuiting 13 tests in this file at the
+    # "x in connected_services" availability gate. Mirrors the fix applied
+    # to `mock_mcp_client` in conftest.py:333 on 2026-04-16.
+    client.connected_services = {"salesforce", "sage_intacct"}
     client.disconnect_all = AsyncMock()
     return client
 
@@ -138,6 +145,12 @@ def mock_db():
         "view_opportunities": True, "edit_own_opportunities": True, "edit_all_opportunities": True,
         "create_opportunities": True, "bulk_update_opportunities": True, "lock_own_opportunities": True,
         "reassign_opportunities": True,
+        # Account + Contact perms gate the 4 endpoints using check_permission_or_internal
+        # (main.py:530,610,736,761). Without these, `POST /api/salesforce/accounts` et al.
+        # return 403 for this "admin" user. Matches the admin permission set used by
+        # tests/test_projects_endpoints.py:36 and tests/test_permissions.py:41,57.
+        "edit_accounts": True, "create_accounts": True,
+        "edit_contacts": True, "create_contacts": True,
         "view_tasks": True, "edit_own_tasks": True, "edit_all_tasks": True, "create_tasks": True,
         "view_revenue_dashboard": True, "view_cashflow_forecasts": True,
         "view_sage_invoices_payments": True, "create_sage_invoices": True,
@@ -166,6 +179,12 @@ def client(mock_client, mock_engine, mock_sync_service, mock_db):
     """Create a TestClient with all dependencies overridden."""
     app.dependency_overrides[get_current_user] = override_get_current_user
     app.dependency_overrides[require_auth] = override_get_current_user
+    # `check_permission_or_internal` (routes/permissions.py:223) depends on
+    # `require_auth_or_internal`, NOT `require_auth`. Endpoints using it
+    # (main.py:530,610,736,761 — create/edit accounts & contacts) would
+    # otherwise fall through to real JWT auth at auth.py:162 and return 401
+    # under TestClient.
+    app.dependency_overrides[require_auth_or_internal] = override_get_current_user
     app.dependency_overrides[get_db] = lambda: mock_db
     app.dependency_overrides[get_mcp_client] = lambda: mock_client
     app.dependency_overrides[get_forecasting_engine] = lambda: mock_engine
@@ -216,6 +235,42 @@ def no_services_client():
         yield c
 
     app.dependency_overrides.clear()
+
+
+@pytest.fixture(autouse=True)
+def mock_db_status_connected(monkeypatch):
+    """Report the database as 'connected' so `/health` returns success=True.
+
+    Tests don't call `init_db()` (that would require a live Postgres), so
+    `db.py._db_init_status` stays at its module-default "not_started" and
+    `/health` (main.py:249-266) reports success=False. Patch the
+    `get_db_status` symbol imported into `main` (main.py:37) to return
+    "connected". Autouse so it applies to every test; monkeypatch reverts
+    automatically on teardown.
+    """
+    import main
+    monkeypatch.setattr(main, "get_db_status", lambda: "connected")
+
+
+@pytest.fixture(autouse=True)
+def reset_cache():
+    """Wipe the module-level TTLCache before and after every test.
+
+    Endpoints in main.py (opps:, accounts:, contacts:, payments:,
+    opp-payments:, my-tasks:, users) and routes/progress_tracking.py share
+    a singleton `cache` instance at services/cache.py:49. Without this
+    autouse reset, earlier tests populate cache entries that later tests
+    read back, causing assertions like `test_get_opportunities_returns_records`
+    (expects 1 record from a fresh mock) to see stale multi-record data from
+    an earlier test in a different class. `cache.clear()` is used rather than
+    per-prefix `invalidate_prefix` so any newly-added endpoint cache prefix
+    can't silently slip past this fixture. Mirrors the pattern in
+    tests/test_wall_of_progress_endpoints.py:89-94.
+    """
+    from services.cache import cache
+    cache.clear()
+    yield
+    cache.clear()
 
 
 # ===================================================================
@@ -871,8 +926,10 @@ class TestEdgeCases:
         response = client.get("/api/salesforce/opportunities", params={"limit": 5000})
         assert response.status_code == 422
 
-    def test_accounts_limit_capped_at_1000(self, client):
-        response = client.get("/api/salesforce/accounts", params={"limit": 2000})
+    def test_accounts_limit_capped_at_2000(self, client):
+        """Accounts `limit` query param is capped at 2000, matching opportunities
+        endpoint (main.py:308). Prior cap was 5000; tightened 2026-04-17."""
+        response = client.get("/api/salesforce/accounts", params={"limit": 2001})
         assert response.status_code == 422
 
     def test_cash_flow_months_ahead_min(self, client, mock_engine):

@@ -1,6 +1,12 @@
 /**
  * Summary metric cards shown above the Opportunities DataGrid.
  * Renders different cards depending on the active view mode.
+ *
+ * Three cards on the Open view are clickable filter handles:
+ *   - "Open Opportunities" / "Total Pipeline Value" → clear filter (null)
+ *   - "Closing This Month" → filter to opps closing in current month
+ *   - "Stale Deals" → filter to opps not modified in 30+ days
+ * Clicking the already-active card toggles the filter off.
  */
 import React from 'react';
 import { Card, CardContent, Grid, Typography } from '@mui/material';
@@ -9,12 +15,36 @@ import { formatDollarMillions } from '../../utils/formatters';
 import type { Opportunity } from './helpers';
 import type { ViewMode } from './useOpportunityData';
 
+export type SummaryFilterKey = 'stale' | 'closingMonth' | null;
+
 interface SummaryCardsProps {
   viewMode: ViewMode;
   opps: Opportunity[];
+  /** Currently-applied filter so we can highlight the matching card. */
+  activeFilter?: SummaryFilterKey | 'atRisk';
+  /** Called when the user clicks a clickable card. Pass `null` to clear. */
+  onCardClick?: (filter: SummaryFilterKey) => void;
 }
 
-export const SummaryCards: React.FC<SummaryCardsProps> = ({ viewMode, opps }) => {
+/** Visual treatment for clickable cards — pointer cursor, hover lift, and
+ *  a primary-color border when this card matches the active filter. */
+const clickableSx = (active: boolean) => ({
+  cursor: 'pointer',
+  transition: 'transform 0.1s, box-shadow 0.1s, border-color 0.1s',
+  border: '2px solid',
+  borderColor: active ? 'primary.main' : 'transparent',
+  '&:hover': {
+    transform: 'translateY(-2px)',
+    boxShadow: 3,
+  },
+});
+
+export const SummaryCards: React.FC<SummaryCardsProps> = ({
+  viewMode,
+  opps,
+  activeFilter,
+  onCardClick,
+}) => {
   if (viewMode === 'closed') return null;
 
   const totalAmount = opps.reduce((sum, opp) => sum + (opp.Amount || 0), 0);
@@ -38,10 +68,24 @@ export const SummaryCards: React.FC<SummaryCardsProps> = ({ viewMode, opps }) =>
       (opp) => opp.LastModifiedDate && differenceInDays(today, parseISO(opp.LastModifiedDate)) > 30,
     ).length;
 
+    // Clickable cards: clicking the already-active card toggles back to null.
+    const handleClick = (filter: SummaryFilterKey) => {
+      if (!onCardClick) return;
+      onCardClick(filter);
+    };
+    const isActiveStale = activeFilter === 'stale';
+    const isActiveClosingMonth = activeFilter === 'closingMonth';
+    // "Total Pipeline Value" represents "no filter" — highlight when nothing
+    // is filtering.
+    const isActiveAll = !activeFilter;
+
     return (
       <Grid container spacing={2} sx={{ mb: 3 }}>
         <Grid item xs={12} sm={6} md={2}>
-          <Card>
+          <Card
+            sx={onCardClick ? clickableSx(isActiveAll) : undefined}
+            onClick={onCardClick ? () => handleClick(null) : undefined}
+          >
             <CardContent>
               <Typography color="textSecondary" gutterBottom variant="body2">Open Opportunities</Typography>
               <Typography variant="h4">{opps.length}</Typography>
@@ -50,7 +94,10 @@ export const SummaryCards: React.FC<SummaryCardsProps> = ({ viewMode, opps }) =>
           </Card>
         </Grid>
         <Grid item xs={12} sm={6} md={2}>
-          <Card>
+          <Card
+            sx={onCardClick ? clickableSx(isActiveAll) : undefined}
+            onClick={onCardClick ? () => handleClick(null) : undefined}
+          >
             <CardContent>
               <Typography color="textSecondary" gutterBottom variant="body2">Total Pipeline Value</Typography>
               <Typography variant="h4">{formatDollarMillions(totalAmount)}</Typography>
@@ -77,7 +124,13 @@ export const SummaryCards: React.FC<SummaryCardsProps> = ({ viewMode, opps }) =>
           </Card>
         </Grid>
         <Grid item xs={12} sm={6} md={2}>
-          <Card sx={{ bgcolor: 'warning.50' }}>
+          <Card
+            sx={{
+              bgcolor: 'warning.50',
+              ...(onCardClick ? clickableSx(isActiveClosingMonth) : {}),
+            }}
+            onClick={onCardClick ? () => handleClick('closingMonth') : undefined}
+          >
             <CardContent>
               <Typography color="textSecondary" gutterBottom variant="body2">Closing This Month</Typography>
               <Typography variant="h4" color="warning.main">{formatDollarMillions(closingAmount)}</Typography>
@@ -86,7 +139,13 @@ export const SummaryCards: React.FC<SummaryCardsProps> = ({ viewMode, opps }) =>
           </Card>
         </Grid>
         <Grid item xs={12} sm={6} md={2}>
-          <Card sx={{ bgcolor: staleCount > 0 ? 'error.50' : undefined }}>
+          <Card
+            sx={{
+              bgcolor: staleCount > 0 ? 'error.50' : undefined,
+              ...(onCardClick ? clickableSx(isActiveStale) : {}),
+            }}
+            onClick={onCardClick ? () => handleClick('stale') : undefined}
+          >
             <CardContent>
               <Typography color="textSecondary" gutterBottom variant="body2">Stale Deals</Typography>
               <Typography variant="h4" color={staleCount > 0 ? 'error.main' : undefined}>{staleCount}</Typography>

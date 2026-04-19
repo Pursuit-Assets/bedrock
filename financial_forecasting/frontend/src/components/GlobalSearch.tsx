@@ -291,7 +291,7 @@ const GlobalSearch: React.FC<GlobalSearchProps> = ({
       handleClear();
       handleClose();
       if (mobileOpen) setMobileOpen(false);
-      navigate(`/pipeline?tab=${TAB_NAMES[type]}&search=${encodeURIComponent(name)}`);
+      navigate(`/reports?tab=${TAB_NAMES[type]}&search=${encodeURIComponent(name)}`);
     },
     [query, handleClear, handleClose, mobileOpen, navigate],
   );

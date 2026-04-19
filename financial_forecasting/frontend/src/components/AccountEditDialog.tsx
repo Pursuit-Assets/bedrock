@@ -1,9 +1,6 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import {
-  Dialog,
-  DialogTitle,
-  DialogContent,
-  DialogActions,
+  Drawer,
   TextField,
   MenuItem,
   Grid,
@@ -20,7 +17,10 @@ import {
   Collapse,
   IconButton,
 } from '@mui/material';
-import { ExpandMore as ExpandMoreIcon } from '@mui/icons-material';
+import {
+  ExpandMore as ExpandMoreIcon,
+  Close as CloseIcon,
+} from '@mui/icons-material';
 import { useQueryClient } from 'react-query';
 import toast from 'react-hot-toast';
 import ConfirmSaveButton from './ConfirmSaveButton';
@@ -138,6 +138,33 @@ const AccountEditDialog: React.FC<AccountEditDialogProps> = ({
   const [companySizeValues, setCompanySizeValues] = useState<string[]>([]);
   const [fundingFocusValues, setFundingFocusValues] = useState<string[]>([]);
   const [focusAreaValues, setFocusAreaValues] = useState<string[]>([]);
+
+  // ── Drawer resize ───────────────────────────────────────────────────────
+  const MIN_WIDTH = 480;
+  const MAX_WIDTH = 900;
+  const [width, setWidth] = useState(680);
+  const resizeRef = useRef({ active: false, startX: 0, startWidth: 0 });
+
+  useEffect(() => {
+    const onMouseMove = (e: globalThis.MouseEvent) => {
+      if (!resizeRef.current.active) return;
+      const dx = e.clientX - resizeRef.current.startX;
+      const newWidth = Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, resizeRef.current.startWidth + dx));
+      setWidth(newWidth);
+    };
+    const onMouseUp = () => { resizeRef.current.active = false; };
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+    return () => {
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+    };
+  }, []);
+
+  const handleResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    resizeRef.current = { active: true, startX: e.clientX, startWidth: width };
+  }, [width]);
 
   // ── Permission checks ───────────────────────────────────────────────────
   const canEdit = isAdmin || can('edit_accounts');
@@ -319,17 +346,63 @@ const AccountEditDialog: React.FC<AccountEditDialogProps> = ({
   const notFound = open && accountId && !originalRecord;
 
   return (
-    <Dialog open={open} onClose={onClose} maxWidth="md" fullWidth>
-      <DialogTitle>
-        Edit Account
-        {originalRecord?.Name && (
-          <Typography variant="subtitle2" color="text.secondary" sx={{ mt: 0.25 }}>
-            {originalRecord.Name}
-          </Typography>
-        )}
-      </DialogTitle>
+    <Drawer
+      anchor="right"
+      open={open}
+      onClose={onClose}
+      PaperProps={{
+        sx: {
+          width: { xs: '100%', sm: width },
+          p: 0,
+          display: 'flex',
+          flexDirection: 'column',
+        },
+      }}
+    >
+      {/* Resize handle on left edge (sm+ only) */}
+      <Box
+        onMouseDown={handleResizeStart}
+        sx={{
+          display: { xs: 'none', sm: 'block' },
+          position: 'absolute',
+          left: 0,
+          top: 0,
+          bottom: 0,
+          width: 8,
+          cursor: 'col-resize',
+          zIndex: 20,
+          '&:hover::after': {
+            content: '""',
+            position: 'absolute',
+            left: '50%',
+            top: '50%',
+            transform: 'translate(-50%, -50%)',
+            width: 4,
+            height: 48,
+            borderRadius: 2,
+            bgcolor: 'primary.main',
+            opacity: 0.4,
+          },
+        }}
+      />
 
-      <DialogContent dividers>
+      {/* Header */}
+      <Box sx={{ px: 3, py: 2, borderBottom: 1, borderColor: 'divider', display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between' }}>
+        <Box>
+          <Typography variant="h6">Edit Account</Typography>
+          {originalRecord?.Name && (
+            <Typography variant="subtitle2" color="text.secondary" sx={{ mt: 0.25 }}>
+              {originalRecord.Name}
+            </Typography>
+          )}
+        </Box>
+        <IconButton onClick={onClose} size="small" sx={{ mt: 0.5 }}>
+          <CloseIcon />
+        </IconButton>
+      </Box>
+
+      {/* Scrollable content */}
+      <Box sx={{ flex: 1, overflow: 'auto', px: 3, py: 2 }}>
         {notFound && (
           <Alert severity="warning" sx={{ mb: 2 }}>
             Account not found. It may have been deleted or you may not have access.
@@ -915,9 +988,10 @@ const AccountEditDialog: React.FC<AccountEditDialogProps> = ({
             </Box>
           </>
         )}
-      </DialogContent>
+      </Box>
 
-      <DialogActions sx={{ px: 3, py: 1.5 }}>
+      {/* Sticky footer */}
+      <Box sx={{ px: 3, py: 1.5, borderTop: 1, borderColor: 'divider', display: 'flex', justifyContent: 'flex-end', gap: 1 }}>
         <Button onClick={onClose}>Cancel</Button>
         <ConfirmSaveButton
           onConfirm={handleSave}
@@ -926,8 +1000,8 @@ const AccountEditDialog: React.FC<AccountEditDialogProps> = ({
         >
           Save
         </ConfirmSaveButton>
-      </DialogActions>
-    </Dialog>
+      </Box>
+    </Drawer>
   );
 };
 

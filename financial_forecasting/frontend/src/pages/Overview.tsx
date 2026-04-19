@@ -39,7 +39,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { usePermissions } from '../contexts/PermissionsContext';
 import { addQuarters, startOfQuarter, endOfQuarter, format, isWithinInterval, differenceInDays, parseISO } from 'date-fns';
 import PipelineFunnel from '../components/PipelineFunnel';
-import { OwnerOption } from '../components/OwnerSelector';
+import OwnerSelector, { OwnerOption, loadStoredOwnerSelection } from '../components/OwnerSelector';
 import { useOwnerGoals } from '../hooks/useOwnerGoals';
 import { OPEN_STAGES } from '../types/salesforce';
 import ConnectPrompt from '../components/ConnectPrompt';
@@ -66,23 +66,30 @@ interface Opportunity {
   npe01__Payments_Made__c?: number;
 }
 
+// Pursuit's Salesforce contains BOTH "Closed / Completed" (1,923 live
+// records) AND "Closed Won" (575 live records) as terminal "we won" stages,
+// plus "In Collection" (650) and "Collecting / In Effect" (47) for in-flight
+// collections. The defensive substring match below covers all of them. Do
+// NOT narrow to exact-match on OPPORTUNITY_STAGES — the enum declares 13
+// stages but the live org has 22. See tasks/stage-schema-drift.md for the
+// full gap + deferred fixes pending a glossary conversation.
 const CLOSED_WON_STAGES = ['Closed Won', 'Closed / Completed', 'Collecting / In Effect', 'Collecting', 'In Collection', 'In Effect'];
 const CLOSED_LOST_STAGES = ['Closed Lost', 'Withdrawn', 'Did not Fulfill', 'Closed / Did not Fulfill'];
 
-const Dashboard: React.FC = () => {
+const Progress: React.FC = () => {
   const navigate = useNavigate();
   const { user } = useAuth();
   const { sfUserId } = usePermissions();
   // Wall of Progress fiscal year — Pursuit's FY = calendar year
   const currentFiscalYear = useMemo(() => new Date().getFullYear(), []);
-  const { goals: ownerGoals } = useOwnerGoals(currentFiscalYear);
+  const { goals: ownerGoals, isLoading: goalsLoading } = useOwnerGoals(currentFiscalYear);
 
   const [selectedOwnerIds, setSelectedOwnerIds] = useState<string[]>([]);
   const [hasInitializedSelection, setHasInitializedSelection] = useState(false);
   const [expandedOwnerId, setExpandedOwnerId] = useState<string | null>(null);
 
   // Fetch opportunities
-  const { data: opportunitiesData, isLoading } = useQuery(
+  const { data: opportunitiesData, isLoading: oppsLoading } = useQuery(
     'opportunities',
     async () => {
       const response = await apiService.getOpportunities();
@@ -100,6 +107,41 @@ const Dashboard: React.FC = () => {
     [opportunitiesData],
   );
 
+  // Fetch active SF users enriched with the Bedrock "progress-tracked" override.
+  // The override lives in bedrock.progress_tracked_override and is managed by
+  // admins in Settings → Progress Visibility. Untoggled users default to
+  // tracked (visible). See routes/progress_tracking.py.
+  const { data: progressUsersData, isLoading: usersLoading } = useQuery(
+    'progress-tracked-users',
+    async () => (await apiService.getProgressTrackedUsers()).data,
+    { staleTime: 300000 },
+  );
+
+  // Normalize to the {Id, Name, IsActive} shape the rest of this component
+  // already uses (leftovers from when we hit /api/salesforce/users); carry
+  // is_tracked through for the filter below.
+  const allUsers = useMemo<
+    Array<{ Id: string; Name: string; IsActive: boolean; is_tracked: boolean }>
+  >(
+    () =>
+      (Array.isArray(progressUsersData) ? progressUsersData : []).map((u: any) => ({
+        Id: u.sf_user_id,
+        Name: u.name,
+        IsActive: u.is_active !== false,
+        is_tracked: u.is_tracked !== false,
+      })),
+    [progressUsersData],
+  );
+
+  // IsActive is guaranteed true by the backend (WHERE IsActive=true) but we
+  // keep the check as belt-and-suspenders. The load-bearing filter here is
+  // is_tracked — admins toggle this via Settings to hide bots / ex-employees
+  // from the Progress page without touching Salesforce.
+  const activeUsers = useMemo(
+    () => allUsers.filter((u) => u.IsActive && u.is_tracked),
+    [allUsers],
+  );
+
   // ── Wall of Progress: derive available owners from currently-open opps ──
   const availableOpenOwners = useMemo<OwnerOption[]>(() => {
     const seen = new Map<string, string>();
@@ -112,15 +154,6 @@ const Dashboard: React.FC = () => {
       a.name.localeCompare(b.name),
     );
   }, [opportunities]);
-
-  // Initialize selected owner for pipeline funnel
-  useEffect(() => {
-    if (hasInitializedSelection || availableOpenOwners.length === 0) return;
-    if (sfUserId && availableOpenOwners.some((o) => o.id === sfUserId)) {
-      setSelectedOwnerIds([sfUserId]);
-    }
-    setHasInitializedSelection(true);
-  }, [availableOpenOwners, hasInitializedSelection, sfUserId]);
 
   // Opportunities passed to the funnel: filtered by selection (or all if empty)
   const opportunitiesForFunnel = useMemo(() => {
@@ -408,18 +441,71 @@ const Dashboard: React.FC = () => {
     };
   }, [opportunities]);
 
-  // Per-owner progress for targets table
+  // Per-owner progress for targets table. Shows ONLY users who match all
+  // three criteria (set by JP + Jac 2026-04-15):
+  //   (a) FY revenue target set in Settings → Targets
+  //   (b) IsActive=true in Salesforce AND visible via Bedrock override
+  //       (Settings → Progress Visibility)
+  //   (c) Owns at least one opportunity in Salesforce
+  // Users missing a target are counted separately (see `missingTargetCount`
+  // below) and surfaced as a caption under the section header so admins know
+  // how many targets still need setting — without filling the table with
+  // "Target not set" placeholder rows.
+  const ownerIdsWithOpps = useMemo(() => {
+    const ids = new Set<string>();
+    for (const o of opportunities) if (o.OwnerId) ids.add(o.OwnerId);
+    return ids;
+  }, [opportunities]);
+
+  // Canonical "has a target" set: goal record exists AND amount > 0. A
+  // $0-amount goal (e.g. accidentally saved from the Targets dialog) is
+  // NOT a target — treating it as one produced a ghost row previously
+  // (row appeared but rendered "Target not set" because the display check
+  // used goal_amount > 0 while the filter only truthy-checked the goal
+  // record). Normalizing through this one memo eliminates the drift.
+  const goalHoldersWithAmount = useMemo(() => {
+    const ids = new Set<string>();
+    if (ownerGoals) {
+      for (const [sfId, goal] of Object.entries(ownerGoals)) {
+        if (goal.goal_amount > 0) ids.add(sfId);
+      }
+    }
+    return ids;
+  }, [ownerGoals]);
+
   const GOAL_STAGES = useMemo(() => ['Collecting / In Effect', 'Closed / Completed'], []);
   const ownerProgress = useMemo(() => {
-    if (!ownerGoals || !opportunities.length) return [];
+    if (!opportunities.length) return [];
     const now = new Date();
     const fyStart = new Date(now.getFullYear(), 0, 1);
     const fyEnd = new Date(now.getFullYear(), 11, 31, 23, 59, 59, 999);
+    const yearPct = Math.max(0, Math.min(1, (now.getTime() - fyStart.getTime()) / (fyEnd.getTime() - fyStart.getTime())));
 
-    return Object.entries(ownerGoals).map(([sfId, goal]) => {
-      const target = goal.goal_amount;
+    // Build the eligible set: user must pass ALL THREE checks per the
+    // JP + Jac alignment on 2026-04-15 — IsActive=true in SF (covered by
+    // the `activeUsers` query + Bedrock override), owns ≥1 opportunity
+    // (`ownerIdsWithOpps`), and has a target with amount > 0
+    // (`goalHoldersWithAmount`). No historical-holder fallback — if a
+    // user is IsActive=false in SF they don't appear here, regardless of
+    // whether they still carry a target or opps (HR source of truth).
+    const ids = new Set<string>();
+    for (const u of activeUsers) {
+      if (ownerIdsWithOpps.has(u.Id) && goalHoldersWithAmount.has(u.Id)) {
+        ids.add(u.Id);
+      }
+    }
 
-      // Wins: closed/collecting in FY, owned by this user
+    const nameById = (sfId: string) =>
+      allUsers.find((u) => u.Id === sfId)?.Name
+      || availableOpenOwners.find((o) => o.id === sfId)?.name
+      || opportunities.find((o) => o.OwnerId === sfId)?.Owner?.Name
+      || sfId;
+
+    return Array.from(ids).map((sfId) => {
+      const goal = ownerGoals?.[sfId];
+      const hasTarget = !!goal && goal.goal_amount > 0;
+      const target = hasTarget ? goal.goal_amount : 0;
+
       const wonOpps = opportunities.filter((o) =>
         o.OwnerId === sfId &&
         GOAL_STAGES.includes(o.StageName) &&
@@ -427,43 +513,116 @@ const Dashboard: React.FC = () => {
       );
       const wins = wonOpps.reduce((s, o) => s + (o.Amount || 0), 0);
 
-      // Open pipeline for this user
       const openOpps = opportunities.filter((o) =>
         o.OwnerId === sfId && OPEN_STAGES.includes(o.StageName as any)
       );
       const pipeline = openOpps.reduce((s, o) => s + (o.Amount || 0), 0);
       const weighted = openOpps.reduce((s, o) => s + ((o.Amount || 0) * (o.Probability || 0)) / 100, 0);
 
-      // Projection: wins so far annualized
-      const elapsed = Math.max(1, (now.getTime() - fyStart.getTime()) / (fyEnd.getTime() - fyStart.getTime()) * 12);
-      const projected = (wins / elapsed) * 12;
+      // Projection: wins so far annualized (FY-linear). Useful even without
+      // a target — shows the run-rate trajectory.
+      const elapsedMonths = Math.max(1, (now.getTime() - fyStart.getTime()) / (fyEnd.getTime() - fyStart.getTime()) * 12);
+      const projected = (wins / elapsedMonths) * 12;
 
-      const remaining = Math.max(0, target - wins);
-      const pct = target > 0 ? Math.min(1, wins / target) : 0;
+      const remaining = hasTarget ? Math.max(0, target - wins) : 0;
+      const pct = hasTarget ? Math.min(1, wins / target) : 0;
+      const onTrack: 'ahead' | 'close' | 'behind' | 'none' = !hasTarget
+        ? 'none'
+        : pct >= yearPct ? 'ahead'
+        : pct >= yearPct * 0.75 ? 'close'
+        : 'behind';
 
-      // How far through the FY are we (0..1)
-      const yearPct = Math.max(0, Math.min(1, (now.getTime() - fyStart.getTime()) / (fyEnd.getTime() - fyStart.getTime())));
-      // On track = wins % >= year % (or close to it)
-      const onTrack = pct >= yearPct ? 'ahead' : pct >= yearPct * 0.75 ? 'close' : 'behind';
+      return {
+        sfId,
+        ownerName: nameById(sfId),
+        hasTarget,
+        target,
+        wins,
+        remaining,
+        projected,
+        pct,
+        yearPct,
+        onTrack,
+        pipeline,
+        weighted,
+        wonOpps,
+        openOpps,
+      };
+    }).sort((a, b) => {
+      // Users with targets first (by pct desc), users without targets
+      // grouped at the bottom alphabetically — keeps the "needs attention"
+      // info high on the page.
+      if (a.hasTarget !== b.hasTarget) return a.hasTarget ? -1 : 1;
+      if (a.hasTarget) return b.pct - a.pct;
+      return a.ownerName.localeCompare(b.ownerName);
+    });
+  }, [ownerGoals, opportunities, GOAL_STAGES, activeUsers, allUsers, availableOpenOwners, ownerIdsWithOpps, goalHoldersWithAmount]);
 
-      const ownerName = availableOpenOwners.find((o) => o.id === sfId)?.name
-        || opportunities.find((o) => o.OwnerId === sfId)?.Owner?.Name
-        || sfId;
+  // Seed the Pipeline Flow multi-select. Precedence:
+  //   1. localStorage selection from a prior session (filtered to the current
+  //      available-owner pool so dormant IDs drop out automatically)
+  //   2. Individual Goals & Pipelines table (ownerProgress ∩ open-owner pool)
+  //   3. [] — triggers the "No targets set" banner when ownerProgress is empty
+  // Only runs once per mount, after all three upstream queries (opps,
+  // progress-users, goals) have resolved. Before that we can't distinguish
+  // "no goals set" from "goals still loading" and would race with the banner.
+  useEffect(() => {
+    if (hasInitializedSelection) return;
+    if (oppsLoading || usersLoading || goalsLoading) return;
+    const openIds = new Set(availableOpenOwners.map((o) => o.id));
+    const stored = loadStoredOwnerSelection('progress-pipeline-owners', openIds);
+    const seeded = stored && stored.length > 0
+      ? stored
+      : ownerProgress.map((r) => r.sfId).filter((id) => openIds.has(id));
+    setSelectedOwnerIds(seeded);
+    setHasInitializedSelection(true);
+  }, [
+    hasInitializedSelection,
+    oppsLoading,
+    usersLoading,
+    goalsLoading,
+    availableOpenOwners,
+    ownerProgress,
+  ]);
 
-      return { sfId, ownerName, target, wins, remaining, projected, pct, yearPct, onTrack, pipeline, weighted, wonOpps, openOpps };
-    }).sort((a, b) => b.pct - a.pct);
-  }, [ownerGoals, opportunities, GOAL_STAGES, availableOpenOwners]);
+  // Count of users who SHOULD have a target but don't. Definition:
+  // active (SF IsActive + visible via override) AND owns at least one
+  // opportunity AND does NOT have a goal set. Service accounts (no opps)
+  // and hidden users don't count — only "real revenue-tracked staff
+  // who we haven't onboarded to targets yet".
+  const missingTargetCount = useMemo(() => {
+    return activeUsers.filter(
+      (u) => ownerIdsWithOpps.has(u.Id) && !goalHoldersWithAmount.has(u.Id),
+    ).length;
+  }, [activeUsers, ownerIdsWithOpps, goalHoldersWithAmount]);
+
+  // Aggregate totals for the "Team total" row at the top of Individual
+  // Goals & Pipelines. Since the table now only contains targeted users
+  // (filter above), wins/remaining/projected/target all sum across every
+  // visible row — no need to split targeted/untargeted.
+  const teamTotals = useMemo(() => {
+    const targeted = ownerProgress.filter((r) => r.hasTarget);
+    const totalTarget = targeted.reduce((s, r) => s + r.target, 0);
+    const totalTargetedWins = targeted.reduce((s, r) => s + r.wins, 0);
+    return {
+      wins: ownerProgress.reduce((s, r) => s + r.wins, 0),
+      remaining: targeted.reduce((s, r) => s + r.remaining, 0),
+      projected: ownerProgress.reduce((s, r) => s + r.projected, 0),
+      target: totalTarget,
+      pct: totalTarget > 0 ? Math.min(1, totalTargetedWins / totalTarget) : 0,
+    };
+  }, [ownerProgress]);
 
   const formatPercent = (value: number) => {
     return `${value.toFixed(1)}%`;
   };
 
-  if (isLoading) {
+  if (oppsLoading) {
     return (
       <Box sx={{ width: '100%', mt: 4 }}>
         <LinearProgress />
         <Typography align="center" sx={{ mt: 2 }}>
-          Loading dashboard...
+          Loading progress...
         </Typography>
       </Box>
     );
@@ -472,30 +631,26 @@ const Dashboard: React.FC = () => {
   if (!metrics || (!user?.salesforce_connected && opportunities.length === 0)) {
     return (
       <Box>
-        <Box sx={{ mb: 4 }}>
-          <Typography variant="h4" gutterBottom>Overview</Typography>
-        </Box>
-        <ConnectPrompt service="Salesforce" message="Connect Salesforce in Settings to see your pipeline overview." />
+        <ConnectPrompt service="Salesforce" message="Connect Salesforce in Settings to see team progress." />
       </Box>
     );
   }
 
   return (
     <Box>
-      {/* Header */}
-      <Box sx={{ mb: 4 }}>
-        <Typography variant="h4" gutterBottom>
-          Wall of Progress
-        </Typography>
-        <Typography variant="body2" color="textSecondary">
-          Team pipeline accountability &middot; Real-time goal tracking per RM &middot; Updated: {format(new Date(), 'PPpp')}
+      {/* Page title + subtitle come from Layout's ALL_MENU_ITEMS (single
+          source of truth). Previous in-page H4 "Wall of Progress" +
+          "Team pipeline accountability · …" duplicated that header. */}
+
+      {/* Current FY Overview — team-wide wins + open pipeline table */}
+      <Box sx={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', flexWrap: 'wrap', gap: 1, mb: 0.25 }}>
+        <Typography variant="h6" sx={{ fontWeight: 700 }}>Current FY Overview</Typography>
+        <Typography variant="caption" color="text.disabled">
+          Updated {format(new Date(), 'p')}
         </Typography>
       </Box>
-
-      {/* Pipeline Summary Table */}
-      <Typography variant="h6" sx={{ fontWeight: 700, mb: 0.5 }}>Pipeline</Typography>
-      <Typography variant="body2" color="textSecondary" sx={{ mb: 2 }}>
-        Wins + open pipeline ({metrics.totalDeals} active opps) &middot; Probability-weighted scenarios
+      <Typography variant="body2" color="textSecondary" sx={{ mb: 1.5 }}>
+        Quarterly wins and open pipeline &middot; {metrics.totalDeals} active deals &middot; probability-weighted
       </Typography>
 
       <TableContainer component={Paper} variant="outlined" sx={{ mb: 3 }}>
@@ -611,19 +766,24 @@ const Dashboard: React.FC = () => {
       </TableContainer>
 
 
-      {/* ── Individual Progress — targets table with expandable detail ── */}
-      <Box sx={{ mb: 2, mt: 3 }}>
-        <Typography variant="h6" sx={{ fontWeight: 700, mb: 0.5 }}>
-          Individual Progress
+      {/* ── Individual Goals & Pipelines — one row per targeted team member ── */}
+      <Box sx={{ mb: 1, mt: 2 }}>
+        <Typography variant="h6" sx={{ fontWeight: 700, mb: 0.25 }}>
+          Individual Goals &amp; Pipelines
         </Typography>
-        <Typography variant="body2" color="textSecondary" sx={{ mb: 2 }}>
-          FY{currentFiscalYear.toString().slice(-2)} revenue targets &middot; Click a row to see pipeline detail
+        <Typography variant="body2" color="textSecondary">
+          FY{currentFiscalYear.toString().slice(-2)} revenue goal vs. actuals per team member.
         </Typography>
+        {missingTargetCount > 0 && (
+          <Typography variant="caption" color="text.disabled" sx={{ display: 'block', mt: 0.5 }}>
+            {missingTargetCount} active SF user{missingTargetCount === 1 ? '' : 's'} lack a target. Clean up in Bulk Edit page (coming soon).
+          </Typography>
+        )}
       </Box>
 
       {ownerProgress.length === 0 ? (
         <Alert severity="info" sx={{ mb: 2 }}>
-          No revenue targets set for FY{currentFiscalYear}. Add targets in Settings &rarr; Targets.
+          No FY{currentFiscalYear} targets set yet. Add targets in Settings &rarr; Targets.
         </Alert>
       ) : (
         <TableContainer component={Paper} variant="outlined" sx={{ mb: 3 }}>
@@ -640,6 +800,55 @@ const Dashboard: React.FC = () => {
               </TableRow>
             </TableHead>
             <TableBody>
+              {/* Team total — aggregate of all visible rows. Non-expandable
+                  (no chevron / no onClick) and visually weightier than body
+                  rows so it reads as the summary line. */}
+              <TableRow sx={{ bgcolor: 'grey.50', '& td': { fontWeight: 700 } }}>
+                <TableCell sx={{ width: 32 }} />
+                <TableCell>
+                  <Typography variant="body2" sx={{ fontWeight: 700 }}>Team total</Typography>
+                </TableCell>
+                <TableCell>
+                  <Box sx={{ position: 'relative' }}>
+                    <LinearProgress
+                      variant="determinate"
+                      value={Math.min(100, teamTotals.pct * 100)}
+                      sx={{ height: 18, borderRadius: 1, bgcolor: 'grey.200' }}
+                    />
+                    <Typography
+                      variant="caption"
+                      sx={{
+                        position: 'absolute', left: '50%', top: '50%',
+                        transform: 'translate(-50%, -50%)',
+                        fontWeight: 700, fontSize: '0.65rem',
+                        color: teamTotals.pct > 0.35 ? 'white' : 'text.primary',
+                      }}
+                    >
+                      {(teamTotals.pct * 100).toFixed(0)}%
+                    </Typography>
+                  </Box>
+                </TableCell>
+                <TableCell align="right">
+                  <Typography variant="body2" sx={{ fontWeight: 700, color: teamTotals.wins > 0 ? 'success.main' : 'text.disabled' }}>
+                    {teamTotals.wins > 0 ? formatDollarMillions(teamTotals.wins) : '—'}
+                  </Typography>
+                </TableCell>
+                <TableCell align="right">
+                  <Typography variant="body2" sx={{ fontWeight: 700, color: teamTotals.remaining > 0 ? 'text.primary' : 'success.main' }}>
+                    {teamTotals.remaining > 0 ? formatDollarMillions(teamTotals.remaining) : 'Met'}
+                  </Typography>
+                </TableCell>
+                <TableCell align="right">
+                  <Typography variant="body2" sx={{ fontWeight: 700 }}>
+                    {teamTotals.projected > 0 ? formatDollarMillions(teamTotals.projected) : '—'}
+                  </Typography>
+                </TableCell>
+                <TableCell align="right">
+                  <Typography variant="body2" sx={{ fontWeight: 700 }}>
+                    {teamTotals.target > 0 ? formatDollarMillions(teamTotals.target) : '—'}
+                  </Typography>
+                </TableCell>
+              </TableRow>
               {ownerProgress.map((row) => {
                 const isExpanded = expandedOwnerId === row.sfId;
                 const statusColor = row.onTrack === 'ahead' ? 'success' : row.onTrack === 'close' ? 'warning' : 'error';
@@ -647,7 +856,14 @@ const Dashboard: React.FC = () => {
                   <React.Fragment key={row.sfId}>
                     <TableRow
                       hover
-                      sx={{ cursor: 'pointer', '& > td': { borderBottom: isExpanded ? 'none' : undefined } }}
+                      sx={{
+                        cursor: 'pointer',
+                        // De-emphasize untargeted users — keeps the "needs
+                        // attention" (targeted) rows visually dominant so
+                        // eyes don't have to compete with the dim rows.
+                        opacity: row.hasTarget ? 1 : 0.55,
+                        '& > td': { borderBottom: isExpanded ? 'none' : undefined },
+                      }}
                       onClick={() => setExpandedOwnerId(isExpanded ? null : row.sfId)}
                     >
                       <TableCell sx={{ px: 0.5 }}>
@@ -659,65 +875,84 @@ const Dashboard: React.FC = () => {
                         <Typography variant="body2" sx={{ fontWeight: 600 }}>{row.ownerName}</Typography>
                       </TableCell>
                       <TableCell>
-                        <Box sx={{ position: 'relative' }}>
-                          <LinearProgress
-                            variant="determinate"
-                            value={Math.min(100, row.pct * 100)}
-                            color={statusColor as any}
-                            sx={{ height: 18, borderRadius: 1, bgcolor: 'grey.100' }}
-                          />
-                          {/* Year-progress marker */}
-                          <MuiTooltip title={`Today: ${(row.yearPct * 100).toFixed(0)}% through FY`} arrow placement="top">
-                            <Box
-                              sx={{
-                                position: 'absolute',
-                                left: `${row.yearPct * 100}%`,
-                                top: -2,
-                                bottom: -2,
-                                width: 2,
-                                bgcolor: 'text.primary',
-                                opacity: 0.7,
-                                zIndex: 1,
-                                '&::after': {
-                                  content: '""',
+                        {row.hasTarget ? (
+                          <Box sx={{ position: 'relative' }}>
+                            <LinearProgress
+                              variant="determinate"
+                              value={Math.min(100, row.pct * 100)}
+                              color={statusColor as any}
+                              sx={{ height: 18, borderRadius: 1, bgcolor: 'grey.100' }}
+                            />
+                            {/* Year-progress marker */}
+                            <MuiTooltip title={`Today: ${(row.yearPct * 100).toFixed(0)}% through FY`} arrow placement="top">
+                              <Box
+                                sx={{
                                   position: 'absolute',
-                                  top: -3,
-                                  left: -3,
-                                  width: 8,
-                                  height: 8,
-                                  borderRadius: '50%',
+                                  left: `${row.yearPct * 100}%`,
+                                  top: -2,
+                                  bottom: -2,
+                                  width: 2,
                                   bgcolor: 'text.primary',
                                   opacity: 0.7,
-                                },
-                              }}
-                            />
-                          </MuiTooltip>
-                          {/* Percentage label */}
-                          <Typography
-                            variant="caption"
-                            sx={{ position: 'absolute', left: '50%', top: '50%', transform: 'translate(-50%, -50%)', fontWeight: 700, fontSize: '0.65rem', color: row.pct > 0.35 ? 'white' : 'text.primary', zIndex: 2 }}
-                          >
-                            {(row.pct * 100).toFixed(0)}%
+                                  zIndex: 1,
+                                  '&::after': {
+                                    content: '""',
+                                    position: 'absolute',
+                                    top: -3,
+                                    left: -3,
+                                    width: 8,
+                                    height: 8,
+                                    borderRadius: '50%',
+                                    bgcolor: 'text.primary',
+                                    opacity: 0.7,
+                                  },
+                                }}
+                              />
+                            </MuiTooltip>
+                            {/* Percentage label */}
+                            <Typography
+                              variant="caption"
+                              sx={{ position: 'absolute', left: '50%', top: '50%', transform: 'translate(-50%, -50%)', fontWeight: 700, fontSize: '0.65rem', color: row.pct > 0.35 ? 'white' : 'text.primary', zIndex: 2 }}
+                            >
+                              {(row.pct * 100).toFixed(0)}%
+                            </Typography>
+                          </Box>
+                        ) : (
+                          <Typography variant="caption" color="text.disabled" sx={{ fontStyle: 'italic' }}>
+                            Target not set
                           </Typography>
-                        </Box>
+                        )}
                       </TableCell>
                       <TableCell align="right">
-                        <Typography variant="body2" sx={{ fontWeight: 600, color: 'success.main' }}>
-                          {formatDollarMillions(row.wins)}
+                        <Typography variant="body2" sx={{ fontWeight: 600, color: row.wins > 0 ? 'success.main' : 'text.disabled' }}>
+                          {row.wins > 0 ? formatDollarMillions(row.wins) : '—'}
                         </Typography>
                       </TableCell>
                       <TableCell align="right">
-                        <Typography variant="body2" color={row.remaining > 0 ? 'text.primary' : 'success.main'}>
-                          {row.remaining > 0 ? formatDollarMillions(row.remaining) : 'Met'}
+                        {row.hasTarget ? (
+                          <Typography variant="body2" color={row.remaining > 0 ? 'text.primary' : 'success.main'}>
+                            {row.remaining > 0 ? formatDollarMillions(row.remaining) : 'Met'}
+                          </Typography>
+                        ) : (
+                          <Typography variant="body2" color="text.disabled">—</Typography>
+                        )}
+                      </TableCell>
+                      <TableCell align="right">
+                        <Typography
+                          variant="body2"
+                          sx={{ color: row.hasTarget
+                            ? (row.projected >= row.target ? 'success.main' : 'warning.main')
+                            : 'text.secondary' }}
+                        >
+                          {row.projected > 0 ? formatDollarMillions(row.projected) : '—'}
                         </Typography>
                       </TableCell>
                       <TableCell align="right">
-                        <Typography variant="body2" sx={{ color: row.projected >= row.target ? 'success.main' : 'warning.main' }}>
-                          {formatDollarMillions(row.projected)}
-                        </Typography>
-                      </TableCell>
-                      <TableCell align="right">
-                        <Typography variant="body2" sx={{ fontWeight: 500 }}>{formatDollarMillions(row.target)}</Typography>
+                        {row.hasTarget ? (
+                          <Typography variant="body2" sx={{ fontWeight: 500 }}>{formatDollarMillions(row.target)}</Typography>
+                        ) : (
+                          <Typography variant="body2" color="text.disabled" sx={{ fontStyle: 'italic' }}>Not set</Typography>
+                        )}
                       </TableCell>
                     </TableRow>
 
@@ -815,6 +1050,23 @@ const Dashboard: React.FC = () => {
         </TableContainer>
       )}
 
+      {/* Pipeline Flow owner filter — seeded from the Individual Goals &
+          Pipelines table above, editable via Autocomplete chips. */}
+      <Box sx={{ mb: 2, display: 'flex', flexDirection: 'column', gap: 0.5 }}>
+        <OwnerSelector
+          availableOwners={availableOpenOwners}
+          value={selectedOwnerIds}
+          onChange={setSelectedOwnerIds}
+          storageKey="progress-pipeline-owners"
+        />
+        {hasInitializedSelection && !goalsLoading && ownerProgress.length === 0 && (
+          <Typography variant="caption" sx={{ color: 'warning.main' }}>
+            No targets set — showing everyone with open pipeline. Set targets in
+            the Individual Goals & Pipelines table above to filter.
+          </Typography>
+        )}
+      </Box>
+
       {/* Pipeline Health Funnel — driven by the multi-select selection */}
       <PipelineFunnel
         opportunities={opportunitiesForFunnel}
@@ -828,4 +1080,4 @@ const Dashboard: React.FC = () => {
   );
 };
 
-export default Dashboard;
+export default Progress;

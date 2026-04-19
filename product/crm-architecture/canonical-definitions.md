@@ -26,6 +26,24 @@ Bedrock uses **one stage enum** for all Opportunities. The `revenue_stream` fiel
 
 PRD.md (Nov 2025) used ~11 stages that collapsed into 7: Lead Gen/New Lead → `identified`, Qualifying → `qualified`, Design/Proposal Creation → `proposal-sent`, Proposal Negotiation/Contract Creation/Negotiating Contract → `in-negotiation`, Collecting/In Effect/Closed Completed → `closed-won`, Closed Lost/Did not Fulfill → `closed-lost`. Key change: payment state (formerly encoded in Opp stage) now lives in Payment status.
 
+**2026-04-16 update — live SF drift beyond the 11-stage mapping:**
+SOQL verified Pursuit's live SF org carries 22 distinct StageName values, not 11. The extra 11 stages and their Bedrock-canonical mapping:
+
+| Live SF stage | Count | Bedrock canonical mapping |
+|---|---:|---|
+| `In Collection` | 650 | **Not philanthropy** — ISA RecordType (Pursuit Bond / Income Share Agreement), 2019-2020 legacy. Out of scope; handled elsewhere. |
+| `Closed Won` | 575 | → `closed-won` (Donorbox-auto-populated donations, money already received via Stripe). `revenue_stream=nonprofit`. |
+| `Close/Unknown` | 68 | Dirty data; TBD (cleanup in future Bulk Edit sprint) |
+| `Closed / Full-Time or Successful Conversion` | 14 | → `closed-won` with `revenue_stream=pbc` (TBD — fundraising glossary session) |
+| `Closed / Temporary Hire` | 5 | → `closed-won` with `revenue_stream=pbc` (TBD) |
+| `Closed / Fulfilled` | 5 | TBD (which program?) |
+| `Closed / Contract or Agreement But No Fellows Hired` | 4 | Likely → `closed-lost` with `revenue_stream=pbc` (contract signed, zero fellow placements) (TBD) |
+| `Contract Signing` | 3 | → `in-negotiation` (late-funnel, pre-close) (TBD) |
+| `Closed / Sourcing` | 2 | TBD — misleading name |
+| `Verbal Commitment` | 1 | → `verbal-commit` (TBD — pre-contract) |
+
+**Operational fix direction:** Per JP directive 2026-04-16 ("SF stages are sacred"), Bedrock's implementation uses `ReadonlySet<string>` buckets in `frontend/src/types/salesforce.ts` that admit values outside the 7-stage enum. No `LEGACY_STAGES` flag; no stage hiding in edit UIs. When the enum is widened to include PBC stages (deferred post-MVP), all stages appear in dropdowns. See `tasks/f1-stage-buckets-plan.md` (2026-04-16) for the F1 bucket implementation.
+
 ---
 
 ## 2. Field Names (Canonical)

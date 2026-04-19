@@ -17,6 +17,16 @@ import type {
   ActivitySearchParams,
 } from '../types/activity';
 
+/** Request body for POST /api/ai/pipeline-analysis.
+ *  Either `days` (preset lookback, 1..365) OR `start`+`end` (YYYY-MM-DD, within
+ *  the last 365 days). `days` and start/end are mutually exclusive server-side. */
+export interface PipelineAnalysisBody {
+  days?: number;
+  start?: string;
+  end?: string;
+  owner_ids?: string[];
+}
+
 // Create axios instance with default config
 const api: AxiosInstance = axios.create({
   baseURL: process.env.REACT_APP_API_URL || 'http://localhost:8000',
@@ -93,8 +103,8 @@ export const apiService = {
   getOwnershipHistory: (days: number = 7) =>
     api.get('/api/salesforce/opportunities/ownership-history', { params: { days } }),
 
-  analyzePipeline: (days: number = 30, ownerIds: string[] = []) =>
-    api.post('/api/ai/pipeline-analysis', { days, owner_ids: ownerIds }),
+  analyzePipeline: (body: PipelineAnalysisBody) =>
+    api.post('/api/ai/pipeline-analysis', body),
 
   // Owner Goals (Wall of Progress)
   getOwnerGoals: (fiscalYear: number) =>
@@ -257,6 +267,15 @@ export const apiService = {
   getUsers: (params?: { limit?: number }) =>
     api.get('/api/salesforce/users', { params }),
 
+  // Progress-page visibility override (Settings → Progress Visibility)
+  // GET returns active SF users enriched with the Bedrock `is_tracked` flag;
+  // PUT upserts the admin override row for a single SF User Id.
+  getProgressTrackedUsers: () =>
+    api.get('/api/progress-tracking/users'),
+
+  setProgressTrackedOverride: (sfUserId: string, isTracked: boolean) =>
+    api.put(`/api/progress-tracking/overrides/${sfUserId}`, { is_tracked: isTracked }),
+
   // Sage Intacct - Invoices
   getInvoices: (params?: { customer_id?: string; limit?: number }) =>
     api.get('/api/intacct/invoices', { params }),
@@ -403,14 +422,6 @@ export const apiService = {
     api.get('/api/drive/health'),
 
   // AI-Powered Activity Intelligence (unified)
-  getActivityIntelligence: (accountName: string, forceRefresh: boolean = false, opportunityName?: string) =>
-    api.get(`/api/activity-intelligence/${encodeURIComponent(accountName)}`, {
-      timeout: 120000,
-      params: {
-        ...(forceRefresh ? { force_refresh: true } : {}),
-        ...(opportunityName ? { opportunity_name: opportunityName } : {}),
-      },
-    }),
 
   // Payment Schedule Management
   parsePaymentSchedule: (opportunityId: string, data: {

@@ -29,6 +29,7 @@ from models import (
     OpportunityUpdateRequest, InvoiceCreationRequest, ForecastingDashboardData,
     OpportunityStage, PaymentTerms, InvoiceStatus,
     OPEN_STAGES, CLOSED_STAGES, COLLECTING_STAGES,
+    WON_STAGES_SET, LOST_STAGES_SET,
     ApiResponse,
 )
 from forecasting_engine import ForecastingEngine
@@ -40,6 +41,7 @@ from routes.sf_dependencies import router as sf_deps_router
 from routes.permissions import router as permissions_router, opp_router as opp_lock_router, check_permission, check_permission_or_internal, resolve_task_lock
 from routes.opportunities_extra import router as opp_extra_router
 from routes.owner_goals import router as owner_goals_router
+from routes.progress_tracking import router as progress_tracking_router
 from routes.payment_schedules import router as payment_schedules_router
 from routes.finance import router as finance_router
 from routes.sage import router as sage_router
@@ -115,6 +117,7 @@ app.include_router(opp_lock_router)
 # Phase 2 route files
 app.include_router(opp_extra_router)
 app.include_router(owner_goals_router)
+app.include_router(progress_tracking_router)
 app.include_router(payment_schedules_router)
 app.include_router(finance_router)
 app.include_router(sage_router)
@@ -291,8 +294,11 @@ async def services_health_check(
 
 # Salesforce endpoints
 
-# Valid stages derived from the OpportunityStage enum — single source of truth
-VALID_STAGES = {s.value for s in OpportunityStage}
+# Valid stages admit the 13-stage OpportunityStage enum values PLUS the F1 bucket-set
+# members that live outside the enum (notably "Closed Won", the Donorbox-auto-populated
+# philanthropy stage). Callers passing stages=['Closed Won'] were silently dropped before
+# this widened — see tasks/stage-schema-drift.md § "Known pre-existing defects" item 3.
+VALID_STAGES = {s.value for s in OpportunityStage} | WON_STAGES_SET | LOST_STAGES_SET
 
 
 @app.get("/api/salesforce/opportunities")
@@ -463,7 +469,15 @@ async def update_opportunity(
 
 @app.get("/api/salesforce/accounts")
 async def get_accounts(
-    limit: int = Query(2000, le=5000),
+    # Cap matches GET /api/salesforce/opportunities (main.py:308) at le=2000.
+    # Security-positive vs the prior le=5000: shrinks the max data pull on a
+    # compromised or misbehaving client. All frontend callers use the default
+    # or a lower explicit value, so no caller regresses.
+    # NOTE: this endpoint uses salesforce.query() (single-page), not
+    # query_all(). If Pursuit's real Account row count ever exceeds 2000,
+    # results get silently truncated. Tracked separately in
+    # tasks/accounts-endpoint-pagination-followup.md.
+    limit: int = Query(2000, le=2000),
     client: UnifiedMCPClient = Depends(get_mcp_client),
     user = Depends(require_auth)
 ):

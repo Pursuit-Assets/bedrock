@@ -45,6 +45,33 @@ CLOSED_STAGES = frozenset({
 })
 
 
+# String-valued bucket sets — admit stage values outside the OpportunityStage enum
+# (notably "Closed Won", the Donorbox-auto-populated philanthropy stage, ~575 live
+# records). Mirror of frontend/src/types/salesforce.ts WON_STAGES / LOST_STAGES /
+# COLLECTING_STAGES / PAYMENT_RECEIVED_STAGES. Consumers: F2 Intacct bundle (deferred)
+# + forecasting_engine follow-up. See tasks/f1-stage-buckets-plan.md.
+WON_STAGES_SET: frozenset[str] = frozenset({
+    OpportunityStage.COLLECTING.value,          # "Collecting / In Effect"
+    OpportunityStage.CLOSED_COMPLETED.value,    # "Closed / Completed"
+    "Closed Won",                               # Donorbox philanthropy — not in enum
+})
+
+LOST_STAGES_SET: frozenset[str] = frozenset({
+    OpportunityStage.CLOSED_LOST.value,
+    OpportunityStage.WITHDRAWN.value,
+    OpportunityStage.CLOSED_DID_NOT_FULFILL.value,
+})
+
+COLLECTING_STAGES_SET: frozenset[str] = frozenset({
+    OpportunityStage.COLLECTING.value,
+})
+
+PAYMENT_RECEIVED_STAGES_SET: frozenset[str] = frozenset({
+    OpportunityStage.CLOSED_COMPLETED.value,
+    "Closed Won",
+})
+
+
 class PaymentTerms(str, Enum):
     """Common payment terms."""
     NET_15 = "Net 15"

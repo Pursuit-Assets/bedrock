@@ -4,7 +4,7 @@
  * Wires together sub-components extracted into the Opportunities/ directory:
  *   - useOpportunityData: data fetching, mutations, derived state
  *   - columns:            DataGrid column definitions
- *   - EditCells:          Autocomplete edit cells for Account / Owner
+ *   - inline-edit/cells:  Domain cells (StageCell, OwnerCell, AccountCell, AmountCell)
  *   - SummaryCards:       metric cards above the grid
  *   - helpers:            pure functions + Opportunity interface
  */
@@ -39,11 +39,10 @@ import { parseISO, differenceInDays } from 'date-fns';
 import { apiService } from '../services/api';
 import PaymentScheduleModal from '../components/PaymentScheduleModal';
 import TaskPanel from '../components/TaskPanel';
-import ActivityIntelligencePanel from '../components/ActivityIntelligencePanel';
 import PipelineFilterBar, { PipelineFilters, DEFAULT_FILTERS } from '../components/PipelineFilterBar';
 import { OPPORTUNITY_STAGES, OPEN_STAGES, CLOSED_STAGES } from '../types/salesforce';
 import type { Opportunity } from './Opportunities/helpers';
-import { useOpportunityData, ViewMode } from './Opportunities/useOpportunityData';
+import { useOpportunityData, ViewMode, oppQueryKey } from './Opportunities/useOpportunityData';
 import { buildPipelineColumns, buildPaymentColumns, ColumnCallbacks } from './Opportunities/columns';
 import { SummaryCards } from './Opportunities/SummaryCards';
 import OpportunityEditDialog from '../components/OpportunityEditDialog';
@@ -64,7 +63,11 @@ const Opportunities: React.FC = () => {
   const [philanthropyOnly, setPhilanthropyOnly] = useState(false);
   const [pbcOnly, setPbcOnly] = useState(false);
   const [aijiOnly, setAijiOnly] = useState(false);
-  const [initialFilter, setInitialFilter] = useState<'atRisk' | 'stale' | null>(null);
+  // initialFilter values:
+  //   'atRisk'       — set by Dashboard nav: low-prob / early-stage opps in the current quarter.
+  //   'stale'        — set by Dashboard nav OR by clicking the Stale Deals card.
+  //   'closingMonth' — set by clicking the Closing This Month card.
+  const [initialFilter, setInitialFilter] = useState<'atRisk' | 'stale' | 'closingMonth' | null>(null);
   const [dashboardFilterAlert, setDashboardFilterAlert] = useState<string | null>(null);
   const [pipelineFilters, setPipelineFilters] = useState<PipelineFilters>(DEFAULT_FILTERS);
 
@@ -86,18 +89,16 @@ const Opportunities: React.FC = () => {
   const [taskPanelOpen, setTaskPanelOpen] = useState(false);
   const [taskPanelOpp, setTaskPanelOpp] = useState<Opportunity | null>(null);
 
-  // Activity intelligence drawer
-  const [activityPanelOpen, setActivityPanelOpen] = useState(false);
-  const [activityOpp, setActivityOpp] = useState<Opportunity | null>(null);
-
   // Data hook
   const {
     opportunities,
     users,
+    accounts,
     accountMap,
     userMap,
-    openOnlyOpps,
-    paymentOpps,
+    openCount,
+    collectingCount,
+    closedCount,
     isLoading,
     error,
     updateMutation,
@@ -195,42 +196,71 @@ const Opportunities: React.FC = () => {
     }
   };
 
-  const handleStageChange = (params: GridRenderCellParams, newStage: string) => {
-    if (newStage === params.value) return;
+  /**
+   * Stage change handler — special-cased because transitioning to
+   * "Collecting / In Effect" navigates the user to the payment-schedule
+   * page. Other stages go through the generic optimistic-update path.
+   */
+  const handleStageChange = (oppId: string, oldStage: string, newStage: string) => {
+    if (newStage === oldStage) return;
     const loadingToast = toast.loading('Updating stage...');
 
     const closedStages = ['Withdrawn', 'Closed Lost', 'Closed / Did not Fulfill', 'Closed / Completed'];
-    if (closedStages.includes(newStage)) markRecentlyChanged(params.row.Id);
+    if (closedStages.includes(newStage)) markRecentlyChanged(oppId);
 
     if (newStage === 'Collecting / In Effect') {
       toast.dismiss(loadingToast);
       toast('Please review and confirm payment schedule', { icon: '\uD83D\uDCB0', duration: 3000 });
-      navigate(`/payment-schedule/${params.row.Id}`, {
-        state: { fromStageChange: true, targetStage: newStage, opportunityId: params.row.Id },
+      navigate(`/payment-schedule/${oppId}`, {
+        state: { fromStageChange: true, targetStage: newStage, opportunityId: oppId },
       });
       return;
     }
 
-    // Optimistic update (align with useOpportunityData query key)
-    const currentQueryKey =
-      !philanthropyOnly && !pbcOnly && viewMode === 'open'
-        ? 'opportunities'
-        : ['opportunities', philanthropyOnly, pbcOnly, viewMode];
+    // Optimistic update — MUST use the exact same key the hook feeds from.
+    // Previously this built a 4-element array that didn't match the hook's
+    // 2-element (filtered) or string (unfiltered) key, so the optimistic
+    // write landed in an orphan cache entry and the UI showed no change
+    // until the server round-trip invalidated + refetched.
+    const currentQueryKey = oppQueryKey(philanthropyOnly, pbcOnly);
     const oldData = queryClient.getQueryData(currentQueryKey);
     queryClient.setQueryData(currentQueryKey, (old: any) =>
-      old?.map((opp: any) => (opp.Id === params.row.Id ? { ...opp, StageName: newStage } : opp)),
+      old?.map((opp: any) => (opp.Id === oppId ? { ...opp, StageName: newStage } : opp)),
     );
 
-    apiService.updateOpportunity(params.row.Id, { StageName: newStage })
+    apiService.updateOpportunity(oppId, { StageName: newStage })
       .then(() => {
         toast.success('Stage updated!', { id: loadingToast });
         queryClient.invalidateQueries('opportunities');
       })
       .catch((err: any) => {
         queryClient.setQueryData(currentQueryKey, oldData);
-        clearRecentlyChanged(params.row.Id);
+        clearRecentlyChanged(oppId);
         toast.error(`Failed: ${err.response?.data?.detail || err.message}`, { id: loadingToast });
       });
+  };
+
+  /**
+   * Generic per-field save used by the inline-edit domain cells
+   * (AccountCell, OwnerCell, AmountCell). Sends a patch, invalidates the
+   * cache, and surfaces toasts. Throws on failure so the primitive can
+   * surface an error in the cell.
+   */
+  const handleFieldSave = async (oppId: string, field: string, newValue: any) => {
+    const loadingToast = toast.loading('Saving...');
+    try {
+      await apiService.updateOpportunity(oppId, { [field]: newValue });
+      toast.success('Saved!', { id: loadingToast, duration: 2000 });
+      // Invalidate immediately — the previous setTimeout(500ms) created a
+      // stale-cache window during which downstream consumers (MyDashboard,
+      // NetworkMap, Leads, AutomationReview, Overview, PaymentProcessing,
+      // etc.) read pre-mutation data, and rapid sequential edits raced
+      // each other's refetch cycles. Mirror handleStageChange's behavior.
+      queryClient.invalidateQueries('opportunities');
+    } catch (err: any) {
+      toast.error(`Failed: ${err.response?.data?.detail || err.message}`, { id: loadingToast });
+      throw err;
+    }
   };
 
   // ---------------------------------------------------------------------------
@@ -239,12 +269,12 @@ const Opportunities: React.FC = () => {
 
   const columnCallbacks: ColumnCallbacks = useMemo(() => ({
     onTaskPanelOpen: (opp) => { setTaskPanelOpp(opp); setTaskPanelOpen(true); },
-    onActivityPanelOpen: (opp) => { setActivityOpp(opp); setActivityPanelOpen(true); },
     onStageChange: handleStageChange,
+    onSaveField: handleFieldSave,
     accountMap,
     userMap,
-    activeActivityOppId: activityOpp?.Id,
-    activityPanelOpen,
+    users,
+    accounts,
     lockMap,
     onLockToggle: (oppId, ownerId, isLocked) => {
       if (isLocked) unlockMutation.mutate(oppId);
@@ -253,7 +283,7 @@ const Opportunities: React.FC = () => {
     currentSfUserId: sfUserId,
     canLock: can('lock_own_opportunities'),
     onEditDialogOpen: (opp) => { setSelectedOpp(opp); setEditDialogOpen(true); },
-  }), [accountMap, userMap, activityOpp?.Id, activityPanelOpen, philanthropyOnly, pbcOnly, viewMode, lockMap, sfUserId]);
+  }), [accountMap, userMap, users, accounts, philanthropyOnly, pbcOnly, viewMode, lockMap, sfUserId]);
 
   const pipelineColumns = useMemo(() => buildPipelineColumns(columnCallbacks), [columnCallbacks]);
   const paymentColumns = useMemo(() => buildPaymentColumns(columnCallbacks), [columnCallbacks]);
@@ -356,6 +386,15 @@ const Opportunities: React.FC = () => {
       const lastMod = opp.LastModifiedDate ? parseISO(opp.LastModifiedDate) : parseISO(opp.CreatedDate);
       return isPastDue || differenceInDays(now, lastMod) > 30;
     });
+  } else if (initialFilter === 'closingMonth') {
+    const now = new Date();
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
+    visibleOpps = visibleOpps.filter((opp) => {
+      if (!opp.CloseDate) return false;
+      const cd = parseISO(opp.CloseDate);
+      return cd >= monthStart && cd <= monthEnd;
+    });
   }
 
   // ---------------------------------------------------------------------------
@@ -368,16 +407,16 @@ const Opportunities: React.FC = () => {
       <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
         <Box sx={{ display: 'flex', gap: 2, alignItems: 'center' }}>
           <Button variant={viewMode === 'open' ? 'contained' : 'outlined'} onClick={() => setViewMode('open')} sx={{ minWidth: 150 }}>
-            Open Pipeline <Chip label={openOnlyOpps.length} size="small" sx={{ ml: 1, bgcolor: viewMode === 'open' ? 'rgba(255,255,255,0.3)' : 'default' }} />
+            Open Pipeline <Chip label={openCount} size="small" sx={{ ml: 1, bgcolor: viewMode === 'open' ? 'rgba(255,255,255,0.3)' : 'default' }} />
           </Button>
           <Button variant={viewMode === 'collecting' ? 'contained' : 'outlined'} onClick={() => setViewMode('collecting')}
             color={viewMode === 'collecting' ? 'success' : 'inherit'} sx={{ minWidth: 180 }}>
-            Collecting / In Effect <Chip label={paymentOpps.length} size="small" sx={{ ml: 1, bgcolor: viewMode === 'collecting' ? 'rgba(255,255,255,0.3)' : 'default' }} />
+            Collecting / In Effect <Chip label={collectingCount} size="small" sx={{ ml: 1, bgcolor: viewMode === 'collecting' ? 'rgba(255,255,255,0.3)' : 'default' }} />
           </Button>
           <Button variant={viewMode === 'closed' ? 'contained' : 'outlined'} onClick={() => setViewMode('closed')}
             color={viewMode === 'closed' ? 'error' : 'inherit'} sx={{ minWidth: 150 }}>
             Closed
-            <Chip label={opportunities.filter((opp) => (CLOSED_STAGES as readonly string[]).includes(opp.StageName)).length} size="small"
+            <Chip label={closedCount} size="small"
               sx={{ ml: 1, bgcolor: viewMode === 'closed' ? 'rgba(255,255,255,0.3)' : 'default' }} />
           </Button>
         </Box>
@@ -423,6 +462,7 @@ const Opportunities: React.FC = () => {
         <Alert severity="warning" sx={{ mb: 3 }} onClose={() => setInitialFilter(null)}>
           {initialFilter === 'atRisk' && <><strong>Showing At-Risk Deals Only:</strong> Current quarter opportunities with low probability (&lt;50%) or early stage.</>}
           {initialFilter === 'stale' && <><strong>Showing Stale Opportunities Only:</strong> Opportunities that are past due or haven't been updated in 30+ days.</>}
+          {initialFilter === 'closingMonth' && <><strong>Showing Opportunities Closing This Month:</strong> Click the card again to clear, or use ✕ to dismiss.</>}
         </Alert>
       )}
 
@@ -443,8 +483,20 @@ const Opportunities: React.FC = () => {
         </Alert>
       )}
 
-      {/* Summary cards */}
-      <SummaryCards viewMode={viewMode} opps={visibleOpps} />
+      {/* Summary cards — Stale / Closing-this-month / Total-pipeline cards
+          double as click-to-filter handles. Toggle: clicking the active card
+          clears the filter. */}
+      <SummaryCards
+        viewMode={viewMode}
+        opps={visibleOpps}
+        activeFilter={initialFilter}
+        onCardClick={(filter) => {
+          setInitialFilter((prev) => (prev === filter ? null : filter));
+          // Clear the dashboard banner — in-page click takes ownership of the
+          // filter state from here.
+          setDashboardFilterAlert(null);
+        }}
+      />
 
       {/* Error */}
       {error && <Alert severity="error" sx={{ mb: 3 }}>Failed to load opportunities. Please check your connection.</Alert>}
@@ -514,7 +566,14 @@ const Opportunities: React.FC = () => {
                   const lock = lockMap.get(params.row.Id)!;
                   if (lock.locked_by !== sfUserId) return false;
                 }
-                return ['Name', 'AccountId', 'OwnerId', 'Amount', 'Probability', 'CloseDate', 'PaymentDate__c'].includes(params.field);
+                // Only list fields that actually use DataGrid's native edit
+                // UI. Fields owned by an inline-edit domain cell (StageCell,
+                // OwnerCell, AccountCell, AmountCell, ProbabilityCell,
+                // DateCell, …) have `editable: false` on the column def and
+                // handle their own save flow — listing them here silently
+                // re-enables DataGrid-native edit alongside the domain cell
+                // if someone ever flips `editable: true` on the column.
+                return ['Name', 'CloseDate'].includes(params.field);
               }}
               sx={{
                 '& .MuiDataGrid-cell:focus': { outline: 'none' },
@@ -529,14 +588,6 @@ const Opportunities: React.FC = () => {
           </Box>
         </CardContent>
       </Card>
-
-      {/* Activity Intelligence Panel */}
-      <ActivityIntelligencePanel
-        open={activityPanelOpen}
-        onClose={() => { setActivityPanelOpen(false); setActivityOpp(null); }}
-        opportunity={activityOpp}
-        accountName={(activityOpp && (accountMap.get(activityOpp.AccountId)?.Name || activityOpp.Account?.Name || activityOpp.Name)) || ''}
-      />
 
       {/* Edit Dialog */}
       <OpportunityEditDialog

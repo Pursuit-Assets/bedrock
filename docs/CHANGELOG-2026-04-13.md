@@ -107,10 +107,35 @@ Summary of all changes from this session for JP's review.
 
 ---
 
+## Identity Consolidation
+
+### org_users as canonical staff table
+
+**Problem**: `bedrock.app_user` was a separate staff identity table that duplicated `public.org_users`. Two sources of truth for the same people.
+
+**Solution**: Made `public.org_users` the canonical staff table, added `bedrock.user_config` for app-specific settings (permission profile), retired `bedrock.app_user`.
+
+### Backend Changes
+- **`routes/permissions.py`** — Full rewrite. All queries changed from `bedrock.app_user` to `public.org_users JOIN bedrock.user_config`. Added `_ensure_org_user()` to auto-provision on first visit. `/me` endpoint backfills `sf_user_id` to org_users.
+- **`routes/projects.py`** — Project contributor picker changed from `bedrock.app_user` to `org_users JOIN user_config JOIN permission_profile`
+
+### Database Changes
+- **`db/init.sql`** — Added `bedrock.user_config` table (org_user_id UUID PK, profile_id UUID FK). Conditional ALTER adds `sf_user_id` and `is_active` columns to `public.org_users`.
+- **`db/migrations/2026-04-13-identity-consolidation.sql`** — Migration that copies `sf_user_id` from `app_user` to `org_users` by email match, creates `user_config` rows, creates `org_users` rows for any unlinked `app_user` entries. Idempotent (ON CONFLICT DO NOTHING).
+
+### Impact
+- All staff now have one identity in `public.org_users` shared across the platform
+- `bedrock.user_config` stores only Bedrock-specific settings (which permission profile)
+- `bedrock.app_user` still exists but is no longer read by any code — can be dropped after verification period
+- No frontend changes needed — permissions API response shape unchanged
+
+---
+
 ## Commits
 
 | Hash | Message |
 |------|---------|
+| `d0902f0` | feat: identity consolidation — org_users as canonical staff table |
 | `756f88c` | fix: dashboard bugs 2-7, nav cleanup, targets tab, consistent drawers |
 | `bdb030d` | feat: dashboard overhaul — pipeline table, target progress, hide financials |
 | `37ec3bc` | feat: pipeline table — add Q1-Q4 columns, past quarters wins-only |

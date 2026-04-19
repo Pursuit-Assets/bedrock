@@ -84,6 +84,7 @@ def mock_mcp_client():
     client.salesforce = sf
     client.services = {"salesforce": sf}
     client._connected_services = {"salesforce"}
+    client.connected_services = {"salesforce"}  # public alias — see conftest.py:326-333
     return client
 
 

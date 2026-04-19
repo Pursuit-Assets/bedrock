@@ -16,7 +16,7 @@ import ErrorBoundary from './components/ErrorBoundary';
 import Layout from './components/Layout';
 import Login from './pages/Login';
 import Overview from './pages/Overview';
-import Pipeline from './pages/Pipeline';
+import Reports from './pages/Reports';
 import Settings from './pages/Settings';
 import SalesforceCallback from './pages/SalesforceCallback';
 import MyDashboard from './pages/MyDashboard';
@@ -160,15 +160,18 @@ function App() {
                 }
               />
               <Route
-                path="/pipeline"
+                path="/reports"
                 element={
                   <ProtectedRoute>
                     <Layout>
-                      <Pipeline />
+                      <Reports />
                     </Layout>
                   </ProtectedRoute>
                 }
               />
+              {/* Back-compat: old /pipeline links still resolve. Safe to drop
+                  after one release cycle once no bookmarks / shared URLs point here. */}
+              <Route path="/pipeline" element={<Navigate to="/reports" replace />} />
               <Route
                 path="/automation-review"
                 element={

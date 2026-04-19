@@ -153,7 +153,17 @@ tokens/
 *.token
 *.credentials
 
-# Financial Forecasting - Credentials (DO NOT COMMIT)
+# Financial Forecasting - DO NOT USE config.py.
+# Removed from the repo (2026-04-16) — we do NOT store secrets in a local
+# config.py module. Preferred patterns:
+#   - App/service credentials (Salesforce app creds, Sage Intacct, etc.):
+#     environment variables read via os.getenv(). See config_example.py for
+#     the full list of env vars, and env.production for prod values.
+#   - Per-user credentials (Salesforce user tokens, Google OAuth): OAuth
+#     flows at runtime, tokens encrypted into cookies via Fernet.
+# This line stays in .gitignore as a safety net: if someone ever adds a
+# financial_forecasting/config.py by accident (old muscle memory, copied
+# from an old branch), it won't get committed and leak secrets.
 financial_forecasting/config.py
 
 # Test artifact: TestInvoiceMatching in test_api_endpoints.py exercises the

@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import {
   Box, Typography, Card, CardContent, Chip, Collapse, IconButton,
   LinearProgress, Tooltip, Button, TextField, Table, TableBody, TableCell,
-  TableContainer, TableHead, TableRow, Paper, Select, MenuItem,
+  TableContainer, TableHead, TableRow, Paper,
   Dialog, DialogTitle, DialogContent, DialogActions,
 } from '@mui/material';
 import {
@@ -14,7 +14,16 @@ import {
   Delete as DeleteIcon,
 } from '@mui/icons-material';
 import type { Workstream, ProjectMutations } from './types';
-import { TASK_STATUSES, MILESTONE_STATUSES, TASK_STATUS_COLOR, STATUS_CHIP } from './constants';
+import {
+  TASK_STATUSES,
+  MILESTONE_STATUSES,
+  TASK_STATUS_COLOR,
+  MILESTONE_STATUS_COLOR,
+  MILESTONE_PHASES,
+} from './constants';
+import { StatusPillCell } from '../inline-edit/cells/StatusPillCell';
+import { PhasePillCell } from '../inline-edit/cells/PhasePillCell';
+import type { InlineEditableOption } from '../inline-edit/InlineEditable';
 import { getWorkstreamProgress, getMilestoneProgress } from './helpers';
 
 interface ListViewProps {
@@ -45,11 +54,22 @@ const ListView: React.FC<ListViewProps> = ({ workstream, mutations }) => {
     setShowAddMilestone(false);
   };
 
-  const cycleTaskStatus = (task: { id: string; status: string }) => {
-    const idx = TASK_STATUSES.indexOf(task.status as any);
-    const next = TASK_STATUSES[(idx + 1) % TASK_STATUSES.length];
-    mutations.updateTaskStatus(task.id, next);
-  };
+  // Memoized option lists for the inline-edit pill cells. Stable references
+  // so the InlineEditable primitive doesn't churn on each render.
+  const milestoneStatusOptions: InlineEditableOption[] = MILESTONE_STATUSES.map((s) => ({
+    value: s,
+    label: s,
+    color: MILESTONE_STATUS_COLOR[s],
+  }));
+  const taskStatusOptions: InlineEditableOption[] = TASK_STATUSES.map((s) => ({
+    value: s,
+    label: s,
+    color: TASK_STATUS_COLOR[s] || '#9e9e9e',
+  }));
+  const phaseOptions: InlineEditableOption[] = MILESTONE_PHASES.map((p) => ({
+    value: p,
+    label: p,
+  }));
 
   return (
     <>
@@ -69,7 +89,6 @@ const ListView: React.FC<ListViewProps> = ({ workstream, mutations }) => {
 
         {workstream.milestones.map((milestone) => {
           const isExpanded = expandedMilestone === milestone.id;
-          const sc = STATUS_CHIP[milestone.status] || { color: 'default' as const, icon: null };
           const mProgress = getMilestoneProgress(milestone);
 
           return (
@@ -85,25 +104,23 @@ const ListView: React.FC<ListViewProps> = ({ workstream, mutations }) => {
                 <IconButton size="small" sx={{ p: 0 }}>
                   {isExpanded ? <ExpandLessIcon fontSize="small" /> : <ExpandMoreIcon fontSize="small" />}
                 </IconButton>
-                <Select
-                  size="small"
-                  value={milestone.status}
-                  onClick={(e) => e.stopPropagation()}
-                  onChange={(e) => {
-                    e.stopPropagation();
-                    mutations.updateMilestoneStatus(milestone.id, e.target.value);
-                  }}
-                  sx={{ minWidth: 130, '& .MuiSelect-select': { py: 0.25, fontSize: '0.75rem' } }}
-                  renderValue={(val) => {
-                    const s = STATUS_CHIP[val] || { color: 'default' as const };
-                    return <Chip size="small" label={val} color={s.color} sx={{ fontSize: '0.7rem' }} />;
-                  }}
-                >
-                  {MILESTONE_STATUSES.map((s) => (
-                    <MenuItem key={s} value={s} sx={{ fontSize: '0.8rem' }}>{s}</MenuItem>
-                  ))}
-                </Select>
-                <Chip size="small" label={milestone.priority} variant="outlined" sx={{ fontSize: '0.7rem' }} />
+                <Box onClick={(e) => e.stopPropagation()}>
+                  <StatusPillCell
+                    objectType="Milestone"
+                    fieldName="status"
+                    fieldLabel="Status"
+                    value={milestone.status}
+                    options={milestoneStatusOptions}
+                    onSave={(newStatus) => mutations.updateMilestoneStatus(milestone.id, newStatus)}
+                  />
+                </Box>
+                <Box onClick={(e) => e.stopPropagation()}>
+                  <PhasePillCell
+                    value={milestone.priority}
+                    options={phaseOptions}
+                    onSave={(newPhase) => mutations.updateMilestone(milestone.id, { priority: newPhase })}
+                  />
+                </Box>
                 <Typography variant="body2" sx={{ flex: 1, fontWeight: 500 }}>{milestone.title}</Typography>
                 <Typography variant="caption" color="text.secondary">{milestone.owner}</Typography>
                 <Typography variant="caption" sx={{ fontWeight: 600, minWidth: 35, textAlign: 'right' }}>{mProgress}%</Typography>
@@ -152,16 +169,13 @@ const ListView: React.FC<ListViewProps> = ({ workstream, mutations }) => {
                               </Box>
                             </TableCell>
                             <TableCell>
-                              <Chip
-                                size="small"
-                                label={task.status}
-                                onClick={() => cycleTaskStatus(task)}
-                                sx={{
-                                  fontSize: '0.65rem', height: 20,
-                                  bgcolor: TASK_STATUS_COLOR[task.status] || '#9e9e9e',
-                                  color: '#fff', cursor: 'pointer',
-                                  '&:hover': { opacity: 0.85 },
-                                }}
+                              <StatusPillCell
+                                objectType="Task"
+                                fieldName="Status"
+                                fieldLabel="Task status"
+                                value={task.status}
+                                options={taskStatusOptions}
+                                onSave={(newStatus) => mutations.updateTaskStatus(task.id, newStatus)}
                               />
                             </TableCell>
                             <TableCell sx={{ fontSize: '0.75rem' }}>{task.owner}</TableCell>

@@ -35,7 +35,6 @@ import {
 import {
   AddTask as AddTaskIcon,
   OpenInNew as OpenInNewIcon,
-  Warning as WarningIcon,
   ExpandMore as ExpandMoreIcon,
   ExpandLess as ExpandLessIcon,
   CheckCircle as CheckCircleIcon,
@@ -43,6 +42,15 @@ import {
   Flag as FlagIcon,
   OpenInFull as OpenInFullIcon,
   Add as AddIcon,
+  // Alert-row icons — one per AlertKind. Keep in sync with ALERT_DEFS below.
+  Error as AlertOverdueIcon,
+  AccessTime as AlertClosingIcon,
+  HourglassEmpty as AlertStaleIcon,
+  AssignmentLate as AlertOverdueTasksIcon,
+  Assignment as AlertNoTasksIcon,
+  Event as AlertMeetingIcon,
+  Autorenew as AlertRenewalIcon,
+  InfoOutlined as InfoIcon,
 } from '@mui/icons-material';
 import { format, parseISO, differenceInDays, isBefore, startOfDay } from 'date-fns';
 import { formatDollarMillions } from '../utils/formatters';
@@ -53,11 +61,56 @@ import {
   computeUrgency,
   countOverdueTasks,
 } from '../utils/priorityScoring';
+import { useQuery } from 'react-query';
 import { apiService } from '../services/api';
-import { getStageHexColor, stageIndex, OPPORTUNITY_STAGES } from '../types/salesforce';
+import { stageIndex, getStageHexColor } from '../types/salesforce';
+import {
+  AlertKind,
+  ALERT_LABELS,
+  groupReasonsByKind,
+} from '../utils/priorityAlertClassifier';
+import { StageCell } from './inline-edit/cells/StageCell';
+import { AmountCell } from './inline-edit/cells/AmountCell';
+import { DateCell } from './inline-edit/cells/DateCell';
+import { ProbabilityCell } from './inline-edit/cells/ProbabilityCell';
 import toast from 'react-hot-toast';
 
 export type { PriorityOpp };
+
+// Icon + color per alert category. Pairs with the classifier in
+// utils/priorityAlertClassifier.ts — adding a new AlertKind requires a new
+// entry here. Colors line up with the rest of the table's severity palette
+// (#d32f2f red, #f57c00 orange, #1976d2 blue, #2e7d32 green, #9e9e9e gray).
+const ALERT_DEFS: Record<AlertKind, { Icon: React.ElementType; color: string }> = {
+  overdue:      { Icon: AlertOverdueIcon,      color: '#d32f2f' },
+  overdueTasks: { Icon: AlertOverdueTasksIcon, color: '#d32f2f' },
+  stale:        { Icon: AlertStaleIcon,        color: '#f57c00' },
+  closing:      { Icon: AlertClosingIcon,      color: '#f57c00' },
+  meeting:      { Icon: AlertMeetingIcon,      color: '#1976d2' },
+  renewal:      { Icon: AlertRenewalIcon,      color: '#2e7d32' },
+  noTasks:      { Icon: AlertNoTasksIcon,      color: '#9e9e9e' },
+};
+
+/** Render the legend popover content shown when hovering the (?) in the
+ *  Alerts column header. Lists every category with its icon + color so users
+ *  can decode the row icons at a glance.
+ */
+const AlertLegend: React.FC = () => (
+  <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5, py: 0.5 }}>
+    <Typography variant="caption" sx={{ fontWeight: 600, mb: 0.25 }}>
+      Alert types
+    </Typography>
+    {(Object.keys(ALERT_DEFS) as AlertKind[]).map((kind) => {
+      const def = ALERT_DEFS[kind];
+      return (
+        <Box key={kind} sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
+          <def.Icon sx={{ fontSize: 14, color: def.color }} />
+          <Typography variant="caption">{ALERT_LABELS[kind]}</Typography>
+        </Box>
+      );
+    })}
+  </Box>
+);
 
 type OppSortField = 'name' | 'stage' | 'amount' | 'close' | 'prob' | 'tasks' | null;
 type SortDir = 'asc' | 'desc';
@@ -374,147 +427,12 @@ const AddTaskRow: React.FC<AddTaskRowProps> = ({ oppId, users, onCreated }) => {
   );
 };
 
-// ── Opp-level inline edit cell ──
-
-interface OppEditableCellProps {
-  value: string | number | null;
-  oppId: string;
-  field: string;
-  type?: 'text' | 'date' | 'currency' | 'stage';
-  onSave: (oppId: string, field: string, value: string | number | null) => void;
-  renderDisplay?: (value: string | number | null) => React.ReactNode;
-}
-
-const OppEditableCell: React.FC<OppEditableCellProps> = ({ value, oppId, field, type = 'text', onSave, renderDisplay }) => {
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState<string>(value != null ? String(value) : '');
-  const inputRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => { setDraft(value != null ? String(value) : ''); }, [value]);
-  useEffect(() => {
-    if (editing && inputRef.current) inputRef.current.focus();
-  }, [editing]);
-
-  const commit = useCallback(() => {
-    setEditing(false);
-    const original = value != null ? String(value) : '';
-    if (draft !== original) {
-      if (type === 'currency') {
-        const parsed = parseFloat(draft.replace(/[,$]/g, ''));
-        onSave(oppId, field, isNaN(parsed) ? null : parsed);
-      } else {
-        onSave(oppId, field, draft || null);
-      }
-    }
-  }, [draft, value, oppId, field, onSave, type]);
-
-  const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
-    if (e.key === 'Enter') commit();
-    if (e.key === 'Escape') { setDraft(value != null ? String(value) : ''); setEditing(false); }
-  }, [commit, value]);
-
-  // Stage field uses select
-  if (type === 'stage') {
-    return (
-      <Select
-        size="small"
-        value={value || ''}
-        onChange={(e) => onSave(oppId, field, e.target.value)}
-        variant="standard"
-        disableUnderline
-        sx={{
-          fontSize: '0.7rem',
-          '& .MuiSelect-select': {
-            py: 0,
-            px: 0.5,
-            bgcolor: getStageHexColor(String(value || '')),
-            color: '#fff',
-            fontWeight: 600,
-            borderRadius: 1,
-          },
-        }}
-      >
-        {OPPORTUNITY_STAGES.filter(s => s !== '--None--').map((s) => (
-          <MenuItem key={s} value={s} sx={{ fontSize: '0.75rem' }}>
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-              <Box sx={{ width: 8, height: 8, borderRadius: '50%', bgcolor: getStageHexColor(s) }} />
-              {s}
-            </Box>
-          </MenuItem>
-        ))}
-      </Select>
-    );
-  }
-
-  if (!editing) {
-    return (
-      <Box
-        onClick={() => setEditing(true)}
-        sx={{
-          cursor: 'pointer',
-          borderRadius: 0.5,
-          px: 0.5,
-          '&:hover': { bgcolor: 'action.hover' },
-          minHeight: 20,
-        }}
-      >
-        {renderDisplay ? renderDisplay(value) : (
-          <Typography variant="body2" sx={{ fontSize: '0.8rem' }}>
-            {value != null ? String(value) : '-'}
-          </Typography>
-        )}
-      </Box>
-    );
-  }
-
-  if (type === 'date') {
-    return (
-      <TextField
-        inputRef={inputRef}
-        size="small"
-        type="date"
-        value={draft}
-        onChange={(e) => setDraft(e.target.value)}
-        onBlur={commit}
-        onKeyDown={handleKeyDown}
-        variant="standard"
-        InputProps={{ disableUnderline: false, sx: { fontSize: '0.8rem' } }}
-        InputLabelProps={{ shrink: true }}
-        sx={{ minWidth: 120 }}
-      />
-    );
-  }
-
-  if (type === 'currency') {
-    return (
-      <TextField
-        inputRef={inputRef}
-        size="small"
-        value={draft}
-        onChange={(e) => setDraft(e.target.value)}
-        onBlur={commit}
-        onKeyDown={handleKeyDown}
-        variant="standard"
-        InputProps={{ disableUnderline: false, sx: { fontSize: '0.8rem' } }}
-        sx={{ minWidth: 80 }}
-      />
-    );
-  }
-
-  return (
-    <TextField
-      inputRef={inputRef}
-      size="small"
-      value={draft}
-      onChange={(e) => setDraft(e.target.value)}
-      onBlur={commit}
-      onKeyDown={handleKeyDown}
-      variant="standard"
-      InputProps={{ disableUnderline: false, sx: { fontSize: '0.8rem' } }}
-      sx={{ minWidth: 80 }}
-    />
-  );
-};
+// Bug 4.3 (2026-04-14) — the in-file OppEditableCell was replaced by the
+// shared inline-edit primitive. Stage / Amount / CloseDate / Probability
+// columns now compose StageCell / AmountCell / DateCell / ProbabilityCell
+// from components/inline-edit/cells/. Sensitive fields (Stage, Amount,
+// Probability) gain a lock-on-hover unlock confirmation. Date stays safe
+// with a 1970→+10yr sanity bound.
 
 // ── Main Component ──
 
@@ -527,6 +445,41 @@ const PriorityTable: React.FC<PriorityTableProps> = ({ opportunities, onAddTask,
     field: 'ActivityDate',
     dir: 'asc',
   });
+
+  // ── Record locks — feed the inline-edit cells so the backend 403
+  //    ("This opportunity is locked by its owner") shows up as a disabled
+  //    cell + lock tooltip instead of letting the user walk through the
+  //    sensitive-field unlock dialog only to have the PATCH fail at the
+  //    server. Query key is shared with useOpportunityData/TaskPanel —
+  //    react-query dedupes, so this is at most one network call.
+  const { data: locksData } = useQuery(
+    'opportunity-locks',
+    async () => {
+      const res = await apiService.getOpportunityLocks();
+      return res.data?.data || [];
+    },
+    { staleTime: 30_000 },
+  );
+
+  const lockMap = useMemo(() => {
+    const map = new Map<string, { locked_by: string; locked_at: string }>();
+    for (const lock of (locksData || [])) {
+      map.set(lock.sf_opportunity_id, { locked_by: lock.locked_by, locked_at: lock.locked_at });
+    }
+    return map;
+  }, [locksData]);
+
+  const userMap = useMemo(() => {
+    const map = new Map<string, { Id: string; Name: string }>();
+    for (const u of (users || [])) map.set(u.Id, u);
+    return map;
+  }, [users]);
+
+  const resolveLockerName = useCallback((oppId: string): string | null => {
+    const lock = lockMap.get(oppId);
+    if (!lock) return null;
+    return userMap.get(lock.locked_by)?.Name ?? null;
+  }, [lockMap, userMap]);
 
   const handleOppSortClick = (field: OppSortField) => {
     setOppSort((prev) => {
@@ -727,19 +680,10 @@ const PriorityTable: React.FC<PriorityTableProps> = ({ opportunities, onAddTask,
     return 'grey.400';
   };
 
-  /** Alert chip colors by type */
-  const alertChipColor = (reason: string) => {
-    if (/overdue/i.test(reason)) return '#e65100';
-    if (/closing in/i.test(reason)) return '#2e7d32';
-    if (/quiet/i.test(reason)) return '#e65100';
-    if (/renewal|upsell/i.test(reason)) return '#2e7d32';
-    return '#1565c0';
-  };
-
   const hasActiveFilters = filters.aijiOnly || filters.stage.length > 0 || filters.closeDateRange !== 'all' || filters.hasTasks !== 'all' || filters.amountMin !== null;
 
   const handleOpenInPipeline = (opp: PriorityOpp) => {
-    window.open(`/pipeline?search=${encodeURIComponent(opp.Name)}`, '_blank');
+    window.open(`/reports?search=${encodeURIComponent(opp.Name)}`, '_blank');
   };
 
   const handleTaskCountClick = (oppId: string) => {
@@ -927,7 +871,7 @@ const PriorityTable: React.FC<PriorityTableProps> = ({ opportunities, onAddTask,
           <TableHead>
             <TableRow>
               <TableCell sx={{ width: '3%', px: 1 }}>#</TableCell>
-              <TableCell sx={{ width: oppNameWidth !== null ? oppNameWidth : '20%' }}>
+              <TableCell sx={{ width: oppNameWidth !== null ? oppNameWidth : '30%' }}>
                 <TableSortLabel
                   active={oppSort.field === 'name'}
                   direction={oppSort.field === 'name' ? oppSort.dir : 'asc'}
@@ -948,7 +892,7 @@ const PriorityTable: React.FC<PriorityTableProps> = ({ opportunities, onAddTask,
                   }}
                 />
               </TableCell>
-              <TableCell sx={{ width: '14%' }}>
+              <TableCell sx={{ width: '16%' }}>
                 <TableSortLabel
                   active={oppSort.field === 'stage'}
                   direction={oppSort.field === 'stage' ? oppSort.dir : 'asc'}
@@ -957,7 +901,7 @@ const PriorityTable: React.FC<PriorityTableProps> = ({ opportunities, onAddTask,
                   Stage
                 </TableSortLabel>
               </TableCell>
-              <TableCell align="right" sx={{ width: '8%' }}>
+              <TableCell align="right" sx={{ width: '9%' }}>
                 <TableSortLabel
                   active={oppSort.field === 'amount'}
                   direction={oppSort.field === 'amount' ? oppSort.dir : 'asc'}
@@ -966,7 +910,7 @@ const PriorityTable: React.FC<PriorityTableProps> = ({ opportunities, onAddTask,
                   Amount
                 </TableSortLabel>
               </TableCell>
-              <TableCell sx={{ width: '7%' }}>
+              <TableCell sx={{ width: '8%' }}>
                 <TableSortLabel
                   active={oppSort.field === 'close'}
                   direction={oppSort.field === 'close' ? oppSort.dir : 'asc'}
@@ -984,8 +928,15 @@ const PriorityTable: React.FC<PriorityTableProps> = ({ opportunities, onAddTask,
                   Prob
                 </TableSortLabel>
               </TableCell>
-              <TableCell sx={{ width: '30%' }}>Alerts</TableCell>
-              <TableCell align="center" sx={{ width: '5%' }}>
+              <TableCell sx={{ width: '12%' }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                  <span>Alerts</span>
+                  <Tooltip title={<AlertLegend />} arrow placement="bottom">
+                    <InfoIcon sx={{ fontSize: 13, color: 'text.secondary', cursor: 'help' }} />
+                  </Tooltip>
+                </Box>
+              </TableCell>
+              <TableCell align="center" sx={{ width: '6%' }}>
                 <TableSortLabel
                   active={oppSort.field === 'tasks'}
                   direction={oppSort.field === 'tasks' ? oppSort.dir : 'asc'}
@@ -994,14 +945,13 @@ const PriorityTable: React.FC<PriorityTableProps> = ({ opportunities, onAddTask,
                   Tasks
                 </TableSortLabel>
               </TableCell>
-              <TableCell align="center" sx={{ width: '8%' }}>Actions</TableCell>
+              <TableCell align="center" sx={{ width: '11%' }}>Actions</TableCell>
             </TableRow>
           </TableHead>
           <TableBody>
             {displayed.map(({ opp, urgency, overdueTasks, totalTasks }, idx) => {
               const isOverdue = opp.CloseDate && isBefore(parseISO(opp.CloseDate), startOfDay(new Date()));
-              const alertsToShow = urgency.reasons.slice(0, 2);
-              const overflowCount = urgency.reasons.length - 2;
+              const alertGroups = groupReasonsByKind(urgency.reasons);
               const isExpanded = expandedOppId === opp.Id;
               const allTasks = opp.tasks || [];
               const pendingTasks = sortTasks(allTasks.filter((t) => t.Status !== 'Completed'));
@@ -1051,83 +1001,79 @@ const PriorityTable: React.FC<PriorityTableProps> = ({ opportunities, onAddTask,
                       </Typography>
                     </TableCell>
 
-                    {/* Stage — editable */}
+                    {/* Stage — sensitive, unlock-on-edit via StageCell */}
                     <TableCell>
-                      <OppEditableCell
+                      <StageCell
                         value={opp.StageName}
-                        oppId={opp.Id}
-                        field="StageName"
-                        type="stage"
-                        onSave={handleInlineOppSave}
+                        onSave={(v) => handleInlineOppSave(opp.Id, 'StageName', v)}
+                        recordLock={lockMap.get(opp.Id) ?? null}
+                        recordLockedByName={resolveLockerName(opp.Id)}
                       />
                     </TableCell>
 
-                    {/* Amount — editable */}
+                    {/* Amount — sensitive, unlock-on-edit via AmountCell */}
                     <TableCell align="right">
-                      <OppEditableCell
+                      <AmountCell
                         value={opp.Amount}
-                        oppId={opp.Id}
-                        field="Amount"
-                        type="currency"
-                        onSave={handleInlineOppSave}
-                        renderDisplay={(v) => (
-                          <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                            {v ? formatDollarMillions(v as number) : '-'}
-                          </Typography>
-                        )}
+                        onSave={(v) => handleInlineOppSave(opp.Id, 'Amount', v)}
+                        recordLock={lockMap.get(opp.Id) ?? null}
+                        recordLockedByName={resolveLockerName(opp.Id)}
                       />
                     </TableCell>
 
-                    {/* Close date — editable */}
+                    {/* Close date — safe (with bounds) via DateCell.
+                        Custom display preserves the existing red-on-overdue color. */}
                     <TableCell>
-                      <OppEditableCell
+                      <DateCell
                         value={opp.CloseDate || ''}
-                        oppId={opp.Id}
-                        field="CloseDate"
-                        type="date"
-                        onSave={handleInlineOppSave}
-                        renderDisplay={(v) => (
+                        onSave={(v) => handleInlineOppSave(opp.Id, 'CloseDate', v)}
+                        displayFormat="MMM d"
+                        recordLock={lockMap.get(opp.Id) ?? null}
+                        recordLockedByName={resolveLockerName(opp.Id)}
+                        renderDisplay={(formatted) => (
                           <Typography
                             variant="body2"
                             sx={{ color: isOverdue ? '#e65100' : 'text.primary', fontWeight: isOverdue ? 600 : 400 }}
                           >
-                            {v ? format(parseISO(String(v)), 'MMM d') : '-'}
+                            {formatted}
                           </Typography>
                         )}
                       />
                     </TableCell>
 
-                    {/* Probability */}
+                    {/* Probability — sensitive, unlock-on-edit via ProbabilityCell.
+                        Note: SF auto-calculates from stage; manual edits override
+                        until the next stage change. */}
                     <TableCell align="right">
-                      <Typography variant="body2">
-                        {opp.Probability != null ? `${opp.Probability}%` : '-'}
-                      </Typography>
+                      <ProbabilityCell
+                        value={opp.Probability}
+                        onSave={(v) => handleInlineOppSave(opp.Id, 'Probability', v)}
+                        recordLock={lockMap.get(opp.Id) ?? null}
+                        recordLockedByName={resolveLockerName(opp.Id)}
+                      />
                     </TableCell>
 
-                    {/* Alerts */}
+                    {/* Alerts — one icon per category, deduped + severity-sorted.
+                        Hover any icon for the underlying reason(s); hover the (?) in
+                        the column header for the legend. */}
                     <TableCell>
-                      <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap' }}>
-                        {alertsToShow.map((reason, i) => (
-                          <Chip
-                            key={i}
-                            icon={<WarningIcon sx={{ fontSize: '12px !important' }} />}
-                            label={reason}
-                            size="small"
-                            variant="outlined"
-                            sx={{
-                              height: 20, fontSize: '0.65rem', maxWidth: 180,
-                              borderColor: alertChipColor(reason),
-                              color: alertChipColor(reason),
-                              '& .MuiChip-icon': { color: 'inherit' },
-                            }}
-                          />
-                        ))}
-                        {overflowCount > 0 && (
-                          <Tooltip title={urgency.reasons.slice(2).join(', ')}>
-                            <Chip label={`+${overflowCount}`} size="small" sx={{ height: 20, fontSize: '0.65rem' }} />
-                          </Tooltip>
-                        )}
-                      </Box>
+                      {alertGroups.length === 0 ? (
+                        <Box component="span" sx={{ color: 'text.disabled' }}>—</Box>
+                      ) : (
+                        <Box sx={{ display: 'flex', gap: 0.4, alignItems: 'center', flexWrap: 'wrap' }}>
+                          {alertGroups.map(([kind, reasons]) => {
+                            const def = ALERT_DEFS[kind];
+                            const tooltipTitle = reasons.length > 1
+                              ? reasons.join(' · ')
+                              : reasons[0];
+                            return (
+                              <Tooltip key={kind} title={tooltipTitle} arrow>
+                                <def.Icon sx={{ fontSize: 16, color: def.color }} />
+                              </Tooltip>
+                            );
+                          })}
+                        </Box>
+                      )}
                     </TableCell>
 
                     {/* Tasks count — clickable */}

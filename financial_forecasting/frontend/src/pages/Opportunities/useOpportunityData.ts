@@ -15,6 +15,17 @@ import type { Opportunity } from './helpers';
 
 export type ViewMode = 'open' | 'collecting' | 'closed';
 
+/**
+ * Canonical query key for the opportunities cache. Exported so both the hook
+ * and any external optimistic-update callsite read/write the *same* cache
+ * entry. The key does NOT include `viewMode` — stage filtering happens
+ * client-side on the shared dataset (see `opportunities` memo below).
+ */
+export const oppQueryKey = (philanthropyOnly: boolean, pbcOnly: boolean) =>
+  (philanthropyOnly || pbcOnly)
+    ? ['opportunities', { philanthropyOnly, pbcOnly }]
+    : 'opportunities';
+
 export function useOpportunityData(
   viewMode: ViewMode,
   philanthropyOnly: boolean,
@@ -31,18 +42,16 @@ export function useOpportunityData(
   const stagesForView = viewMode === 'open' ? OPEN_STAGES
     : viewMode === 'collecting' ? COLLECTING_STAGES : CLOSED_STAGES;
 
-  // Share cache with Priorities/Dashboard when no filters: use key 'opportunities' + no params
-  const useSharedCache = !philanthropyOnly && !pbcOnly && viewMode === 'open';
-  const queryKey = useSharedCache ? 'opportunities' : ['opportunities', philanthropyOnly, pbcOnly, viewMode];
+  // Always fetch unfiltered by stage so tab counts reflect the full dataset.
+  // Stage-filtering for the visible grid happens client-side below.
+  // Share cache with Priorities/Dashboard/etc. when no philanthropy/pbc filter.
+  const useFilteredFetch = philanthropyOnly || pbcOnly;
+  const queryKey = oppQueryKey(philanthropyOnly, pbcOnly);
 
   const { data: opportunitiesData, isLoading, error } = useQuery(
     queryKey,
     async () => {
-      if (useSharedCache) {
-        const response = await apiService.getOpportunities();
-        return response.data;
-      }
-      const params: any = { stages: stagesForView };
+      const params: any = {};
       if (philanthropyOnly) {
         params.record_type = 'Philanthropy';
         params.active_only = true;
@@ -51,7 +60,9 @@ export function useOpportunityData(
         params.opp_type = 'PBC';
         params.active_only = true;
       }
-      const response = await apiService.getOpportunities(params);
+      const response = await apiService.getOpportunities(
+        useFilteredFetch ? params : undefined,
+      );
       return response.data;
     },
   );
@@ -63,15 +74,13 @@ export function useOpportunityData(
       ?? [];
   }, [opportunitiesData]);
 
-  // When using shared cache, filter client-side by stagesForView
-  const opportunities: Opportunity[] = useMemo(() => {
-    if (useSharedCache) {
-      return rawOpportunities.filter((opp: Opportunity) =>
-        (stagesForView as readonly string[]).includes(opp.StageName),
-      );
-    }
-    return rawOpportunities;
-  }, [rawOpportunities, useSharedCache, stagesForView]);
+  // Visible grid = stage-filtered subset of the full cache for the current tab.
+  const opportunities: Opportunity[] = useMemo(
+    () => rawOpportunities.filter((opp: Opportunity) =>
+      (stagesForView as readonly string[]).includes(opp.StageName),
+    ),
+    [rawOpportunities, stagesForView],
+  );
 
   const { data: usersData } = useQuery(
     'users',
@@ -115,19 +124,30 @@ export function useOpportunityData(
     return map;
   }, [users]);
 
-  // ---------- Stage-based sub-lists ----------
+  // ---------- Tab counts ----------
+  // Counts are derived from `rawOpportunities` (the full cache), not the
+  // stage-filtered `opportunities`, so every tab chip shows the correct total
+  // regardless of which tab is currently active.
 
-  const openOnlyOpps = useMemo(
-    () => opportunities.filter((opp) => (OPEN_STAGES as readonly string[]).includes(opp.StageName)),
-    [opportunities],
+  const openCount = useMemo(
+    () => rawOpportunities.filter((opp: Opportunity) =>
+      (OPEN_STAGES as readonly string[]).includes(opp.StageName),
+    ).length,
+    [rawOpportunities],
   );
 
-  const paymentOpps = useMemo(
-    () => opportunities.filter((opp) => {
-      const s = opp.StageName || '';
-      return s.includes('Collecting') || s.includes('In Effect');
-    }),
-    [opportunities],
+  const collectingCount = useMemo(
+    () => rawOpportunities.filter((opp: Opportunity) =>
+      (COLLECTING_STAGES as readonly string[]).includes(opp.StageName),
+    ).length,
+    [rawOpportunities],
+  );
+
+  const closedCount = useMemo(
+    () => rawOpportunities.filter((opp: Opportunity) =>
+      (CLOSED_STAGES as readonly string[]).includes(opp.StageName),
+    ).length,
+    [rawOpportunities],
   );
 
   // ---------- Mutations ----------
@@ -226,12 +246,14 @@ export function useOpportunityData(
   return {
     // raw
     opportunities,
+    rawOpportunities,
     users,
     accounts,
     accountMap,
     userMap,
-    openOnlyOpps,
-    paymentOpps,
+    openCount,
+    collectingCount,
+    closedCount,
     isLoading,
     error,
     // mutations

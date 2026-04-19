@@ -9,9 +9,10 @@ Extracted from main.py: POST /api/slack/webhook, GET /api/automation-review/pend
 import json
 import logging
 import os
+import re
 import uuid as _uuid
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Body, Depends, HTTPException
 
@@ -41,6 +42,92 @@ SLACK_PIPELINE_CHANNEL = os.getenv("SLACK_PIPELINE_CHANNEL", "pipeline-updates")
 _automation_queue: Dict[str, Dict[str, Any]] = {}
 _ingested_slack_ts: set = set()
 
+# Strict YYYY-MM-DD. The character class is deliberately narrow: digits and
+# hyphen only. That lets us interpolate validated values directly into SOQL
+# datetime literals (`CreatedDate >= 2026-01-01T00:00:00Z`) without escaping,
+# because no SOQL-breaking character (quote, whitespace, comment, wildcard,
+# operator) can pass the regex. Same discipline as validate_salesforce_id.
+_ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _parse_pipeline_time_window(
+    payload: Dict[str, Any],
+) -> Tuple[int, Optional[str], Optional[str]]:
+    """Parse the time-window section of an /api/ai/pipeline-analysis payload.
+
+    Returns (days, start_or_none, end_or_none).
+    - If `start`/`end` provided: both returned as validated YYYY-MM-DD strings,
+      and `days` is computed as an integer span (inclusive day count) for
+      backward-compatible response shape.
+    - Otherwise: `days` is the validated int (default 30), start/end are None.
+
+    Raises HTTPException(400) on any validation failure.
+    """
+    raw_days = payload.get("days")
+    raw_start = payload.get("start")
+    raw_end = payload.get("end")
+
+    has_days = raw_days is not None
+    has_start = raw_start is not None
+    has_end = raw_end is not None
+
+    if has_start != has_end:
+        raise HTTPException(
+            status_code=400, detail="start and end must be provided together"
+        )
+    if (has_start or has_end) and has_days:
+        raise HTTPException(
+            status_code=400,
+            detail="provide either days or start+end, not both",
+        )
+
+    if has_start and has_end:
+        if not isinstance(raw_start, str) or not isinstance(raw_end, str):
+            raise HTTPException(
+                status_code=400, detail="start and end must be YYYY-MM-DD strings"
+            )
+        if not _ISO_DATE_RE.match(raw_start) or not _ISO_DATE_RE.match(raw_end):
+            raise HTTPException(
+                status_code=400,
+                detail="start and end must match YYYY-MM-DD format",
+            )
+        try:
+            start_dt = datetime.strptime(raw_start, "%Y-%m-%d").replace(
+                tzinfo=timezone.utc
+            )
+            end_dt = datetime.strptime(raw_end, "%Y-%m-%d").replace(
+                tzinfo=timezone.utc, hour=23, minute=59, second=59
+            )
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail="start and end must be valid calendar dates",
+            )
+        if start_dt > end_dt:
+            raise HTTPException(
+                status_code=400, detail="start must be on or before end"
+            )
+        now_utc = datetime.now(timezone.utc)
+        if start_dt < now_utc - timedelta(days=365):
+            raise HTTPException(
+                status_code=400,
+                detail="start must be within the last 365 days",
+            )
+        # Allow end up to end-of-today by permitting one extra day of slack.
+        if end_dt > now_utc + timedelta(days=1):
+            raise HTTPException(
+                status_code=400, detail="end cannot be in the future"
+            )
+        span_days = (end_dt.date() - start_dt.date()).days + 1
+        return span_days, raw_start, raw_end
+
+    days = raw_days if has_days else 30
+    if not isinstance(days, int) or isinstance(days, bool) or days < 1 or days > 365:
+        raise HTTPException(
+            status_code=400, detail="days must be an integer between 1 and 365"
+        )
+    return days, None, None
+
 
 # ---------------------------------------------------------------------------
 # POST /api/ai/pipeline-analysis
@@ -63,11 +150,7 @@ async def ai_pipeline_analysis(
             detail="AI analysis not configured (missing ANTHROPIC_API_KEY)",
         )
 
-    days = payload.get("days", 30)
-    if not isinstance(days, int) or days < 1 or days > 365:
-        raise HTTPException(
-            status_code=400, detail="days must be an integer between 1 and 365"
-        )
+    days, start, end = _parse_pipeline_time_window(payload)
 
     raw_owner_ids = payload.get("owner_ids") or []
     if not isinstance(raw_owner_ids, list):
@@ -108,12 +191,24 @@ async def ai_pipeline_analysis(
             except Exception as e:
                 logger.warning(f"Failed to resolve owner names for analysis: {e}")
 
+        # SOQL date literal: either LAST_N_DAYS:n (preset) or an explicit
+        # range (custom). start/end are regex-validated (digits + hyphen
+        # only) so direct interpolation is injection-safe — matches the
+        # validate_salesforce_id pattern used for owner_filter_clause above.
+        if start is not None and end is not None:
+            time_clause = (
+                f"CreatedDate >= {start}T00:00:00Z "
+                f"AND CreatedDate <= {end}T23:59:59Z"
+            )
+        else:
+            time_clause = f"CreatedDate = LAST_N_DAYS:{days}"
+
         history_query = f"""
         SELECT OpportunityId, Opportunity.Name, Opportunity.Amount,
                Opportunity.StageName, OldValue, NewValue, CreatedDate
         FROM OpportunityFieldHistory
         WHERE Field = 'StageName'
-          AND CreatedDate = LAST_N_DAYS:{days}{owner_filter_clause}
+          AND {time_clause}{owner_filter_clause}
         ORDER BY CreatedDate DESC
         """
         history_result = await salesforce.query_all(history_query)
@@ -155,6 +250,11 @@ async def ai_pipeline_analysis(
         else:
             scope_line = "SCOPE: This analysis covers the entire team's pipeline."
 
+        if start is not None and end is not None:
+            window_heading = f"STAGE CHANGES FROM {start} TO {end}"
+        else:
+            window_heading = f"STAGE CHANGES IN THE LAST {days} DAYS"
+
         prompt = f"""You are a pipeline analyst for a nonprofit fundraising team managing grant opportunities.
 
 {scope_line}
@@ -162,7 +262,7 @@ async def ai_pipeline_analysis(
 CURRENT PIPELINE SNAPSHOT (open opportunities by stage):
 {json.dumps(stage_snapshot, indent=1)}
 
-STAGE CHANGES IN THE LAST {days} DAYS ({len(formatted_changes)} total):
+{window_heading} ({len(formatted_changes)} total):
 {json.dumps(formatted_changes[:50], default=str, indent=1)}
 
 Analyze the pipeline health in 3-5 concise bullet points covering:
@@ -186,6 +286,8 @@ Be specific — reference actual stage names, counts, and dollar amounts. Keep e
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "changes_count": len(formatted_changes),
             "days": days,
+            "start": start,
+            "end": end,
             "owner_ids": owner_ids,
             "owner_names": [owner_names_lookup.get(oid, oid) for oid in owner_ids],
         }
