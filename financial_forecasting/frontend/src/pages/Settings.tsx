@@ -115,7 +115,7 @@ const PERMISSION_GROUPS = [
       { key: 'trigger_data_sync', label: 'Trigger Data Sync' },
       { key: 'manage_users_roles', label: 'Manage Users & Roles (Admin)' },
       { key: 'edit_permission_profiles', label: 'Edit Permission Profiles' },
-      { key: 'manage_targets', label: 'Manage Revenue Targets (Exec)' },
+      { key: 'manage_owner_goals', label: 'Manage Revenue Targets (Exec)' },
     ],
   },
 ];
@@ -190,7 +190,7 @@ const Settings: React.FC = () => {
   const { can: canDo } = usePermissions();
   const isAdmin = canDo('manage_users_roles');
   const canEditProfiles = canDo('edit_permission_profiles') || isAdmin;
-  const canManageTargets = isAdmin || canDo('manage_targets');
+  const canManageTargets = isAdmin || canDo('manage_owner_goals');
   const queryClient = useQueryClient();
   const [settingsTab, setSettingsTab] = useState(() => {
     const tab = searchParams.get('tab');

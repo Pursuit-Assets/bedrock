@@ -74,15 +74,15 @@ describe('classifyField', () => {
       expect(c.permission).toBe('edit_project_status');
       expect(c.lockReason).toBeTruthy();
     });
-    it('Target amount requires manage_targets', () => {
+    it('Target amount requires manage_owner_goals', () => {
       const c = classifyField('Target', 'amount');
       expect(c.sensitivity).toBe('permission-gated');
-      expect(c.permission).toBe('manage_targets');
+      expect(c.permission).toBe('manage_owner_goals');
     });
-    it('Target period requires manage_targets', () => {
+    it('Target period requires manage_owner_goals', () => {
       const c = classifyField('Target', 'period');
       expect(c.sensitivity).toBe('permission-gated');
-      expect(c.permission).toBe('manage_targets');
+      expect(c.permission).toBe('manage_owner_goals');
     });
   });
 
