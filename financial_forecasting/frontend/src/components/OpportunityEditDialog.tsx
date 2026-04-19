@@ -31,6 +31,7 @@ import ActivityTimeline from './ActivityTimeline';
 import { apiService } from '../services/api';
 import { usePermissions } from '../contexts/PermissionsContext';
 import { OPPORTUNITY_STAGES, COLLECTING_STAGES, CLOSED_STAGES } from '../types/salesforce';
+import { useOpportunityTypePicklist } from '../hooks/useOpportunityTypePicklist';
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -102,6 +103,10 @@ const OpportunityEditDialog: React.FC<OpportunityEditDialogProps> = ({
 }) => {
   const queryClient = useQueryClient();
   const { can, isAdmin, sfUserId } = usePermissions();
+
+  // SF Opportunity.Type picklist for the Type field. Shared react-query
+  // cache-key with the grid's TypeCell, so this dedupes to the same fetch.
+  const typePicklist = useOpportunityTypePicklist();
 
   // ── Local state ─────────────────────────────────────────────────────────
   const [editForm, setEditForm] = useState<Record<string, any>>({});
@@ -495,14 +500,46 @@ const OpportunityEditDialog: React.FC<OpportunityEditDialogProps> = ({
                 />
               </Grid>
               <Grid item xs={12} sm={6}>
-                <TextField
-                  label="Type"
-                  fullWidth
-                  size="small"
-                  disabled={!canEdit}
-                  value={editForm.Type || ''}
-                  onChange={(e) => handleFieldChange('Type', e.target.value)}
-                />
+                {/* Type is a SF picklist — render as Select when the picklist
+                    is available. On fetch failure (empty options) fall back
+                    to a free-text TextField so editing still works offline
+                    or during a schema endpoint outage. */}
+                {typePicklist.options.length > 0 ? (
+                  <TextField
+                    label="Type"
+                    fullWidth
+                    size="small"
+                    select
+                    disabled={!canEdit}
+                    value={editForm.Type || ''}
+                    onChange={(e) => handleFieldChange('Type', e.target.value)}
+                  >
+                    <MenuItem value="">
+                      <em>— None —</em>
+                    </MenuItem>
+                    {typePicklist.options.map((opt) => (
+                      <MenuItem key={opt} value={opt}>{opt}</MenuItem>
+                    ))}
+                    {/* If the record's current Type isn't in the active
+                        picklist (e.g. a deprecated value), still show it so
+                        the user isn't confused by a silent clear. */}
+                    {editForm.Type && !typePicklist.options.includes(editForm.Type) && (
+                      <MenuItem value={editForm.Type} disabled>
+                        {editForm.Type} (inactive)
+                      </MenuItem>
+                    )}
+                  </TextField>
+                ) : (
+                  <TextField
+                    label="Type"
+                    fullWidth
+                    size="small"
+                    disabled={!canEdit}
+                    value={editForm.Type || ''}
+                    onChange={(e) => handleFieldChange('Type', e.target.value)}
+                    helperText={typePicklist.error ? 'Type picklist unavailable — free text' : undefined}
+                  />
+                )}
               </Grid>
               <Grid item xs={12} sm={6}>
                 <TextField

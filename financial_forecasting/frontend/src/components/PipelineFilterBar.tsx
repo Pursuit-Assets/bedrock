@@ -23,6 +23,7 @@ export interface PipelineFilters {
   owners: string[];
   stages: string[];
   revenueStreams: string[];
+  types: string[];
   amountRange: [number, number];
   closeDateStart: string;
   closeDateEnd: string;
@@ -34,6 +35,7 @@ export const DEFAULT_FILTERS: PipelineFilters = {
   owners: [],
   stages: [],
   revenueStreams: [],
+  types: [],
   amountRange: [0, 50000000],
   closeDateStart: '',
   closeDateEnd: '',
@@ -47,6 +49,9 @@ interface PipelineFilterBarProps {
   ownerOptions: Array<{ id: string; name: string; isActive?: boolean }>;
   stageOptions?: string[];
   revenueStreamOptions?: string[];
+  /** Distinct Opportunity.Type values available in the current dataset.
+   *  Rendered as a multi-select Autocomplete when non-empty. */
+  typeOptions?: string[];
   initialExpanded?: boolean;
 }
 
@@ -56,6 +61,7 @@ const PipelineFilterBar: React.FC<PipelineFilterBarProps> = ({
   ownerOptions,
   stageOptions = OPPORTUNITY_STAGES as unknown as string[],
   revenueStreamOptions = [],
+  typeOptions = [],
   initialExpanded = false,
 }) => {
   const [expanded, setExpanded] = useState(initialExpanded);
@@ -65,6 +71,7 @@ const PipelineFilterBar: React.FC<PipelineFilterBarProps> = ({
     if (filters.owners.length) count++;
     if (filters.stages.length) count++;
     if (filters.revenueStreams.length) count++;
+    if (filters.types.length) count++;
     if (filters.amountRange[0] > 0 || filters.amountRange[1] < 50000000) count++;
     if (filters.closeDateStart || filters.closeDateEnd) count++;
     if (filters.aijiOnly) count++;
@@ -117,6 +124,13 @@ const PipelineFilterBar: React.FC<PipelineFilterBarProps> = ({
             label={`Stage: ${filters.stages.length}`}
             size="small"
             onDelete={() => update({ stages: [] })}
+          />
+        )}
+        {filters.types.length > 0 && (
+          <Chip
+            label={`Type: ${filters.types.length}`}
+            size="small"
+            onDelete={() => update({ types: [] })}
           />
         )}
         {(filters.closeDateStart || filters.closeDateEnd) && (
@@ -184,6 +198,19 @@ const PipelineFilterBar: React.FC<PipelineFilterBarProps> = ({
               value={filters.revenueStreams}
               onChange={(_, vals) => update({ revenueStreams: vals })}
               renderInput={(params) => <TextField {...params} label="Revenue Stream" />}
+              sx={{ minWidth: 200 }}
+              disableCloseOnSelect
+            />
+          )}
+
+          {typeOptions.length > 0 && (
+            <Autocomplete
+              multiple
+              size="small"
+              options={typeOptions}
+              value={filters.types}
+              onChange={(_, vals) => update({ types: vals })}
+              renderInput={(params) => <TextField {...params} label="Type" />}
               sx={{ minWidth: 200 }}
               disableCloseOnSelect
             />

@@ -327,6 +327,11 @@ class TestSalesforceOpportunities:
         data = response.json()
         assert len(data) == 1
         assert data[0]["Id"] == opp["Id"]
+        # Type round-trip: the 2026-04-17 B2 incident was that Opportunity.Type
+        # never surfaced in the UI. The root cause was frontend (no column),
+        # but this assertion guards the API contract so regressions here get
+        # caught even if the frontend regresses separately.
+        assert data[0]["Type"] == "Other fee for service"
 
     def test_get_opportunities_with_stage_filter(self, client, mock_client):
         opp = make_sf_opportunity({"StageName": "Qualifying"})

@@ -1,7 +1,7 @@
 # MVP launch — running hand-off notes (for Jac)
 
 **Launch target:** Wed 2026-04-22
-**Last updated:** 2026-04-19 (JP + Claude session)
+**Last updated:** 2026-04-19 (B2 shipped)
 **Canonical bug spec:** `tasks/mvp-launch-sprint.md`
 **Session source:** `tasks/notes-2026-04-17-jac-review.md`
 
@@ -12,7 +12,7 @@ This is a live status page. Updated with every bug-fix PR (same PR diff — no s
 | Bug | Priority | Status | PR | Pending Jac action? |
 |-----|----------|--------|----|---------------------|
 | **B1** targets not saving to shared DB | P0 | ✅ Code shipped, merged to dev | [#142](https://github.com/Pursuit-Assets/bedrock/pull/142) | ⏳ Run migration + confirm deployed `DATABASE_URL` (see below) |
-| **B2** opp `Type` field missing on view | P0 | 🔜 Next | — | — |
+| **B2** opp `Type` field missing on view | P0 | ✅ Code shipped | PR pending — target `fix/b2-opp-type-field` | — |
 | **B3** Reports + Contacts 500-row cap | P1 | ⏳ Queued | — | — |
 | **B4** task create/edit/delete bugs | P1 | ⏳ Queued | — | — |
 | **B5** inline-edit lock too strict on Amount + Probability | P1 | ⏳ Queued | — | — |
@@ -36,6 +36,23 @@ This is a live status page. Updated with every bug-fix PR (same PR diff — no s
 2. **Confirm `DATABASE_URL` is set in the deployed backend's `.env`.** PR #142 removed the `postgresql://bedrock@localhost:5432/bedrock` fallback. If `DATABASE_URL` is unset or empty, the backend refuses to start — `init_db` logs a clear error, pool stays `None`, every DB route returns 503. Intentional, but means the production deploy must have the env var explicitly set.
 
 ## Progress log (newest first)
+
+### 2026-04-19 — B2 shipped (this PR)
+
+- **Problem.** From the 2026-04-17 session (~9:21–9:55): you looked up Mercy Corps for Data in Bedrock and expected to see its `Type` value. Salesforce has `Type = 'Other fee for service'` (you confirmed in the SF UI). Bedrock showed nothing. JP flagged: "type is not pulling in correctly."
+- **Root cause.** The backend correctly queried and returned Type — verified at `main.py:333` (SELECT includes Type), `main.py:365–371` (records returned raw), `services/crm_parser.py:23–27` (cache stores raw). Frontend type definitions included Type at `types/salesforce.ts:129` and `pages/Opportunities/helpers.ts:69`. The bug was purely display-side: **no grid exposed a Type column**, and no filter targeted it. Users could only see/edit Type by opening the full-edit drawer per-record. Also caught: the test factory (`conftest.py:make_sf_opportunity`) had no Type default, so no test ever round-tripped Type — the regression was invisible to CI.
+- **Fix.** JP's chosen scope: "everything + inline-edit column like Stage." Single PR:
+  1. New hook `useOpportunityTypePicklist.ts` — react-query fetch of `/api/salesforce/schema/Opportunity` picklist, 30-min cache, graceful empty-on-error fallback.
+  2. New `TypeCell.tsx` — mirrors `StageCell` pattern. Renders a neutral-pill inline-edit select. Falls back to read-only plain text when the picklist fetch fails.
+  3. `buildPipelineColumns` — new Type column between Stage and Amount, using TypeCell.
+  4. `buildPaymentColumns` — new Type column (read-only) between Account and Close Date; Finance view is scan-oriented so no inline-edit.
+  5. `PipelineFilterBar.tsx` — new `types` field on `PipelineFilters`, new Autocomplete in the expanded drawer, active-filter chip when set.
+  6. `OpportunityEditDialog.tsx:498` — free-text TextField upgraded to select-variant TextField populated from the shared picklist hook. Falls back to free-text if the picklist is empty. Inactive-but-current-value is shown as disabled "(inactive)" so users don't silently lose a value.
+  7. `Accounts.tsx:627+` opportunity-detail columns — new read-only Type column between Stage and Amount.
+  8. `conftest.py:make_sf_opportunity` — Type now defaults to `"Other fee for service"` so all factory-derived tests exercise Type by default.
+  9. `test_api_endpoints.py:test_get_opportunities_returns_records` — new assertion `data[0]["Type"] == "Other fee for service"` guards the API contract.
+- **Verification.** Frontend typecheck clean. Full test suite no new failures. Visual check against shared DB: Type column renders, picklist dropdown populates, filter works, edit dialog select replaces the free-text field.
+- **Pending for you.** None. Pure frontend PR; no migration, no env change.
 
 ### 2026-04-19 — B1 shipped (PR #142)
 
