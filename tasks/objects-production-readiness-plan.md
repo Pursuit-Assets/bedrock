@@ -102,7 +102,7 @@ This table is the source of truth for per-PR status. Each PR that ships updates 
 |---|---|---|---|---|
 | [#147](https://github.com/Pursuit-Assets/bedrock/pull/147) | `pr-planning` | This plan doc + doc updates across existing task files | docs-only | 👀 in review |
 | #148 | `pr-contacts-accounts-pagination` | Backend: Contacts + Accounts + opp-tasks + my-tasks → `query_all()` pattern | S-M | ⏳ Queued |
-| #149 | `pr-rowcount-caption-reports-tabs` | `<RowCountCaption>` component + apply to Opportunities (migrate) / Accounts / Contacts / Tasks / Leads | M | ⏳ Queued |
+| #149 | `pr-rowcount-caption-reports-tabs` | `<RowCountCaption>` component + apply to Opportunities (migrate) / Accounts / Contacts / Tasks | M | ⏳ Queued |
 | #150 | `pr-rowcount-caption-other-surfaces` | Apply caption to Priorities / WeeklyPriorities / MyDashboard / Overview / Accounts-detail / Finance pages | S | ⏳ Queued |
 | #151 | `pr-tasks-whoid` | Add `WhoId` (Contact lookup) to TaskPanel + TaskCreateRequest + TaskUpdateRequest | S | ⏳ Queued |
 | #152 | `pr-use-schema-picklist` | Generalize `useOpportunityTypePicklist` → `useSchemaPicklist(sobject, fieldName)` | S | ⏳ Queued |
@@ -111,7 +111,7 @@ This table is the source of truth for per-PR status. Each PR that ships updates 
 | #155 | `pr-dialog-audit-contact` | Contact dialog: add `npe01__AlternateEmail__c`, convert picklists | S-M | ⏳ Queued |
 | #156 | `pr-dialog-audit-taskpanel` | TaskPanel: convert Status + Priority picklists | S | ⏳ Queued |
 | #157 | `pr-activities-list-page` | New `pages/Activities.tsx` + Reports tab (replaces Leads tab) | M | ⏳ Queued |
-| #158 | `pr-activities-sync` | `data_sync.sync_activities()` completion (Sprint 9A) | M-L | ⏳ Queued |
+| #158 | `pr-activities-sync` | `data_sync.sync_activities()` round-trip tests + manual verification (Sprint 9A; impl already landed) | S-M | ⏳ Queued |
 | #159 | `pr-activities-detail-tabs` | `ActivityTimeline` component + Activities tabs on Opportunity / Account / Contact detail dialogs | M | ⏳ Queued |
 | #160 | `pr-b4a-task-title-true` | Fix: task title coerces to "True" on save | S | ⏳ Queued |
 | #161 | `pr-b4b-task-description-400` | Fix: description save returns 400 | S | ⏳ Queued |
@@ -161,7 +161,8 @@ Status legend: ⏳ Queued · 🚧 in flight · 👀 in review · ✅ merged · �
 **Frontend:**
 - New `frontend/src/components/RowCountCaption.tsx` — props `{ visible: number; total: number; label: string; sx?: SxProps }`. Renders e.g. *"Showing 100 of 1,834 opportunities"*. Handles `visible === total` (drops "of Y"); handles `total === undefined` (shows just `visible {label}`).
 - Opportunities (`pages/Opportunities.tsx`): migrate the hand-rolled caption at ~line 529 to `<RowCountCaption visible={visibleOpps.length} total={rawOpportunities.length} label="opportunities" />`. Keep the existing summary-stats box next to it.
-- Accounts, Contacts, Tasks, Leads: add `<RowCountCaption>` above each DataGrid.
+- Accounts, Contacts, Tasks: add `<RowCountCaption>` above each DataGrid.
+- **Skip Leads** — it's being dropped from Reports in PR #157 and has no standalone route (verified: no `/leads` route in `App.tsx`; no `navigate('/leads')` anywhere; the `Leads` component is only mounted via Reports tab 3). Applying a caption there would be wasted work.
 - Tests: `RowCountCaption.test.tsx` — render assertions for the three shape variants (equal, different, unknown total).
 
 **Verification:** manual against segundo-db, open each Reports tab, confirm caption matches expected totals.
@@ -256,6 +257,7 @@ Uses `useSchemaPicklist` (PR #152).
   - Filter bar: type (enum), source (enum), activity_date range, entity scope (opportunity/account/contact) — maps to `ActivityFilterParams` already defined.
   - Row click → if `sf_id` set, open related SF Task/Event dialog (edits flow through SF, per Sprint 9 design).
 - `pages/Reports.tsx`: drop Leads tab (JP directive), add Activities tab. Update `TAB_MAP`.
+- **Leads consequence (verified):** the `Leads` component at `pages/Leads.tsx` has no standalone route in `App.tsx` and no inbound `navigate('/leads')` anywhere in the codebase — it's only reachable via the Reports "Leads" tab. Dropping the tab makes `Leads.tsx` + `contexts/LeadsContext.tsx` dead code. PR #157 leaves the files in place (the LeadsProvider still wraps the tree in `App.tsx:112-338`, so removing it is a larger ripple). Actual deletion is an optional post-MVP cleanup PR.
 - Apply `<RowCountCaption>` (from PR #149) — totals come from the server via `meta.total` in `ApiResponse`, not client-side array length.
 
 **Note.** The backend CRUD + apiService methods (`getActivities`, `getActivity`, `createActivity`, `updateActivity`, `deleteActivity`, `searchActivities`) are already implemented (`routes/activities.py` + `services/api.ts:595-615`). PR #157 is frontend list page + Reports tab wiring only.
@@ -264,16 +266,26 @@ Uses `useSchemaPicklist` (PR #152).
 
 ---
 
-### PR #158 — `pr-activities-sync` (Sprint 9A)
+### PR #158 — `pr-activities-sync` (Sprint 9A verification + tests)
 
-Execution handoff to `tasks/sprint9-activities-extension-plan.md` — that doc remains authoritative for Activities internals. This PR ships the backend sync portion needed for daily use:
+**Scope corrected after verification pass 2** (2026-04-20): `data_sync.py::sync_activities()` is substantially **already implemented** at lines 55-162:
+- Reads watermark via `MAX(sf_last_modified) FROM bedrock.activity WHERE source = 'salesforce'` (so the watermark lives in the activity table itself — no separate `bedrock.sync_watermark` table needed).
+- Fetches Tasks + Events via `salesforce.query_all` with `LastModifiedDate > {watermark}` WHERE clauses.
+- Maps to `bedrock.activity` columns via `_map_sf_task` (data_sync.py:199-250) and `_map_sf_event` (data_sync.py:252-281).
+- Upserts via `_upsert_activity` (data_sync.py:283-332) with `WHERE bedrock.activity.deleted_at IS NULL` guard — soft-deleted rows are skipped.
+- Wired into `sync_all_data()` at line 340. `/api/activities/sync/trigger` (`routes/activities.py:87-106`) acquires a lock and calls this method in a BackgroundTask.
 
-- `data_sync.py::sync_activities()` — pull SF Task + Event since last watermark, upsert into `bedrock.activity` (by `sf_id`), preserve soft deletes (don't resurrect `deleted_at IS NOT NULL` rows).
-- Incremental sync via `sf_last_modified` watermark stored in `bedrock.sync_watermark` (table TBD by sprint 9 plan).
-- Background task wiring finishing `/api/activities/sync/trigger` (already scaffolded).
-- Tests: extend `tests/test_activities.py` sync suite with a full round-trip scenario.
+**What's actually missing:**
+- **Round-trip test coverage.** `tests/test_activities.py` has endpoint-level tests (sync_count, sync_trigger, sync_status) but nothing that feeds 3 mock Tasks + 2 mock Events through `sync_activities()` and asserts 5 `bedrock.activity` rows with correctly mapped columns + soft-delete preservation.
+- **End-to-end verification against Pursuit's real SF org** — does the sync complete? How long does it take? Are there unexpected record types that fail mapping?
+- Any edge-case fixes surfaced by the above.
 
-If this work exceeds the "M-L" budget in the sequence table, split further per the sprint 9 plan's internal breakdown.
+**Scope for PR #158:**
+1. Add `tests/test_activity_sync.py` (or extend `test_activities.py`) — mock SF query_all returning Tasks + Events, run `sync_activities()`, assert bedrock.activity rows. Include cases for: Task with email TaskSubtype → "email" type; Task with CallType → "call"; Event IsAllDayEvent → "calendar-event" vs "meeting"; WhatId → opportunity_id vs account_id routing; soft-deleted row not resurrected.
+2. Manual run against segundo-db — trigger sync, check row counts + sync_history.
+3. Any edge-case fixes from (1) or (2).
+
+Size bumps from original estimate: if round-trip tests surface real bugs, the fix bundle grows. Split if needed.
 
 ---
 
@@ -364,7 +376,7 @@ From `mvp-launch-sprint.md` B9. Fully blue-highlight the field when in edit mode
 | List pages | `financial_forecasting/frontend/src/pages/Opportunities.tsx`, `Accounts.tsx`, `Contacts.tsx`, `Tasks.tsx`, `Leads.tsx` |
 | Edit dialogs | `financial_forecasting/frontend/src/components/OpportunityEditDialog.tsx`, `AccountEditDialog.tsx`, `ContactEditDialog.tsx`, `TaskPanel.tsx` |
 | Schema utilities | `financial_forecasting/frontend/src/utils/schemaColumns.tsx`, `financial_forecasting/frontend/src/hooks/useOpportunityTypePicklist.ts` |
-| SF schema describe endpoint | `financial_forecasting/routes/salesforce_schema.py:143-182` |
+| SF schema describe endpoint | `financial_forecasting/routes/salesforce_schema.py:143-184` |
 
 ## Cross-references
 
