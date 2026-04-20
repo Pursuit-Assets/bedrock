@@ -1,25 +1,39 @@
 # MVP launch — running hand-off notes (for Jac)
 
-**Launch target:** Wed 2026-04-22
-**Last updated:** 2026-04-19 (B2 shipped)
-**Canonical bug spec:** `tasks/mvp-launch-sprint.md`
+**Launch target:** (moved — see "Launch pacing" below)
+**Last updated:** 2026-04-20 (objects plan PR #147 in flight)
+**Canonical bug spec:** `tasks/mvp-launch-sprint.md` (B1-B9)
+**Master plan (2026-04-20 expansion):** `tasks/objects-production-readiness-plan.md` (PR sequence #147-#168)
 **Session source:** `tasks/notes-2026-04-17-jac-review.md`
 
-This is a live status page. Updated with every bug-fix PR (same PR diff — no separate docs-update churn). Newest entries at the top of the progress log; status table updates in place.
+This is a live status page. Updated with every PR diff — no separate docs-update churn. Newest entries at the top of the progress log; status table updates in place.
+
+## Scope expansion 2026-04-20
+
+JP expanded scope on 2026-04-20 from "ship B3 and move on" to "get all 5 core SF objects (Opportunities, Accounts, Contacts, Tasks, Activities) production-ready using real SF schemas — no shortcuts." See `tasks/objects-production-readiness-plan.md` for the full verified inventory + 22-PR sequence (#147-#168). B3 and B6 absorbed into PRs #148-#150; B4 splits into PRs #160-#164; B5, B7-B9 become PRs #165-#168.
+
+## Launch pacing
+
+Original target Wed 2026-04-22 is deferred. JP: *"We have time to do this correctly, so ignore time constraints. … production-ready for MVP sprint."* New cadence: each PR in the plan sequence ships production-ready before the next starts. Per-PR status tracked in the plan doc's "PR sequence" table.
 
 ## Status at a glance
 
-| Bug | Priority | Status | PR | Pending Jac action? |
-|-----|----------|--------|----|---------------------|
-| **B1** targets not saving to shared DB | P0 | ✅ Code shipped, merged to dev | [#142](https://github.com/Pursuit-Assets/bedrock/pull/142) | ⏳ Run migration + confirm deployed `DATABASE_URL` (see below) |
-| **B2** opp `Type` field missing on view | P0 | ✅ Code shipped, in review | [#144](https://github.com/Pursuit-Assets/bedrock/pull/144) | — |
-| **B3** Reports + Contacts 500-row cap | P1 | ⏳ Queued | — | — |
-| **B4** task create/edit/delete bugs | P1 | ⏳ Queued | — | — |
-| **B5** inline-edit lock too strict on Amount + Probability | P1 | ⏳ Queued | — | — |
-| **B6** Contacts inline-edit migration status | P1 | ⏳ Queued | — | — |
-| **B7** dropdown picker positioned wrong | P2 | ⏳ Queued | — | — |
-| **B8** Progress page full pipeline (include Lost/Withdrawn) | P2 | ⏳ Queued | — | — |
-| **B9** inline-edit "actively editing" affordance | P2 | ⏳ Queued | — | — |
+| Bug / Item | Priority | Status | Ref | Pending Jac action? |
+|---|---|---|---|---|
+| **Objects production-readiness plan** | P0 | 🚧 in flight (PR #147) | [plan](objects-production-readiness-plan.md) | Review plan + approve PR #147 |
+| **B1** targets not saving to shared DB | P0 | ✅ Merged to dev | [#142](https://github.com/Pursuit-Assets/bedrock/pull/142) | ⏳ Run migration + confirm deployed `DATABASE_URL` (see below) |
+| **B2** opp `Type` field missing on view | P0 | ✅ Merged to dev | [#144](https://github.com/Pursuit-Assets/bedrock/pull/144) | — |
+| **B3** Reports + Contacts 500-row cap | P1 | 📘 Absorbed — PRs #148-#150 | [plan](objects-production-readiness-plan.md) | — |
+| **B4** task create/edit/delete bugs | P1 | 📘 Absorbed — PRs #160-#164 | [plan](objects-production-readiness-plan.md) | — |
+| **B5** inline-edit lock too strict on Amount + Probability | P1 | 📘 Absorbed — PR #165 | [plan](objects-production-readiness-plan.md) | — |
+| **B6** Contacts inline-edit migration status | P1 | 📘 Absorbed — PRs #148-#149 | [plan](objects-production-readiness-plan.md) | — |
+| **B7** dropdown picker positioned wrong | P2 | 📘 Absorbed — PR #166 | [plan](objects-production-readiness-plan.md) | — |
+| **B8** Progress page full pipeline (include Lost/Withdrawn) | P2 | 📘 Absorbed — PR #167 | [plan](objects-production-readiness-plan.md) | — |
+| **B9** inline-edit "actively editing" affordance | P2 | 📘 Absorbed — PR #168 | [plan](objects-production-readiness-plan.md) | — |
+
+Status legend: ⏳ Queued · 🚧 in flight · 👀 in review · ✅ merged · 📘 absorbed into master plan.
+
+For per-PR status of the 22 PRs in the plan, see the "PR sequence" table in `tasks/objects-production-readiness-plan.md`.
 
 ## Pending actions on your side (Jac)
 
@@ -36,6 +50,15 @@ This is a live status page. Updated with every bug-fix PR (same PR diff — no s
 2. **Confirm `DATABASE_URL` is set in the deployed backend's `.env`.** PR #142 removed the `postgresql://bedrock@localhost:5432/bedrock` fallback. If `DATABASE_URL` is unset or empty, the backend refuses to start — `init_db` logs a clear error, pool stays `None`, every DB route returns 503. Intentional, but means the production deploy must have the env var explicitly set.
 
 ## Progress log (newest first)
+
+### 2026-04-20 — Scope expanded; master plan PR #147 in flight
+
+- **Context.** From B3 investigation (see below): Reports-page "500-row cap" turned out to be a mix of real (Contacts backend uses `query()` not `query_all()`) and perceptual (Opportunities backend already correct since 2026-03-25; the user-visible symptom was pageSize=500 + stage-filter masking). Fixing only Contacts wasn't enough.
+- **JP direction (2026-04-20).** "We need all the key objects listed here, Opportunities, Accounts, Contacts, Tasks, and Activities (ignore Leads as an object for Reports for MVP). We need edit dialogs to work throughout the site, not just fix the caps on Report page. … We have time to do this correctly, so ignore time constraints. … real SF schemas, not your guesses. … DO NOT DO ANY SHORTCUTS!"
+- **Inventory.** Three parallel Explore agents ran a full audit: backend list + write endpoints per object, frontend list pages + row-count captions, edit dialogs + gap analysis. Verified directly against `origin/dev` HEAD `17732d3`.
+- **Master plan.** `tasks/objects-production-readiness-plan.md` — 22-PR sequence (#147 through #168) organized by risk and dependency. Each PR production-ready on its own. Leads drops from Reports for MVP; Activities takes its place.
+- **This PR (#147)** ships docs only: the plan itself, plus supersession banners across `tasks/mvp-launch-sprint.md`, `tasks/accounts-endpoint-pagination-followup.md`, `tasks/sprint9-activities-extension-plan.md`, this file, and `tasks/handoff-prompt.md`.
+- **Pending for you.** Review the plan (~10 min read). Approve PR #147. Then PR #148 (`pr-contacts-accounts-pagination`) is the next concrete code PR.
 
 ### 2026-04-19 — B2 shipped (PR #144)
 
@@ -87,10 +110,12 @@ Monday night handoff: JP sends a state-of-the-world summary — what's shipped, 
 - [x] B1 code shipped (PR #142)
 - [ ] B1 migration applied to shared segundo-db (pending Jac action above)
 - [ ] Deployed `DATABASE_URL` confirmed set (pending Jac action above)
-- [ ] B2 (opp Type field) shipped
-- [ ] Remaining P1 bugs shipped or explicitly deferred with a known-issues note
+- [x] B2 (opp Type field) shipped (PR #144, merged 2026-04-20)
+- [ ] PR #147 planning PR merged
+- [ ] PRs #148-#168 shipped per `tasks/objects-production-readiness-plan.md` sequence
 - [ ] End-to-end workflow smoke test (from the meeting: "create an opportunity, create a contact, create a task, create an account, progress it all, change it all")
 - [ ] Wall of Progress E2E: JP sets a target, Jac queries DB, target is present, target appears on Jac's Progress page after refresh
+- [ ] All 5 core objects (Opportunities, Accounts, Contacts, Tasks, Activities) support: find (list returns all rows), edit (dialog covers workflow fields via real SF schema), organize (sort/filter/search)
 
 ## What's explicitly parked / deferred (agreed in session)
 

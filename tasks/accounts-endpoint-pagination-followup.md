@@ -1,5 +1,7 @@
 # Follow-up — `GET /api/salesforce/accounts` pagination mismatch
 
+> **📘 SUPERSEDED 2026-04-20 — folded into PR #148 of `tasks/objects-production-readiness-plan.md`.** The master plan applies the same one-line `query() → query_all()` fix pattern to Accounts alongside Contacts and opp-tasks in a single coordinated PR. Analysis preserved below for reference; ignore the "future PR" instructions in favor of the PR #148 scope.
+
 **Status:** Surfaced 2026-04-17 while fixing `test_accounts_limit_capped_at_1000` in PR #137. Not fixed in that PR — logged here for a proper future fix.
 
 ## The problem

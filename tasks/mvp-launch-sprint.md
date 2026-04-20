@@ -1,8 +1,10 @@
-# MVP launch sprint — 2026-04-19 through 2026-04-22
+# MVP launch sprint — 2026-04-19 onward
 
-**Target:** ship Bedrock MVP to production by Wednesday 2026-04-22.
+**Target:** ship Bedrock MVP to production, production-ready for daily team use.
 **Source of scope:** JP + Jac review session 2026-04-17 (full transcript at `tasks/notes-2026-04-17-jac-review.md`).
 **Upstream context:** PR #139 merged dev → main 2026-04-19T14:03:01Z. This sprint ships on top of that baseline.
+
+> **⚠️ Scope and pacing expanded 2026-04-20.** JP widened scope from "ship B1-B9 bug list" to "get all 5 core SF objects (Opportunities, Accounts, Contacts, Tasks, Activities) production-ready with real SF schemas and no shortcuts." Original Wed 2026-04-22 target deferred — pacing is now per-PR production-readiness, not calendar. See `tasks/objects-production-readiness-plan.md` for the master 22-PR sequence (#147-#168). Per-bug absorption is annotated inline below. B1 and B2 shipped before the expansion; B3-B9 all absorbed.
 
 ---
 
@@ -52,6 +54,8 @@
 
 #### B3. Reports / Opportunities table only loads 500 records
 
+> **📘 Absorbed 2026-04-20 into PRs #148-#150** of `tasks/objects-production-readiness-plan.md`. Root cause clarified: Opportunities backend was already correct (Jac's symptom was perceptual — pageSize=500 + stage filter); Contacts is the real backend cap. Fix propagates to all 4 SF list endpoints (Contacts, Accounts, opp-tasks, my-tasks) and adds a shared `<RowCountCaption>` to every list surface. Original acceptance criterion preserved below.
+
 - **Symptom:** Jac sorted by Amount descending and the highest-amount real opportunity wasn't in the table. Table is capped at 500 rows regardless of how many opportunities exist.
 - **JP in session:** "I had put that in the last one" — thought this was already fixed in PR #131 or earlier frontend test hygiene work. Apparently didn't actually land.
 - **Suspected root causes (investigate in order):**
@@ -63,6 +67,8 @@
 - **Acceptance criteria:** Reports and Contacts pages show all rows matching the current filter (not 500, not 2000 — all). Verify by sorting by the heaviest column and confirming the extreme values are present.
 
 #### B4. Task creation is broken in multiple places
+
+> **📘 Absorbed 2026-04-20 into PRs #160-#164** of `tasks/objects-production-readiness-plan.md`. Each sub-bug (B4a-B4e) gets its own PR for review-sized diffs. Detail preserved below.
 
 Treat as one bundled bug with multiple sub-failures, since they all share the create-task code path.
 
@@ -79,6 +85,8 @@ Treat as one bundled bug with multiple sub-failures, since they all share the cr
 
 #### B5. Inline-edit lock is too strict on Amount and Probability
 
+> **📘 Absorbed 2026-04-20 into PR #165** of `tasks/objects-production-readiness-plan.md`.
+
 - **Symptom:** Jac clicked on Amount and Probability cells in the Opportunities grid; couldn't edit without hitting an unlock step first.
 - **Current design:** these fields are gated by the sensitivity table introduced in PR #112 (inline-edit foundation) and refined in PR #124 (Probability column sensitivity gate).
 - **Jac's recommendation:** soften the UX. Either (a) remove the lock for these specific fields (they're not that sensitive relative to Stage); (b) keep the lock but make click-to-edit much faster and clearer so users don't feel they need a lock; (c) move to a "confirm on save" model instead of "lock before edit".
@@ -87,6 +95,8 @@ Treat as one bundled bug with multiple sub-failures, since they all share the cr
 - **Acceptance criteria:** Click Amount → field goes blue, editable immediately, no extra unlock step. Save triggers the existing green-check confirmation. Same for Probability.
 
 #### B6. Contacts page inline-edit migration — may not have shipped
+
+> **📘 Absorbed 2026-04-20 into PRs #148-#149** of `tasks/objects-production-readiness-plan.md`. Verification revealed Contacts.tsx already uses `buildSchemaColumns()` with inline edit (the migration DID ship). The remaining work is the backend row-cap fix (PR #148) + row-count caption (PR #149) — both covered.
 
 - **JP in session:** "I may just not have gotten to shipping that one yet. I have to check like my Sprint list."
 - **What to verify:**
@@ -98,12 +108,16 @@ Treat as one bundled bug with multiple sub-failures, since they all share the cr
 
 #### B7. Dropdown picker appears at wrong screen position
 
+> **📘 Absorbed 2026-04-20 into PR #166** of `tasks/objects-production-readiness-plan.md`.
+
 - **Symptom:** Click a dropdown for Account or Owner in an inline-edit cell. The dropdown list appears at the top of the screen instead of anchored to the cell.
 - **Jac confirmed:** "I've actually seen this in browser too" — not a cursor IDE rendering artifact, it's a real UI bug.
 - **Where to look:** MUI `Autocomplete` or `Select` component's anchor/popper configuration. Probably missing a `PopperProps` or `MenuProps` anchor.
 - **Acceptance criteria:** dropdown appears directly under the cell being edited. Works in desktop Chrome, Safari, Firefox.
 
 #### B8. Progress page should show full pipeline (including Lost + Withdrawn)
+
+> **📘 Absorbed 2026-04-20 into PR #167** of `tasks/objects-production-readiness-plan.md`.
 
 - **Jac's argument:** "A really important part of managing a pipeline is to surface losses and withdraws... we actually want to encourage people to mark something as a loss when it's a loss."
 - **JP's response in session:** "Why don't we just show the full pipeline? All the active stages for philanthropy pipeline can be here."
@@ -112,6 +126,8 @@ Treat as one bundled bug with multiple sub-failures, since they all share the cr
 - **Acceptance criteria:** Progress page shows all active philanthropy stages plus Lost / Withdrawn / Did Not Fulfill. RMs can see their loss rate at a glance.
 
 #### B9. Inline-edit "I'm actively editing" affordance is too subtle
+
+> **📘 Absorbed 2026-04-20 into PR #168** of `tasks/objects-production-readiness-plan.md`.
 
 - **Current:** thin blue border when clicked.
 - **Jac + JP agreed:** fully blue-highlight the field when in edit mode. Keep the green-check save indicator (that one already works well).
