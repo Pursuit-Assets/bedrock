@@ -70,6 +70,12 @@ SAGE_SENDER_PASSWORD=<ask team>
 ANTHROPIC_API_KEY=<ask team>
 FIREFLIES_API_KEY=<ask team>
 SLACK_BOT_TOKEN=<ask team>
+
+# --- Optional for local dev (only set if frontend isn't on port 3000) ---
+# FRONTEND_URL defaults to http://localhost:3000 (matches `npm start`).
+# Override here if you run the frontend on a non-default port, otherwise
+# Google-OAuth login redirects land on the wrong URL.
+# FRONTEND_URL=http://localhost:4000
 ```
 
 ### 3. Run

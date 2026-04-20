@@ -22,7 +22,7 @@ JWT_ALGORITHM = "HS256"
 JWT_EXPIRATION_HOURS = 24 * 30  # 30 days
 
 # Production detection
-FRONTEND_URL = os.getenv('FRONTEND_URL') or 'http://localhost:4000'
+FRONTEND_URL = os.getenv('FRONTEND_URL') or 'http://localhost:3000'
 IS_PRODUCTION = FRONTEND_URL.startswith('https')
 
 # Defense-in-depth JWT check at import time. The full env validator runs
