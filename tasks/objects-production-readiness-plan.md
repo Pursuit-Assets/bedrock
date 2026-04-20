@@ -72,8 +72,8 @@ Routing-to-component mapping verified directly in `App.tsx` + `Layout.tsx:72-103
 
 | Sidebar label | Route | Renders | Notes |
 |---|---|---|---|
-| Progress | `/dashboard` | `pages/Overview.tsx` | Per-owner opportunity cards. Wall of Progress feature lives here. |
-| Priorities | `/priorities` | `pages/MyDashboard.tsx` | Renders `PriorityTable` custom component (imported MyDashboard.tsx:56, used line 1238). The file name `MyDashboard.tsx` is a legacy; the page IS the Priorities page. |
+| Progress | `/dashboard` | `pages/Progress.tsx` | Per-owner opportunity cards. Wall of Progress feature lives here. |
+| Priorities | `/priorities` | `pages/Priorities.tsx` | Renders `PriorityTable` custom component (imported Priorities.tsx:56, used line 1238). |
 | Reports | `/reports` | `pages/Reports.tsx` | Tabbed container for Opp/Acct/Contact/Tasks (and Activities post-PR #158). |
 | Projects | `/projects` | `pages/Projects.tsx` | |
 | Settings | `/settings` | `pages/Settings.tsx` | |
@@ -83,13 +83,11 @@ Off-MVP routes that still render lists and need captions:
 - `/overview` → redirects to `/dashboard` (legacy alias only).
 
 Surfaces needing `<RowCountCaption>` (PR #151):
-- `pages/MyDashboard.tsx` (the **Priorities** page) — `PriorityTable` adapter likely needed to expose visible/total
-- `pages/Overview.tsx` (the **Progress** page / Wall of Progress) — per-owner card headers
+- `pages/Priorities.tsx` — `PriorityTable` adapter likely needed to expose visible/total
+- `pages/Progress.tsx` (Wall of Progress) — per-owner card headers
 - `pages/WeeklyPriorities.tsx` (off-MVP standalone)
 - `pages/Accounts.tsx` detail dialog — nested Opportunities grid (rendered at Accounts.tsx:916 area inside the `activeTab < 3` condition)
 - Finance pages (`UnpaidBills`, `ReceivedPayments`, `PendingInvoices`, `PaymentProcessing`, `GivingCapacity`, `FinanceDashboard`) — non-SF but user-facing lists (all 6 verified to exist)
-
-There is no `pages/Priorities.tsx` file — the "Priorities" navbar entry routes to `MyDashboard.tsx`.
 
 ### Edit-dialog inventory and critical gaps
 
