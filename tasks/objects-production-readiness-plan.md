@@ -1,7 +1,7 @@
 # Objects production-readiness — MVP launch plan
 
 **Created:** 2026-04-20
-**Status:** PR #147 (this planning doc) in flight; PRs #148-#168 queued below.
+**Status:** PR #147 (this planning doc) open for review; PRs #148-#168 queued below. See live per-PR status in the "PR sequence" table.
 **Scope:** The five core Salesforce-backed objects used in daily workflows — **Opportunities, Accounts, Contacts, Tasks, Activities** — brought to production-ready quality for MVP launch.
 
 This plan supersedes B3 (row caps) and B6 (Contacts inline-edit) in `mvp-launch-sprint.md`. Those symptoms roll into PRs #148-#150 below and expand to cover all five objects.
@@ -251,13 +251,14 @@ Uses `useSchemaPicklist` (PR #152).
 
 **Frontend:**
 - New `frontend/src/pages/Activities.tsx` — DataGrid list of `bedrock.activity` rows.
-  - Uses `apiService.listActivities({ limit, offset, filters })` with `paginationMode="server"` (the Activities endpoint supports this natively via `offset`/`limit`).
-  - Columns hand-built from the `Activity` model (`models.py:169-201`) — not SF-describe, since Activities are a local bedrock-db object.
-  - Filter bar: type (enum), source (enum), activity_date range, entity scope (opportunity/account/contact).
+  - Uses existing `apiService.getActivities(params)` (already defined at `services/api.ts:595`, returns `ApiResponse<Activity[]>`) with `paginationMode="server"` (the backend endpoint supports `offset`/`limit` natively).
+  - Columns hand-built from the `Activity` model (`models.py:169-201`) and `types/activity.ts` — not SF-describe, since Activities are a local bedrock-db object.
+  - Filter bar: type (enum), source (enum), activity_date range, entity scope (opportunity/account/contact) — maps to `ActivityFilterParams` already defined.
   - Row click → if `sf_id` set, open related SF Task/Event dialog (edits flow through SF, per Sprint 9 design).
 - `pages/Reports.tsx`: drop Leads tab (JP directive), add Activities tab. Update `TAB_MAP`.
-- Apply `<RowCountCaption>` (from PR #149).
-- Apply `<RowCountCaption>` differently here — totals come from the server via `meta.total` in `ApiResponse`.
+- Apply `<RowCountCaption>` (from PR #149) — totals come from the server via `meta.total` in `ApiResponse`, not client-side array length.
+
+**Note.** The backend CRUD + apiService methods (`getActivities`, `getActivity`, `createActivity`, `updateActivity`, `deleteActivity`, `searchActivities`) are already implemented (`routes/activities.py` + `services/api.ts:595-615`). PR #157 is frontend list page + Reports tab wiring only.
 
 **Tests:** render + filter interaction.
 

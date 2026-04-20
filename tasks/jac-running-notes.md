@@ -1,7 +1,7 @@
 # MVP launch — running hand-off notes (for Jac)
 
 **Launch target:** (moved — see "Launch pacing" below)
-**Last updated:** 2026-04-20 (objects plan PR #147 in flight)
+**Last updated:** 2026-04-20 (objects plan PR #147; live per-PR status in the table below)
 **Canonical bug spec:** `tasks/mvp-launch-sprint.md` (B1-B9)
 **Master plan (2026-04-20 expansion):** `tasks/objects-production-readiness-plan.md` (PR sequence #147-#168)
 **Session source:** `tasks/notes-2026-04-17-jac-review.md`
@@ -51,7 +51,7 @@ For per-PR status of the 22 PRs in the plan, see the "PR sequence" table in `tas
 
 ## Progress log (newest first)
 
-### 2026-04-20 — Scope expanded; master plan PR #147 in flight
+### 2026-04-20 — Scope expanded; master plan opened as PR #147
 
 - **Context.** From B3 investigation (see below): Reports-page "500-row cap" turned out to be a mix of real (Contacts backend uses `query()` not `query_all()`) and perceptual (Opportunities backend already correct since 2026-03-25; the user-visible symptom was pageSize=500 + stage-filter masking). Fixing only Contacts wasn't enough.
 - **JP direction (2026-04-20).** "We need all the key objects listed here, Opportunities, Accounts, Contacts, Tasks, and Activities (ignore Leads as an object for Reports for MVP). We need edit dialogs to work throughout the site, not just fix the caps on Report page. … We have time to do this correctly, so ignore time constraints. … real SF schemas, not your guesses. … DO NOT DO ANY SHORTCUTS!"
