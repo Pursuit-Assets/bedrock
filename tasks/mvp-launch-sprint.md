@@ -54,7 +54,7 @@
 
 #### B3. Reports / Opportunities table only loads 500 records
 
-> **📘 Absorbed 2026-04-20 into PRs #148-#150** of `tasks/objects-production-readiness-plan.md`. Root cause clarified: Opportunities backend was already correct (Jac's symptom was perceptual — pageSize=500 + stage filter); Contacts is the real backend cap. Fix propagates to all 4 SF list endpoints (Contacts, Accounts, opp-tasks, my-tasks) and adds a shared `<RowCountCaption>` to every list surface. Original acceptance criterion preserved below.
+> **📘 Absorbed 2026-04-20 into PRs #149-#151** of `tasks/objects-production-readiness-plan.md`. Root cause clarified: Opportunities backend was already correct (Jac's symptom was perceptual — pageSize=500 + stage filter); Contacts is the real backend cap. Fix propagates to all 4 SF list endpoints (Contacts, Accounts, opp-tasks, my-tasks) and adds a shared `<RowCountCaption>` to every list surface. Original acceptance criterion preserved below.
 
 - **Symptom:** Jac sorted by Amount descending and the highest-amount real opportunity wasn't in the table. Table is capped at 500 rows regardless of how many opportunities exist.
 - **JP in session:** "I had put that in the last one" — thought this was already fixed in PR #131 or earlier frontend test hygiene work. Apparently didn't actually land.
@@ -68,7 +68,7 @@
 
 #### B4. Task creation is broken in multiple places
 
-> **📘 Absorbed 2026-04-20 into PRs #160-#164** of `tasks/objects-production-readiness-plan.md`. Each sub-bug (B4a-B4e) gets its own PR for review-sized diffs. Detail preserved below.
+> **📘 Absorbed 2026-04-20 into PRs #161-#165** of `tasks/objects-production-readiness-plan.md`. Each sub-bug (B4a-B4e) gets its own PR for review-sized diffs. Detail preserved below.
 
 Treat as one bundled bug with multiple sub-failures, since they all share the create-task code path.
 
@@ -85,7 +85,7 @@ Treat as one bundled bug with multiple sub-failures, since they all share the cr
 
 #### B5. Inline-edit lock is too strict on Amount and Probability
 
-> **📘 Absorbed 2026-04-20 into PR #165** of `tasks/objects-production-readiness-plan.md`.
+> **📘 Absorbed 2026-04-20 into PR #166** of `tasks/objects-production-readiness-plan.md`.
 
 - **Symptom:** Jac clicked on Amount and Probability cells in the Opportunities grid; couldn't edit without hitting an unlock step first.
 - **Current design:** these fields are gated by the sensitivity table introduced in PR #112 (inline-edit foundation) and refined in PR #124 (Probability column sensitivity gate).
@@ -96,7 +96,7 @@ Treat as one bundled bug with multiple sub-failures, since they all share the cr
 
 #### B6. Contacts page inline-edit migration — may not have shipped
 
-> **📘 Absorbed 2026-04-20 into PRs #148-#149** of `tasks/objects-production-readiness-plan.md`. Verification revealed Contacts.tsx already uses `buildSchemaColumns()` with inline edit (the migration DID ship). The remaining work is the backend row-cap fix (PR #148) + row-count caption (PR #149) — both covered.
+> **📘 Absorbed 2026-04-20 into PRs #149-#150** of `tasks/objects-production-readiness-plan.md`. Verification revealed Contacts.tsx already uses `buildSchemaColumns()` with inline edit (the migration DID ship). The remaining work is the backend row-cap fix (PR #149) + row-count caption (PR #150) — both covered.
 
 - **JP in session:** "I may just not have gotten to shipping that one yet. I have to check like my Sprint list."
 - **What to verify:**
@@ -108,7 +108,7 @@ Treat as one bundled bug with multiple sub-failures, since they all share the cr
 
 #### B7. Dropdown picker appears at wrong screen position
 
-> **📘 Absorbed 2026-04-20 into PR #166** of `tasks/objects-production-readiness-plan.md`.
+> **📘 Absorbed 2026-04-20 into PR #167** of `tasks/objects-production-readiness-plan.md`.
 
 - **Symptom:** Click a dropdown for Account or Owner in an inline-edit cell. The dropdown list appears at the top of the screen instead of anchored to the cell.
 - **Jac confirmed:** "I've actually seen this in browser too" — not a cursor IDE rendering artifact, it's a real UI bug.
@@ -117,7 +117,7 @@ Treat as one bundled bug with multiple sub-failures, since they all share the cr
 
 #### B8. Progress page should show full pipeline (including Lost + Withdrawn)
 
-> **📘 Absorbed 2026-04-20 into PR #167** of `tasks/objects-production-readiness-plan.md`.
+> **📘 Absorbed 2026-04-20 into PR #168** of `tasks/objects-production-readiness-plan.md`.
 
 - **Jac's argument:** "A really important part of managing a pipeline is to surface losses and withdraws... we actually want to encourage people to mark something as a loss when it's a loss."
 - **JP's response in session:** "Why don't we just show the full pipeline? All the active stages for philanthropy pipeline can be here."
@@ -127,7 +127,7 @@ Treat as one bundled bug with multiple sub-failures, since they all share the cr
 
 #### B9. Inline-edit "I'm actively editing" affordance is too subtle
 
-> **📘 Absorbed 2026-04-20 into PR #168** of `tasks/objects-production-readiness-plan.md`.
+> **📘 Absorbed 2026-04-20 into PR #169** of `tasks/objects-production-readiness-plan.md`.
 
 - **Current:** thin blue border when clicked.
 - **Jac + JP agreed:** fully blue-highlight the field when in edit mode. Keep the green-check save indicator (that one already works well).

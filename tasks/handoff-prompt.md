@@ -2,9 +2,9 @@
 
 Open this file, copy the fenced prompt block, paste it into a new Claude Code shell. Gives the fresh session everything it needs to pick up the next PR cold without re-establishing context by trial and error.
 
-**Current next PR:** PR #148 — `pr-contacts-accounts-pagination` (first code PR after #147 planning doc merges).
+**Current next PR:** PR #148 — `pr-page-rename-cleanup` (first code PR after #147 planning doc merges; renames `MyDashboard.tsx` → `Priorities.tsx` and `Overview.tsx` → `Progress.tsx` to align files with sidebar labels before any larger code work touches them).
 
-**Master plan:** `tasks/objects-production-readiness-plan.md` (22-PR sequence #147-#168).
+**Master plan:** `tasks/objects-production-readiness-plan.md` (23-PR sequence #147-#169).
 
 ---
 
@@ -14,9 +14,9 @@ Open this file, copy the fenced prompt block, paste it into a new Claude Code sh
 Continue the Bedrock MVP objects production-readiness plan.
 
 Before doing anything, read in this order:
-1. tasks/objects-production-readiness-plan.md — master plan with full PR sequence (#147-#168), verified backend/frontend inventory, and per-PR scope detail
+1. tasks/objects-production-readiness-plan.md — master plan with full PR sequence (#147-#169), verified backend/frontend inventory, and per-PR scope detail
 2. tasks/jac-running-notes.md — high-level rollup + pending Jac actions. Scope expansion recap at the top.
-3. tasks/mvp-launch-sprint.md — original B1-B9 spec (B3, B6 absorbed into the plan; B4 split into PRs #160-#164; B5, B7-B9 become PRs #165-#168)
+3. tasks/mvp-launch-sprint.md — original B1-B9 spec (B3, B6 absorbed into the plan; B4 split into PRs #161-#165; B5, B7-B9 become PRs #166-#169)
 
 Task: the lowest-numbered PR in the plan's "PR sequence" table whose status is still ⏳ Queued. Start there.
 - Verify the predicted PR number against the current gh PR counter: run `gh pr list --state all --limit 1 --json number`. If the next number isn't the one in the plan, the sequence has drifted — update the plan's PR-sequence table as part of your PR diff, then proceed.
@@ -30,7 +30,7 @@ Standing directives — non-negotiable. JP wants highest-standard, production-gr
 - Bundle the doc updates (plan's PR-sequence status flip to 👀/✅, jac-running-notes.md progress-log entry at the top) into the same PR diff. No separate docs-update PRs.
 
 Workflow:
-- Cut a fresh branch from latest origin/dev. Name: <type>/pr<NNN>-<slug>, e.g. fix/pr148-contacts-accounts-pagination.
+- Cut a fresh branch from latest origin/dev. Name: <type>/pr<NNN>-<slug>, e.g. chore/pr148-page-rename-cleanup or fix/pr149-contacts-accounts-pagination.
 - Execute the PR's scope exactly as specified in the plan. Do not bundle with other PR scopes.
 - Single coordinated PR targeting dev. Include verification results (test counts, typecheck status) in the PR body.
 - Squash-merge on JP approval per feedback_prefer_prs.

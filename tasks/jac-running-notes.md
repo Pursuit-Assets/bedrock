@@ -10,7 +10,7 @@ This is a live status page. Updated with every PR diff — no separate docs-upda
 
 ## Scope expansion 2026-04-20
 
-JP expanded scope on 2026-04-20 from "ship B3 and move on" to "get all 5 core SF objects (Opportunities, Accounts, Contacts, Tasks, Activities) production-ready using real SF schemas — no shortcuts." See `tasks/objects-production-readiness-plan.md` for the full verified inventory + 22-PR sequence (#147-#168). B3 and B6 absorbed into PRs #148-#150; B4 splits into PRs #160-#164; B5, B7-B9 become PRs #165-#168.
+JP expanded scope on 2026-04-20 from "ship B3 and move on" to "get all 5 core SF objects (Opportunities, Accounts, Contacts, Tasks, Activities) production-ready using real SF schemas — no shortcuts." See `tasks/objects-production-readiness-plan.md` for the full verified inventory + 23-PR sequence (#147-#169, including a page-rename cleanup at #148). B3 and B6 absorbed into PRs #149-#151; B4 splits into PRs #161-#165; B5, B7-B9 become PRs #166-#169.
 
 ## Launch pacing
 
@@ -23,17 +23,17 @@ Original target Wed 2026-04-22 is deferred. JP: *"We have time to do this correc
 | **Objects production-readiness plan** | P0 | 👀 in review ([PR #147](https://github.com/Pursuit-Assets/bedrock/pull/147)) | [plan](objects-production-readiness-plan.md) | Review plan + approve PR #147 |
 | **B1** targets not saving to shared DB | P0 | ✅ Merged to dev | [#142](https://github.com/Pursuit-Assets/bedrock/pull/142) | ⏳ Run migration + confirm deployed `DATABASE_URL` (see below) |
 | **B2** opp `Type` field missing on view | P0 | ✅ Merged to dev | [#144](https://github.com/Pursuit-Assets/bedrock/pull/144) | — |
-| **B3** Reports + Contacts 500-row cap | P1 | 📘 Absorbed — PRs #148-#150 | [plan](objects-production-readiness-plan.md) | — |
-| **B4** task create/edit/delete bugs | P1 | 📘 Absorbed — PRs #160-#164 | [plan](objects-production-readiness-plan.md) | — |
-| **B5** inline-edit lock too strict on Amount + Probability | P1 | 📘 Absorbed — PR #165 | [plan](objects-production-readiness-plan.md) | — |
-| **B6** Contacts inline-edit migration status | P1 | 📘 Absorbed — PRs #148-#149 | [plan](objects-production-readiness-plan.md) | — |
-| **B7** dropdown picker positioned wrong | P2 | 📘 Absorbed — PR #166 | [plan](objects-production-readiness-plan.md) | — |
-| **B8** Progress page full pipeline (include Lost/Withdrawn) | P2 | 📘 Absorbed — PR #167 | [plan](objects-production-readiness-plan.md) | — |
-| **B9** inline-edit "actively editing" affordance | P2 | 📘 Absorbed — PR #168 | [plan](objects-production-readiness-plan.md) | — |
+| **B3** Reports + Contacts 500-row cap | P1 | 📘 Absorbed — PRs #149-#151 | [plan](objects-production-readiness-plan.md) | — |
+| **B4** task create/edit/delete bugs | P1 | 📘 Absorbed — PRs #161-#165 | [plan](objects-production-readiness-plan.md) | — |
+| **B5** inline-edit lock too strict on Amount + Probability | P1 | 📘 Absorbed — PR #166 | [plan](objects-production-readiness-plan.md) | — |
+| **B6** Contacts inline-edit migration status | P1 | 📘 Absorbed — PRs #149-#150 | [plan](objects-production-readiness-plan.md) | — |
+| **B7** dropdown picker positioned wrong | P2 | 📘 Absorbed — PR #167 | [plan](objects-production-readiness-plan.md) | — |
+| **B8** Progress page full pipeline (include Lost/Withdrawn) | P2 | 📘 Absorbed — PR #168 | [plan](objects-production-readiness-plan.md) | — |
+| **B9** inline-edit "actively editing" affordance | P2 | 📘 Absorbed — PR #169 | [plan](objects-production-readiness-plan.md) | — |
 
 Status legend: ⏳ Queued · 🚧 in flight · 👀 in review · ✅ merged · 📘 absorbed into master plan.
 
-For per-PR status of the 22 PRs in the plan, see the "PR sequence" table in `tasks/objects-production-readiness-plan.md`.
+For per-PR status of the 23 PRs in the plan, see the "PR sequence" table in `tasks/objects-production-readiness-plan.md`.
 
 ## Pending actions on your side (Jac)
 
@@ -56,9 +56,9 @@ For per-PR status of the 22 PRs in the plan, see the "PR sequence" table in `tas
 - **Context.** From B3 investigation (see below): Reports-page "500-row cap" turned out to be a mix of real (Contacts backend uses `query()` not `query_all()`) and perceptual (Opportunities backend already correct since 2026-03-25; the user-visible symptom was pageSize=500 + stage-filter masking). Fixing only Contacts wasn't enough.
 - **JP direction (2026-04-20).** "We need all the key objects listed here, Opportunities, Accounts, Contacts, Tasks, and Activities (ignore Leads as an object for Reports for MVP). We need edit dialogs to work throughout the site, not just fix the caps on Report page. … We have time to do this correctly, so ignore time constraints. … real SF schemas, not your guesses. … DO NOT DO ANY SHORTCUTS!"
 - **Inventory.** Three parallel Explore agents ran a full audit: backend list + write endpoints per object, frontend list pages + row-count captions, edit dialogs + gap analysis. Verified directly against `origin/dev` HEAD `17732d3`.
-- **Master plan.** `tasks/objects-production-readiness-plan.md` — 22-PR sequence (#147 through #168) organized by risk and dependency. Each PR production-ready on its own. Leads drops from Reports for MVP; Activities takes its place.
+- **Master plan.** `tasks/objects-production-readiness-plan.md` — 23-PR sequence (#147 through #169, with a page-rename cleanup at #148) organized by risk and dependency. Each PR production-ready on its own. Leads drops from Reports for MVP; Activities takes its place.
 - **This PR (#147)** ships docs only: the plan itself, plus supersession banners across `tasks/mvp-launch-sprint.md`, `tasks/accounts-endpoint-pagination-followup.md`, `tasks/sprint9-activities-extension-plan.md`, this file, and `tasks/handoff-prompt.md`.
-- **Pending for you.** Review the plan (~10 min read). Approve PR #147. Then PR #148 (`pr-contacts-accounts-pagination`) is the next concrete code PR.
+- **Pending for you.** Review the plan (~10 min read). Approve PR #147. Then PR #148 (`pr-page-rename-cleanup`) is the next concrete code PR — a small file/component rename to align `pages/MyDashboard.tsx` → `pages/Priorities.tsx` and `pages/Overview.tsx` → `pages/Progress.tsx` with their sidebar labels, before any larger code work touches those files.
 
 ### 2026-04-19 — B2 shipped (PR #144)
 
@@ -112,7 +112,7 @@ Monday night handoff: JP sends a state-of-the-world summary — what's shipped, 
 - [ ] Deployed `DATABASE_URL` confirmed set (pending Jac action above)
 - [x] B2 (opp Type field) shipped (PR #144, merged 2026-04-20)
 - [ ] PR #147 planning PR merged
-- [ ] PRs #148-#168 shipped per `tasks/objects-production-readiness-plan.md` sequence
+- [ ] PRs #148-#169 shipped per `tasks/objects-production-readiness-plan.md` sequence
 - [ ] End-to-end workflow smoke test (from the meeting: "create an opportunity, create a contact, create a task, create an account, progress it all, change it all")
 - [ ] Wall of Progress E2E: JP sets a target, Jac queries DB, target is present, target appears on Jac's Progress page after refresh
 - [ ] All 5 core objects (Opportunities, Accounts, Contacts, Tasks, Activities) support: find (list returns all rows), edit (dialog covers workflow fields via real SF schema), organize (sort/filter/search)
