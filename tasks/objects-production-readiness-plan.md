@@ -100,7 +100,7 @@ This table is the source of truth for per-PR status. Each PR that ships updates 
 
 | # | Slug | Ships what | Size | Status |
 |---|---|---|---|---|
-| #147 | `pr-planning` | This plan doc + doc updates across existing task files | docs-only | 🚧 in flight |
+| [#147](https://github.com/Pursuit-Assets/bedrock/pull/147) | `pr-planning` | This plan doc + doc updates across existing task files | docs-only | 👀 in review |
 | #148 | `pr-contacts-accounts-pagination` | Backend: Contacts + Accounts + opp-tasks + my-tasks → `query_all()` pattern | S-M | ⏳ Queued |
 | #149 | `pr-rowcount-caption-reports-tabs` | `<RowCountCaption>` component + apply to Opportunities (migrate) / Accounts / Contacts / Tasks / Leads | M | ⏳ Queued |
 | #150 | `pr-rowcount-caption-other-surfaces` | Apply caption to Priorities / WeeklyPriorities / MyDashboard / Overview / Accounts-detail / Finance pages | S | ⏳ Queued |

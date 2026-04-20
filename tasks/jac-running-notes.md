@@ -20,7 +20,7 @@ Original target Wed 2026-04-22 is deferred. JP: *"We have time to do this correc
 
 | Bug / Item | Priority | Status | Ref | Pending Jac action? |
 |---|---|---|---|---|
-| **Objects production-readiness plan** | P0 | 🚧 in flight (PR #147) | [plan](objects-production-readiness-plan.md) | Review plan + approve PR #147 |
+| **Objects production-readiness plan** | P0 | 👀 in review ([PR #147](https://github.com/Pursuit-Assets/bedrock/pull/147)) | [plan](objects-production-readiness-plan.md) | Review plan + approve PR #147 |
 | **B1** targets not saving to shared DB | P0 | ✅ Merged to dev | [#142](https://github.com/Pursuit-Assets/bedrock/pull/142) | ⏳ Run migration + confirm deployed `DATABASE_URL` (see below) |
 | **B2** opp `Type` field missing on view | P0 | ✅ Merged to dev | [#144](https://github.com/Pursuit-Assets/bedrock/pull/144) | — |
 | **B3** Reports + Contacts 500-row cap | P1 | 📘 Absorbed — PRs #148-#150 | [plan](objects-production-readiness-plan.md) | — |
