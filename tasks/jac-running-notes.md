@@ -12,7 +12,7 @@ This is a live status page. Updated with every bug-fix PR (same PR diff — no s
 | Bug | Priority | Status | PR | Pending Jac action? |
 |-----|----------|--------|----|---------------------|
 | **B1** targets not saving to shared DB | P0 | ✅ Code shipped, merged to dev | [#142](https://github.com/Pursuit-Assets/bedrock/pull/142) | ⏳ Run migration + confirm deployed `DATABASE_URL` (see below) |
-| **B2** opp `Type` field missing on view | P0 | ✅ Code shipped | PR pending — target `fix/b2-opp-type-field` | — |
+| **B2** opp `Type` field missing on view | P0 | ✅ Code shipped, in review | [#144](https://github.com/Pursuit-Assets/bedrock/pull/144) | — |
 | **B3** Reports + Contacts 500-row cap | P1 | ⏳ Queued | — | — |
 | **B4** task create/edit/delete bugs | P1 | ⏳ Queued | — | — |
 | **B5** inline-edit lock too strict on Amount + Probability | P1 | ⏳ Queued | — | — |
@@ -37,7 +37,7 @@ This is a live status page. Updated with every bug-fix PR (same PR diff — no s
 
 ## Progress log (newest first)
 
-### 2026-04-19 — B2 shipped (this PR)
+### 2026-04-19 — B2 shipped (PR #144)
 
 - **Problem.** From the 2026-04-17 session (~9:21–9:55): you looked up Mercy Corps for Data in Bedrock and expected to see its `Type` value. Salesforce has `Type = 'Other fee for service'` (you confirmed in the SF UI). Bedrock showed nothing. JP flagged: "type is not pulling in correctly."
 - **Root cause.** The backend correctly queried and returned Type — verified at `main.py:333` (SELECT includes Type), `main.py:365–371` (records returned raw), `services/crm_parser.py:23–27` (cache stores raw). Frontend type definitions included Type at `types/salesforce.ts:129` and `pages/Opportunities/helpers.ts:69`. The bug was purely display-side: **no grid exposed a Type column**, and no filter targeted it. Users could only see/edit Type by opening the full-edit drawer per-record. Also caught: the test factory (`conftest.py:make_sf_opportunity`) had no Type default, so no test ever round-tripped Type — the regression was invisible to CI.
