@@ -160,7 +160,7 @@ See the full migration steps in the original DEV_SETUP_GUIDE (JWT Bearer section
 
 ## PBD Calendar
 
-**PBD_CALENDAR_ID** must be set in `.env` for the Priorities page calendar to show events. If unset, the backend uses a hardcoded default. The frontend fallback in `MyDashboard.tsx` must match the backend default. Override only when using a different shared calendar.
+**PBD_CALENDAR_ID** must be set in `.env` for the Priorities page calendar to show events. If unset, the backend uses a hardcoded default. The frontend fallback in `Priorities.tsx` must match the backend default. Override only when using a different shared calendar.
 
 ---
 

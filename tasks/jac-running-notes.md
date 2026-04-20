@@ -1,7 +1,7 @@
 # MVP launch — running hand-off notes (for Jac)
 
 **Launch target:** (moved — see "Launch pacing" below)
-**Last updated:** 2026-04-20 (objects plan PR #147; live per-PR status in the table below)
+**Last updated:** 2026-04-20 (page-rename cleanup PR #148 in review; plan PR #147 merged)
 **Canonical bug spec:** `tasks/mvp-launch-sprint.md` (B1-B9)
 **Master plan (2026-04-20 expansion):** `tasks/objects-production-readiness-plan.md` (PR sequence #147-#168)
 **Session source:** `tasks/notes-2026-04-17-jac-review.md`
@@ -20,7 +20,7 @@ Original target Wed 2026-04-22 is deferred. JP: *"We have time to do this correc
 
 | Bug / Item | Priority | Status | Ref | Pending Jac action? |
 |---|---|---|---|---|
-| **Objects production-readiness plan** | P0 | 👀 in review ([PR #147](https://github.com/Pursuit-Assets/bedrock/pull/147)) | [plan](objects-production-readiness-plan.md) | Review plan + approve PR #147 |
+| **Objects production-readiness plan** | P0 | ✅ Merged to dev ([PR #147](https://github.com/Pursuit-Assets/bedrock/pull/147)) | [plan](objects-production-readiness-plan.md) | — |
 | **B1** targets not saving to shared DB | P0 | ✅ Merged to dev | [#142](https://github.com/Pursuit-Assets/bedrock/pull/142) | ⏳ Run migration + confirm deployed `DATABASE_URL` (see below) |
 | **B2** opp `Type` field missing on view | P0 | ✅ Merged to dev | [#144](https://github.com/Pursuit-Assets/bedrock/pull/144) | — |
 | **B3** Reports + Contacts 500-row cap | P1 | 📘 Absorbed — PRs #149-#151 | [plan](objects-production-readiness-plan.md) | — |
@@ -50,6 +50,15 @@ For per-PR status of the 23 PRs in the plan, see the "PR sequence" table in `tas
 2. **Confirm `DATABASE_URL` is set in the deployed backend's `.env`.** PR #142 removed the `postgresql://bedrock@localhost:5432/bedrock` fallback. If `DATABASE_URL` is unset or empty, the backend refuses to start — `init_db` logs a clear error, pool stays `None`, every DB route returns 503. Intentional, but means the production deploy must have the env var explicitly set.
 
 ## Progress log (newest first)
+
+### 2026-04-20 — Page-rename cleanup shipped (PR #148)
+
+- **Why.** PR #147 plan-verification surfaced a file/component name drift: the **Priorities** sidebar entry routed to `pages/MyDashboard.tsx` (component inside was `const MyDashboard`), and the **Progress** sidebar entry routed to `pages/Overview.tsx` (component inside was already correctly named `Progress`, but file name was stale — asymmetric).
+- **Fix.** `git mv MyDashboard.tsx → Priorities.tsx` with matching `const`/`export` rename; `git mv Overview.tsx → Progress.tsx` (file-rename only — internal `const Progress` unchanged). `App.tsx` import + JSX call sites updated. Also cleaned up 7 cross-file comment/doc references that repo-grep surfaced during verification so they point at the new file names (`env.production.template`, `DEV_SETUP_GUIDE.md`, `Opportunities.tsx`, `WeeklyCalendar.tsx`, `Layout.tsx`, `COMPREHENSIVE_DATA_FIX.md`, `README.md`).
+- **Routes unchanged.** `/priorities` and `/dashboard` stay stable — no bookmark impact.
+- **Intentionally untouched.** Inside the new `Progress.tsx`, the user-visible "Current FY Overview" heading is semantic English (not a component reference) — left alone.
+- **Verification.** `npx tsc --noEmit` clean; `CI=true npm test -- --watchAll=false` no new failures; manual smoke on `/priorities` + `/dashboard` — page-identity headers (rendered by `Layout` from `currentMenuItem.text`) unchanged.
+- **Pending for you.** None.
 
 ### 2026-04-20 — Scope expanded; master plan opened as PR #147
 

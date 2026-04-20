@@ -23,7 +23,7 @@ This POC provides a simplified dashboard where:
 
 **Connected Salesforce Org:** joinpursuit.my.salesforce.com
 
-> **Note (2026-04-16):** The pipeline snapshot below is POC-era sample data from Nov 2025. The live Pursuit SF org has ~6,000+ Opportunities across **22 distinct stages** (13 declared in the enum; 9 drift stages documented in `../tasks/stage-schema-drift.md`). Current live queries + funnel classifier work on real data — see `frontend/src/pages/Overview.tsx` and `routes/ai.py`.
+> **Note (2026-04-16):** The pipeline snapshot below is POC-era sample data from Nov 2025. The live Pursuit SF org has ~6,000+ Opportunities across **22 distinct stages** (13 declared in the enum; 9 drift stages documented in `../tasks/stage-schema-drift.md`). Current live queries + funnel classifier work on real data — see `frontend/src/pages/Progress.tsx` and `routes/ai.py`.
 
 **Pipeline Overview (POC snapshot, Nov 2025):**
 - **50 grant opportunities** in pipeline

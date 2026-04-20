@@ -257,8 +257,8 @@ const Opportunities: React.FC = () => {
       await apiService.updateOpportunity(oppId, { [field]: newValue });
       toast.success('Saved!', { id: loadingToast, duration: 2000 });
       // Invalidate immediately — the previous setTimeout(500ms) created a
-      // stale-cache window during which downstream consumers (MyDashboard,
-      // NetworkMap, Leads, AutomationReview, Overview, PaymentProcessing,
+      // stale-cache window during which downstream consumers (Priorities,
+      // NetworkMap, Leads, AutomationReview, Progress, PaymentProcessing,
       // etc.) read pre-mutation data, and rapid sequential edits raced
       // each other's refetch cycles. Mirror handleStageChange's behavior.
       queryClient.invalidateQueries('opportunities');

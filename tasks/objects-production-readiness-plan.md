@@ -1,7 +1,7 @@
 # Objects production-readiness — MVP launch plan
 
 **Created:** 2026-04-20
-**Status:** PR #147 (this planning doc) open for review; PRs #148-#169 queued below. See live per-PR status in the "PR sequence" table.
+**Status:** PR #147 merged 2026-04-20. PR #148 (page-rename cleanup) open for review; PRs #149-#169 queued below. See live per-PR status in the "PR sequence" table.
 **Scope:** The five core Salesforce-backed objects used in daily workflows — **Opportunities, Accounts, Contacts, Tasks, Activities** — brought to production-ready quality for MVP launch.
 
 This plan supersedes B3 (row caps) and B6 (Contacts inline-edit) in `mvp-launch-sprint.md`. Those symptoms roll into PRs #149-#151 below and expand to cover all five objects.
@@ -117,8 +117,8 @@ This table is the source of truth for per-PR status. Each PR that ships updates 
 
 | # | Slug | Ships what | Size | Status |
 |---|---|---|---|---|
-| [#147](https://github.com/Pursuit-Assets/bedrock/pull/147) | `pr-planning` | This plan doc + doc updates across existing task files | docs-only | 👀 in review |
-| #148 | `pr-page-rename-cleanup` | Rename `MyDashboard.tsx` → `Priorities.tsx` and `Overview.tsx` → `Progress.tsx` to align file/component names with sidebar labels | S | ⏳ Queued |
+| [#147](https://github.com/Pursuit-Assets/bedrock/pull/147) | `pr-planning` | This plan doc + doc updates across existing task files | docs-only | ✅ merged |
+| #148 | `pr-page-rename-cleanup` | Rename `MyDashboard.tsx` → `Priorities.tsx` and `Overview.tsx` → `Progress.tsx` to align file/component names with sidebar labels | S | 👀 in review |
 | #149 | `pr-contacts-accounts-pagination` | Backend: Contacts + Accounts + opp-tasks + my-tasks → `query_all()` pattern | S-M | ⏳ Queued |
 | #150 | `pr-rowcount-caption-reports-tabs` | `<RowCountCaption>` component + apply to Opportunities (migrate) / Accounts / Contacts / Tasks | M | ⏳ Queued |
 | #151 | `pr-rowcount-caption-other-surfaces` | Apply caption to Priorities / Progress / WeeklyPriorities / Accounts-detail / Finance pages | S | ⏳ Queued |

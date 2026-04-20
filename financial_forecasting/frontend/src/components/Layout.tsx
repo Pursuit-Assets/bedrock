@@ -178,7 +178,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
     }
   );
 
-  // Fetch tasks for notification dropdown (React Query dedupes with MyDashboard)
+  // Fetch tasks for notification dropdown (React Query dedupes with Priorities)
   const { data: tasksData, isLoading: tasksLoading } = useQuery(
     ['my-tasks'],
     async () => {
