@@ -34,7 +34,24 @@ async def init_db() -> None:
     the pool stays alive for queries.
     """
     global _pool, _db_init_status
-    DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://bedrock@localhost:5432/bedrock")
+    # DATABASE_URL is required in every environment. The prior localhost
+    # fallback (`postgresql://bedrock@localhost:5432/bedrock`) caused a P0
+    # data-drift incident on 2026-04-17: a dev session without DATABASE_URL
+    # silently wrote to a local Postgres while teammates read from the shared
+    # DB, producing goal-data that never reached production. Fail fast instead.
+    # See tasks/notes-2026-04-17-jac-review.md and tasks/mvp-launch-sprint.md
+    # item B1.
+    DATABASE_URL = (os.getenv("DATABASE_URL") or "").strip()
+    if not DATABASE_URL:
+        logger.error(
+            "DATABASE_URL is not set. Bedrock refuses to start without an "
+            "explicit database URL to prevent silent writes to the wrong DB. "
+            "Set DATABASE_URL in your environment (or .env) and restart. "
+            "For local dev see DEV_SETUP_GUIDE.md."
+        )
+        _pool = None
+        _db_init_status = "disconnected"
+        return
 
     _log_connection_target(DATABASE_URL)
 

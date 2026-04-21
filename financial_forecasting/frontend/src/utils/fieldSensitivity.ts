@@ -106,8 +106,8 @@ const FIELD_CLASSIFICATIONS: Record<string, Record<string, FieldClassification>>
     OwnerId:              { sensitivity: 'sensitive',        lockReason: 'Reassigning a task changes accountability. Click to confirm.' },
   },
   Target: {
-    amount:               { sensitivity: 'permission-gated', permission: 'manage_targets',     lockReason: 'Revenue targets require Admin or Executive permission.' },
-    period:               { sensitivity: 'permission-gated', permission: 'manage_targets',     lockReason: 'Target periods require Admin or Executive permission.' },
+    amount:               { sensitivity: 'permission-gated', permission: 'manage_owner_goals', lockReason: 'Revenue targets require Admin or Executive permission.' },
+    period:               { sensitivity: 'permission-gated', permission: 'manage_owner_goals', lockReason: 'Target periods require Admin or Executive permission.' },
   },
 };
 

@@ -11,7 +11,7 @@ Added array safety checks to ALL components that use `useQuery` to fetch data fr
 
 ## Files Fixed
 
-### 1. `/pages/Overview.tsx`
+### 1. `/pages/Progress.tsx`
 **Issue**: `payments.reduce()` error
 **Fix**: Added array check for payments data
 ```typescript

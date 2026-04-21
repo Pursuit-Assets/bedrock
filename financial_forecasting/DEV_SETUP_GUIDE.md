@@ -6,6 +6,9 @@ This app bridges Salesforce (grant pipeline) and Sage Intacct (accounting) to pr
 
 > **Fiscal Year Convention:** Pursuit's fiscal year follows the calendar year (January 1 – December 31). This is reflected in `GoalTracker.tsx`'s `getFYBounds()` and the `DateRangeSelector`'s "Current FY" preset.
 
+> **⚠️ `DATABASE_URL` is required in every environment, including local dev.**
+> Bedrock does NOT fall back to a local Postgres default. If `DATABASE_URL` is unset or empty at startup, `init_db()` logs a clear error, sets db status to `disconnected`, and leaves the pool `None` — every DB-backed route then returns `503`. This is intentional: running against a wrong-DB target produced an incident on 2026-04-17 where a dev session silently wrote goals to local Postgres while teammates read from the shared DB. Set `DATABASE_URL` explicitly in your `.env` (to the shared staging DB for local dev, or to the production DB for deploys). See `tasks/notes-2026-04-17-jac-review.md` for the precedent and `tasks/mvp-launch-sprint.md` item B1 for the full root-cause analysis.
+
 ## Architecture: How Auth Works
 
 There are **two auth layers** — this is important to understand before you start:
@@ -67,6 +70,12 @@ SAGE_SENDER_PASSWORD=<ask team>
 ANTHROPIC_API_KEY=<ask team>
 FIREFLIES_API_KEY=<ask team>
 SLACK_BOT_TOKEN=<ask team>
+
+# --- Optional for local dev (only set if frontend isn't on port 3000) ---
+# FRONTEND_URL defaults to http://localhost:3000 (matches `npm start`).
+# Override here if you run the frontend on a non-default port, otherwise
+# Google-OAuth login redirects land on the wrong URL.
+# FRONTEND_URL=http://localhost:4000
 ```
 
 ### 3. Run
@@ -151,7 +160,7 @@ See the full migration steps in the original DEV_SETUP_GUIDE (JWT Bearer section
 
 ## PBD Calendar
 
-**PBD_CALENDAR_ID** must be set in `.env` for the Priorities page calendar to show events. If unset, the backend uses a hardcoded default. The frontend fallback in `MyDashboard.tsx` must match the backend default. Override only when using a different shared calendar.
+**PBD_CALENDAR_ID** must be set in `.env` for the Priorities page calendar to show events. If unset, the backend uses a hardcoded default. The frontend fallback in `Priorities.tsx` must match the backend default. Override only when using a different shared calendar.
 
 ---
 

@@ -15,11 +15,11 @@ import PermissionGate from './components/PermissionGate';
 import ErrorBoundary from './components/ErrorBoundary';
 import Layout from './components/Layout';
 import Login from './pages/Login';
-import Overview from './pages/Overview';
+import Progress from './pages/Progress';
 import Reports from './pages/Reports';
 import Settings from './pages/Settings';
 import SalesforceCallback from './pages/SalesforceCallback';
-import MyDashboard from './pages/MyDashboard';
+import Priorities from './pages/Priorities';
 import Pebble from './pages/Pebble';
 
 // Lazy load non-MVP routes to reduce initial bundle
@@ -133,7 +133,7 @@ function App() {
                 element={
                   <ProtectedRoute>
                     <Layout>
-                      <MyDashboard />
+                      <Priorities />
                     </Layout>
                   </ProtectedRoute>
                 }
@@ -143,7 +143,7 @@ function App() {
                 element={
                   <ProtectedRoute>
                     <Layout>
-                      <Overview />
+                      <Progress />
                     </Layout>
                   </ProtectedRoute>
                 }

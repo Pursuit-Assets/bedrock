@@ -36,6 +36,12 @@ def _admin_db():
     AND can be configured per-test for owner_goal CRUD queries."""
     admin_row = {
         "id": "test-id",
+        # profile_id must be non-None to take the "existing user_config"
+        # branch at permissions.py:110 where the Admin setdefault auto-grant
+        # fires. A None profile_id diverts to the auto-provision path which
+        # then looks up a default profile via fetchrow — the mock returns
+        # None there and the user ends up with empty permissions.
+        "profile_id": "00000000-0000-0000-0000-000000000001",
         "sf_user_id": "005TESTOWNER00001",
         "email": "test@test.org",
         "name": "Test",
@@ -52,7 +58,7 @@ def _admin_db():
     # tests can override fetchrow.side_effect to return owner-goal-specific rows.
     async def default_fetchrow(query, *args):
         # Permission lookup
-        if "FROM bedrock.app_user" in query:
+        if "FROM public.org_users" in query:
             return admin_row
         # Otherwise None (no row found by default)
         return None
@@ -68,6 +74,8 @@ def _non_admin_db():
     """Mock DB that returns a non-admin user with only view permissions."""
     rm_row = {
         "id": "rm-id",
+        # See _admin_db() for why profile_id must be non-None.
+        "profile_id": "00000000-0000-0000-0000-000000000002",
         "sf_user_id": "005A0000001RMUSER",
         "email": "rm@test.org",
         "name": "RM",
@@ -84,7 +92,7 @@ def _non_admin_db():
     db = AsyncMock()
 
     async def default_fetchrow(query, *args):
-        if "FROM bedrock.app_user" in query:
+        if "FROM public.org_users" in query:
             return rm_row
         return None
 
@@ -185,7 +193,7 @@ class TestGetOwnerGoal:
         admin_row = _admin_db_admin_row()
 
         async def fetchrow_with_goal(query, *args):
-            if "FROM bedrock.app_user" in query:
+            if "FROM public.org_users" in query:
                 return admin_row
             if "FROM bedrock.owner_goal" in query:
                 return _make_goal_row(VALID_SF_USER_ID, 2026, 3_000_000.0)
@@ -210,7 +218,7 @@ class TestUpsertOwnerGoal:
         admin_row = _admin_db_admin_row()
 
         async def fetchrow_returning_inserted(query, *args):
-            if "FROM bedrock.app_user" in query:
+            if "FROM public.org_users" in query:
                 return admin_row
             # The INSERT ... ON CONFLICT ... RETURNING query
             return _make_goal_row(VALID_SF_USER_ID, 2026, 2_000_000.0)
@@ -283,6 +291,8 @@ class TestDeleteOwnerGoal:
 def _admin_db_admin_row():
     return {
         "id": "test-id",
+        # See _admin_db() for why profile_id must be non-None.
+        "profile_id": "00000000-0000-0000-0000-000000000001",
         "sf_user_id": "005TESTOWNER00001",
         "email": "test@test.org",
         "name": "Test",

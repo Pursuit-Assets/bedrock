@@ -528,7 +528,7 @@ const MOCK_PRIORITY_OPPS: PriorityOpp[] = [
   },
 ];
 
-const MyDashboard: React.FC = () => {
+const Priorities: React.FC = () => {
   const navigate = useNavigate();
   const theme = useTheme();
   const isDesktop = useMediaQuery(theme.breakpoints.up('md'));
@@ -1508,4 +1508,4 @@ const MyDashboard: React.FC = () => {
   );
 };
 
-export default MyDashboard;
+export default Priorities;

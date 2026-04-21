@@ -421,7 +421,8 @@ VALUES (
         "pebble_crm_write": true,
         "trigger_data_sync": true,
         "manage_users_roles": true,
-        "edit_permission_profiles": true
+        "edit_permission_profiles": true,
+        "manage_owner_goals": true
     }'::jsonb
 ) ON CONFLICT (name) DO NOTHING;
 
@@ -503,7 +504,8 @@ VALUES (
         "pebble_crm_write": false,
         "trigger_data_sync": false,
         "manage_users_roles": false,
-        "edit_permission_profiles": true
+        "edit_permission_profiles": true,
+        "manage_owner_goals": true
     }'::jsonb
 ) ON CONFLICT (name) DO NOTHING;
 

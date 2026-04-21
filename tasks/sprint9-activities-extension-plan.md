@@ -3,6 +3,8 @@
 **Status**: Planned (approved 2026-03-26)
 **Sprints**: 9A (Foundation) → 9B (Timeline+Modals) → 9C (Extension) → 9D (Integration)
 
+> **🔗 Cross-reference (2026-04-20):** The MVP objects-production-readiness master plan at `tasks/objects-production-readiness-plan.md` references this sprint in its PR sequence — specifically PR #158 (frontend Activities list page), PR #159 (Sprint 9A sync verification + tests; the `sync_activities()` impl already landed), and PR #160 (ActivityTimeline on detail dialogs). This Sprint 9 doc remains authoritative for Activities internals (schema, associations, search, AI insights, extension). The objects plan governs order-of-operations within the MVP scope; Sprint 9B-D (extension build, deep integration) remain post-MVP per the stretch parking lot.
+
 ## Context
 
 Bedrock is rolling out to a 4-person team (started 2026-03-23). Salesforce remains source of truth for CRM data. The team needs Activities (logged meetings, emails, calls) brought into Bedrock and made searchable, plus a Chrome extension for logging emails and calendar events. This builds trust that Bedrock can eventually replace Salesforce entirely.

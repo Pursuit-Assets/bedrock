@@ -33,6 +33,7 @@ import { AccountCell } from '../../components/inline-edit/cells/AccountCell';
 import { AmountCell } from '../../components/inline-edit/cells/AmountCell';
 import { DateCell } from '../../components/inline-edit/cells/DateCell';
 import { ProbabilityCell } from '../../components/inline-edit/cells/ProbabilityCell';
+import { TypeCell } from '../../components/inline-edit/cells/TypeCell';
 
 /**
  * Look up the display name of the user who holds the record-level lock on
@@ -79,6 +80,9 @@ export interface ColumnCallbacks {
   canLock?: boolean;
   // Edit dialog
   onEditDialogOpen?: (opp: any) => void;
+  /** SF Opportunity.Type picklist values — feeds TypeCell in the grid.
+   *  Empty array is acceptable: TypeCell falls back to read-only display. */
+  typeOptions?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -148,6 +152,25 @@ export function buildPipelineColumns(cb: ColumnCallbacks): GridColDef[] {
     accountColumn(cb, { editable: true }),
     ownerColumn(cb),
     stageColumn(cb),
+    {
+      field: 'Type',
+      headerName: 'Type',
+      flex: 0.9,
+      minWidth: 150,
+      filterable: true,
+      editable: false, // TypeCell owns the edit flow via picklist popover
+      renderCell: (params: GridRenderCellParams) => (
+        <TypeCell
+          value={(params.value as string | null) ?? null}
+          options={cb.typeOptions ?? []}
+          onSave={async (v) => {
+            if (cb.onSaveField) await cb.onSaveField(params.row.Id, 'Type', v);
+          }}
+          recordLock={cb.lockMap?.get(params.row.Id) ?? null}
+          recordLockedByName={resolveLockerName(cb, params.row.Id)}
+        />
+      ),
+    },
     amountColumn(cb),
     {
       field: 'Probability',
@@ -231,6 +254,20 @@ export function buildPaymentColumns(cb: ColumnCallbacks): GridColDef[] {
       filterable: true,
     },
     accountColumn(cb, { editable: false }),
+    // Type is read-only in the payment view — Finance needs to see Type for
+    // grouping/filtering but editing belongs in the pipeline (Open) view.
+    {
+      field: 'Type',
+      headerName: 'Type',
+      flex: 0.8,
+      minWidth: 140,
+      filterable: true,
+      renderCell: (params: GridRenderCellParams) => (
+        <Box component="span" sx={{ color: params.value ? 'text.primary' : 'text.disabled' }}>
+          {(params.value as string) || '—'}
+        </Box>
+      ),
+    },
     closeDateColumn(),
     {
       field: 'Amount',

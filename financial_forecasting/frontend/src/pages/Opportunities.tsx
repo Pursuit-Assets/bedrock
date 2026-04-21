@@ -44,6 +44,7 @@ import { OPPORTUNITY_STAGES, OPEN_STAGES, CLOSED_STAGES } from '../types/salesfo
 import type { Opportunity } from './Opportunities/helpers';
 import { useOpportunityData, ViewMode, oppQueryKey } from './Opportunities/useOpportunityData';
 import { buildPipelineColumns, buildPaymentColumns, ColumnCallbacks } from './Opportunities/columns';
+import { useOpportunityTypePicklist } from '../hooks/useOpportunityTypePicklist';
 import { SummaryCards } from './Opportunities/SummaryCards';
 import OpportunityEditDialog from '../components/OpportunityEditDialog';
 import ConfirmSaveButton from '../components/ConfirmSaveButton';
@@ -112,6 +113,10 @@ const Opportunities: React.FC = () => {
     lockMutation,
     unlockMutation,
   } = useOpportunityData(viewMode, philanthropyOnly, pbcOnly);
+
+  // SF Opportunity.Type picklist — used by the Type column's inline-edit
+  // and by the Type filter in PipelineFilterBar. Cached 30 min via react-query.
+  const typePicklist = useOpportunityTypePicklist();
 
   // Handle incoming filter from Dashboard
   useEffect(() => {
@@ -252,8 +257,8 @@ const Opportunities: React.FC = () => {
       await apiService.updateOpportunity(oppId, { [field]: newValue });
       toast.success('Saved!', { id: loadingToast, duration: 2000 });
       // Invalidate immediately — the previous setTimeout(500ms) created a
-      // stale-cache window during which downstream consumers (MyDashboard,
-      // NetworkMap, Leads, AutomationReview, Overview, PaymentProcessing,
+      // stale-cache window during which downstream consumers (Priorities,
+      // NetworkMap, Leads, AutomationReview, Progress, PaymentProcessing,
       // etc.) read pre-mutation data, and rapid sequential edits raced
       // each other's refetch cycles. Mirror handleStageChange's behavior.
       queryClient.invalidateQueries('opportunities');
@@ -283,7 +288,8 @@ const Opportunities: React.FC = () => {
     currentSfUserId: sfUserId,
     canLock: can('lock_own_opportunities'),
     onEditDialogOpen: (opp) => { setSelectedOpp(opp); setEditDialogOpen(true); },
-  }), [accountMap, userMap, users, accounts, philanthropyOnly, pbcOnly, viewMode, lockMap, sfUserId]);
+    typeOptions: typePicklist.options,
+  }), [accountMap, userMap, users, accounts, philanthropyOnly, pbcOnly, viewMode, lockMap, sfUserId, typePicklist.options]);
 
   const pipelineColumns = useMemo(() => buildPipelineColumns(columnCallbacks), [columnCallbacks]);
   const paymentColumns = useMemo(() => buildPaymentColumns(columnCallbacks), [columnCallbacks]);
@@ -336,6 +342,11 @@ const Opportunities: React.FC = () => {
     // Revenue stream (RecordType)
     if (f.revenueStreams.length > 0) {
       filtered = filtered.filter((opp) => opp.RecordType?.Name && f.revenueStreams.includes(opp.RecordType.Name));
+    }
+
+    // Type (secondary SF categorization, e.g. "Other fee for service")
+    if (f.types.length > 0) {
+      filtered = filtered.filter((opp) => opp.Type && f.types.includes(opp.Type));
     }
 
     // Amount range
@@ -447,6 +458,15 @@ const Opportunities: React.FC = () => {
           const streams = new Set<string>();
           opportunities.forEach((o) => { if (o.RecordType?.Name) streams.add(o.RecordType.Name); });
           return Array.from(streams).sort();
+        })()}
+        typeOptions={(() => {
+          // Derive Type filter options from the current dataset so users can
+          // filter by any Type value actually present — even if the picklist
+          // in SF has been trimmed since the data was first fetched. Mirrors
+          // the revenueStreams derivation above.
+          const types = new Set<string>();
+          opportunities.forEach((o) => { if (o.Type) types.add(o.Type); });
+          return Array.from(types).sort();
         })()}
       />
 
