@@ -37,6 +37,7 @@ class MilestoneCreate(BaseModel):
     status: str = "On Track"
     priority: str = "Now"
     owner: str = ""
+    owner_ids: List[str] = []
     description: str = ""
     source_links: List[str] = []
     sort_order: int = 0
@@ -47,6 +48,7 @@ class MilestoneUpdate(BaseModel):
     status: Optional[str] = None
     priority: Optional[str] = None
     owner: Optional[str] = None
+    owner_ids: Optional[List[str]] = None
     description: Optional[str] = None
     source_links: Optional[List[str]] = None
     sort_order: Optional[int] = None
@@ -56,6 +58,7 @@ class ProjectTaskCreate(BaseModel):
     title: str
     status: str = "Not Started"
     owner: str = ""
+    owner_ids: List[str] = []
     deadline: Optional[str] = None
     start_date: Optional[str] = None
     description: str = ""
@@ -69,6 +72,7 @@ class ProjectTaskUpdate(BaseModel):
     title: Optional[str] = None
     status: Optional[str] = None
     owner: Optional[str] = None
+    owner_ids: Optional[List[str]] = None
     deadline: Optional[str] = None
     start_date: Optional[str] = None
     description: Optional[str] = None
@@ -105,6 +109,7 @@ class ProjectImportTask(BaseModel):
     title: str
     status: str = "Not Started"
     owner: str = ""
+    owner_ids: List[str] = []
     deadline: Optional[str] = None
     start_date: Optional[str] = None
     description: str = ""
@@ -115,6 +120,7 @@ class ProjectImportMilestone(BaseModel):
     status: str = "On Track"
     priority: str = "Now"
     owner: str = ""
+    owner_ids: List[str] = []
     tasks: List[ProjectImportTask] = []
 
 
@@ -222,6 +228,40 @@ async def list_project_users(user=Depends(check_permission("edit_projects")), co
     return {"success": True, "data": [dict(r) for r in rows]}
 
 
+@router.get("/users/active")
+async def list_active_users(user=Depends(check_permission("view_projects")), conn=Depends(get_db)):
+    """List all active staff, for the Projects owner multi-select picker.
+
+    Broader than /api/projects/users (which gates on edit_projects) — owner
+    selection needs to cover every active Pursuit teammate, including people
+    who don't themselves have project-edit rights. Service accounts are
+    excluded by display_name so 'Systems Admin' never appears in the picker.
+    Non-SF teammates (sf_user_id IS NULL) are surfaced via is_in_sf=false so
+    the UI can visually distinguish them if it wants to.
+    """
+    rows = await conn.fetch(
+        "SELECT id, email, display_name, sf_user_id "
+        "FROM public.org_users "
+        "WHERE COALESCE(is_active, true) = true "
+        "  AND display_name IS NOT NULL "
+        "  AND LOWER(COALESCE(display_name, '')) <> 'systems admin' "
+        "ORDER BY display_name, email"
+    )
+    return {
+        "success": True,
+        "data": [
+            {
+                "id": str(r["id"]),
+                "email": r["email"],
+                "display_name": r["display_name"],
+                "sf_user_id": r["sf_user_id"],
+                "is_in_sf": bool(r["sf_user_id"]),
+            }
+            for r in rows
+        ],
+    }
+
+
 @router.get("/projects/{project_id}")
 async def get_project(project_id: str, user=Depends(check_permission("view_projects")), conn=Depends(get_db)):
     """Get a full project tree: workstreams → milestones → tasks (single query)."""
@@ -236,8 +276,10 @@ async def get_project(project_id: str, user=Depends(check_permission("view_proje
         SELECT
             w.id AS w_id, w.name AS w_name, w.description AS w_desc, w.sort_order AS w_sort,
             m.id AS m_id, m.title AS m_title, m.status AS m_status, m.priority AS m_priority,
-            m.owner AS m_owner, m.description AS m_desc, m.source_links AS m_links, m.sort_order AS m_sort,
+            m.owner AS m_owner, m.owner_ids AS m_owner_ids,
+            m.description AS m_desc, m.source_links AS m_links, m.sort_order AS m_sort,
             t.id AS t_id, t.title AS t_title, t.status AS t_status, t.owner AS t_owner,
+            t.owner_ids AS t_owner_ids,
             t.deadline AS t_deadline, t.start_date AS t_start_date, t.description AS t_desc,
             t.updates AS t_updates, t.links AS t_links, t.depends_on AS t_depends, t.sort_order AS t_sort
         FROM bedrock.workstream w
@@ -272,6 +314,7 @@ async def get_project(project_id: str, user=Depends(check_permission("view_proje
                 "status": r["m_status"],
                 "priority": r["m_priority"],
                 "owner": r["m_owner"],
+                "owner_ids": [str(u) for u in (r["m_owner_ids"] or [])],
                 "description": r["m_desc"],
                 "sourceLinks": r["m_links"] or [],
                 "sort_order": r["m_sort"],
@@ -286,6 +329,7 @@ async def get_project(project_id: str, user=Depends(check_permission("view_proje
                 "title": r["t_title"],
                 "status": r["t_status"],
                 "owner": r["t_owner"],
+                "owner_ids": [str(u) for u in (r["t_owner_ids"] or [])],
                 "deadline": r["t_deadline"].isoformat() if r["t_deadline"] else None,
                 "startDate": r["t_start_date"].isoformat() if r["t_start_date"] else None,
                 "description": r["t_desc"],
@@ -707,24 +751,25 @@ async def import_project_data(project_id: str, body: ProjectImportPayload, user=
                 ms_key = ms.title.lower()
                 existing_m = ms_by_title.get(ms_key)
 
+                ms_owner_ids = [uuid.UUID(x) for x in ms.owner_ids]
                 if existing_m:
                     mid = existing_m["id"]
                     await conn.execute(
-                        "UPDATE bedrock.milestone SET status = $2, priority = $3, owner = $4, sort_order = $5 WHERE id = $1 AND deleted_at IS NULL",
-                        mid, ms.status, ms.priority, ms.owner, ms_idx,
+                        "UPDATE bedrock.milestone SET status = $2, priority = $3, owner = $4, owner_ids = $5, sort_order = $6 WHERE id = $1 AND deleted_at IS NULL",
+                        mid, ms.status, ms.priority, ms.owner, ms_owner_ids, ms_idx,
                     )
                     summary["milestones"]["updated"] += 1
                 else:
                     row = await conn.fetchrow(
-                        "INSERT INTO bedrock.milestone (workstream_id, title, status, priority, owner, sort_order) "
-                        "VALUES ($1, $2, $3, $4, $5, $6) RETURNING id",
-                        wid, ms.title, ms.status, ms.priority, ms.owner, ms_idx,
+                        "INSERT INTO bedrock.milestone (workstream_id, title, status, priority, owner, owner_ids, sort_order) "
+                        "VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id",
+                        wid, ms.title, ms.status, ms.priority, ms.owner, ms_owner_ids, ms_idx,
                     )
                     mid = row["id"]
                     summary["milestones"]["new"] += 1
 
                 existing_tasks = await conn.fetch(
-                    "SELECT id, title, status, owner, deadline, start_date FROM bedrock.project_task WHERE milestone_id = $1 AND deleted_at IS NULL", mid
+                    "SELECT id, title, status, owner, owner_ids, deadline, start_date FROM bedrock.project_task WHERE milestone_id = $1 AND deleted_at IS NULL", mid
                 )
                 task_by_title = {r["title"].lower(): r for r in existing_tasks}
 
@@ -738,18 +783,21 @@ async def import_project_data(project_id: str, body: ProjectImportPayload, user=
                         from datetime import timedelta
                         start_val = deadline_val - timedelta(days=7)
 
+                    t_owner_ids = [uuid.UUID(x) for x in task.owner_ids]
+
                     if existing_t:
                         changed = (
                             existing_t["status"] != task.status
                             or existing_t["owner"] != task.owner
+                            or list(existing_t["owner_ids"] or []) != t_owner_ids
                             or existing_t["deadline"] != deadline_val
                             or existing_t["start_date"] != start_val
                         )
                         if changed:
                             await conn.execute(
-                                "UPDATE bedrock.project_task SET status = $2, owner = $3, deadline = $4, "
-                                "start_date = $5, description = $6, sort_order = $7 WHERE id = $1 AND deleted_at IS NULL",
-                                existing_t["id"], task.status, task.owner,
+                                "UPDATE bedrock.project_task SET status = $2, owner = $3, owner_ids = $4, deadline = $5, "
+                                "start_date = $6, description = $7, sort_order = $8 WHERE id = $1 AND deleted_at IS NULL",
+                                existing_t["id"], task.status, task.owner, t_owner_ids,
                                 deadline_val, start_val, task.description, t_idx,
                             )
                             summary["tasks"]["updated"] += 1
@@ -757,10 +805,10 @@ async def import_project_data(project_id: str, body: ProjectImportPayload, user=
                             summary["tasks"]["unchanged"] += 1
                     else:
                         await conn.execute(
-                            "INSERT INTO bedrock.project_task (milestone_id, title, status, owner, deadline, "
+                            "INSERT INTO bedrock.project_task (milestone_id, title, status, owner, owner_ids, deadline, "
                             "start_date, description, sort_order) "
-                            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
-                            mid, task.title, task.status, task.owner,
+                            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+                            mid, task.title, task.status, task.owner, t_owner_ids,
                             deadline_val, start_val, task.description, t_idx,
                         )
                         summary["tasks"]["new"] += 1
@@ -828,10 +876,11 @@ async def delete_workstream(workstream_id: str, user=Depends(check_permission("e
 @router.post("/workstreams/{workstream_id}/milestones")
 async def create_milestone(workstream_id: str, body: MilestoneCreate, user=Depends(check_permission("edit_projects")), conn=Depends(get_db)):
     wid = uuid.UUID(workstream_id)
+    owner_ids = [uuid.UUID(x) for x in body.owner_ids]
     row = await conn.fetchrow(
-        """INSERT INTO bedrock.milestone (workstream_id, title, status, priority, owner, description, source_links, sort_order)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id""",
-        wid, body.title, body.status, body.priority, body.owner,
+        """INSERT INTO bedrock.milestone (workstream_id, title, status, priority, owner, owner_ids, description, source_links, sort_order)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id""",
+        wid, body.title, body.status, body.priority, body.owner, owner_ids,
         body.description, body.source_links, body.sort_order,
     )
     return {"success": True, "data": {"id": str(row["id"])}}
@@ -843,6 +892,9 @@ async def update_milestone(milestone_id: str, body: MilestoneUpdate, user=Depend
     fields = body.model_dump(exclude_none=True)
     if not fields:
         raise HTTPException(status_code=400, detail="No fields to update")
+
+    if "owner_ids" in fields:
+        fields["owner_ids"] = [uuid.UUID(x) for x in fields["owner_ids"]]
 
     sets = ", ".join(f"{k} = ${i+2}" for i, k in enumerate(fields))
     vals = [mid] + list(fields.values())
@@ -888,11 +940,12 @@ async def create_project_task(milestone_id: str, body: ProjectTaskCreate, user=D
         start_date_val = d.fromisoformat(body.start_date)
 
     depends = [uuid.UUID(x) for x in body.depends_on] if body.depends_on else []
+    owner_ids = [uuid.UUID(x) for x in body.owner_ids]
 
     row = await conn.fetchrow(
-        """INSERT INTO bedrock.project_task (milestone_id, title, status, owner, deadline, start_date, description, updates, links, depends_on, sort_order)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id""",
-        mid, body.title, body.status, body.owner, deadline, start_date_val,
+        """INSERT INTO bedrock.project_task (milestone_id, title, status, owner, owner_ids, deadline, start_date, description, updates, links, depends_on, sort_order)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING id""",
+        mid, body.title, body.status, body.owner, owner_ids, deadline, start_date_val,
         body.description, body.updates, body.links, depends, body.sort_order,
     )
     return {"success": True, "data": {"id": str(row["id"])}}
@@ -920,6 +973,8 @@ async def update_project_task(task_id: str, body: ProjectTaskUpdate, user=Depend
             fields["start_date"] = None
     if "depends_on" in fields:
         fields["depends_on"] = [uuid.UUID(x) for x in fields["depends_on"]]
+    if "owner_ids" in fields:
+        fields["owner_ids"] = [uuid.UUID(x) for x in fields["owner_ids"]]
 
     sets = ", ".join(f"{k} = ${i+2}" for i, k in enumerate(fields))
     vals = [tid] + list(fields.values())
