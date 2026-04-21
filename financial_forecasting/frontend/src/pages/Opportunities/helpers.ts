@@ -66,7 +66,6 @@ export interface Opportunity {
   Earliest_Scheduled_Payment__c?: string;
   RecordType?: { Name: string };
   Active_Opportunity__c?: boolean;
-  Type?: string;
   RenewalRepeat__c?: string;
   LastActivityDate?: string;
   LeadSource?: string;
