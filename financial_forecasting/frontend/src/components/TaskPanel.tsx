@@ -851,6 +851,9 @@ const TaskPanel: React.FC<TaskPanelProps> = ({ open, onClose, opportunity, users
             users={users}
             isSaving={updateTaskMutation.isLoading}
             opportunities={opportunities}
+            statusOptions={statusPicklist.options}
+            priorityOptions={priorityPicklist.options}
+            contactOptions={contactOptions}
             dependencies={depMap.get(orphanAsTask.Id) || []}
             siblingTasks={[]}
             onAddDep={(taskId, depId) => addDepMutation.mutate({ taskId, dependsOnId: depId })}
@@ -1067,6 +1070,9 @@ const TaskPanel: React.FC<TaskPanelProps> = ({ open, onClose, opportunity, users
                 users={users}
                 isSaving={updateTaskMutation.isLoading}
                 opportunities={opportunities}
+                statusOptions={statusPicklist.options}
+                priorityOptions={priorityPicklist.options}
+                contactOptions={contactOptions}
                 dependencies={depMap.get(task.Id) || []}
                 siblingTasks={tasks}
                 onAddDep={(taskId, depId) => addDepMutation.mutate({ taskId, dependsOnId: depId })}
@@ -1104,6 +1110,9 @@ const TaskPanel: React.FC<TaskPanelProps> = ({ open, onClose, opportunity, users
                 users={users}
                 isSaving={updateTaskMutation.isLoading}
                 opportunities={opportunities}
+                statusOptions={statusPicklist.options}
+                priorityOptions={priorityPicklist.options}
+                contactOptions={contactOptions}
                 dependencies={depMap.get(task.Id) || []}
                 siblingTasks={tasks}
                 onAddDep={(taskId, depId) => addDepMutation.mutate({ taskId, dependsOnId: depId })}
@@ -1247,18 +1256,25 @@ const TaskItem: React.FC<TaskItemProps> = ({
         <Box sx={{ display: 'flex', gap: 1, mb: 1.5 }}>
           {(() => {
             const statusLoad = getFieldLoadStatus('Status', task as unknown as Record<string, any>);
+            const opts = statusOptions && statusOptions.length > 0
+              ? statusOptions
+              : ['Not Started', 'In Progress', 'Completed', 'Deferred'];
+            const currentValue = editTask.Status;
+            const showInactive = currentValue && !opts.includes(currentValue);
             return (
               <FormControl size="small" sx={{ flex: 1 }}>
                 <InputLabel>Status</InputLabel>
                 <Select
-                  value={editTask.Status}
+                  value={currentValue}
                   label="Status"
                   onChange={(e) => setEditTask({ ...editTask, Status: e.target.value })}
                 >
-                  <MenuItem value="Not Started">Not Started</MenuItem>
-                  <MenuItem value="In Progress">In Progress</MenuItem>
-                  <MenuItem value="Completed">Completed</MenuItem>
-                  <MenuItem value="Deferred">Deferred</MenuItem>
+                  {showInactive && (
+                    <MenuItem value={currentValue}>{currentValue} (inactive)</MenuItem>
+                  )}
+                  {opts.map((v) => (
+                    <MenuItem key={v} value={v}>{v}</MenuItem>
+                  ))}
                 </Select>
                 {statusLoad.helperText && (
                   <FormHelperText sx={statusLoad.isWarning ? { color: 'warning.main' } : undefined}>
@@ -1270,17 +1286,25 @@ const TaskItem: React.FC<TaskItemProps> = ({
           })()}
           {(() => {
             const priorityLoad = getFieldLoadStatus('Priority', task as unknown as Record<string, any>);
+            const opts = priorityOptions && priorityOptions.length > 0
+              ? priorityOptions
+              : ['High', 'Normal', 'Low'];
+            const currentValue = editTask.Priority;
+            const showInactive = currentValue && !opts.includes(currentValue);
             return (
               <FormControl size="small" sx={{ flex: 1 }}>
                 <InputLabel>Priority</InputLabel>
                 <Select
-                  value={editTask.Priority}
+                  value={currentValue}
                   label="Priority"
                   onChange={(e) => setEditTask({ ...editTask, Priority: e.target.value })}
                 >
-                  <MenuItem value="High">🔴 High</MenuItem>
-                  <MenuItem value="Normal">🔵 Normal</MenuItem>
-                  <MenuItem value="Low">⚪ Low</MenuItem>
+                  {showInactive && (
+                    <MenuItem value={currentValue}>{currentValue} (inactive)</MenuItem>
+                  )}
+                  {opts.map((v) => (
+                    <MenuItem key={v} value={v}>{v}</MenuItem>
+                  ))}
                 </Select>
                 {priorityLoad.helperText && (
                   <FormHelperText sx={priorityLoad.isWarning ? { color: 'warning.main' } : undefined}>
@@ -1350,6 +1374,36 @@ const TaskItem: React.FC<TaskItemProps> = ({
                 </FormHelperText>
               )}
             </FormControl>
+          );
+        })()}
+
+        {/* Contact link (WhoId) — PR #169 / B5. Mirrors the create-form
+            Autocomplete above; getFieldLoadStatus surfaced via helperText
+            on the internal TextField (Autocomplete can't host FormHelperText
+            directly, so we piggyback on renderInput). */}
+        {(() => {
+          const whoIdLoad = getFieldLoadStatus('WhoId', task as unknown as Record<string, any>);
+          const opts = contactOptions || [];
+          return (
+            <Autocomplete
+              options={opts}
+              getOptionLabel={(c) => c.Name || ''}
+              value={opts.find((c) => c.Id === editTask.WhoId) || null}
+              onChange={(_e, newValue) =>
+                setEditTask({ ...editTask, WhoId: newValue?.Id || '' })
+              }
+              isOptionEqualToValue={(option, value) => option.Id === value?.Id}
+              renderInput={(params) => (
+                <TextField
+                  {...params}
+                  label="Contact (optional)"
+                  size="small"
+                  helperText={whoIdLoad.helperText || undefined}
+                  FormHelperTextProps={whoIdLoad.isWarning ? { sx: { color: 'warning.main' } } : undefined}
+                />
+              )}
+              sx={{ mb: 1.5 }}
+            />
           );
         })()}
 
