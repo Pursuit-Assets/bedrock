@@ -199,16 +199,18 @@ export const apiService = {
     ActivityDate?: string;
     Description?: string;
     OwnerId?: string;
+    WhoId?: string | null;
   }) => api.post(`/api/salesforce/opportunities/${opportunityId}/tasks`, taskData),
-  
+
   updateTask: (taskId: string, updates: {
-    Subject?: string;
-    Status?: string;
-    Priority?: string;
-    ActivityDate?: string;
-    Description?: string;
-    OwnerId?: string;
-    WhatId?: string;
+    Subject?: string | null;
+    Status?: string | null;
+    Priority?: string | null;
+    ActivityDate?: string | null;
+    Description?: string | null;
+    OwnerId?: string | null;
+    WhatId?: string | null;
+    WhoId?: string | null;
   }) => api.put(`/api/salesforce/tasks/${taskId}`, updates),
   
   deleteTask: (taskId: string) =>
@@ -339,6 +341,32 @@ export const apiService = {
    *  main.py's delete_payment handler. Permission-gated on `edit_payments`. */
   deleteSfPayment: (paymentId: string) =>
     api.delete(`/api/salesforce/payments/${paymentId}`),
+
+  /** Permanently delete a Salesforce Opportunity record. Irreversible at
+   *  the SF level — child tasks and payments become orphaned. UI callers
+   *  (OpportunityEditDialog) must surface a confirm-before-delete popover.
+   *  Backend: DELETE /api/salesforce/opportunities/{id} at main.py's
+   *  delete_opportunity handler (PR #169). Permission-gated on
+   *  `edit_own_opportunities` + ownership check. */
+  deleteSfOpportunity: (opportunityId: string) =>
+    api.delete(`/api/salesforce/opportunities/${opportunityId}`),
+
+  /** Permanently delete a Salesforce Account record. Irreversible at the
+   *  SF level — child contacts + opportunities lose their link. UI callers
+   *  (AccountEditDialog) must surface a confirm dialog before invoking.
+   *  Backend: DELETE /api/salesforce/accounts/{id} at main.py's
+   *  delete_account handler (PR #169). Permission-gated on `edit_accounts`
+   *  + admin-or-owner check (no edit-all-accounts key exists). */
+  deleteSfAccount: (accountId: string) =>
+    api.delete(`/api/salesforce/accounts/${accountId}`),
+
+  /** Permanently delete a Salesforce Contact record. Irreversible at the
+   *  SF level. UI callers (ContactEditDialog) must surface a confirm
+   *  dialog before invoking. Backend: DELETE /api/salesforce/contacts/{id}
+   *  at main.py's delete_contact handler (PR #169). Permission-gated on
+   *  `edit_contacts` + admin-or-owner check. */
+  deleteSfContact: (contactId: string) =>
+    api.delete(`/api/salesforce/contacts/${contactId}`),
 
   // Salesforce - Users
   getUsers: (params?: { limit?: number }) =>

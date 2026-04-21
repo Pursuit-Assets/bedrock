@@ -839,52 +839,73 @@ class TestPaymentCreateRequestValidation:
 # 4a-quater. Payment ownership enforcement helper (PR #163)
 # ===================================================================
 
-class TestEnforceOppOwnershipForPayment:
-    """Unit tests for the `_enforce_opp_ownership_for_payment` helper — added
-    in PR #163 after adversarial review found that `edit_payments` alone
-    let any user create/delete payments on any opp.
+class TestEnforceRecordOwnership:
+    """Unit tests for the `_enforce_record_ownership` helper — generalized in
+    PR #169 from the Opp-only helper shipped in PR #163 so Account / Contact /
+    Opportunity write + delete endpoints share one ownership path.
 
-    Contract: admin or edit_all_opportunities bypasses; otherwise the
-    caller's sf_user_id must match the Opp's OwnerId; 404 if opp absent;
-    403 if the user isn't linked to a Salesforce user at all.
+    Contract:
+      1. `is_service=True` bypasses without any SF query (Pebble CRM-write).
+      2. Admin (`manage_users_roles`) bypasses.
+      3. Per-resource `edit_all_perm` bypasses when the caller opts in.
+      4. Otherwise: caller's sf_user_id must match the record's OwnerId via
+         SOQL `SELECT OwnerId FROM {sobject} WHERE Id = '{id}'`. 404 if
+         record absent; 403 on mismatch or unlinked user.
+
+    Payment endpoints pass `sobject="Opportunity"` + parent-Opp Id +
+    `edit_all_perm="edit_all_opportunities"` — prior behavior preserved.
+    Account + Contact pass `edit_all_perm=None` (admin-only bypass — no
+    edit-all key for those objects in PERMISSION_KEYS).
     """
 
     @pytest.mark.asyncio
+    async def test_service_caller_bypasses_without_querying_sf(self):
+        """PR #169: is_service=True short-circuits FIRST, before any
+        _permissions / _app_user access. Required because
+        check_permission_or_internal sets is_service without populating
+        those user-dict keys (routes/permissions.py:232)."""
+        from main import _enforce_record_ownership
+        sf = AsyncMock()
+        sf.query = AsyncMock()
+        user = {"is_service": True, "user_id": "service:pebble"}
+        await _enforce_record_ownership(sf, "Opportunity", "006TESTOPPORT01", user, "edit_all_opportunities")
+        sf.query.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_admin_bypasses_without_querying_sf(self):
-        from main import _enforce_opp_ownership_for_payment
+        from main import _enforce_record_ownership
         sf = AsyncMock()
         sf.query = AsyncMock()
         user = {"_permissions": {"manage_users_roles": True}, "_app_user": None}
-        # Should not raise
-        await _enforce_opp_ownership_for_payment(sf, "006TESTOPPORT01", user)
+        await _enforce_record_ownership(sf, "Opportunity", "006TESTOPPORT01", user, "edit_all_opportunities")
         sf.query.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_edit_all_opportunities_bypasses_without_querying_sf(self):
-        from main import _enforce_opp_ownership_for_payment
+        from main import _enforce_record_ownership
         sf = AsyncMock()
         sf.query = AsyncMock()
         user = {
             "_permissions": {"edit_all_opportunities": True},
             "_app_user": {"sf_user_id": "005ANY"},
         }
-        await _enforce_opp_ownership_for_payment(sf, "006TESTOPPORT01", user)
+        await _enforce_record_ownership(sf, "Opportunity", "006TESTOPPORT01", user, "edit_all_opportunities")
         sf.query.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_owner_allowed(self):
-        from main import _enforce_opp_ownership_for_payment
+        from main import _enforce_record_ownership
         sf = AsyncMock()
         sf.query = AsyncMock(return_value={"records": [{"OwnerId": "005SAME"}]})
         user = {
             "_permissions": {},
             "_app_user": {"sf_user_id": "005SAME"},
         }
-        await _enforce_opp_ownership_for_payment(sf, "006TESTOPPORT01", user)
+        await _enforce_record_ownership(sf, "Opportunity", "006TESTOPPORT01", user, "edit_all_opportunities")
 
     @pytest.mark.asyncio
     async def test_non_owner_raises_403(self):
-        from main import _enforce_opp_ownership_for_payment
+        from main import _enforce_record_ownership
         from fastapi import HTTPException
         sf = AsyncMock()
         sf.query = AsyncMock(return_value={"records": [{"OwnerId": "005OTHER"}]})
@@ -893,12 +914,12 @@ class TestEnforceOppOwnershipForPayment:
             "_app_user": {"sf_user_id": "005ME"},
         }
         with pytest.raises(HTTPException) as exc_info:
-            await _enforce_opp_ownership_for_payment(sf, "006TESTOPPORT01", user)
+            await _enforce_record_ownership(sf, "Opportunity", "006TESTOPPORT01", user, "edit_all_opportunities")
         assert exc_info.value.status_code == 403
 
     @pytest.mark.asyncio
-    async def test_opp_not_found_raises_404(self):
-        from main import _enforce_opp_ownership_for_payment
+    async def test_record_not_found_raises_404(self):
+        from main import _enforce_record_ownership
         from fastapi import HTTPException
         sf = AsyncMock()
         sf.query = AsyncMock(return_value={"records": []})
@@ -907,22 +928,164 @@ class TestEnforceOppOwnershipForPayment:
             "_app_user": {"sf_user_id": "005ME"},
         }
         with pytest.raises(HTTPException) as exc_info:
-            await _enforce_opp_ownership_for_payment(sf, "006TESTOPPORT01", user)
+            await _enforce_record_ownership(sf, "Opportunity", "006TESTOPPORT01", user, "edit_all_opportunities")
         assert exc_info.value.status_code == 404
 
     @pytest.mark.asyncio
     async def test_unlinked_user_raises_403_without_querying_sf(self):
         """Bedrock user with no sf_user_id link — can't evaluate ownership,
         must deny. Safer than permitting."""
-        from main import _enforce_opp_ownership_for_payment
+        from main import _enforce_record_ownership
         from fastapi import HTTPException
         sf = AsyncMock()
         sf.query = AsyncMock()
         user = {"_permissions": {}, "_app_user": None}
         with pytest.raises(HTTPException) as exc_info:
-            await _enforce_opp_ownership_for_payment(sf, "006TESTOPPORT01", user)
+            await _enforce_record_ownership(sf, "Opportunity", "006TESTOPPORT01", user, "edit_all_opportunities")
         assert exc_info.value.status_code == 403
         sf.query.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_account_ownership_admin_bypasses_without_edit_all(self):
+        """PR #169: Account/Contact callers pass edit_all_perm=None. Admin
+        (manage_users_roles) still bypasses without querying SF."""
+        from main import _enforce_record_ownership
+        sf = AsyncMock()
+        sf.query = AsyncMock()
+        user = {"_permissions": {"manage_users_roles": True}, "_app_user": None}
+        await _enforce_record_ownership(sf, "Account", "001TESTACCOUNT001", user, None)
+        sf.query.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_account_ownership_owner_allowed_no_edit_all(self):
+        """PR #169: non-admin owner passes OwnerId match even when
+        edit_all_perm=None. SOQL targets the correct SObject."""
+        from main import _enforce_record_ownership
+        sf = AsyncMock()
+        sf.query = AsyncMock(return_value={"records": [{"OwnerId": "005OWNER"}]})
+        user = {
+            "_permissions": {},
+            "_app_user": {"sf_user_id": "005OWNER"},
+        }
+        await _enforce_record_ownership(sf, "Account", "001TESTACCOUNT001", user, None)
+        # Verify the SOQL query targeted Account, not Opportunity
+        soql = sf.query.call_args[0][0]
+        assert "FROM Account" in soql
+
+    @pytest.mark.asyncio
+    async def test_contact_ownership_non_owner_raises_403_sobject_in_error(self):
+        """PR #169: generalized helper produces {sobject}-specific error
+        text so users see which record type they're not allowed to modify."""
+        from main import _enforce_record_ownership
+        from fastapi import HTTPException
+        sf = AsyncMock()
+        sf.query = AsyncMock(return_value={"records": [{"OwnerId": "005OTHER"}]})
+        user = {
+            "_permissions": {},
+            "_app_user": {"sf_user_id": "005ME"},
+        }
+        with pytest.raises(HTTPException) as exc_info:
+            await _enforce_record_ownership(sf, "Contact", "003TESTCONTACT001", user, None)
+        assert exc_info.value.status_code == 403
+        assert "contacts" in exc_info.value.detail.lower()
+
+
+# ===================================================================
+# 4c. Salesforce DELETE endpoints — Opportunity / Account / Contact (PR #169)
+# ===================================================================
+
+class TestSalesforceOpportunityDelete:
+    """Tests for DELETE /api/salesforce/opportunities/{id} (PR #169).
+
+    Destructive endpoint — frontend (OpportunityEditDialog) surfaces a
+    confirm-before-delete popover. Backend uses check_permission_or_internal
+    + _enforce_record_ownership("Opportunity", ..., "edit_all_opportunities").
+    mock_db grants manage_users_roles so admin-path bypasses the OwnerId
+    check without the helper querying SF.
+    """
+
+    OPP_ID = "006TESTOPPORT01"
+
+    def test_delete_opportunity_success(self, client, mock_client):
+        mock_client.salesforce.delete_record.return_value = True
+        response = client.delete(f"/api/salesforce/opportunities/{self.OPP_ID}")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["success"] is True
+        assert body["data"]["id"] == self.OPP_ID
+        mock_client.salesforce.delete_record.assert_called_once_with("Opportunity", self.OPP_ID)
+
+    def test_delete_opportunity_rejected_by_salesforce_returns_400(self, client, mock_client):
+        """SF returns False on delete (e.g., locked record, FK violation)."""
+        mock_client.salesforce.delete_record.return_value = False
+        response = client.delete(f"/api/salesforce/opportunities/{self.OPP_ID}")
+        assert response.status_code == 400
+
+    def test_delete_opportunity_invalid_id_rejected(self, client, mock_client):
+        """validate_salesforce_id runs before anything else — 400 without
+        delete_record being called."""
+        response = client.delete("/api/salesforce/opportunities/not-a-real-sf-id")
+        assert response.status_code in (400, 422)
+        mock_client.salesforce.delete_record.assert_not_called()
+
+
+class TestSalesforceAccountDelete:
+    """Tests for DELETE /api/salesforce/accounts/{id} (PR #169).
+
+    Admin path (mock_db grants manage_users_roles) bypasses the OwnerId
+    check. edit_all_perm=None for Account — admin-only bypass, no edit-all
+    key exists in PERMISSION_KEYS.
+    """
+
+    # 15-char valid SF Id — the conftest make_sf_account uses 17 chars which
+    # validate_salesforce_id rejects with 400. Use a fresh valid Id here.
+    ACCOUNT_ID = "001TESTACCT0001"
+
+    def test_delete_account_success(self, client, mock_client):
+        mock_client.salesforce.delete_record.return_value = True
+        response = client.delete(f"/api/salesforce/accounts/{self.ACCOUNT_ID}")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["success"] is True
+        assert body["data"]["id"] == self.ACCOUNT_ID
+        mock_client.salesforce.delete_record.assert_called_once_with("Account", self.ACCOUNT_ID)
+
+    def test_delete_account_rejected_by_salesforce_returns_400(self, client, mock_client):
+        mock_client.salesforce.delete_record.return_value = False
+        response = client.delete(f"/api/salesforce/accounts/{self.ACCOUNT_ID}")
+        assert response.status_code == 400
+
+    def test_delete_account_invalid_id_rejected(self, client, mock_client):
+        response = client.delete("/api/salesforce/accounts/not-a-real-sf-id")
+        assert response.status_code in (400, 422)
+        mock_client.salesforce.delete_record.assert_not_called()
+
+
+class TestSalesforceContactDelete:
+    """Tests for DELETE /api/salesforce/contacts/{id} (PR #169)."""
+
+    # 15-char valid SF Id — make_sf_contact uses 16 chars which fails
+    # validate_salesforce_id. Use a fresh valid Id.
+    CONTACT_ID = "003TESTCONT0001"
+
+    def test_delete_contact_success(self, client, mock_client):
+        mock_client.salesforce.delete_record.return_value = True
+        response = client.delete(f"/api/salesforce/contacts/{self.CONTACT_ID}")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["success"] is True
+        assert body["data"]["id"] == self.CONTACT_ID
+        mock_client.salesforce.delete_record.assert_called_once_with("Contact", self.CONTACT_ID)
+
+    def test_delete_contact_rejected_by_salesforce_returns_400(self, client, mock_client):
+        mock_client.salesforce.delete_record.return_value = False
+        response = client.delete(f"/api/salesforce/contacts/{self.CONTACT_ID}")
+        assert response.status_code == 400
+
+    def test_delete_contact_invalid_id_rejected(self, client, mock_client):
+        response = client.delete("/api/salesforce/contacts/not-a-real-sf-id")
+        assert response.status_code in (400, 422)
+        mock_client.salesforce.delete_record.assert_not_called()
 
 
 # ===================================================================
@@ -972,6 +1135,71 @@ class TestSalesforceOpportunityTasks:
             params={"limit": 2001},
         )
         assert response.status_code == 422
+
+    def test_create_task_with_whoid_round_trips(self, client, mock_client):
+        """PR #169 (B5): TaskCreateRequest now declares WhoId, so Contact
+        links sent from the TaskPanel's new Contact autocomplete round-trip
+        through to SF. Pin the contract: body WhoId lands in create_record
+        alongside the URL-derived WhatId."""
+        mock_client.salesforce.create_record.return_value = {"id": "00T0000TESTCRE1"}
+        response = client.post(
+            f"/api/salesforce/opportunities/{self.OPP_ID}/tasks",
+            json={
+                "Subject": "Call Jane",
+                "WhoId": "003TESTCONT0001",
+            },
+        )
+        assert response.status_code == 200
+        call = mock_client.salesforce.create_record.call_args
+        assert call[0][0] == "Task"
+        fields = call[0][1]
+        assert fields["Subject"] == "Call Jane"
+        assert fields["WhoId"] == "003TESTCONT0001"
+        assert fields["WhatId"] == self.OPP_ID  # URL-derived
+
+    def test_create_task_url_whatid_wins_over_body_whatid(self, client, mock_client):
+        """PR #169 (B10 defensive fix): even if a client sends WhatId in
+        the body, the URL path param must win. TaskCreateRequest doesn't
+        declare WhatId, so Pydantic default extra-filtering strips it —
+        but the reversed dict-spread order at main.py's create_opportunity_task
+        is the belt-and-suspenders guard. Verify the URL id lands in SF."""
+        mock_client.salesforce.create_record.return_value = {"id": "00T0000TESTCRE2"}
+        response = client.post(
+            f"/api/salesforce/opportunities/{self.OPP_ID}/tasks",
+            json={
+                "Subject": "Should bind to URL opp",
+                "WhatId": "006ATTACKOPP001",  # Attacker-supplied body WhatId
+            },
+        )
+        assert response.status_code == 200
+        call = mock_client.salesforce.create_record.call_args
+        fields = call[0][1]
+        # URL-derived WhatId wins — body WhatId stripped + overridden.
+        assert fields["WhatId"] == self.OPP_ID
+        assert fields["WhatId"] != "006ATTACKOPP001"
+
+    def test_update_task_with_null_activity_date_succeeds(self, client, mock_client):
+        """PR #169 (B8 root cause — regression): TaskPanel's saveEdit sent
+        ActivityDate as '' (empty string) for unchanged optional fields,
+        which SF rejects with 400 on date fields. Fix is frontend-side
+        (diff-based save) but this test pins the backend contract: sending
+        ActivityDate as None works fine (exclude_none=True drops it)."""
+        mock_client.salesforce.update_record.return_value = True
+        # 15-char valid SF Task Id (make_sf_task uses 16 — invalid under validate_salesforce_id).
+        response = client.put(
+            "/api/salesforce/tasks/00T0000TEST0001",
+            json={
+                "Description": "Updated description",
+                "ActivityDate": None,  # Was '' pre-fix — now None or omitted
+            },
+        )
+        assert response.status_code == 200
+        call = mock_client.salesforce.update_record.call_args
+        fields = call[0][2]
+        # ActivityDate absent from the update payload because exclude_none dropped it.
+        assert "ActivityDate" not in fields
+        # Description made it through.
+        assert fields["Description"] == "Updated description"
 
 
 # ===================================================================

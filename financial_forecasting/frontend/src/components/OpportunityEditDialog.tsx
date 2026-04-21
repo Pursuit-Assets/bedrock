@@ -91,6 +91,9 @@ interface OpportunityEditDialogProps {
   initialData?: Record<string, any>;
   onSaved?: (oppId: string, updates: Record<string, any>) => void;
   onStageClosedCompleted?: (opp: { Id: string; Name: string; Amount: number }) => void;
+  /** Fires after a successful destructive delete. Parent invalidates any
+   *  extra caches the dialog's own invalidateQueries doesn't cover. */
+  onDeleted?: (oppId: string) => void;
   /** When provided, shows "Open" icons next to lookup fields for stacked dialog navigation. */
   onOpenRelated?: (type: 'opportunity' | 'account' | 'contact', id: string) => void;
 }
@@ -168,6 +171,7 @@ const OpportunityEditDialog: React.FC<OpportunityEditDialogProps> = ({
   initialData,
   onSaved,
   onStageClosedCompleted,
+  onDeleted,
   onOpenRelated,
 }) => {
   const queryClient = useQueryClient();
@@ -213,6 +217,7 @@ const OpportunityEditDialog: React.FC<OpportunityEditDialogProps> = ({
   const [editForm, setEditForm] = useState<Record<string, any>>({});
   const [originalOpp, setOriginalOpp] = useState<Record<string, any> | null>(null);
   const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [dialogTab, setDialogTab] = useState(0);
   const [saveBlockedMissing, setSaveBlockedMissing] = useState<string[]>([]);
@@ -466,6 +471,34 @@ const OpportunityEditDialog: React.FC<OpportunityEditDialogProps> = ({
       toast.error(detail);
     } finally {
       setSaving(false);
+    }
+  };
+
+  // ── Delete handler ──────────────────────────────────────────────────────
+  // Destructive and irreversible at the SF level. Backend enforces ownership
+  // via _enforce_record_ownership("Opportunity", ..., "edit_all_opportunities")
+  // — admin OR edit_all OR isOwner can delete; everyone else gets 403.
+  const handleDelete = async () => {
+    if (!opportunityId) return;
+    setDeleting(true);
+    try {
+      await apiService.deleteSfOpportunity(opportunityId);
+      toast.success('Opportunity deleted');
+      // Cascade invalidation: opp lists + opp-tasks + accounts page joined view.
+      queryClient.invalidateQueries('opportunities');
+      queryClient.invalidateQueries(['opportunity-tasks', opportunityId]);
+      queryClient.invalidateQueries('opportunities-for-accounts');
+      if (onDeleted) onDeleted(opportunityId);
+      onClose();
+    } catch (error: any) {
+      const detail =
+        error?.response?.data?.detail ||
+        error?.response?.data?.error ||
+        error?.message ||
+        'Failed to delete opportunity';
+      toast.error(detail);
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -1176,12 +1209,33 @@ const OpportunityEditDialog: React.FC<OpportunityEditDialogProps> = ({
 
       {/* Sticky footer */}
       <Box sx={{ px: 3, py: 1.5, borderTop: 1, borderColor: 'divider', display: 'flex', justifyContent: 'flex-end', gap: 1 }}>
-        <Button onClick={onClose}>{dialogTab === 0 ? 'Cancel' : 'Close'}</Button>
+        {/* Destructive Delete only on the Details tab — same gate as Save.
+            canEdit at line ~268 already encodes admin OR edit_all OR
+            (isOwner && edit_own_opportunities); backend ownership helper
+            re-enforces server-side. */}
+        {dialogTab === 0 && originalOpp && canEdit && (
+          <ConfirmSaveButton
+            onConfirm={handleDelete}
+            loading={deleting}
+            disabled={!opportunityId}
+            variant="outlined"
+            color="error"
+            confirmTitle="Delete Opportunity?"
+            confirmMessage="This permanently deletes the opportunity from Salesforce. Child tasks and payments will be orphaned. This cannot be undone."
+            confirmLabel="Delete"
+            sx={{ mr: 'auto' }}
+          >
+            Delete
+          </ConfirmSaveButton>
+        )}
+        <Button onClick={onClose} disabled={saving || deleting}>
+          {dialogTab === 0 ? 'Cancel' : 'Close'}
+        </Button>
         {dialogTab === 0 && (
           <ConfirmSaveButton
             onConfirm={handleSave}
             loading={saving}
-            disabled={!canEdit || !originalOpp}
+            disabled={!canEdit || !originalOpp || deleting}
           >
             Save
           </ConfirmSaveButton>

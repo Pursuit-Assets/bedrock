@@ -465,6 +465,65 @@ async def update_opportunity(
         raise HTTPException(status_code=400, detail=error_msg)
 
 
+@app.delete("/api/salesforce/opportunities/{opportunity_id}")
+@limiter.limit("30/minute")
+async def delete_opportunity(
+    request: Request,
+    opportunity_id: str,
+    client: UnifiedMCPClient = Depends(get_mcp_client),
+    user = Depends(check_permission_or_internal("edit_own_opportunities")),
+):
+    """Delete a Salesforce Opportunity.
+
+    Destructive and irreversible at the SF level — the frontend caller
+    (OpportunityEditDialog) surfaces a confirm-before-delete popover.
+
+    Auth (PR #169): `check_permission_or_internal("edit_own_opportunities")`
+    is the outer gate — matches update_opportunity's permission key so the
+    permission profile already grants the right users. `_enforce_record_ownership`
+    then restricts deletes to the opp's owner, admins, or users with
+    `edit_all_opportunities`. Service callers (is_service=True) short-circuit
+    inside the helper for Pebble CRM-write.
+
+    Cascade invalidation: child tasks/payments + stage rollups all become
+    stale when an opp goes away.
+    """
+    validate_salesforce_id(opportunity_id, "opportunity_id")
+    try:
+        salesforce = client.salesforce
+        await _enforce_record_ownership(
+            salesforce, "Opportunity", opportunity_id, user, "edit_all_opportunities",
+        )
+        success = await salesforce.delete_record("Opportunity", opportunity_id)
+        if not success:
+            raise HTTPException(400, "Salesforce rejected the delete")
+        # Opp list caches (get_opportunities at main.py:304 uses "opps:")
+        cache.invalidate_prefix("opps:")
+        # stage_history:30 — direct key invalidation (set at main.py:454 under
+        # update_opportunity; stage rollups change when an opp is removed).
+        cache.invalidate("stage_history:30")
+        # opp-payments: / payments: — child payments now orphaned.
+        cache.invalidate_prefix("opp-payments:")
+        cache.invalidate_prefix("payments:")
+        # my-tasks: — child Tasks still have WhatId pointing at the deleted opp.
+        cache.invalidate_prefix("my-tasks:")
+        # opportunities: — Payment endpoints invalidate this prefix defensively.
+        cache.invalidate_prefix("opportunities:")
+        logger.info(f"Opportunity {opportunity_id} deleted by {user['user_id']}")
+        return ApiResponse(
+            success=True,
+            data={"id": opportunity_id, "message": "Opportunity deleted"},
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting opportunity {opportunity_id}: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=400,
+            detail="Failed to delete opportunity. Check server logs or contact support.",
+        )
+
+
 @app.get("/api/salesforce/accounts")
 async def get_accounts(
     # `le=2000` matches GET /api/salesforce/opportunities — defensive upper
@@ -794,63 +853,96 @@ class PaymentCreateRequest(BaseModel):
         return v
 
 
-async def _enforce_opp_ownership_for_payment(
+async def _enforce_record_ownership(
     salesforce,
-    opportunity_id: str,
+    sobject: str,
+    record_id: str,
     user: Dict[str, Any],
+    edit_all_perm: Optional[str] = None,
 ) -> None:
-    """Raise HTTPException(403/404) unless `user` may mutate payments on
-    `opportunity_id`.
+    """Raise HTTPException(403/404) unless `user` may mutate `record_id` on `sobject`.
 
-    Mirrors the pattern used by `update_opportunity` (main.py:425-436): admin
-    or `edit_all_opportunities` bypasses the check; otherwise the caller's
-    `sf_user_id` must match the Opportunity's `OwnerId`.
+    Generalized 2026-04-21 (PR #169) from the Opp-only helper shipped in PR #163
+    so Account/Contact/Opportunity write endpoints share one ownership path.
+    Payment write endpoints pass `sobject="Opportunity"` + the parent Opp's Id
+    (resolved upstream) + `edit_all_perm="edit_all_opportunities"` — identical
+    behavior to the prior helper.
 
-    Added 2026-04-21 post-adversarial review (PR #163). Previously,
-    `check_permission("edit_payments")` alone gated POST/DELETE — any user
-    with that permission could create/delete payments on any opportunity,
-    including ones they didn't own. This helper restores parity with the
-    opportunity-update permission model.
+    Bypass order (first match wins — no SF query):
+      1. Service callers (`is_service=True`). check_permission_or_internal
+         sets this without populating _permissions / _app_user, so the
+         service-account branch MUST come first. Load-bearing for Pebble
+         CRM-write against Account/Contact/Payment endpoints that use
+         check_permission_or_internal; unreachable no-op for any future
+         caller still gated on check_permission.
+      2. Admin (`manage_users_roles`).
+      3. Per-resource "edit-all" permission when the caller opts in
+         (e.g. `edit_all_opportunities` for Opportunity and Payment).
+         Account + Contact have no edit-all key in PERMISSION_KEYS
+         (routes/permissions.py:19-34), so their callers pass `None` and
+         get admin-only bypass.
+
+    Otherwise: SOQL `SELECT OwnerId FROM {sobject} WHERE Id = '{safe_id}'`
+    and compare against the caller's `sf_user_id`. 404 if the record is
+    absent; 403 on OwnerId mismatch or when the user isn't linked to a
+    Salesforce user (can't evaluate ownership — deny, safer than permit).
     """
+    # 1. Service-account bypass — check_permission_or_internal sets is_service
+    #    without populating _permissions / _app_user, so guard first.
+    if user.get("is_service"):
+        return
     perms = user.get("_permissions", {})
+    # 2. Admin bypass (manage_users_roles).
     if perms.get("manage_users_roles", False):
-        return  # Admin bypass
-    if perms.get("edit_all_opportunities", False):
-        return  # Global edit bypass — same as update_opportunity
+        return
+    # 3. Per-resource edit-all bypass (caller opt-in).
+    if edit_all_perm and perms.get(edit_all_perm, False):
+        return
     sf_user_id = (user.get("_app_user") or {}).get("sf_user_id")
     if not sf_user_id:
-        # User exists in Bedrock but isn't linked to a Salesforce user —
-        # we can't evaluate ownership, so deny. Consistent with the
-        # edit-own-opps flow; safer than permitting.
         raise HTTPException(
             status_code=403,
-            detail="Cannot verify opportunity ownership — user is not linked to a Salesforce user",
+            detail=f"Cannot verify {sobject.lower()} ownership — user is not linked to a Salesforce user",
         )
-    safe_opp = escape_soql_string(opportunity_id)
+    safe_id = escape_soql_string(record_id)
     result = await salesforce.query(
-        f"SELECT OwnerId FROM Opportunity WHERE Id = '{safe_opp}' LIMIT 1"
+        f"SELECT OwnerId FROM {sobject} WHERE Id = '{safe_id}' LIMIT 1"
     )
     records = result.get("records", [])
     if not records:
-        raise HTTPException(status_code=404, detail="Opportunity not found")
+        raise HTTPException(status_code=404, detail=f"{sobject} not found")
     if records[0].get("OwnerId") != sf_user_id:
         raise HTTPException(
             status_code=403,
-            detail="You can only modify payments on opportunities you own",
+            detail=f"You can only modify {sobject.lower()}s you own",
         )
 
 
 @app.put("/api/salesforce/accounts/{account_id}")
+@limiter.limit("30/minute")
 async def update_account(
+    request: Request,
     account_id: str,
     update_request: AccountUpdateRequest,
     client: UnifiedMCPClient = Depends(get_mcp_client),
     user = Depends(check_permission_or_internal("edit_accounts")),
 ):
-    """Update a Salesforce account."""
+    """Update a Salesforce account.
+
+    Auth (PR #169 hardening): `check_permission_or_internal("edit_accounts")`
+    is the outer gate — admits service callers (is_service=True) for Pebble
+    CRM-write. Human path then runs `_enforce_record_ownership` on the
+    Account — non-owner edits rejected unless the caller is admin
+    (manage_users_roles). No edit-all-accounts bypass (no such key in
+    PERMISSION_KEYS). Service callers short-circuit inside the helper.
+
+    Rate-limited at 30/minute per IP to blunt compromised-account abuse.
+    Errors sanitized — raw SF error text stays server-side.
+    """
     validate_salesforce_id(account_id, "account_id")
     try:
         salesforce = client.salesforce
+        await _enforce_record_ownership(salesforce, "Account", account_id, user)
         success = await salesforce.update_record("Account", account_id, update_request.updates)
         if not success:
             raise HTTPException(400, "Salesforce rejected the update")
@@ -860,22 +952,84 @@ async def update_account(
     except HTTPException:
         raise
     except Exception as e:
-        error_msg = str(e)
-        logger.error(f"Error updating account {account_id}: {error_msg}")
-        raise HTTPException(status_code=400, detail=error_msg)
+        logger.error(f"Error updating account {account_id}: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=400,
+            detail="Failed to update account. Check server logs or contact support.",
+        )
+
+
+@app.delete("/api/salesforce/accounts/{account_id}")
+@limiter.limit("30/minute")
+async def delete_account(
+    request: Request,
+    account_id: str,
+    client: UnifiedMCPClient = Depends(get_mcp_client),
+    user = Depends(check_permission_or_internal("edit_accounts")),
+):
+    """Delete a Salesforce Account.
+
+    Destructive and irreversible at the SF level — frontend caller
+    (AccountEditDialog) surfaces a confirm-before-delete popover.
+
+    Auth (PR #169): `check_permission_or_internal("edit_accounts")` outer
+    gate + `_enforce_record_ownership` admin-or-owner check. No edit-all
+    bypass (no such key in PERMISSION_KEYS — admin only). Service callers
+    (is_service=True) short-circuit inside the helper.
+
+    Cascade invalidation: child contacts + opps reference AccountId.
+    """
+    validate_salesforce_id(account_id, "account_id")
+    try:
+        salesforce = client.salesforce
+        await _enforce_record_ownership(salesforce, "Account", account_id, user)
+        success = await salesforce.delete_record("Account", account_id)
+        if not success:
+            raise HTTPException(400, "Salesforce rejected the delete")
+        cache.invalidate_prefix("accounts:")
+        # Child Contacts reference AccountId via the get_contacts SOQL join.
+        cache.invalidate_prefix("contacts:")
+        # Opps reference AccountId; opp list + Account-joined views stale.
+        cache.invalidate_prefix("opps:")
+        cache.invalidate_prefix("opportunities:")
+        logger.info(f"Account {account_id} deleted by {user['user_id']}")
+        return ApiResponse(
+            success=True,
+            data={"id": account_id, "message": "Account deleted"},
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting account {account_id}: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=400,
+            detail="Failed to delete account. Check server logs or contact support.",
+        )
 
 
 @app.put("/api/salesforce/contacts/{contact_id}")
+@limiter.limit("30/minute")
 async def update_contact(
+    request: Request,
     contact_id: str,
     update_request: ContactUpdateRequest,
     client: UnifiedMCPClient = Depends(get_mcp_client),
     user = Depends(check_permission_or_internal("edit_contacts")),
 ):
-    """Update a Salesforce contact."""
+    """Update a Salesforce contact.
+
+    Auth (PR #169 hardening): `check_permission_or_internal("edit_contacts")`
+    is the outer gate — admits service callers (is_service=True) for Pebble
+    CRM-write. Human path then runs `_enforce_record_ownership` on the
+    Contact — non-owner edits rejected unless the caller is admin. No
+    edit-all-contacts bypass (no such key in PERMISSION_KEYS).
+
+    Rate-limited at 30/minute per IP. Errors sanitized.
+    """
     validate_salesforce_id(contact_id, "contact_id")
     try:
         salesforce = client.salesforce
+        await _enforce_record_ownership(salesforce, "Contact", contact_id, user)
         success = await salesforce.update_record("Contact", contact_id, update_request.updates)
         if not success:
             raise HTTPException(400, "Salesforce rejected the update")
@@ -885,9 +1039,51 @@ async def update_contact(
     except HTTPException:
         raise
     except Exception as e:
-        error_msg = str(e)
-        logger.error(f"Error updating contact {contact_id}: {error_msg}")
-        raise HTTPException(status_code=400, detail=error_msg)
+        logger.error(f"Error updating contact {contact_id}: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=400,
+            detail="Failed to update contact. Check server logs or contact support.",
+        )
+
+
+@app.delete("/api/salesforce/contacts/{contact_id}")
+@limiter.limit("30/minute")
+async def delete_contact(
+    request: Request,
+    contact_id: str,
+    client: UnifiedMCPClient = Depends(get_mcp_client),
+    user = Depends(check_permission_or_internal("edit_contacts")),
+):
+    """Delete a Salesforce Contact.
+
+    Destructive and irreversible at the SF level — frontend caller
+    (ContactEditDialog) surfaces a confirm-before-delete popover.
+
+    Auth (PR #169): `check_permission_or_internal("edit_contacts")` outer
+    gate + `_enforce_record_ownership` admin-or-owner check. No edit-all
+    bypass (no such key in PERMISSION_KEYS). Service callers short-circuit.
+    """
+    validate_salesforce_id(contact_id, "contact_id")
+    try:
+        salesforce = client.salesforce
+        await _enforce_record_ownership(salesforce, "Contact", contact_id, user)
+        success = await salesforce.delete_record("Contact", contact_id)
+        if not success:
+            raise HTTPException(400, "Salesforce rejected the delete")
+        cache.invalidate_prefix("contacts:")
+        logger.info(f"Contact {contact_id} deleted by {user['user_id']}")
+        return ApiResponse(
+            success=True,
+            data={"id": contact_id, "message": "Contact deleted"},
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting contact {contact_id}: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=400,
+            detail="Failed to delete contact. Check server logs or contact support.",
+        )
 
 
 @app.put("/api/salesforce/payments/{payment_id}")
@@ -897,15 +1093,16 @@ async def update_payment(
     payment_id: str,
     update_request: PaymentUpdateRequest,
     client: UnifiedMCPClient = Depends(get_mcp_client),
-    user = Depends(check_permission("edit_payments")),
+    user = Depends(check_permission_or_internal("edit_payments")),
 ):
     """Update a Salesforce payment (npe01__OppPayment__c).
 
-    Auth: `check_permission("edit_payments")` is the outer gate. PR #164 added
-    opp-ownership parity with POST/DELETE — the endpoint now resolves the
-    payment's parent Opp (cheap SOQL) and defers to
-    `_enforce_opp_ownership_for_payment`. Non-owner updates are rejected
-    unless the caller is admin or has `edit_all_opportunities`.
+    Auth: `check_permission_or_internal("edit_payments")` is the outer gate.
+    Switched from `check_permission` in PR #169 so Pebble's future
+    `pebble_crm_write` flow can reach Payment writes via the internal API key.
+    User-path still runs `_enforce_record_ownership` on the payment's parent
+    Opp — non-owner updates rejected unless admin or `edit_all_opportunities`.
+    Service callers (is_service=True) short-circuit inside the helper.
 
     Rate-limited at 30/minute per IP so a compromised account with
     edit_payments can't bulk-update SF records."""
@@ -922,7 +1119,9 @@ async def update_payment(
             raise HTTPException(status_code=404, detail="Payment not found")
         parent_opp_id = parent_records[0].get("npe01__Opportunity__c")
         if parent_opp_id:
-            await _enforce_opp_ownership_for_payment(salesforce, parent_opp_id, user)
+            await _enforce_record_ownership(
+                salesforce, "Opportunity", parent_opp_id, user, "edit_all_opportunities",
+            )
         # Ownership OK — proceed with the update.
         success = await salesforce.update_record("npe01__OppPayment__c", payment_id, update_request.updates)
         if not success:
@@ -954,7 +1153,7 @@ async def delete_payment(
     request: Request,
     payment_id: str,
     client: UnifiedMCPClient = Depends(get_mcp_client),
-    user = Depends(check_permission("edit_payments")),
+    user = Depends(check_permission_or_internal("edit_payments")),
 ):
     """Delete a Salesforce Payment (npe01__OppPayment__c).
 
@@ -962,12 +1161,13 @@ async def delete_payment(
     (PaymentEditDialog) is expected to surface a confirm-before-delete
     dialog.
 
-    Auth: `check_permission("edit_payments")` is the outer gate. This endpoint
-    takes only `payment_id`, so we first resolve the parent Opp via a cheap
-    SOQL query (also gives us a 404 if the payment doesn't exist), then
-    defer to `_enforce_opp_ownership_for_payment` — non-owner deletes are
-    rejected unless the caller is admin or has `edit_all_opportunities`
-    (PR #163 hardening)."""
+    Auth: `check_permission_or_internal("edit_payments")` is the outer gate.
+    Switched from `check_permission` in PR #169 for Pebble CRM-write parity.
+    This endpoint takes only `payment_id`, so we first resolve the parent Opp
+    via a cheap SOQL query (also gives us a 404 if the payment doesn't exist),
+    then defer to `_enforce_record_ownership` — non-owner deletes rejected
+    unless admin or `edit_all_opportunities` (PR #163 hardening). Service
+    callers (is_service=True) short-circuit inside the helper."""
     validate_salesforce_id(payment_id, "payment_id")
     try:
         salesforce = client.salesforce
@@ -982,7 +1182,9 @@ async def delete_payment(
             raise HTTPException(status_code=404, detail="Payment not found")
         parent_opp_id = parent_records[0].get("npe01__Opportunity__c")
         if parent_opp_id:
-            await _enforce_opp_ownership_for_payment(salesforce, parent_opp_id, user)
+            await _enforce_record_ownership(
+                salesforce, "Opportunity", parent_opp_id, user, "edit_all_opportunities",
+            )
         # Ownership OK — proceed with the destructive action.
         success = await salesforce.delete_record("npe01__OppPayment__c", payment_id)
         if not success:
@@ -1019,7 +1221,7 @@ async def create_payment(
     request: Request,
     create_request: PaymentCreateRequest,
     client: UnifiedMCPClient = Depends(get_mcp_client),
-    user = Depends(check_permission("edit_payments")),
+    user = Depends(check_permission_or_internal("edit_payments")),
 ):
     """Create a single Salesforce Payment (npe01__OppPayment__c) on an existing
     opportunity.
@@ -1029,16 +1231,20 @@ async def create_payment(
     no validation that the sum matches the Opportunity Amount. The Opp
     dialog's inline Payment Schedule accordion calls this on "+ Add Payment".
 
-    Auth: `check_permission("edit_payments")` is the outer gate; then
-    `_enforce_opp_ownership_for_payment` rejects non-owner writes unless the
-    caller is admin or has `edit_all_opportunities` (PR #163 hardening).
+    Auth: `check_permission_or_internal("edit_payments")` is the outer gate.
+    Switched from `check_permission` in PR #169 so Pebble's future
+    `pebble_crm_write` flow can create payments via the internal API key.
+    User-path then runs `_enforce_record_ownership` — non-owner writes
+    rejected unless admin or `edit_all_opportunities` (PR #163 hardening).
+    Service callers (is_service=True) short-circuit inside the helper.
     """
     validate_salesforce_id(create_request.opportunity_id, "opportunity_id")
     try:
         salesforce = client.salesforce
         # Ownership gate before any SF mutation.
-        await _enforce_opp_ownership_for_payment(
-            salesforce, create_request.opportunity_id, user,
+        await _enforce_record_ownership(
+            salesforce, "Opportunity", create_request.opportunity_id, user,
+            "edit_all_opportunities",
         )
         fields: Dict[str, Any] = {
             "npe01__Opportunity__c": create_request.opportunity_id,
@@ -1174,6 +1380,12 @@ class TaskCreateRequest(BaseModel):
     ActivityDate: Optional[str] = None
     Description: Optional[str] = None
     OwnerId: Optional[str] = None
+    # WhoId (Contact link) added PR #169 so RMs can assign tasks to specific
+    # contacts from the TaskPanel Contact autocomplete. SF Task has both
+    # WhoId (Contact/Lead) and WhatId (parent entity — Opp/Account/etc.);
+    # WhatId is set from the URL path in create_opportunity_task, WhoId
+    # from the body.
+    WhoId: Optional[str] = None
 
 
 class TaskUpdateRequest(BaseModel):
@@ -1184,6 +1396,7 @@ class TaskUpdateRequest(BaseModel):
     Description: Optional[str] = None
     OwnerId: Optional[str] = None
     WhatId: Optional[str] = None
+    WhoId: Optional[str] = None
 
 
 class TaskDuplicateRequest(BaseModel):
@@ -1266,7 +1479,12 @@ async def create_opportunity_task(
             if lock["locked_by"] != sf_user_id and not perms.get("manage_users_roles", False):
                 raise HTTPException(403, "Cannot create tasks on a locked opportunity")
         salesforce = client.salesforce
-        fields = {"WhatId": opportunity_id, **task_data.model_dump(exclude_none=True)}
+        # B10 defensive fix (PR #169): reverse the dict-spread order so the
+        # URL path param wins over any WhatId a client might send in the body.
+        # TaskCreateRequest doesn't currently declare WhatId, and Pydantic's
+        # default extra="ignore" filters unknowns — but an override here would
+        # bind the task to the wrong opp silently. Belt-and-suspenders.
+        fields = {**task_data.model_dump(exclude_none=True), "WhatId": opportunity_id}
         result = await salesforce.create_record("Task", fields)
         task_id = result.get("id") or result.get("Id")
         cache.invalidate_prefix("my-tasks:")

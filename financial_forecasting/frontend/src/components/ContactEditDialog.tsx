@@ -30,6 +30,7 @@ import ConfirmSaveButton from './ConfirmSaveButton';
 import ActivityTimeline from './ActivityTimeline';
 import { apiService } from '../services/api';
 import { usePermissions } from '../contexts/PermissionsContext';
+import { useSchemaPicklist } from '../hooks/useSchemaPicklist';
 import { fieldStatusProps, findMissingFields } from '../utils/fieldLoadStatus';
 import SaveBlockedDialog from './SaveBlockedDialog';
 
@@ -50,6 +51,10 @@ const CONTACT_EDITABLE_FIELDS: readonly string[] = [
   'Email',
   'npe01__WorkEmail__c',
   'npe01__HomeEmail__c',
+  // npe01__AlternateEmail__c — new editable field PR #169 per cheat-sheet
+  // "Edit your Contacts" bullet. Already SELECTed in get_contacts SOQL
+  // (main.py:584), so the save-guard won't false-positive.
+  'npe01__AlternateEmail__c',
   'npe01__Preferred_Email__c',
   'Phone',
   'MobilePhone',
@@ -88,6 +93,9 @@ interface ContactEditDialogProps {
   contactId: string | null;
   initialData?: Record<string, any>;
   onSaved?: (contactId: string, updates: Record<string, any>) => void;
+  /** Fires after a successful destructive delete. Parent invalidates any
+   *  extra caches the dialog's own invalidateQueries doesn't cover. */
+  onDeleted?: (contactId: string) => void;
   /** When provided, shows "Open" icons next to lookup fields for stacked dialog navigation. */
   onOpenRelated?: (type: 'opportunity' | 'account' | 'contact', id: string) => void;
 }
@@ -100,12 +108,6 @@ interface UserOption {
 interface AccountOption {
   Id: string;
   Name: string;
-}
-
-interface PicklistValue {
-  value: string;
-  label: string;
-  active: boolean;
 }
 
 // ── Constants ───────────────────────────────────────────────────────────────
@@ -132,9 +134,6 @@ const READONLY_FIELDS = new Set([
   'RecordTypeId', 'IsDeleted', 'SystemModstamp',
 ]);
 
-// Hardcoded fallback picklist values
-const FALLBACK_SALUTATIONS = ['Mr.', 'Ms.', 'Mrs.', 'Dr.', 'Prof.'];
-
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 function formatDate(iso: string | null | undefined): string {
@@ -156,14 +155,6 @@ function formatDateShort(iso: string | null | undefined): string {
  * so all four drawers read as one visual family. */
 const DRAWER_HEADER_GRADIENT = 'linear-gradient(135deg, #1976d2 0%, #1565c0 100%)';
 
-function extractPicklistValues(fields: any[], fieldName: string): string[] {
-  const field = fields.find((f: any) => f.name === fieldName);
-  if (!field?.picklistValues) return [];
-  return field.picklistValues
-    .filter((pv: PicklistValue) => pv.active)
-    .map((pv: PicklistValue) => pv.value);
-}
-
 // ── Component ───────────────────────────────────────────────────────────────
 
 const ContactEditDialog: React.FC<ContactEditDialogProps> = ({
@@ -172,6 +163,7 @@ const ContactEditDialog: React.FC<ContactEditDialogProps> = ({
   contactId,
   initialData,
   onSaved,
+  onDeleted,
   onOpenRelated,
 }) => {
   const queryClient = useQueryClient();
@@ -182,6 +174,7 @@ const ContactEditDialog: React.FC<ContactEditDialogProps> = ({
   const [originalRecord, setOriginalRecord] = useState<Record<string, any> | null>(null);
   const [saveBlockedMissing, setSaveBlockedMissing] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
 
   // Merge per-field validation error with load-status caption.
@@ -198,12 +191,14 @@ const ContactEditDialog: React.FC<ContactEditDialogProps> = ({
   const [usersLoading, setUsersLoading] = useState(false);
   const [accountsLoading, setAccountsLoading] = useState(false);
 
-  // Picklist values from SF schema
-  const [salutationValues, setSalutationValues] = useState<string[]>(FALLBACK_SALUTATIONS);
-  const [genderValues, setGenderValues] = useState<string[]>([]);
-  const [preferredPhoneValues, setPreferredPhoneValues] = useState<string[]>([]);
-  const [preferredEmailValues, setPreferredEmailValues] = useState<string[]>([]);
-  const [leadSourceValues, setLeadSourceValues] = useState<string[]>([]);
+  // Schema-driven picklists via useSchemaPicklist (PR #169). Replaces the
+  // prior FALLBACK_SALUTATIONS + useState + ad-hoc getSchemaDescribe useEffect.
+  // Each hook keys on (sobject, fieldName) with shared 30-min cache.
+  const salutationField = useSchemaPicklist('Contact', 'Salutation');
+  const genderField = useSchemaPicklist('Contact', 'Gender__c');
+  const preferredPhoneField = useSchemaPicklist('Contact', 'npe01__PreferredPhone__c');
+  const preferredEmailField = useSchemaPicklist('Contact', 'npe01__Preferred_Email__c');
+  const leadSourceField = useSchemaPicklist('Contact', 'LeadSource');
 
   // ── Drawer resize ───────────────────────────────────────────────────────
   const MIN_WIDTH = 480;
@@ -293,24 +288,7 @@ const ContactEditDialog: React.FC<ContactEditDialogProps> = ({
       .catch(() => { if (!cancelled) setAccounts([]); })
       .finally(() => { if (!cancelled) setAccountsLoading(false); });
 
-    // Load picklist values from SF schema
-    apiService.getSchemaDescribe('Contact')
-      .then((res) => {
-        if (cancelled) return;
-        const fields = res.data?.fields || [];
-        const extract = (name: string) => extractPicklistValues(fields, name);
-        const salutations = extract('Salutation');
-        if (salutations.length) setSalutationValues(salutations);
-        const genders = extract('Gender__c');
-        if (genders.length) setGenderValues(genders);
-        const prefPhone = extract('npe01__PreferredPhone__c');
-        if (prefPhone.length) setPreferredPhoneValues(prefPhone);
-        const prefEmail = extract('npe01__Preferred_Email__c');
-        if (prefEmail.length) setPreferredEmailValues(prefEmail);
-        const leads = extract('LeadSource');
-        if (leads.length) setLeadSourceValues(leads);
-      })
-      .catch(() => { /* Use fallback values */ });
+    // Picklist values now sourced from useSchemaPicklist hooks above (PR #169).
 
     return () => { cancelled = true; };
   }, [open]);
@@ -397,6 +375,34 @@ const ContactEditDialog: React.FC<ContactEditDialogProps> = ({
       toast.error(detail);
     } finally {
       setSaving(false);
+    }
+  };
+
+  // ── Delete handler ──────────────────────────────────────────────────────
+  // Destructive and irreversible at the SF level. Backend enforces
+  // ownership via _enforce_record_ownership on Contact (admin-or-owner).
+  const handleDelete = async () => {
+    if (!contactId) return;
+    setDeleting(true);
+    try {
+      await apiService.deleteSfContact(contactId);
+      toast.success('Contact deleted');
+      // Mirror DialogStackContext.tsx:163 invalidate pattern
+      queryClient.invalidateQueries('all-contacts');
+      if (originalRecord?.AccountId) {
+        queryClient.invalidateQueries(['account-contacts', originalRecord.AccountId]);
+      }
+      if (onDeleted) onDeleted(contactId);
+      onClose();
+    } catch (error: any) {
+      const detail =
+        error?.response?.data?.detail ||
+        error?.response?.data?.error ||
+        error?.message ||
+        'Failed to delete contact';
+      toast.error(detail);
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -524,21 +530,40 @@ const ContactEditDialog: React.FC<ContactEditDialogProps> = ({
             {/* ── Section 1: Identity ──────────────────────────────── */}
             <Grid container spacing={2}>
               <Grid item xs={12} sm={3}>
-                <TextField
-                  label="Salutation"
-                  fullWidth
-                  size="small"
-                  select
-                  disabled={!canEdit}
-                  value={editForm.Salutation || ''}
-                  onChange={(e) => handleFieldChange('Salutation', e.target.value)}
-                  {...getHelperProps('Salutation')}
-                >
-                  <MenuItem value="">None</MenuItem>
-                  {salutationValues.map((v) => (
-                    <MenuItem key={v} value={v}>{v}</MenuItem>
-                  ))}
-                </TextField>
+                {salutationField.options.length > 0 ? (
+                  <TextField
+                    label="Salutation"
+                    fullWidth
+                    size="small"
+                    select
+                    disabled={!canEdit}
+                    value={editForm.Salutation || ''}
+                    onChange={(e) => handleFieldChange('Salutation', e.target.value)}
+                    {...getHelperProps('Salutation')}
+                  >
+                    <MenuItem value="">None</MenuItem>
+                    {salutationField.options.map((v) => (
+                      <MenuItem key={v} value={v}>{v}</MenuItem>
+                    ))}
+                    {editForm.Salutation
+                      && !salutationField.options.some((v) => v === editForm.Salutation) && (
+                      <MenuItem value={editForm.Salutation} disabled>
+                        {editForm.Salutation} (inactive)
+                      </MenuItem>
+                    )}
+                  </TextField>
+                ) : (
+                  <TextField
+                    label="Salutation"
+                    fullWidth
+                    size="small"
+                    disabled
+                    value={editForm.Salutation || ''}
+                    helperText={salutationField.error
+                      ? 'Salutation list unavailable'
+                      : 'No active salutations available'}
+                  />
+                )}
               </Grid>
               <Grid item xs={12} sm={4.5}>
                 <TextField
@@ -586,7 +611,7 @@ const ContactEditDialog: React.FC<ContactEditDialogProps> = ({
                 />
               </Grid>
               <Grid item xs={12} sm={4}>
-                {genderValues.length > 0 ? (
+                {genderField.options.length > 0 ? (
                   <TextField
                     label="Gender"
                     fullWidth
@@ -598,9 +623,15 @@ const ContactEditDialog: React.FC<ContactEditDialogProps> = ({
                     {...getHelperProps('Gender__c')}
                   >
                     <MenuItem value="">None</MenuItem>
-                    {genderValues.map((v) => (
+                    {genderField.options.map((v) => (
                       <MenuItem key={v} value={v}>{v}</MenuItem>
                     ))}
+                    {editForm.Gender__c
+                      && !genderField.options.some((v) => v === editForm.Gender__c) && (
+                      <MenuItem value={editForm.Gender__c} disabled>
+                        {editForm.Gender__c} (inactive)
+                      </MenuItem>
+                    )}
                   </TextField>
                 ) : (
                   <TextField
@@ -611,6 +642,9 @@ const ContactEditDialog: React.FC<ContactEditDialogProps> = ({
                     value={editForm.Gender__c || ''}
                     onChange={(e) => handleFieldChange('Gender__c', e.target.value)}
                     {...getHelperProps('Gender__c')}
+                    helperText={genderField.error
+                      ? 'Gender list unavailable'
+                      : undefined}
                   />
                 )}
               </Grid>
@@ -718,7 +752,22 @@ const ContactEditDialog: React.FC<ContactEditDialogProps> = ({
                 />
               </Grid>
               <Grid item xs={12} sm={6}>
-                {preferredEmailValues.length > 0 ? (
+                {/* Alternate Email — new editable field PR #169 per cheat-sheet
+                    "Edit your Contacts" bullet. get_contacts SOQL already
+                    SELECTs npe01__AlternateEmail__c (main.py:584). */}
+                <TextField
+                  label="Alternate Email"
+                  fullWidth
+                  size="small"
+                  type="email"
+                  disabled={!canEdit}
+                  value={editForm.npe01__AlternateEmail__c || ''}
+                  onChange={(e) => handleFieldChange('npe01__AlternateEmail__c', e.target.value)}
+                  {...getHelperProps('npe01__AlternateEmail__c')}
+                />
+              </Grid>
+              <Grid item xs={12} sm={6}>
+                {preferredEmailField.options.length > 0 ? (
                   <TextField
                     label="Preferred Email"
                     fullWidth
@@ -730,9 +779,15 @@ const ContactEditDialog: React.FC<ContactEditDialogProps> = ({
                     {...getHelperProps('npe01__Preferred_Email__c')}
                   >
                     <MenuItem value="">None</MenuItem>
-                    {preferredEmailValues.map((v) => (
+                    {preferredEmailField.options.map((v) => (
                       <MenuItem key={v} value={v}>{v}</MenuItem>
                     ))}
+                    {editForm.npe01__Preferred_Email__c
+                      && !preferredEmailField.options.some((v) => v === editForm.npe01__Preferred_Email__c) && (
+                      <MenuItem value={editForm.npe01__Preferred_Email__c} disabled>
+                        {editForm.npe01__Preferred_Email__c} (inactive)
+                      </MenuItem>
+                    )}
                   </TextField>
                 ) : (
                   <TextField
@@ -743,6 +798,9 @@ const ContactEditDialog: React.FC<ContactEditDialogProps> = ({
                     value={editForm.npe01__Preferred_Email__c || ''}
                     onChange={(e) => handleFieldChange('npe01__Preferred_Email__c', e.target.value)}
                     {...getHelperProps('npe01__Preferred_Email__c')}
+                    helperText={preferredEmailField.error
+                      ? 'Preferred Email list unavailable'
+                      : undefined}
                   />
                 )}
               </Grid>
@@ -782,8 +840,8 @@ const ContactEditDialog: React.FC<ContactEditDialogProps> = ({
                   {...getHelperProps('npe01__WorkPhone__c')}
                 />
               </Grid>
-              {preferredPhoneValues.length > 0 && (
-                <Grid item xs={12} sm={4}>
+              <Grid item xs={12} sm={4}>
+                {preferredPhoneField.options.length > 0 ? (
                   <TextField
                     label="Preferred Phone"
                     fullWidth
@@ -795,12 +853,29 @@ const ContactEditDialog: React.FC<ContactEditDialogProps> = ({
                     {...getHelperProps('npe01__PreferredPhone__c')}
                   >
                     <MenuItem value="">None</MenuItem>
-                    {preferredPhoneValues.map((v) => (
+                    {preferredPhoneField.options.map((v) => (
                       <MenuItem key={v} value={v}>{v}</MenuItem>
                     ))}
+                    {editForm.npe01__PreferredPhone__c
+                      && !preferredPhoneField.options.some((v) => v === editForm.npe01__PreferredPhone__c) && (
+                      <MenuItem value={editForm.npe01__PreferredPhone__c} disabled>
+                        {editForm.npe01__PreferredPhone__c} (inactive)
+                      </MenuItem>
+                    )}
                   </TextField>
-                </Grid>
-              )}
+                ) : (
+                  <TextField
+                    label="Preferred Phone"
+                    fullWidth
+                    size="small"
+                    disabled
+                    value={editForm.npe01__PreferredPhone__c || ''}
+                    helperText={preferredPhoneField.error
+                      ? 'Preferred Phone list unavailable'
+                      : 'No active preferred-phone values'}
+                  />
+                )}
+              </Grid>
             </Grid>
 
             {/* ── Section 4: Address ──────────────────────────────── */}
@@ -924,8 +999,8 @@ const ContactEditDialog: React.FC<ContactEditDialogProps> = ({
                   {...getHelperProps('Board_Status__c')}
                 />
               </Grid>
-              {leadSourceValues.length > 0 && (
-                <Grid item xs={12} sm={6}>
+              <Grid item xs={12} sm={6}>
+                {leadSourceField.options.length > 0 ? (
                   <TextField
                     label="Lead Source"
                     fullWidth
@@ -937,12 +1012,29 @@ const ContactEditDialog: React.FC<ContactEditDialogProps> = ({
                     {...getHelperProps('LeadSource')}
                   >
                     <MenuItem value="">None</MenuItem>
-                    {leadSourceValues.map((v) => (
+                    {leadSourceField.options.map((v) => (
                       <MenuItem key={v} value={v}>{v}</MenuItem>
                     ))}
+                    {editForm.LeadSource
+                      && !leadSourceField.options.some((v) => v === editForm.LeadSource) && (
+                      <MenuItem value={editForm.LeadSource} disabled>
+                        {editForm.LeadSource} (inactive)
+                      </MenuItem>
+                    )}
                   </TextField>
-                </Grid>
-              )}
+                ) : (
+                  <TextField
+                    label="Lead Source"
+                    fullWidth
+                    size="small"
+                    disabled
+                    value={editForm.LeadSource || ''}
+                    helperText={leadSourceField.error
+                      ? 'Lead Source list unavailable'
+                      : 'No active lead sources available'}
+                  />
+                )}
+              </Grid>
               <Grid item xs={12} sm={6}>
                 <TextField
                   label="LinkedIn URL"
@@ -1104,12 +1196,31 @@ const ContactEditDialog: React.FC<ContactEditDialogProps> = ({
 
       {/* Sticky footer */}
       <Box sx={{ px: 3, py: 1.5, borderTop: 1, borderColor: 'divider', display: 'flex', justifyContent: 'flex-end', gap: 1 }}>
-        <Button onClick={onClose}>{dialogTab === 0 ? 'Cancel' : 'Close'}</Button>
+        {/* Destructive Delete only on the Details tab — same gate as Save.
+            Mirrors PaymentEditDialog.tsx:650 destructive pattern. */}
+        {dialogTab === 0 && originalRecord && canEdit && (
+          <ConfirmSaveButton
+            onConfirm={handleDelete}
+            loading={deleting}
+            disabled={!contactId}
+            variant="outlined"
+            color="error"
+            confirmTitle="Delete Contact?"
+            confirmMessage="This permanently deletes the contact from Salesforce. This cannot be undone."
+            confirmLabel="Delete"
+            sx={{ mr: 'auto' }}
+          >
+            Delete
+          </ConfirmSaveButton>
+        )}
+        <Button onClick={onClose} disabled={saving || deleting}>
+          {dialogTab === 0 ? 'Cancel' : 'Close'}
+        </Button>
         {dialogTab === 0 && (
           <ConfirmSaveButton
             onConfirm={handleSave}
             loading={saving}
-            disabled={!canEdit || !originalRecord}
+            disabled={!canEdit || !originalRecord || deleting}
           >
             Save
           </ConfirmSaveButton>

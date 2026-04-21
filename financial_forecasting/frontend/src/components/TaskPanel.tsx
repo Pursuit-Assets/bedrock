@@ -21,6 +21,7 @@ import {
   DialogTitle,
   DialogContent,
   DialogActions,
+  Autocomplete,
 } from '@mui/material';
 import {
   Close as CloseIcon,
@@ -44,15 +45,17 @@ import {
 import { useQuery, useMutation, useQueryClient } from 'react-query';
 import { apiService } from '../services/api';
 import { usePermissions } from '../contexts/PermissionsContext';
+import { useSchemaPicklist } from '../hooks/useSchemaPicklist';
 import toast from 'react-hot-toast';
 import ConfirmSaveButton from './ConfirmSaveButton';
 import SaveStatusIndicator from './SaveStatusIndicator';
 import { fieldStatusProps, getFieldLoadStatus, findMissingFields } from '../utils/fieldLoadStatus';
 import SaveBlockedDialog from './SaveBlockedDialog';
 
-// Task fields the inline edit form can save. DriveLink is a UI-only stub
-// (tracked for removal in Lane B13 `pr-drivelink-stub-fix`), so it's
-// excluded — no SF field to compare against.
+// Task fields the inline edit form can save. WhoId added PR #169 for the
+// new Contact autocomplete. DriveLink is a UI-only stub (tracked for
+// removal in Lane B13 `pr-drivelink-stub-fix`), so it's excluded — no SF
+// field to compare against.
 const TASK_EDITABLE_FIELDS: readonly string[] = [
   'Subject',
   'Status',
@@ -60,6 +63,7 @@ const TASK_EDITABLE_FIELDS: readonly string[] = [
   'ActivityDate',
   'OwnerId',
   'WhatId',
+  'WhoId',
   'Description',
 ] as const;
 
@@ -224,6 +228,29 @@ const TaskPanel: React.FC<TaskPanelProps> = ({ open, onClose, opportunity, users
   const [taskSort, setTaskSort] = useState<'asc' | 'desc'>('asc');
   const [saveBlockedMissing, setSaveBlockedMissing] = useState<string[]>([]);
 
+  // Schema-driven Status + Priority picklists (PR #169 / B6). Each hook
+  // shares the 30-min react-query cache keyed on (sobject, fieldName).
+  // Empty options → fall back to the prior hardcoded MenuItems below.
+  const statusPicklist = useSchemaPicklist('Task', 'Status');
+  const priorityPicklist = useSchemaPicklist('Task', 'Priority');
+
+  // Contact autocomplete options (PR #169 / B5 — new Contact link via WhoId).
+  // Reuse the existing /api/salesforce/contacts list endpoint; small list at
+  // Pursuit's scale, fits inside an Autocomplete without server-side search.
+  const { data: contactOptionsData } = useQuery(
+    'taskpanel-contacts',
+    async () => {
+      const res = await apiService.getContacts();
+      const data = res.data?.data || res.data || [];
+      return Array.isArray(data) ? data : [];
+    },
+    { enabled: open, staleTime: 5 * 60 * 1000 }
+  );
+  const contactOptions: Array<{ Id: string; Name: string }> = useMemo(
+    () => (contactOptionsData ?? []).map((c: any) => ({ Id: c.Id, Name: c.Name })),
+    [contactOptionsData],
+  );
+
   // New task form state
   const [newTask, setNewTask] = useState({
     Subject: '',
@@ -232,6 +259,7 @@ const TaskPanel: React.FC<TaskPanelProps> = ({ open, onClose, opportunity, users
     ActivityDate: '',
     Description: '',
     OwnerId: '',
+    WhoId: '',
     DriveLink: '',
   });
 
@@ -243,6 +271,7 @@ const TaskPanel: React.FC<TaskPanelProps> = ({ open, onClose, opportunity, users
     ActivityDate: '',
     Description: '',
     OwnerId: '',
+    WhoId: '',
     DriveLink: '',
     WhatId: '',
   });
@@ -384,20 +413,29 @@ const TaskPanel: React.FC<TaskPanelProps> = ({ open, onClose, opportunity, users
   const createTaskMutation = useMutation(
     async (taskData: typeof newTask) => {
       if (!opportunity?.Id) throw new Error('No opportunity selected');
+      // Build the payload explicitly instead of spreading `taskData` so that
+      //   (a) DriveLink (UI-only stub) doesn't leak into the request, and
+      //   (b) empty strings coerce to undefined → TaskCreateRequest's
+      //       `model_dump(exclude_none=True)` drops them instead of SF
+      //       rejecting '' for date/Id fields (B8 failure mode).
       const response = await apiService.createTask(opportunity.Id, {
-        ...taskData,
+        Subject: taskData.Subject,
+        Status: taskData.Status || undefined,
+        Priority: taskData.Priority || undefined,
         ActivityDate: taskData.ActivityDate || undefined,
         Description: taskData.Description || undefined,
         OwnerId: taskData.OwnerId || undefined,
+        WhoId: taskData.WhoId || undefined,
       });
       return response.data;
     },
     {
       onSuccess: () => {
         queryClient.invalidateQueries(['opportunity-tasks', opportunity?.Id]);
+        queryClient.invalidateQueries(['my-tasks']);
         toast.success('Task created!');
         setShowAddForm(false);
-        setNewTask({ Subject: '', Status: 'Not Started', Priority: 'Normal', ActivityDate: '', Description: '', OwnerId: '', DriveLink: '' });
+        setNewTask({ Subject: '', Status: 'Not Started', Priority: 'Normal', ActivityDate: '', Description: '', OwnerId: '', WhoId: '', DriveLink: '' });
       },
       onError: (error: any) => {
         toast.error(`Failed to create task: ${error.message}`);
@@ -455,6 +493,7 @@ const TaskPanel: React.FC<TaskPanelProps> = ({ open, onClose, opportunity, users
       ActivityDate: task.ActivityDate || '',
       Description: task.Description || '',
       OwnerId: task.OwnerId || '',
+      WhoId: task.WhoId || '',
       DriveLink: '',
       WhatId: task.WhatId || opportunity?.Id || '',
     });
@@ -472,7 +511,40 @@ const TaskPanel: React.FC<TaskPanelProps> = ({ open, onClose, opportunity, users
         return;
       }
     }
-    updateTaskMutation.mutate({ taskId: editingTaskId, updates: editTask });
+    // Diff-based update (B8 fix, PR #169). Previously TaskPanel sent the
+    // entire `editTask` object verbatim — including `ActivityDate: ''` /
+    // `OwnerId: ''` / `WhoId: ''` for unchanged optional fields — and SF
+    // rejected empty-string dates + ids with 400. Compute a diff against
+    // the originalTask and only send changed fields. Normalize '' → null
+    // so an intentional clear can still propagate (backend treats None
+    // specially via exclude_none, so explicit null goes through).
+    const updates: Record<string, any> = {};
+    const candidates: Record<string, any> = {
+      Subject: editTask.Subject,
+      Status: editTask.Status,
+      Priority: editTask.Priority,
+      ActivityDate: editTask.ActivityDate,
+      Description: editTask.Description,
+      OwnerId: editTask.OwnerId,
+      WhatId: editTask.WhatId,
+      WhoId: editTask.WhoId,
+    };
+    for (const [key, rawNew] of Object.entries(candidates)) {
+      const rawOld = (originalTask as any)?.[key] ?? null;
+      // Treat '' and null as equivalent for comparison — SF returns null
+      // for unset fields; form state holds ''.
+      const newNorm = rawNew === '' ? null : rawNew;
+      const oldNorm = rawOld === '' ? null : rawOld;
+      if (newNorm !== oldNorm) {
+        updates[key] = newNorm;
+      }
+    }
+    if (Object.keys(updates).length === 0) {
+      toast('No changes detected');
+      setEditingTaskId(null);
+      return;
+    }
+    updateTaskMutation.mutate({ taskId: editingTaskId, updates });
   };
 
   const handleCreateTask = () => {
@@ -559,6 +631,7 @@ const TaskPanel: React.FC<TaskPanelProps> = ({ open, onClose, opportunity, users
         ActivityDate: orphanTask.ActivityDate || '',
         Description: orphanTask.Description || '',
         OwnerId: orphanTask.OwnerId || '',
+        WhoId: '', // OrphanTask doesn't carry WhoId through the orphan-mode contract
         DriveLink: '',
         WhatId: orphanTask.WhatId || '',
       });
@@ -821,6 +894,10 @@ const TaskPanel: React.FC<TaskPanelProps> = ({ open, onClose, opportunity, users
             />
             
             <Box sx={{ display: 'flex', gap: 1, mb: 1.5 }}>
+              {/* Status: schema-driven via useSchemaPicklist('Task', 'Status').
+                  Fall back to the four common SF defaults (Not Started /
+                  In Progress / Completed / Deferred) when the schema
+                  describe is unavailable. */}
               <FormControl size="small" sx={{ flex: 1 }}>
                 <InputLabel>Status</InputLabel>
                 <Select
@@ -828,12 +905,18 @@ const TaskPanel: React.FC<TaskPanelProps> = ({ open, onClose, opportunity, users
                   label="Status"
                   onChange={(e) => setNewTask({ ...newTask, Status: e.target.value })}
                 >
-                  <MenuItem value="Not Started">Not Started</MenuItem>
-                  <MenuItem value="In Progress">In Progress</MenuItem>
-                  <MenuItem value="Completed">Completed</MenuItem>
-                  <MenuItem value="Deferred">Deferred</MenuItem>
+                  {statusPicklist.options.length > 0
+                    ? statusPicklist.options.map((v) => (
+                        <MenuItem key={v} value={v}>{v}</MenuItem>
+                      ))
+                    : ['Not Started', 'In Progress', 'Completed', 'Deferred'].map((v) => (
+                        <MenuItem key={v} value={v}>{v}</MenuItem>
+                      ))}
                 </Select>
               </FormControl>
+              {/* Priority: schema-driven. Fall back to SF defaults. Dropped
+                  the emoji prefixes — SF doesn't store them, and they'd
+                  break if SF ever adds a new priority value. */}
               <FormControl size="small" sx={{ flex: 1 }}>
                 <InputLabel>Priority</InputLabel>
                 <Select
@@ -841,9 +924,13 @@ const TaskPanel: React.FC<TaskPanelProps> = ({ open, onClose, opportunity, users
                   label="Priority"
                   onChange={(e) => setNewTask({ ...newTask, Priority: e.target.value })}
                 >
-                  <MenuItem value="High">🔴 High</MenuItem>
-                  <MenuItem value="Normal">🔵 Normal</MenuItem>
-                  <MenuItem value="Low">⚪ Low</MenuItem>
+                  {priorityPicklist.options.length > 0
+                    ? priorityPicklist.options.map((v) => (
+                        <MenuItem key={v} value={v}>{v}</MenuItem>
+                      ))
+                    : ['High', 'Normal', 'Low'].map((v) => (
+                        <MenuItem key={v} value={v}>{v}</MenuItem>
+                      ))}
                 </Select>
               </FormControl>
             </Box>
@@ -875,6 +962,23 @@ const TaskPanel: React.FC<TaskPanelProps> = ({ open, onClose, opportunity, users
               </FormControl>
             )}
 
+            {/* Contact link (WhoId) — PR #169 / B5 per cheat-sheet RM bullet
+                "assign tasks to collaborators". Mirrors the existing Account
+                autocomplete pattern elsewhere in the codebase. */}
+            <Autocomplete
+              options={contactOptions}
+              getOptionLabel={(c) => c.Name || ''}
+              value={contactOptions.find((c) => c.Id === newTask.WhoId) || null}
+              onChange={(_e, newValue) =>
+                setNewTask({ ...newTask, WhoId: newValue?.Id || '' })
+              }
+              isOptionEqualToValue={(option, value) => option.Id === value?.Id}
+              renderInput={(params) => (
+                <TextField {...params} label="Contact (optional)" size="small" />
+              )}
+              sx={{ mb: 1.5 }}
+            />
+
             <TextField
               label="Description"
               value={newTask.Description}
@@ -900,7 +1004,7 @@ const TaskPanel: React.FC<TaskPanelProps> = ({ open, onClose, opportunity, users
             <Box sx={{ display: 'flex', gap: 1, justifyContent: 'flex-end' }}>
               <Button
                 size="small"
-                onClick={() => { setShowAddForm(false); setNewTask({ Subject: '', Status: 'Not Started', Priority: 'Normal', ActivityDate: '', Description: '', OwnerId: '', DriveLink: '' }); }}
+                onClick={() => { setShowAddForm(false); setNewTask({ Subject: '', Status: 'Not Started', Priority: 'Normal', ActivityDate: '', Description: '', OwnerId: '', WhoId: '', DriveLink: '' }); }}
                 startIcon={<CancelIcon />}
               >
                 Cancel
@@ -1092,6 +1196,12 @@ interface TaskItemProps {
   onDelete: (id: string) => void;
   users?: Array<{ Id: string; Name: string }>;
   isSaving: boolean;
+  // Schema-driven picklists for Status + Priority (PR #169 / B6). Empty
+  // array → TaskItem falls back to the hardcoded defaults.
+  statusOptions?: string[];
+  priorityOptions?: string[];
+  // Contact autocomplete options for WhoId (PR #169 / B5).
+  contactOptions?: Array<{ Id: string; Name: string }>;
   // Dependencies
   dependencies?: Array<{ depId: string; dependsOnId: string }>;
   siblingTasks?: Task[];
@@ -1110,6 +1220,7 @@ interface TaskItemProps {
 const TaskItem: React.FC<TaskItemProps> = ({
   task, isEditing, editTask, setEditTask, expandedTaskId, setExpandedTaskId,
   onToggleStatus, onStartEdit, onSaveEdit, onCancelEdit, onDelete, users, isSaving, opportunities,
+  statusOptions, priorityOptions, contactOptions,
   dependencies, siblingTasks, allInboxTasks, onAddDep, onRemoveDep,
   projects, onLinkToProject,
   isOppLocked, canEditLockedOpp, isTaskOwner,

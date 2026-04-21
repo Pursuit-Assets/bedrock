@@ -26,6 +26,7 @@ import toast from 'react-hot-toast';
 import ConfirmSaveButton from './ConfirmSaveButton';
 import { apiService } from '../services/api';
 import { usePermissions } from '../contexts/PermissionsContext';
+import { useSchemaPicklist } from '../hooks/useSchemaPicklist';
 import { fieldStatusProps, findMissingFields } from '../utils/fieldLoadStatus';
 import SaveBlockedDialog from './SaveBlockedDialog';
 
@@ -86,6 +87,12 @@ interface AccountEditDialogProps {
   accountId: string | null;
   initialData?: Record<string, any>;
   onSaved?: (accountId: string, updates: Record<string, any>) => void;
+  /** Fires after a successful destructive delete from the footer Delete
+   *  button. Parent is responsible for any extra cache invalidation /
+   *  list refetch that the dialog's own `queryClient.invalidateQueries`
+   *  doesn't already cover. Distinct from onSaved because semantics
+   *  differ — no updates dict, record is gone rather than modified. */
+  onDeleted?: (accountId: string) => void;
 }
 
 interface UserOption {
@@ -96,12 +103,6 @@ interface UserOption {
 interface AccountOption {
   Id: string;
   Name: string;
-}
-
-interface PicklistValue {
-  value: string;
-  label: string;
-  active: boolean;
 }
 
 // ── Constants ───────────────────────────────────────────────────────────────
@@ -128,14 +129,6 @@ const READONLY_FIELDS = new Set([
   'Id', 'CreatedDate', 'LastModifiedDate', 'LastActivityDate',
   'RecordTypeId', 'IsDeleted', 'SystemModstamp',
 ]);
-
-// Hardcoded fallback picklist values — overwritten by live SF data on load
-const FALLBACK_TYPES = [
-  'Individual', 'Household', 'Corporate', 'Government',
-  'Nonprofit', 'Foundation', 'Academic Institution', 'Donor Advised Fund',
-];
-
-const FALLBACK_TIERS = ['General Account', 'Strategic Account', 'Target Strategic Account'];
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -172,14 +165,6 @@ function formatCurrencyShort(val: number | null | undefined): string {
  * so the four drawers read as one visual family. */
 const DRAWER_HEADER_GRADIENT = 'linear-gradient(135deg, #1976d2 0%, #1565c0 100%)';
 
-function extractPicklistValues(fields: any[], fieldName: string): string[] {
-  const field = fields.find((f: any) => f.name === fieldName);
-  if (!field?.picklistValues) return [];
-  return field.picklistValues
-    .filter((pv: PicklistValue) => pv.active)
-    .map((pv: PicklistValue) => pv.value);
-}
-
 // ── Component ───────────────────────────────────────────────────────────────
 
 const AccountEditDialog: React.FC<AccountEditDialogProps> = ({
@@ -188,6 +173,7 @@ const AccountEditDialog: React.FC<AccountEditDialogProps> = ({
   accountId,
   initialData,
   onSaved,
+  onDeleted,
 }) => {
   const queryClient = useQueryClient();
   const { can, isAdmin } = usePermissions();
@@ -197,6 +183,7 @@ const AccountEditDialog: React.FC<AccountEditDialogProps> = ({
   const [originalRecord, setOriginalRecord] = useState<Record<string, any> | null>(null);
   const [saveBlockedMissing, setSaveBlockedMissing] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
 
   // Merge per-field validation error with load-status caption. Validation
@@ -215,14 +202,18 @@ const AccountEditDialog: React.FC<AccountEditDialogProps> = ({
   const [usersLoading, setUsersLoading] = useState(false);
   const [accountsLoading, setAccountsLoading] = useState(false);
 
-  // Picklist values from SF schema
-  const [typeValues, setTypeValues] = useState<string[]>(FALLBACK_TYPES);
-  const [industryValues, setIndustryValues] = useState<string[]>([]);
-  const [accountSourceValues, setAccountSourceValues] = useState<string[]>([]);
-  const [tierValues, setTierValues] = useState<string[]>(FALLBACK_TIERS);
-  const [companySizeValues, setCompanySizeValues] = useState<string[]>([]);
-  const [fundingFocusValues, setFundingFocusValues] = useState<string[]>([]);
-  const [focusAreaValues, setFocusAreaValues] = useState<string[]>([]);
+  // Schema-driven picklists via useSchemaPicklist (PR #169). Replaces the
+  // prior FALLBACK_* + useState + ad-hoc getSchemaDescribe useEffect. Each
+  // hook keys on (sobject, fieldName) so callers sharing a field dedupe
+  // into one 30-min cached SF describe call. Empty options → disabled
+  // fallback below with distinguished helperText (error vs empty).
+  const typeField = useSchemaPicklist('Account', 'Type');
+  const industryField = useSchemaPicklist('Account', 'Industry');
+  const accountSourceField = useSchemaPicklist('Account', 'AccountSource');
+  const tierField = useSchemaPicklist('Account', 'Account_Tier__c');
+  const companySizeField = useSchemaPicklist('Account', 'Company_Size__c');
+  const fundingFocusField = useSchemaPicklist('Account', 'npsp__Funding_Focus__c');
+  const focusAreaField = useSchemaPicklist('Account', 'Organization_Focus_Area_s__c');
 
   // ── Drawer resize ───────────────────────────────────────────────────────
   const MIN_WIDTH = 480;
@@ -312,28 +303,9 @@ const AccountEditDialog: React.FC<AccountEditDialogProps> = ({
       .catch(() => { if (!cancelled) setAccounts([]); })
       .finally(() => { if (!cancelled) setAccountsLoading(false); });
 
-    // Load picklist values from SF schema
-    apiService.getSchemaDescribe('Account')
-      .then((res) => {
-        if (cancelled) return;
-        const fields = res.data?.fields || [];
-        const extract = (name: string) => extractPicklistValues(fields, name);
-        const types = extract('Type');
-        if (types.length) setTypeValues(types);
-        const industries = extract('Industry');
-        if (industries.length) setIndustryValues(industries);
-        const sources = extract('AccountSource');
-        if (sources.length) setAccountSourceValues(sources);
-        const tiers = extract('Account_Tier__c');
-        if (tiers.length) setTierValues(tiers);
-        const sizes = extract('Company_Size__c');
-        if (sizes.length) setCompanySizeValues(sizes);
-        const focus = extract('npsp__Funding_Focus__c');
-        if (focus.length) setFundingFocusValues(focus);
-        const areas = extract('Organization_Focus_Area_s__c');
-        if (areas.length) setFocusAreaValues(areas);
-      })
-      .catch(() => { /* Use fallback values */ });
+    // Picklist values are now sourced via useSchemaPicklist hooks above
+    // (PR #169) — they own their own react-query cache, retries, and
+    // stale-time policy. No manual fetch needed here.
 
     return () => { cancelled = true; };
   }, [open]);
@@ -431,6 +403,38 @@ const AccountEditDialog: React.FC<AccountEditDialogProps> = ({
       toast.error(detail);
     } finally {
       setSaving(false);
+    }
+  };
+
+  // ── Delete handler ──────────────────────────────────────────────────────
+  // Destructive and irreversible at the SF level. The Delete button in the
+  // footer uses ConfirmSaveButton's popover pattern — user must click
+  // Delete → read the scary warning → click Confirm in the popover. Backend
+  // enforces ownership via _enforce_record_ownership on Account.
+  const handleDelete = async () => {
+    if (!accountId) return;
+    setDeleting(true);
+    try {
+      await apiService.deleteSfAccount(accountId);
+      toast.success('Account deleted');
+      // Cascade: child Contacts reference AccountId, Opportunities reference
+      // AccountId (AccountCell's displayName lookup). Child caches stale on
+      // delete. Mirrors DialogStackContext.tsx:147-148's invalidate pattern.
+      queryClient.invalidateQueries('accounts');
+      queryClient.invalidateQueries('opportunities-for-accounts');
+      queryClient.invalidateQueries('opportunities');
+      queryClient.invalidateQueries('all-contacts');
+      if (onDeleted) onDeleted(accountId);
+      onClose();
+    } catch (error: any) {
+      const detail =
+        error?.response?.data?.detail ||
+        error?.response?.data?.error ||
+        error?.message ||
+        'Failed to delete account';
+      toast.error(detail);
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -557,89 +561,184 @@ const AccountEditDialog: React.FC<AccountEditDialogProps> = ({
                 />
               </Grid>
               <Grid item xs={12} sm={6}>
-                <TextField
-                  label="Account Type"
-                  fullWidth
-                  size="small"
-                  select
-                  disabled={!canEdit}
-                  value={editForm.Type || ''}
-                  onChange={(e) => handleFieldChange('Type', e.target.value)}
-                  {...getHelperProps('Type')}
-                >
-                  <MenuItem value="">None</MenuItem>
-                  {typeValues.map((v) => (
-                    <MenuItem key={v} value={v}>{v}</MenuItem>
-                  ))}
-                </TextField>
+                {typeField.options.length > 0 ? (
+                  <TextField
+                    label="Account Type"
+                    fullWidth
+                    size="small"
+                    select
+                    disabled={!canEdit}
+                    value={editForm.Type || ''}
+                    onChange={(e) => handleFieldChange('Type', e.target.value)}
+                    {...getHelperProps('Type')}
+                  >
+                    <MenuItem value="">None</MenuItem>
+                    {typeField.options.map((v) => (
+                      <MenuItem key={v} value={v}>{v}</MenuItem>
+                    ))}
+                    {editForm.Type
+                      && !typeField.options.some((v) => v === editForm.Type) && (
+                      <MenuItem value={editForm.Type} disabled>
+                        {editForm.Type} (inactive)
+                      </MenuItem>
+                    )}
+                  </TextField>
+                ) : (
+                  <TextField
+                    label="Account Type"
+                    fullWidth
+                    size="small"
+                    disabled
+                    value={editForm.Type || ''}
+                    helperText={typeField.error
+                      ? 'Account Type list unavailable'
+                      : 'No active account types available'}
+                  />
+                )}
               </Grid>
               <Grid item xs={12} sm={6}>
-                <TextField
-                  label="Industry"
-                  fullWidth
-                  size="small"
-                  select
-                  disabled={!canEdit}
-                  value={editForm.Industry || ''}
-                  onChange={(e) => handleFieldChange('Industry', e.target.value)}
-                  {...getHelperProps('Industry')}
-                >
-                  <MenuItem value="">None</MenuItem>
-                  {industryValues.map((v) => (
-                    <MenuItem key={v} value={v}>{v}</MenuItem>
-                  ))}
-                </TextField>
+                {industryField.options.length > 0 ? (
+                  <TextField
+                    label="Industry"
+                    fullWidth
+                    size="small"
+                    select
+                    disabled={!canEdit}
+                    value={editForm.Industry || ''}
+                    onChange={(e) => handleFieldChange('Industry', e.target.value)}
+                    {...getHelperProps('Industry')}
+                  >
+                    <MenuItem value="">None</MenuItem>
+                    {industryField.options.map((v) => (
+                      <MenuItem key={v} value={v}>{v}</MenuItem>
+                    ))}
+                    {editForm.Industry
+                      && !industryField.options.some((v) => v === editForm.Industry) && (
+                      <MenuItem value={editForm.Industry} disabled>
+                        {editForm.Industry} (inactive)
+                      </MenuItem>
+                    )}
+                  </TextField>
+                ) : (
+                  <TextField
+                    label="Industry"
+                    fullWidth
+                    size="small"
+                    disabled
+                    value={editForm.Industry || ''}
+                    helperText={industryField.error
+                      ? 'Industry list unavailable'
+                      : 'No active industries available'}
+                  />
+                )}
               </Grid>
               <Grid item xs={12} sm={6}>
-                <TextField
-                  label="Account Source"
-                  fullWidth
-                  size="small"
-                  select
-                  disabled={!canEdit}
-                  value={editForm.AccountSource || ''}
-                  onChange={(e) => handleFieldChange('AccountSource', e.target.value)}
-                  {...getHelperProps('AccountSource')}
-                >
-                  <MenuItem value="">None</MenuItem>
-                  {accountSourceValues.map((v) => (
-                    <MenuItem key={v} value={v}>{v}</MenuItem>
-                  ))}
-                </TextField>
+                {accountSourceField.options.length > 0 ? (
+                  <TextField
+                    label="Account Source"
+                    fullWidth
+                    size="small"
+                    select
+                    disabled={!canEdit}
+                    value={editForm.AccountSource || ''}
+                    onChange={(e) => handleFieldChange('AccountSource', e.target.value)}
+                    {...getHelperProps('AccountSource')}
+                  >
+                    <MenuItem value="">None</MenuItem>
+                    {accountSourceField.options.map((v) => (
+                      <MenuItem key={v} value={v}>{v}</MenuItem>
+                    ))}
+                    {editForm.AccountSource
+                      && !accountSourceField.options.some((v) => v === editForm.AccountSource) && (
+                      <MenuItem value={editForm.AccountSource} disabled>
+                        {editForm.AccountSource} (inactive)
+                      </MenuItem>
+                    )}
+                  </TextField>
+                ) : (
+                  <TextField
+                    label="Account Source"
+                    fullWidth
+                    size="small"
+                    disabled
+                    value={editForm.AccountSource || ''}
+                    helperText={accountSourceField.error
+                      ? 'Account Source list unavailable'
+                      : 'No active account sources available'}
+                  />
+                )}
               </Grid>
               <Grid item xs={12} sm={6}>
-                <TextField
-                  label="Account Tier"
-                  fullWidth
-                  size="small"
-                  select
-                  disabled={!canEdit}
-                  value={editForm.Account_Tier__c || ''}
-                  onChange={(e) => handleFieldChange('Account_Tier__c', e.target.value)}
-                  {...getHelperProps('Account_Tier__c')}
-                >
-                  <MenuItem value="">None</MenuItem>
-                  {tierValues.map((v) => (
-                    <MenuItem key={v} value={v}>{v}</MenuItem>
-                  ))}
-                </TextField>
+                {tierField.options.length > 0 ? (
+                  <TextField
+                    label="Account Tier"
+                    fullWidth
+                    size="small"
+                    select
+                    disabled={!canEdit}
+                    value={editForm.Account_Tier__c || ''}
+                    onChange={(e) => handleFieldChange('Account_Tier__c', e.target.value)}
+                    {...getHelperProps('Account_Tier__c')}
+                  >
+                    <MenuItem value="">None</MenuItem>
+                    {tierField.options.map((v) => (
+                      <MenuItem key={v} value={v}>{v}</MenuItem>
+                    ))}
+                    {editForm.Account_Tier__c
+                      && !tierField.options.some((v) => v === editForm.Account_Tier__c) && (
+                      <MenuItem value={editForm.Account_Tier__c} disabled>
+                        {editForm.Account_Tier__c} (inactive)
+                      </MenuItem>
+                    )}
+                  </TextField>
+                ) : (
+                  <TextField
+                    label="Account Tier"
+                    fullWidth
+                    size="small"
+                    disabled
+                    value={editForm.Account_Tier__c || ''}
+                    helperText={tierField.error
+                      ? 'Account Tier list unavailable'
+                      : 'No active account tiers available'}
+                  />
+                )}
               </Grid>
               <Grid item xs={12} sm={6}>
-                <TextField
-                  label="Company Size"
-                  fullWidth
-                  size="small"
-                  select
-                  disabled={!canEdit}
-                  value={editForm.Company_Size__c || ''}
-                  onChange={(e) => handleFieldChange('Company_Size__c', e.target.value)}
-                  {...getHelperProps('Company_Size__c')}
-                >
-                  <MenuItem value="">None</MenuItem>
-                  {companySizeValues.map((v) => (
-                    <MenuItem key={v} value={v}>{v}</MenuItem>
-                  ))}
-                </TextField>
+                {companySizeField.options.length > 0 ? (
+                  <TextField
+                    label="Company Size"
+                    fullWidth
+                    size="small"
+                    select
+                    disabled={!canEdit}
+                    value={editForm.Company_Size__c || ''}
+                    onChange={(e) => handleFieldChange('Company_Size__c', e.target.value)}
+                    {...getHelperProps('Company_Size__c')}
+                  >
+                    <MenuItem value="">None</MenuItem>
+                    {companySizeField.options.map((v) => (
+                      <MenuItem key={v} value={v}>{v}</MenuItem>
+                    ))}
+                    {editForm.Company_Size__c
+                      && !companySizeField.options.some((v) => v === editForm.Company_Size__c) && (
+                      <MenuItem value={editForm.Company_Size__c} disabled>
+                        {editForm.Company_Size__c} (inactive)
+                      </MenuItem>
+                    )}
+                  </TextField>
+                ) : (
+                  <TextField
+                    label="Company Size"
+                    fullWidth
+                    size="small"
+                    disabled
+                    value={editForm.Company_Size__c || ''}
+                    helperText={companySizeField.error
+                      ? 'Company Size list unavailable'
+                      : 'No active company sizes available'}
+                  />
+                )}
               </Grid>
               <Grid item xs={12} sm={6}>
                 <TextField
@@ -779,18 +878,18 @@ const AccountEditDialog: React.FC<AccountEditDialogProps> = ({
             </Grid>
 
             {/* ── Section 4: Funding Focus (multipicklist chips) ──── */}
-            {(fundingFocusValues.length > 0 || focusAreaValues.length > 0) && (
+            {(fundingFocusField.options.length > 0 || focusAreaField.options.length > 0) && (
               <>
                 <Divider sx={{ my: 2 }} />
                 <Typography variant="subtitle2" sx={{ mb: 1.5, fontWeight: 600 }}>
                   Focus Areas
                 </Typography>
                 <Grid container spacing={2}>
-                  {fundingFocusValues.length > 0 && (
+                  {fundingFocusField.options.length > 0 && (
                     <Grid item xs={12} sm={6}>
                       <Autocomplete
                         multiple
-                        options={fundingFocusValues}
+                        options={fundingFocusField.options}
                         value={getMultipicklistValues('npsp__Funding_Focus__c')}
                         onChange={(_e, newValue) =>
                           handleMultipicklistChange('npsp__Funding_Focus__c', newValue)
@@ -813,11 +912,11 @@ const AccountEditDialog: React.FC<AccountEditDialogProps> = ({
                       />
                     </Grid>
                   )}
-                  {focusAreaValues.length > 0 && (
+                  {focusAreaField.options.length > 0 && (
                     <Grid item xs={12} sm={6}>
                       <Autocomplete
                         multiple
-                        options={focusAreaValues}
+                        options={focusAreaField.options}
                         value={getMultipicklistValues('Organization_Focus_Area_s__c')}
                         onChange={(_e, newValue) =>
                           handleMultipicklistChange('Organization_Focus_Area_s__c', newValue)
@@ -993,11 +1092,13 @@ const AccountEditDialog: React.FC<AccountEditDialogProps> = ({
                     label="Deadline"
                     fullWidth
                     size="small"
+                    type="date"
                     disabled={!canEdit}
                     value={editForm.npsp__Matching_Gift_Request_Deadline__c || ''}
                     onChange={(e) =>
                       handleFieldChange('npsp__Matching_Gift_Request_Deadline__c', e.target.value)
                     }
+                    InputLabelProps={{ shrink: true }}
                     {...getHelperProps('npsp__Matching_Gift_Request_Deadline__c')}
                   />
                 </Grid>
@@ -1137,11 +1238,34 @@ const AccountEditDialog: React.FC<AccountEditDialogProps> = ({
 
       {/* Sticky footer */}
       <Box sx={{ px: 3, py: 1.5, borderTop: 1, borderColor: 'divider', display: 'flex', justifyContent: 'flex-end', gap: 1 }}>
-        <Button onClick={onClose}>Cancel</Button>
+        {/*
+          Destructive delete: left-aligned via marginRight:auto so the primary
+          Save action stays on the right (mirrors PaymentEditDialog.tsx:650
+          exactly). 2-step popover via ConfirmSaveButton — click Delete →
+          read warning → click Confirm. Gated behind edit_accounts + the
+          backend ownership check does the real enforcement (admin-only
+          bypass — no edit-all-accounts key exists).
+        */}
+        {originalRecord && canEdit && (
+          <ConfirmSaveButton
+            onConfirm={handleDelete}
+            loading={deleting}
+            disabled={!accountId}
+            variant="outlined"
+            color="error"
+            confirmTitle="Delete Account?"
+            confirmMessage="This permanently deletes the account from Salesforce. Child contacts and opportunities will lose their link to this account. This cannot be undone."
+            confirmLabel="Delete"
+            sx={{ mr: 'auto' }}
+          >
+            Delete
+          </ConfirmSaveButton>
+        )}
+        <Button onClick={onClose} disabled={saving || deleting}>Cancel</Button>
         <ConfirmSaveButton
           onConfirm={handleSave}
           loading={saving}
-          disabled={!canEdit || !originalRecord}
+          disabled={!canEdit || !originalRecord || deleting}
         >
           Save
         </ConfirmSaveButton>
