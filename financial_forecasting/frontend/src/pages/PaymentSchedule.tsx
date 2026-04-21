@@ -140,15 +140,23 @@ export default function PaymentSchedule() {
     }
   };
 
-  const handleDetailSaved = () => {
-    // Close the dialog and refresh the schedule rows. PaymentEditDialog hits
-    // /api/salesforce/payments/{id} directly, which doesn't share a
-    // react-query cache key with getPaymentSchedule — so explicit refresh.
+  // Wired to both onSaved and onDeleted — PaymentEditDialog's save and delete
+  // flows have identical parent-side semantics (close the detail dialog,
+  // refresh the schedule table). Renamed from `handleDetailSaved` in PR #164
+  // per adversarial-review feedback: `onDeleted={handleDetailSaved}` was
+  // semantically misleading in the caller wiring.
+  const handleDetailClosed = () => {
+    // PaymentEditDialog hits /api/salesforce/payments/{id} directly, which
+    // doesn't share a react-query cache key with getPaymentSchedule — so we
+    // explicitly refresh. If the refresh fails the schedule table retains
+    // stale data; the toast from the child dialog already indicated success.
     setDetailPaymentId(null);
     setDetailPaymentData(null);
     loadPaymentSchedule();
   };
 
+  // Separate from handleDetailClosed because cancel/close doesn't require a
+  // refresh (nothing changed).
   const handleDetailClose = () => {
     setDetailPaymentId(null);
     setDetailPaymentData(null);
@@ -429,8 +437,8 @@ export default function PaymentSchedule() {
         onClose={handleDetailClose}
         paymentId={detailPaymentId}
         initialData={detailPaymentData ?? undefined}
-        onSaved={handleDetailSaved}
-        onDeleted={handleDetailSaved}
+        onSaved={handleDetailClosed}
+        onDeleted={handleDetailClosed}
       />
     </Box>
   );

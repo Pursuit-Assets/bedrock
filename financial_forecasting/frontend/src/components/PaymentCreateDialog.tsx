@@ -12,7 +12,7 @@
  * After creation the user can open PaymentEditDialog on the new row for the
  * remaining fields (GL Account, Reconciled, Batch Name, etc.).
  */
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Dialog,
   DialogTitle,
@@ -59,6 +59,20 @@ const PaymentCreateDialog: React.FC<PaymentCreateDialogProps> = ({
   const [saving, setSaving] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
 
+  // PR #164: unmounted-component guard. The parent Opp drawer can close mid-save
+  // (user clicks outside the drawer while createSfPayment is in flight). When
+  // the dialog unmounts, we skip the final setState + onCreated calls so we
+  // don't trigger React's "state update on an unmounted component" warning or
+  // try to mutate parent state that's already gone. The SF POST still lands —
+  // just the UI follow-up is suppressed.
+  const isMountedRef = useRef(true);
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
+
   // Reset form state each time the dialog opens so a stale prior-create doesn't
   // leak into the next one.
   useEffect(() => {
@@ -102,12 +116,17 @@ const PaymentCreateDialog: React.FC<PaymentCreateDialogProps> = ({
         payment_method: paymentMethod || null,
       });
       const newId = res.data?.data?.id ?? res.data?.id;
+      // Unmounted-guard: if the parent drawer closed while the POST was in
+      // flight, skip the success-path side effects. The SF record was still
+      // created — just the UI follow-up is suppressed.
+      if (!isMountedRef.current) return;
       toast.success('Payment created!');
       if (onCreated && typeof newId === 'string') {
         onCreated(newId);
       }
       onClose();
     } catch (error: any) {
+      if (!isMountedRef.current) return;
       const detail =
         error?.response?.data?.detail ||
         error?.response?.data?.error ||
@@ -115,7 +134,10 @@ const PaymentCreateDialog: React.FC<PaymentCreateDialogProps> = ({
         'Failed to create payment';
       toast.error(detail);
     } finally {
-      setSaving(false);
+      // setSaving is only meaningful if we're still mounted.
+      if (isMountedRef.current) {
+        setSaving(false);
+      }
     }
   };
 

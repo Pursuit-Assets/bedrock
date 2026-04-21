@@ -891,33 +891,67 @@ async def update_contact(
 
 
 @app.put("/api/salesforce/payments/{payment_id}")
+@limiter.limit("30/minute")
 async def update_payment(
+    request: Request,
     payment_id: str,
     update_request: PaymentUpdateRequest,
     client: UnifiedMCPClient = Depends(get_mcp_client),
     user = Depends(check_permission("edit_payments")),
 ):
-    """Update a Salesforce payment (npe01__OppPayment__c)."""
+    """Update a Salesforce payment (npe01__OppPayment__c).
+
+    Auth: `check_permission("edit_payments")` is the outer gate. PR #164 added
+    opp-ownership parity with POST/DELETE — the endpoint now resolves the
+    payment's parent Opp (cheap SOQL) and defers to
+    `_enforce_opp_ownership_for_payment`. Non-owner updates are rejected
+    unless the caller is admin or has `edit_all_opportunities`.
+
+    Rate-limited at 30/minute per IP so a compromised account with
+    edit_payments can't bulk-update SF records."""
     validate_salesforce_id(payment_id, "payment_id")
     try:
         salesforce = client.salesforce
+        # Ownership gate — same parent-lookup pattern as delete_payment.
+        safe_id = escape_soql_string(payment_id)
+        parent_result = await salesforce.query(
+            f"SELECT npe01__Opportunity__c FROM npe01__OppPayment__c WHERE Id = '{safe_id}' LIMIT 1"
+        )
+        parent_records = parent_result.get("records", [])
+        if not parent_records:
+            raise HTTPException(status_code=404, detail="Payment not found")
+        parent_opp_id = parent_records[0].get("npe01__Opportunity__c")
+        if parent_opp_id:
+            await _enforce_opp_ownership_for_payment(salesforce, parent_opp_id, user)
+        # Ownership OK — proceed with the update.
         success = await salesforce.update_record("npe01__OppPayment__c", payment_id, update_request.updates)
         if not success:
             raise HTTPException(400, "Salesforce rejected the update")
+        # Rollup fields on the parent Opp may change when payment fields
+        # (Amount, Paid, etc.) change — invalidate that cache too.
         cache.invalidate_prefix("payments:")
         cache.invalidate_prefix("opp-payments:")
+        cache.invalidate_prefix("opportunities:")
         logger.info(f"Payment {payment_id} updated by {user['user_id']}")
         return ApiResponse(success=True, data={"id": payment_id, "message": "Payment updated"})
     except HTTPException:
         raise
     except Exception as e:
-        error_msg = str(e)
-        logger.error(f"Error updating payment {payment_id}: {error_msg}")
-        raise HTTPException(status_code=400, detail=error_msg)
+        # Sanitized client error; full detail server-side (matches POST/DELETE).
+        logger.error(
+            f"Error updating payment {payment_id}: {str(e)}",
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=400,
+            detail="Failed to update payment. Check server logs or contact support.",
+        )
 
 
 @app.delete("/api/salesforce/payments/{payment_id}")
+@limiter.limit("30/minute")
 async def delete_payment(
+    request: Request,
     payment_id: str,
     client: UnifiedMCPClient = Depends(get_mcp_client),
     user = Depends(check_permission("edit_payments")),
@@ -980,7 +1014,9 @@ async def delete_payment(
 
 
 @app.post("/api/salesforce/payments")
+@limiter.limit("30/minute")
 async def create_payment(
+    request: Request,
     create_request: PaymentCreateRequest,
     client: UnifiedMCPClient = Depends(get_mcp_client),
     user = Depends(check_permission("edit_payments")),

@@ -614,7 +614,76 @@ class TestSalesforcePaymentCreate:
 
 
 # ===================================================================
-# 4a-bis. Salesforce Payments — DELETE single-record
+# 4a-bis. Salesforce Payments — PUT update (ownership-gated per PR #164)
+# ===================================================================
+
+class TestSalesforcePaymentUpdate:
+    """Tests for PUT /api/salesforce/payments/{id} (ownership hardening, PR #164).
+
+    Prior to PR #164 the PUT endpoint only checked `edit_payments` — any
+    user with that permission could update payments on any opportunity.
+    PR #164 added parent-Opp resolution + `_enforce_opp_ownership_for_payment`
+    for parity with POST/DELETE.
+    """
+
+    PAYMENT_ID = "a0xTESTPAYMENT1"
+    PARENT_OPP_ID = "006TESTOPPORT01"
+
+    def test_update_payment_success_with_admin_bypass(self, client, mock_client):
+        """Admin (mock_db grants manage_users_roles) bypasses ownership,
+        but the parent-Opp lookup still runs — it's required to even locate
+        the record for the ownership helper call."""
+        mock_client.salesforce.query.return_value = {
+            "records": [{"npe01__Opportunity__c": self.PARENT_OPP_ID}],
+        }
+        mock_client.salesforce.update_record.return_value = True
+        response = client.put(
+            f"/api/salesforce/payments/{self.PAYMENT_ID}",
+            json={"updates": {"npe01__Payment_Amount__c": 7500}},
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["success"] is True
+        # Verify the update targeted the right SObject + Id with the right delta
+        mock_client.salesforce.update_record.assert_called_once_with(
+            "npe01__OppPayment__c", self.PAYMENT_ID, {"npe01__Payment_Amount__c": 7500},
+        )
+
+    def test_update_payment_not_found_returns_404(self, client, mock_client):
+        """Parent-opp lookup returns no records → 404 before any update fires."""
+        mock_client.salesforce.query.return_value = {"records": []}
+        response = client.put(
+            f"/api/salesforce/payments/{self.PAYMENT_ID}",
+            json={"updates": {"npe01__Payment_Amount__c": 7500}},
+        )
+        assert response.status_code == 404
+        mock_client.salesforce.update_record.assert_not_called()
+
+    def test_update_payment_rejected_by_salesforce_returns_400(self, client, mock_client):
+        """Parent lookup succeeds, ownership passes (admin), but SF update
+        itself fails → 400."""
+        mock_client.salesforce.query.return_value = {
+            "records": [{"npe01__Opportunity__c": self.PARENT_OPP_ID}],
+        }
+        mock_client.salesforce.update_record.return_value = False
+        response = client.put(
+            f"/api/salesforce/payments/{self.PAYMENT_ID}",
+            json={"updates": {"npe01__Payment_Amount__c": 7500}},
+        )
+        assert response.status_code == 400
+
+    def test_update_payment_invalid_id_rejected(self, client, mock_client):
+        """validate_salesforce_id fires before anything else."""
+        response = client.put(
+            "/api/salesforce/payments/not-a-real-sf-id",
+            json={"updates": {"npe01__Payment_Amount__c": 100}},
+        )
+        assert response.status_code in (400, 422)
+        mock_client.salesforce.update_record.assert_not_called()
+
+
+# ===================================================================
+# 4a-ter. Salesforce Payments — DELETE single-record
 # ===================================================================
 
 class TestSalesforcePaymentDelete:
