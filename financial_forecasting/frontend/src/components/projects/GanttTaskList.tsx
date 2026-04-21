@@ -6,6 +6,8 @@ import {
 } from '@mui/icons-material';
 import type { GanttRow } from './types';
 import { ROW_HEIGHT, TASK_STATUS_COLOR } from './constants';
+import { resolveOwners, initials } from './helpers';
+import { useActiveUsers } from './useActiveUsers';
 
 interface GanttTaskListProps {
   rows: GanttRow[];
@@ -18,6 +20,7 @@ interface GanttTaskListProps {
 const GanttTaskList: React.FC<GanttTaskListProps> = ({
   rows, scrollRef, onScroll, onToggleCollapse, onTaskClick,
 }) => {
+  const { activeUsers } = useActiveUsers();
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
       {/* Header */}
@@ -84,10 +87,13 @@ const GanttTaskList: React.FC<GanttTaskListProps> = ({
                 </Typography>
               </Tooltip>
 
-              {/* Owner initials for tasks */}
-              {row.type === 'task' && row.owner && (
+              {/* Owner initials for tasks — one token per resolved owner, plus Other if any */}
+              {row.type === 'task' && (row.ownerIds?.length || row.owner) && (
                 <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.65rem', ml: 0.5 }}>
-                  {row.owner.split(' ').map(w => w[0]).join('')}
+                  {[
+                    ...resolveOwners(row.ownerIds, activeUsers).map((o) => initials(o.name)),
+                    ...(row.owner ? [row.owner] : []),
+                  ].join(' / ')}
                 </Typography>
               )}
 

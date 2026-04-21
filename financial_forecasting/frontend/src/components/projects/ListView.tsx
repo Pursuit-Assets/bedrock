@@ -13,7 +13,7 @@ import {
   Add as AddIcon,
   Delete as DeleteIcon,
 } from '@mui/icons-material';
-import type { Workstream, ProjectMutations } from './types';
+import type { ActiveUser, Workstream, ProjectMutations } from './types';
 import {
   TASK_STATUSES,
   MILESTONE_STATUSES,
@@ -24,14 +24,22 @@ import {
 import { StatusPillCell } from '../inline-edit/cells/StatusPillCell';
 import { PhasePillCell } from '../inline-edit/cells/PhasePillCell';
 import type { InlineEditableOption } from '../inline-edit/InlineEditable';
-import { getWorkstreamProgress, getMilestoneProgress } from './helpers';
+import { getWorkstreamProgress, getMilestoneProgress, resolveOwners } from './helpers';
 
 interface ListViewProps {
   workstream: Workstream;
   mutations: ProjectMutations;
+  activeUsers: ActiveUser[];
 }
 
-const ListView: React.FC<ListViewProps> = ({ workstream, mutations }) => {
+function formatOwners(ownerIds: string[] | undefined, owner: string, activeUsers: ActiveUser[]): string {
+  const resolved = resolveOwners(ownerIds, activeUsers);
+  const names = resolved.map((o) => o.name);
+  if (owner) names.push(owner);
+  return names.join(', ') || '—';
+}
+
+const ListView: React.FC<ListViewProps> = ({ workstream, mutations, activeUsers }) => {
   const [expandedMilestone, setExpandedMilestone] = useState<string | null>(null);
   const [newTaskTitle, setNewTaskTitle] = useState('');
   const [addingToMilestone, setAddingToMilestone] = useState<string | null>(null);
@@ -122,7 +130,9 @@ const ListView: React.FC<ListViewProps> = ({ workstream, mutations }) => {
                   />
                 </Box>
                 <Typography variant="body2" sx={{ flex: 1, fontWeight: 500 }}>{milestone.title}</Typography>
-                <Typography variant="caption" color="text.secondary">{milestone.owner}</Typography>
+                <Typography variant="caption" color="text.secondary">
+                  {formatOwners(milestone.owner_ids, milestone.owner, activeUsers)}
+                </Typography>
                 <Typography variant="caption" sx={{ fontWeight: 600, minWidth: 35, textAlign: 'right' }}>{mProgress}%</Typography>
                 <IconButton
                   size="small"
@@ -178,7 +188,9 @@ const ListView: React.FC<ListViewProps> = ({ workstream, mutations }) => {
                                 onSave={(newStatus) => mutations.updateTaskStatus(task.id, newStatus)}
                               />
                             </TableCell>
-                            <TableCell sx={{ fontSize: '0.75rem' }}>{task.owner}</TableCell>
+                            <TableCell sx={{ fontSize: '0.75rem' }}>
+                              {formatOwners(task.owner_ids, task.owner, activeUsers)}
+                            </TableCell>
                             <TableCell sx={{ fontSize: '0.75rem' }}>{task.deadline || '\u2014'}</TableCell>
                             <TableCell sx={{ fontSize: '0.75rem' }}>
                               {task.dependsOn?.length

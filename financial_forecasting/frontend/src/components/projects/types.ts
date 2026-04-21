@@ -8,7 +8,8 @@ export interface ProjectTask {
   id: string;
   title: string;
   status: TaskStatus;
-  owner: string;
+  owner: string;            // free-text "Other" (McKinsey, TBD, etc.)
+  owner_ids: string[];      // structured owner UUIDs from public.org_users
   startDate?: string | null;
   deadline?: string | null;
   description?: string;
@@ -23,10 +24,19 @@ export interface Milestone {
   title: string;
   status: MilestoneStatus;
   priority: MilestonePriority;
-  owner: string;
+  owner: string;            // free-text "Other"
+  owner_ids: string[];      // structured owner UUIDs from public.org_users
   description?: string;
   sourceLinks?: string[];
   tasks: ProjectTask[];
+}
+
+export interface ActiveUser {
+  id: string;
+  email: string;
+  display_name: string;
+  sf_user_id: string | null;
+  is_in_sf: boolean;
 }
 
 export interface Workstream {
@@ -58,7 +68,8 @@ export interface GanttRow {
   progress: number;
   dependsOn: string[];
   isCollapsed?: boolean;
-  owner?: string;
+  owner?: string;          // "Other" free-text
+  ownerIds?: string[];     // structured multi-owner
   milestonePriority?: MilestonePriority;
 }
 
