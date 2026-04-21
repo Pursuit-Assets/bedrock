@@ -333,6 +333,8 @@ async def get_opportunities(
                Last_Actual_Payment__c, npe01__Number_of_Payments__c,
                PaymentDate__c, Earliest_Scheduled_Payment__c,
                RenewalRepeat__c,
+               Contract_Start_Date__c, Contract_End_Date__c,
+               Payment_Terms__c, Billing_Frequency__c,
                RecordTypeId, RecordType.Name, Active_Opportunity__c
         FROM Opportunity
         """
@@ -938,7 +940,7 @@ async def get_opportunity_tasks(
         salesforce = client.salesforce
         query = f"""
         SELECT Id, Subject, Status, Priority, ActivityDate, Description,
-               OwnerId, Owner.Name, WhoId, Who.Name, Type, TaskSubtype,
+               OwnerId, Owner.Name, WhoId, Who.Name, WhatId, Type, TaskSubtype,
                CreatedById, CreatedBy.Name, CreatedDate, LastModifiedDate
         FROM Task
         WHERE WhatId = '{opportunity_id}'

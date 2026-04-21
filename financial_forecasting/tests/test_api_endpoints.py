@@ -336,13 +336,18 @@ class TestSalesforceOpportunities:
         # the API contract so regressions here get caught even if the
         # frontend regresses separately.
         assert data[0]["RecordType"]["Name"] == "Other fee for service"
-        # RenewalRepeat__c SOQL-inclusion guard. 2026-04-21 adversarial
-        # verification caught that this custom field was missing from the
-        # SOQL SELECT even though Progress.tsx's isRenewal() helper and
-        # the OpportunityEditDialog's picker both depend on it. Pin the
-        # invariant so future regressions fail the test.
+        # SOQL-inclusion guards. 2026-04-21 adversarial verification
+        # discovered that several custom fields bound in OpportunityEditDialog
+        # were missing from the SOQL SELECT — saved values would silently not
+        # round-trip to the dialog on reopen. RenewalRepeat__c fixed in PR #160;
+        # Contract/Payment/Billing fields fixed in this PR. Pin each invariant
+        # so future regressions fail the test.
         soql = mock_client.salesforce.query_all.call_args[0][0]
         assert "RenewalRepeat__c" in soql
+        assert "Contract_Start_Date__c" in soql
+        assert "Contract_End_Date__c" in soql
+        assert "Payment_Terms__c" in soql
+        assert "Billing_Frequency__c" in soql
 
     def test_get_opportunities_with_stage_filter(self, client, mock_client):
         opp = make_sf_opportunity({"StageName": "Qualifying"})
@@ -542,6 +547,14 @@ class TestSalesforceOpportunityTasks:
         assert body["success"] is True
         assert body["meta"]["count"] == 1
         assert body["data"][0]["Subject"] == "Follow up on grant proposal"
+        # WhatId SOQL-inclusion guard + round-trip. The response serializer
+        # at main.py:972 passes WhatId through, but the SOQL SELECT originally
+        # omitted it — meaning every serialized task's WhatId was null. The
+        # TaskPanel's edit form binds editTask.WhatId, so saved reassignments
+        # would silently revert on reopen. Fixed 2026-04-21; pin the invariant.
+        soql = mock_client.salesforce.query_all.call_args[0][0]
+        assert "WhatId" in soql
+        assert body["data"][0]["WhatId"] == task["WhatId"]
 
     def test_get_opportunity_tasks_paginates_beyond_2000(self, client, mock_client):
         """Default limit=None drives query_all pagination with no SOQL LIMIT."""
