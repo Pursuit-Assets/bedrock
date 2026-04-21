@@ -69,6 +69,15 @@ const CONTACT_EDITABLE_FIELDS: readonly string[] = [
   'AccountId',
   'OwnerId',
   'Description',
+  // Communication Preferences — rendered as Switches in a .map() loop at
+  // the bottom of the form. Bound via handleFieldChange (through the
+  // {field, label} array at ~line 957) and saved through the diff loop,
+  // so a missing key would silently overwrite SF data on save. Switches
+  // don't surface helperText, but the save-guard still catches it.
+  'DoNotCall',
+  'HasOptedOutOfEmail',
+  'npsp__Do_Not_Contact__c',
+  'npsp__Deceased__c',
 ] as const;
 
 // ── Types ───────────────────────────────────────────────────────────────────

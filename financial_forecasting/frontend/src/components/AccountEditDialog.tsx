@@ -71,6 +71,11 @@ const ACCOUNT_EDITABLE_FIELDS: readonly string[] = [
   'npsp__Matching_Gift_Phone__c',
   'npsp__Matching_Gift_Request_Deadline__c',
   'npsp__Matching_Gift_Comments__c',
+  // Multipicklist fields — saved via handleMultipicklistChange (not the
+  // standard handleFieldChange), so easy to miss in this list. Silent-
+  // overwrite risk if the backend response omits them.
+  'npsp__Funding_Focus__c',
+  'Organization_Focus_Area_s__c',
 ] as const;
 
 // ── Types ───────────────────────────────────────────────────────────────────
