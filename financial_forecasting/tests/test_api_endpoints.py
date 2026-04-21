@@ -153,6 +153,9 @@ def mock_db():
         # tests/test_projects_endpoints.py:36 and tests/test_permissions.py:41,57.
         "edit_accounts": True, "create_accounts": True,
         "edit_contacts": True, "create_contacts": True,
+        # edit_payments gates POST /api/salesforce/payments (and PUT). Without
+        # this, TestSalesforcePaymentCreate gets 403 from check_permission.
+        "edit_payments": True,
         "view_tasks": True, "edit_own_tasks": True, "edit_all_tasks": True, "create_tasks": True,
         "view_revenue_dashboard": True, "view_cashflow_forecasts": True,
         "view_sage_invoices_payments": True, "create_sage_invoices": True,
@@ -514,7 +517,89 @@ class TestSalesforceContacts:
 
 
 # ===================================================================
-# 4a. Salesforce Opportunity-Tasks (nested under opportunity)
+# 4a. Salesforce Payments — POST create (single-record)
+# ===================================================================
+
+class TestSalesforcePaymentCreate:
+    """Tests for POST /api/salesforce/payments (single-record create, PR #161).
+
+    Distinct from the bulk routes/payment_schedules.py create endpoint which
+    wipes and recreates the entire schedule. This one appends a single new
+    npe01__OppPayment__c to whatever already exists.
+    """
+
+    OPP_ID = "006TESTOPPORT01"
+
+    def test_create_payment_success(self, client, mock_client):
+        mock_client.salesforce.create_record.return_value = {"id": "a0xNEW000000001"}
+        response = client.post(
+            "/api/salesforce/payments",
+            json={
+                "opportunity_id": self.OPP_ID,
+                "amount": 5000.0,
+                "scheduled_date": "2026-07-15",
+                "payment_method": "ACH",
+            },
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["success"] is True
+        assert body["data"]["id"] == "a0xNEW000000001"
+
+        # Verify the create was called on the right SObject with the expected
+        # field mapping (frontend-friendly names → SF native field names).
+        mock_client.salesforce.create_record.assert_called_once()
+        args = mock_client.salesforce.create_record.call_args[0]
+        assert args[0] == "npe01__OppPayment__c"
+        fields = args[1]
+        assert fields["npe01__Opportunity__c"] == self.OPP_ID
+        assert fields["npe01__Payment_Amount__c"] == 5000.0
+        assert fields["npe01__Scheduled_Date__c"] == "2026-07-15"
+        assert fields["npe01__Payment_Method__c"] == "ACH"
+        assert fields["npe01__Paid__c"] is False
+
+    def test_create_payment_omits_method_when_not_provided(self, client, mock_client):
+        """Payment Method is optional — if omitted, the field is not sent to SF
+        (avoids clobbering any default the Salesforce layer might populate)."""
+        mock_client.salesforce.create_record.return_value = {"id": "a0xNEW000000002"}
+        response = client.post(
+            "/api/salesforce/payments",
+            json={
+                "opportunity_id": self.OPP_ID,
+                "amount": 100.0,
+                "scheduled_date": "2026-08-01",
+            },
+        )
+        assert response.status_code == 200
+        fields = mock_client.salesforce.create_record.call_args[0][1]
+        assert "npe01__Payment_Method__c" not in fields
+
+    def test_create_payment_invalid_opportunity_id_rejected(self, client, mock_client):
+        """validate_salesforce_id runs before we touch Salesforce."""
+        response = client.post(
+            "/api/salesforce/payments",
+            json={
+                "opportunity_id": "not-a-real-sf-id",
+                "amount": 100.0,
+                "scheduled_date": "2026-08-01",
+            },
+        )
+        assert response.status_code in (400, 422)
+        mock_client.salesforce.create_record.assert_not_called()
+
+    def test_create_payment_missing_required_fields_rejected(self, client, mock_client):
+        """Pydantic should reject requests missing opportunity_id / amount /
+        scheduled_date before the handler body runs."""
+        response = client.post(
+            "/api/salesforce/payments",
+            json={"opportunity_id": self.OPP_ID},  # missing amount, scheduled_date
+        )
+        assert response.status_code == 422
+        mock_client.salesforce.create_record.assert_not_called()
+
+
+# ===================================================================
+# 4b. Salesforce Opportunity-Tasks (nested under opportunity)
 # ===================================================================
 
 class TestSalesforceOpportunityTasks:

@@ -736,6 +736,20 @@ class PaymentUpdateRequest(BaseModel):
     reason: Optional[str] = None
 
 
+class PaymentCreateRequest(BaseModel):
+    """Request body for single-record Payment create.
+
+    Distinct from routes/payment_schedules.py's bulk CreatePaymentScheduleRequest,
+    which wipes and re-creates every payment for an opportunity. This endpoint
+    appends a single new npe01__OppPayment__c record to whatever already exists.
+    """
+    opportunity_id: str
+    amount: float
+    scheduled_date: str  # YYYY-MM-DD
+    payment_method: Optional[str] = None
+    paid: bool = False
+
+
 @app.put("/api/salesforce/accounts/{account_id}")
 async def update_account(
     account_id: str,
@@ -809,6 +823,54 @@ async def update_payment(
     except Exception as e:
         error_msg = str(e)
         logger.error(f"Error updating payment {payment_id}: {error_msg}")
+        raise HTTPException(status_code=400, detail=error_msg)
+
+
+@app.post("/api/salesforce/payments")
+async def create_payment(
+    create_request: PaymentCreateRequest,
+    client: UnifiedMCPClient = Depends(get_mcp_client),
+    user = Depends(check_permission("edit_payments")),
+):
+    """Create a single Salesforce Payment (npe01__OppPayment__c) on an existing
+    opportunity.
+
+    Use this (not the bulk routes/payment_schedules.py POST) when appending
+    one additional payment to whatever schedule already exists — no delete,
+    no validation that the sum matches the Opportunity Amount. The Opp
+    dialog's inline Payment Schedule accordion calls this on "+ Add Payment".
+    """
+    validate_salesforce_id(create_request.opportunity_id, "opportunity_id")
+    try:
+        salesforce = client.salesforce
+        fields: Dict[str, Any] = {
+            "npe01__Opportunity__c": create_request.opportunity_id,
+            "npe01__Payment_Amount__c": create_request.amount,
+            "npe01__Scheduled_Date__c": create_request.scheduled_date,
+            "npe01__Paid__c": create_request.paid,
+        }
+        if create_request.payment_method:
+            fields["npe01__Payment_Method__c"] = create_request.payment_method
+        result = await salesforce.create_record("npe01__OppPayment__c", fields)
+        # Rollup fields on the parent Opp change when a new payment lands, so
+        # invalidate both the payment caches and the opportunities cache.
+        cache.invalidate_prefix("payments:")
+        cache.invalidate_prefix("opp-payments:")
+        cache.invalidate_prefix("opportunities:")
+        logger.info(
+            f"Payment created by {user['user_id']} on opp {create_request.opportunity_id}"
+        )
+        return ApiResponse(
+            success=True,
+            data={"id": result.get("id"), "message": "Payment created"},
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        error_msg = str(e)
+        logger.error(
+            f"Error creating payment on opp {create_request.opportunity_id}: {error_msg}"
+        )
         raise HTTPException(status_code=400, detail=error_msg)
 
 

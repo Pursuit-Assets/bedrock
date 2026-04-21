@@ -1,16 +1,18 @@
 /**
- * Unit tests for OpportunityEditDialog — PR #159.
+ * Unit tests for OpportunityEditDialog.
  *
- * Covers:
+ * Covers (from PR #159 + PR #161 post-smoke iterations):
  *   Conversions (tests 1-9):
  *     1-4  StageName schema-driven select + distinguished fallback + not-in-list
  *     5-7  RenewalRepeat__c schema-driven select + distinguished fallback + not-in-list
  *     8-9  Earliest_Scheduled_Payment__c editable date picker + onChange
- *   Payment Schedule inline accordion (tests 10-13):
- *    10    Accordion renders (collapsed) when stage ∈ PAYMENT_SUMMARY_STAGES
- *    11    Expand fires lazy fetch + renders read-first table
- *    12    Row edit icon opens PaymentEditDialog stacked on the drawer
- *    13    Accordion NOT rendered when stage is early-pipeline
+ *   Payment Schedule inline accordion:
+ *    10   Accordion renders (collapsed) at Collecting stage
+ *    11   Expand fires lazy fetch + renders read-first table
+ *    12   Row edit icon opens PaymentEditDialog stacked on the drawer
+ *    13   Accordion also renders at early-pipeline stages (PR #161: always-visible)
+ *    14   "+ Add Payment" button opens PaymentCreateDialog without toggling the accordion
+ *    15   "+ Add Payment" button is hidden without edit_payments permission
  *
  * Mock notes:
  * - getSchemaDescribe uses mockImplementation so all three callers
@@ -38,6 +40,9 @@ jest.mock('../services/api', () => ({
     // Used by the nested PaymentEditDialog when user clicks an edit icon
     // in the accordion's payment row.
     updateSfPayment: jest.fn(),
+    // Used by the nested PaymentCreateDialog when user clicks the
+    // "+" button in the accordion summary.
+    createSfPayment: jest.fn(),
   },
 }));
 
@@ -69,6 +74,7 @@ const getUsers = apiService.getUsers as jest.Mock;
 const getAccounts = apiService.getAccounts as jest.Mock;
 const getSfOpportunityPayments = apiService.getSfOpportunityPayments as jest.Mock;
 const updateSfPayment = apiService.updateSfPayment as jest.Mock;
+const createSfPayment = apiService.createSfPayment as jest.Mock;
 const usePermissionsMock = usePermissions as jest.Mock;
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -200,6 +206,7 @@ beforeEach(() => {
   // Default: no payments. Tests that care about the list override this.
   getSfOpportunityPayments.mockResolvedValue({ data: [] });
   updateSfPayment.mockReset();
+  createSfPayment.mockReset();
   usePermissionsMock.mockReset();
   usePermissionsMock.mockReturnValue(defaultPermissions());
 });
@@ -530,19 +537,62 @@ describe('OpportunityEditDialog — Payment Schedule inline accordion', () => {
     expect((screen.getByLabelText('Payment Amount') as HTMLInputElement).value).toBe('5000');
   });
 
-  it('does NOT render the Payment Schedule accordion when stage is early-pipeline', async () => {
+  it('renders the Payment Schedule accordion even when stage is early-pipeline (always-visible fix)', async () => {
     mockSchema({ stages: [{ value: 'Qualifying', active: true }], renewalRepeat: [] });
 
     renderDialog(buildOpp({ StageName: 'Qualifying' }));
 
-    // Let the dialog fully mount (stages hook resolved) before asserting absence
-    await waitFor(() => {
-      expect(screen.queryByText('Stage list unavailable')).not.toBeInTheDocument();
-      expect(screen.queryByText('No active stages available')).not.toBeInTheDocument();
+    // Post-merge iteration: accordion moved OUT of PAYMENT_SUMMARY_STAGES
+    // conditional so users can schedule payments on early-stage Opps
+    // before the Opp reaches Collecting. The Payment Summary rollup cells
+    // above still stay stage-gated.
+    const header = await screen.findByText(/^Payment Schedule$/);
+    expect(header).toBeInTheDocument();
+    // But "Payment Summary" (the rollup section) should NOT render for early-pipeline
+    expect(screen.queryByText(/^Payment Summary$/)).not.toBeInTheDocument();
+    // Lazy-fetch still holds: collapsed by default, no call yet
+    expect(getSfOpportunityPayments).not.toHaveBeenCalled();
+  });
+
+  it('"+ Add Payment" button opens PaymentCreateDialog without toggling the accordion', async () => {
+    mockSchema({ stages: [{ value: 'Qualifying', active: true }], renewalRepeat: [] });
+
+    renderDialog(buildOpp({ Id: '006000000000001', StageName: 'Qualifying', Name: 'Acme Grant 2026' }));
+
+    // Wait for the accordion header so we know the dialog body has mounted
+    await screen.findByText(/^Payment Schedule$/);
+
+    const addBtn = screen.getByRole('button', { name: /Add payment/i });
+    fireEvent.click(addBtn);
+
+    // PaymentCreateDialog opens — it renders its own "Add Payment" DialogTitle.
+    // Use getAllByText since "Add payment" text now appears in both the
+    // IconButton aria-label and the dialog title (case-insensitive difference
+    // — but here we assert the dialog-title "Add Payment" specifically).
+    await screen.findByText('Add Payment');
+    // The opp name is echoed as the dialog subtitle
+    expect(screen.getAllByText('Acme Grant 2026').length).toBeGreaterThanOrEqual(1);
+    // Accordion did not expand (lazy fetch did not fire)
+    expect(getSfOpportunityPayments).not.toHaveBeenCalled();
+  });
+
+  it('hides the "+ Add Payment" button when the user lacks edit permissions', async () => {
+    mockSchema({ stages: [{ value: 'Qualifying', active: true }], renewalRepeat: [] });
+    usePermissionsMock.mockReturnValue({
+      can: jest.fn().mockReturnValue(false),
+      isAdmin: false,
+      sfUserId: null,
+      orgUserId: null,
+      isPlatformUnlinked: false,
+      profileName: null,
+      permissions: {},
+      loading: false,
+      refetch: jest.fn(),
     });
 
-    // Payment Summary block is hidden → accordion is hidden too
-    expect(screen.queryByText(/^Payment Schedule$/)).not.toBeInTheDocument();
-    expect(getSfOpportunityPayments).not.toHaveBeenCalled();
+    renderDialog(buildOpp({ StageName: 'Qualifying' }));
+
+    await screen.findByText(/^Payment Schedule$/);
+    expect(screen.queryByRole('button', { name: /Add payment/i })).not.toBeInTheDocument();
   });
 });

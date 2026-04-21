@@ -51,7 +51,30 @@ For per-PR status of the 23 PRs in the plan, see the "PR sequence" table in `tas
 
 ## Progress log (newest first)
 
-### 2026-04-21 — Lane B2 shipped (PR #159, scope-expanded + post-smoke iteration) 👀 in review
+### 2026-04-21 — PR #161 post-merge follow-up: always-visible Payment Schedule + Create 👀 in review
+
+- **Why.** Post-#159 smoke on a Qualifying-stage Opp surfaced that the inline Payment Schedule accordion was hidden (it was nested inside the Payment Summary stage-gate, which only renders at Collecting/Closed). JP: "Payment section doesn't appear on Opportunity if no Payments are created yet, it should show the section and allow creating Payments using the dialog stack." Two issues in one ask: (1) accordion visibility gated too tightly, (2) no way to CREATE new payments from the inline UI — only edit existing ones.
+- **Fix (frontend).**
+  - Moved the `<Accordion>` OUT of the `PAYMENT_SUMMARY_STAGES.has(originalOpp.StageName) && (...)` conditional in `OpportunityEditDialog.tsx` so it renders for every loaded Opp regardless of stage. The Payment Summary **rollup cells** (Payments Received, Outstanding, Last/Most Recent/First Payment, Next Scheduled Payment picker) stay stage-gated — they're meaningful only once money is actually moving.
+  - Added a "+ Add Payment" `<IconButton>` inside the `AccordionSummary`'s right edge. `e.stopPropagation()` prevents clicks from toggling the accordion. Button is hidden when `!canEdit` (no `edit_payments` permission).
+  - New `components/PaymentCreateDialog.tsx` (237 LOC) — minimum-field form: Amount, Scheduled Date, optional Payment Method (from `useSchemaPicklist`). Distinct from `PaymentEditDialog` (which is PATCH) and from `PaymentScheduleModal` (bulk-create with sum-matches-Opp-amount validation). On save: POSTs via new `apiService.createSfPayment`, calls `onCreated(id)` which from `OpportunityEditDialog` expands the accordion + refetches so the new row is immediately visible.
+- **Fix (backend).**
+  - New `POST /api/salesforce/payments` endpoint at `main.py` (after the existing PUT handler). Pydantic `PaymentCreateRequest` model (`opportunity_id`, `amount`, `scheduled_date`, optional `payment_method`, default `paid=False`). Permission-gated on `edit_payments` (same as update). Calls `salesforce.create_record('npe01__OppPayment__c', fields)`, invalidates `payments:`, `opp-payments:`, and `opportunities:` cache prefixes (rollup fields on the parent Opp change when a new payment lands).
+- **Scope fence.** Did NOT extend the bulk `routes/payment_schedules.py` create endpoint — it has `delete_existing=True` as default and a sum-matches-Opp-amount validation that makes it wrong for single-record append. Did NOT change the update endpoint. Did NOT convert `PaymentEditDialog` to also handle create — a dedicated `PaymentCreateDialog` keeps the two flows cleanly separated and avoids 20+ branches inside a single component.
+- **Tests.** 9 new tests, zero regressions:
+  - `PaymentCreateDialog.test.tsx` (NEW, 5 tests): renders required fields + opp-name subtitle, resets form on each open (stale-state leak guard), fires `createSfPayment` + `onCreated(id)` on successful save, surfaces validation errors when Amount ≤ 0 or Scheduled Date is empty, disables form + banner when `!edit_payments`.
+  - `OpportunityEditDialog.test.tsx` (+2 tests, 15 total): accordion ALSO renders at early-pipeline stages (flips the previous "NOT rendered" assertion); "+ Add Payment" click opens PaymentCreateDialog without toggling the accordion; hidden when user lacks edit permission.
+  - `tests/test_api_endpoints.py` (+1 class, 4 tests): `TestSalesforcePaymentCreate` covering success (with field-mapping verification), optional Payment Method omission, invalid `opportunity_id` 400/422, missing required fields 422.
+  - Test fixture: added `"edit_payments": True` to the admin permissions dict in `mock_db` so the new tests don't 403.
+- **Verification.**
+  - `npx tsc --noEmit` clean.
+  - `CI=true npm test --watchAll=false` → **29/29 suites, 396/396 tests pass** (baseline post-#159: 28/389; delta +1 suite, +7 tests — matches exactly).
+  - `pytest tests/` → **20 failed, 722 passed, 22 skipped** (pre-existing 20 failures in `test_sf_dependencies.py` unchanged; baseline post-#158 was 718 passing, delta +4 matches the new TestSalesforcePaymentCreate class).
+  - 5 verification passes per JP directive: functional, dead-code, user-flow trace, edge cases, scope fences — all clean.
+- **Numbering.** Target was originally #160, but JP flagged Lane A is taking #160 → renamed branch to `feat/pr161-opp-payment-create` before push.
+- **Pending for you.** Review PR #161. 5 files modified + 2 new files. No migrations; one backend endpoint added; one new Pydantic model. Manual smoke deferred to your review (new POST hits live SF — verify created records have the right parent Opp + field shape).
+
+### 2026-04-21 — Lane B2 shipped (PR #159, scope-expanded + post-smoke iteration) ✅ merged 2026-04-21
 
 **Post-smoke iteration (2026-04-21 afternoon):** First smoke test surfaced that the original "View Payment Schedule" nav link opened a dead-end — the user navigated away from the Opp drawer with no back-navigation. JP redirected: "look at the schedule and just see what's on the list, not immediately edit or create new. Let's have a drop down of the payment schedule first in the Opportunity." **Replaced the nav link with an inline Accordion** in the Opp dialog's Payment Summary block. Read-first: click the accordion header → lazy-fetches payments via `getSfOpportunityPayments` → shows a small table (Amount / Scheduled / Payment Date / Status / edit-icon). Per-row EditIcon opens `PaymentEditDialog` as a modal stacked on top of the Opp drawer — on save, `paymentListQuery.refetch()` refreshes the inline list and the user remains in the Opp drawer context (no navigation). Nav-link tests replaced with 4 accordion tests; full suite 28/28 suites, 389/389 tests pass post-iteration. `useNavigate` + `mockNavigate` references purged from both the component and the test file. PaymentSchedule page's Edit Details clickthrough retained — still reachable via the stage-transition flow from `Opportunities.tsx:217` and `Priorities.tsx:1509`, and stands on its own merit.
 

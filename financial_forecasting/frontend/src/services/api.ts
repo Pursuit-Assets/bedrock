@@ -319,6 +319,20 @@ export const apiService = {
       reason: 'Updated via Revenue Hub',
     } satisfies PaymentUpdatePayload),
 
+  /** Create a single Salesforce Payment on an existing Opportunity.
+   *  Distinct from the bulk createPaymentSchedule endpoint (which wipes and
+   *  recreates every payment); this appends one new record without touching
+   *  what's already there. Backend: POST /api/salesforce/payments at
+   *  main.py's create_payment handler. */
+  createSfPayment: (data: {
+    opportunity_id: string;
+    amount: number;
+    scheduled_date: string;
+    payment_method?: string | null;
+    paid?: boolean;
+  }) =>
+    api.post('/api/salesforce/payments', data),
+
   // Salesforce - Users
   getUsers: (params?: { limit?: number }) =>
     api.get('/api/salesforce/users', { params }),
