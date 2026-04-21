@@ -13,7 +13,7 @@ import logging
 from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.sessions import SessionMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, validator
 import uvicorn
 
 # Import our MCP client and models
@@ -742,12 +742,102 @@ class PaymentCreateRequest(BaseModel):
     Distinct from routes/payment_schedules.py's bulk CreatePaymentScheduleRequest,
     which wipes and re-creates every payment for an opportunity. This endpoint
     appends a single new npe01__OppPayment__c record to whatever already exists.
+
+    Hardened 2026-04-21 post-adversarial review (PR #161): amount bounded and
+    positive-only (blocks negative-amount exploit + NaN/Infinity); scheduled_date
+    strict YYYY-MM-DD (blocks 10MB-string DoS + SOQL-payload fuzzing); extra
+    fields forbidden (blocks field-injection probing).
     """
     opportunity_id: str
     amount: float
     scheduled_date: str  # YYYY-MM-DD
     payment_method: Optional[str] = None
     paid: bool = False
+
+    class Config:
+        extra = "forbid"
+
+    @validator("amount")
+    def _amount_positive_and_bounded(cls, v):
+        import math
+        if math.isnan(v) or math.isinf(v):
+            raise ValueError("amount must be a finite number")
+        if v <= 0:
+            raise ValueError("amount must be greater than 0")
+        # Sanity bound — no single payment should be larger than $1 trillion.
+        # Catches accidental 1e308 / precision-loss attacks.
+        if v > 1_000_000_000_000:
+            raise ValueError("amount is unreasonably large")
+        return v
+
+    @validator("scheduled_date")
+    def _scheduled_date_strict_iso(cls, v):
+        from datetime import datetime as _dt
+        if not isinstance(v, str) or len(v) != 10:
+            raise ValueError("scheduled_date must be exactly YYYY-MM-DD")
+        try:
+            _dt.strptime(v, "%Y-%m-%d")
+        except ValueError:
+            raise ValueError("scheduled_date must be a valid YYYY-MM-DD date")
+        return v
+
+    @validator("payment_method")
+    def _payment_method_bounded(cls, v):
+        if v is None:
+            return v
+        if not isinstance(v, str):
+            raise ValueError("payment_method must be a string")
+        # SF picklist values max at 255 chars; anything larger is an attack
+        # payload or a mistake.
+        if len(v) > 255:
+            raise ValueError("payment_method exceeds 255 chars")
+        return v
+
+
+async def _enforce_opp_ownership_for_payment(
+    salesforce,
+    opportunity_id: str,
+    user: Dict[str, Any],
+) -> None:
+    """Raise HTTPException(403/404) unless `user` may mutate payments on
+    `opportunity_id`.
+
+    Mirrors the pattern used by `update_opportunity` (main.py:425-436): admin
+    or `edit_all_opportunities` bypasses the check; otherwise the caller's
+    `sf_user_id` must match the Opportunity's `OwnerId`.
+
+    Added 2026-04-21 post-adversarial review (PR #163). Previously,
+    `check_permission("edit_payments")` alone gated POST/DELETE — any user
+    with that permission could create/delete payments on any opportunity,
+    including ones they didn't own. This helper restores parity with the
+    opportunity-update permission model.
+    """
+    perms = user.get("_permissions", {})
+    if perms.get("manage_users_roles", False):
+        return  # Admin bypass
+    if perms.get("edit_all_opportunities", False):
+        return  # Global edit bypass — same as update_opportunity
+    sf_user_id = (user.get("_app_user") or {}).get("sf_user_id")
+    if not sf_user_id:
+        # User exists in Bedrock but isn't linked to a Salesforce user —
+        # we can't evaluate ownership, so deny. Consistent with the
+        # edit-own-opps flow; safer than permitting.
+        raise HTTPException(
+            status_code=403,
+            detail="Cannot verify opportunity ownership — user is not linked to a Salesforce user",
+        )
+    safe_opp = escape_soql_string(opportunity_id)
+    result = await salesforce.query(
+        f"SELECT OwnerId FROM Opportunity WHERE Id = '{safe_opp}' LIMIT 1"
+    )
+    records = result.get("records", [])
+    if not records:
+        raise HTTPException(status_code=404, detail="Opportunity not found")
+    if records[0].get("OwnerId") != sf_user_id:
+        raise HTTPException(
+            status_code=403,
+            detail="You can only modify payments on opportunities you own",
+        )
 
 
 @app.put("/api/salesforce/accounts/{account_id}")
@@ -836,11 +926,30 @@ async def delete_payment(
 
     Destructive and irreversible at the SF level — the frontend caller
     (PaymentEditDialog) is expected to surface a confirm-before-delete
-    dialog. Permission-gated on `edit_payments` (the same gate used for
-    create and update)."""
+    dialog.
+
+    Auth: `check_permission("edit_payments")` is the outer gate. This endpoint
+    takes only `payment_id`, so we first resolve the parent Opp via a cheap
+    SOQL query (also gives us a 404 if the payment doesn't exist), then
+    defer to `_enforce_opp_ownership_for_payment` — non-owner deletes are
+    rejected unless the caller is admin or has `edit_all_opportunities`
+    (PR #163 hardening)."""
     validate_salesforce_id(payment_id, "payment_id")
     try:
         salesforce = client.salesforce
+        # Resolve parent Opp Id so we can run the ownership check. If the
+        # payment doesn't exist at all, 404 out before attempting delete.
+        safe_id = escape_soql_string(payment_id)
+        parent_result = await salesforce.query(
+            f"SELECT npe01__Opportunity__c FROM npe01__OppPayment__c WHERE Id = '{safe_id}' LIMIT 1"
+        )
+        parent_records = parent_result.get("records", [])
+        if not parent_records:
+            raise HTTPException(status_code=404, detail="Payment not found")
+        parent_opp_id = parent_records[0].get("npe01__Opportunity__c")
+        if parent_opp_id:
+            await _enforce_opp_ownership_for_payment(salesforce, parent_opp_id, user)
+        # Ownership OK — proceed with the destructive action.
         success = await salesforce.delete_record("npe01__OppPayment__c", payment_id)
         if not success:
             raise HTTPException(400, "Salesforce rejected the delete")
@@ -857,9 +966,17 @@ async def delete_payment(
     except HTTPException:
         raise
     except Exception as e:
-        error_msg = str(e)
-        logger.error(f"Error deleting payment {payment_id}: {error_msg}")
-        raise HTTPException(status_code=400, detail=error_msg)
+        # Full detail server-side for debugging; generic message to the client
+        # so we don't leak SF internal error text (field names, instance URLs,
+        # rate-limit hints). See adversarial review notes on PR #161.
+        logger.error(
+            f"Error deleting payment {payment_id}: {str(e)}",
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=400,
+            detail="Failed to delete payment. Check server logs or contact support.",
+        )
 
 
 @app.post("/api/salesforce/payments")
@@ -875,10 +992,18 @@ async def create_payment(
     one additional payment to whatever schedule already exists — no delete,
     no validation that the sum matches the Opportunity Amount. The Opp
     dialog's inline Payment Schedule accordion calls this on "+ Add Payment".
+
+    Auth: `check_permission("edit_payments")` is the outer gate; then
+    `_enforce_opp_ownership_for_payment` rejects non-owner writes unless the
+    caller is admin or has `edit_all_opportunities` (PR #163 hardening).
     """
     validate_salesforce_id(create_request.opportunity_id, "opportunity_id")
     try:
         salesforce = client.salesforce
+        # Ownership gate before any SF mutation.
+        await _enforce_opp_ownership_for_payment(
+            salesforce, create_request.opportunity_id, user,
+        )
         fields: Dict[str, Any] = {
             "npe01__Opportunity__c": create_request.opportunity_id,
             "npe01__Payment_Amount__c": create_request.amount,
@@ -903,11 +1028,17 @@ async def create_payment(
     except HTTPException:
         raise
     except Exception as e:
-        error_msg = str(e)
+        # Full detail server-side for debugging; generic message to the client
+        # so we don't leak SF internal error text (field names, instance URLs,
+        # rate-limit hints). See adversarial review notes on PR #161.
         logger.error(
-            f"Error creating payment on opp {create_request.opportunity_id}: {error_msg}"
+            f"Error creating payment on opp {create_request.opportunity_id}: {str(e)}",
+            exc_info=True,
         )
-        raise HTTPException(status_code=400, detail=error_msg)
+        raise HTTPException(
+            status_code=400,
+            detail="Failed to create payment. Check server logs or contact support.",
+        )
 
 
 @app.get("/api/salesforce/users")

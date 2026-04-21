@@ -618,16 +618,28 @@ class TestSalesforcePaymentCreate:
 # ===================================================================
 
 class TestSalesforcePaymentDelete:
-    """Tests for DELETE /api/salesforce/payments/{id} (PR #161).
+    """Tests for DELETE /api/salesforce/payments/{id} (PR #161 + PR #163 hardening).
 
     Destructive endpoint used by PaymentEditDialog's footer Delete button
     (which surfaces a confirm-before-delete popover on the frontend).
+
+    PR #163 hardening: DELETE now runs a parent-opp lookup before the
+    destructive action, and enforces ownership unless the caller is admin
+    or has edit_all_opportunities. Tests mock the parent-lookup query and
+    the delete_record separately.
     """
 
     # 15-char SF Id — validate_salesforce_id accepts 15 or 18 chars only.
     PAYMENT_ID = "a0xTESTPAYMENT1"
+    PARENT_OPP_ID = "006TESTOPPORT01"
 
     def test_delete_payment_success(self, client, mock_client):
+        # Parent-opp lookup returns the payment's parent opp so the
+        # ownership check can run; admin bypasses the actual SF query on
+        # the Opp.
+        mock_client.salesforce.query.return_value = {
+            "records": [{"npe01__Opportunity__c": self.PARENT_OPP_ID}],
+        }
         mock_client.salesforce.delete_record.return_value = True
         response = client.delete(f"/api/salesforce/payments/{self.PAYMENT_ID}")
         assert response.status_code == 200
@@ -640,9 +652,20 @@ class TestSalesforcePaymentDelete:
             "npe01__OppPayment__c", self.PAYMENT_ID,
         )
 
+    def test_delete_payment_not_found_returns_404(self, client, mock_client):
+        """If the parent-opp lookup finds no payment record, we 404 without
+        attempting delete_record."""
+        mock_client.salesforce.query.return_value = {"records": []}
+        response = client.delete(f"/api/salesforce/payments/{self.PAYMENT_ID}")
+        assert response.status_code == 404
+        mock_client.salesforce.delete_record.assert_not_called()
+
     def test_delete_payment_rejected_by_salesforce_returns_400(self, client, mock_client):
-        """If SF returns False (e.g., record already deleted, FK violation),
+        """If SF returns False on the actual delete (e.g., FK violation),
         we surface a 400 rather than silently claiming success."""
+        mock_client.salesforce.query.return_value = {
+            "records": [{"npe01__Opportunity__c": self.PARENT_OPP_ID}],
+        }
         mock_client.salesforce.delete_record.return_value = False
         response = client.delete(f"/api/salesforce/payments/{self.PAYMENT_ID}")
         assert response.status_code == 400
@@ -653,6 +676,181 @@ class TestSalesforcePaymentDelete:
         response = client.delete("/api/salesforce/payments/not-a-real-sf-id")
         assert response.status_code in (400, 422)
         mock_client.salesforce.delete_record.assert_not_called()
+
+
+# ===================================================================
+# 4a-tris. Payment Create — Pydantic validation hardening (PR #163)
+# ===================================================================
+
+class TestPaymentCreateRequestValidation:
+    """Unit tests for PaymentCreateRequest's Pydantic validators — added in
+    PR #163 after adversarial security review flagged: negative/NaN amount,
+    unvalidated date format, silent acceptance of extra fields.
+    """
+
+    BASE = {
+        "opportunity_id": "006TESTOPPORT01",
+        "amount": 100.0,
+        "scheduled_date": "2026-07-15",
+    }
+
+    def _make(self, **overrides):
+        from main import PaymentCreateRequest
+        return PaymentCreateRequest(**{**self.BASE, **overrides})
+
+    def test_valid_minimal_payload_succeeds(self):
+        req = self._make()
+        assert req.amount == 100.0
+        assert req.scheduled_date == "2026-07-15"
+        assert req.paid is False
+
+    def test_negative_amount_rejected(self):
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError):
+            self._make(amount=-500)
+
+    def test_zero_amount_rejected(self):
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError):
+            self._make(amount=0)
+
+    def test_nan_amount_rejected(self):
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError):
+            self._make(amount=float("nan"))
+
+    def test_infinity_amount_rejected(self):
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError):
+            self._make(amount=float("inf"))
+
+    def test_amount_over_trillion_rejected(self):
+        """Sanity bound — catches 1e308 precision-loss attacks."""
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError):
+            self._make(amount=1e15)
+
+    def test_malformed_date_rejected(self):
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError):
+            self._make(scheduled_date="not-a-date")
+
+    def test_out_of_range_date_rejected(self):
+        """'2026-13-45' parses as a string but fails strptime's strict check."""
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError):
+            self._make(scheduled_date="2026-13-45")
+
+    def test_giant_date_string_rejected(self):
+        """10KB string payload blocked by the exactly-10-chars length check."""
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError):
+            self._make(scheduled_date="2026-01-01" + "X" * 10_000)
+
+    def test_extra_field_rejected(self):
+        """Prevents silent field injection (e.g., attacker adding IsDeleted)."""
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError):
+            self._make(IsDeleted=True)
+
+    def test_overlong_payment_method_rejected(self):
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError):
+            self._make(payment_method="A" * 256)
+
+    def test_payment_method_none_allowed(self):
+        req = self._make(payment_method=None)
+        assert req.payment_method is None
+
+
+# ===================================================================
+# 4a-quater. Payment ownership enforcement helper (PR #163)
+# ===================================================================
+
+class TestEnforceOppOwnershipForPayment:
+    """Unit tests for the `_enforce_opp_ownership_for_payment` helper — added
+    in PR #163 after adversarial review found that `edit_payments` alone
+    let any user create/delete payments on any opp.
+
+    Contract: admin or edit_all_opportunities bypasses; otherwise the
+    caller's sf_user_id must match the Opp's OwnerId; 404 if opp absent;
+    403 if the user isn't linked to a Salesforce user at all.
+    """
+
+    @pytest.mark.asyncio
+    async def test_admin_bypasses_without_querying_sf(self):
+        from main import _enforce_opp_ownership_for_payment
+        sf = AsyncMock()
+        sf.query = AsyncMock()
+        user = {"_permissions": {"manage_users_roles": True}, "_app_user": None}
+        # Should not raise
+        await _enforce_opp_ownership_for_payment(sf, "006TESTOPPORT01", user)
+        sf.query.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_edit_all_opportunities_bypasses_without_querying_sf(self):
+        from main import _enforce_opp_ownership_for_payment
+        sf = AsyncMock()
+        sf.query = AsyncMock()
+        user = {
+            "_permissions": {"edit_all_opportunities": True},
+            "_app_user": {"sf_user_id": "005ANY"},
+        }
+        await _enforce_opp_ownership_for_payment(sf, "006TESTOPPORT01", user)
+        sf.query.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_owner_allowed(self):
+        from main import _enforce_opp_ownership_for_payment
+        sf = AsyncMock()
+        sf.query = AsyncMock(return_value={"records": [{"OwnerId": "005SAME"}]})
+        user = {
+            "_permissions": {},
+            "_app_user": {"sf_user_id": "005SAME"},
+        }
+        await _enforce_opp_ownership_for_payment(sf, "006TESTOPPORT01", user)
+
+    @pytest.mark.asyncio
+    async def test_non_owner_raises_403(self):
+        from main import _enforce_opp_ownership_for_payment
+        from fastapi import HTTPException
+        sf = AsyncMock()
+        sf.query = AsyncMock(return_value={"records": [{"OwnerId": "005OTHER"}]})
+        user = {
+            "_permissions": {},
+            "_app_user": {"sf_user_id": "005ME"},
+        }
+        with pytest.raises(HTTPException) as exc_info:
+            await _enforce_opp_ownership_for_payment(sf, "006TESTOPPORT01", user)
+        assert exc_info.value.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_opp_not_found_raises_404(self):
+        from main import _enforce_opp_ownership_for_payment
+        from fastapi import HTTPException
+        sf = AsyncMock()
+        sf.query = AsyncMock(return_value={"records": []})
+        user = {
+            "_permissions": {},
+            "_app_user": {"sf_user_id": "005ME"},
+        }
+        with pytest.raises(HTTPException) as exc_info:
+            await _enforce_opp_ownership_for_payment(sf, "006TESTOPPORT01", user)
+        assert exc_info.value.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_unlinked_user_raises_403_without_querying_sf(self):
+        """Bedrock user with no sf_user_id link — can't evaluate ownership,
+        must deny. Safer than permitting."""
+        from main import _enforce_opp_ownership_for_payment
+        from fastapi import HTTPException
+        sf = AsyncMock()
+        sf.query = AsyncMock()
+        user = {"_permissions": {}, "_app_user": None}
+        with pytest.raises(HTTPException) as exc_info:
+            await _enforce_opp_ownership_for_payment(sf, "006TESTOPPORT01", user)
+        assert exc_info.value.status_code == 403
+        sf.query.assert_not_called()
 
 
 # ===================================================================
