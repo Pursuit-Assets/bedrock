@@ -205,4 +205,8 @@ financial_forecasting/frontend/test-results/
 
 # Production environment
 financial_forecasting/frontend/.env.production
+
+# macOS Finder metadata (per-directory UI state — window geometry, view mode, icon positions)
+.DS_Store
+**/.DS_Store
 .gstack/
