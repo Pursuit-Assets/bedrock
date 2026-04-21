@@ -75,6 +75,13 @@ function buildInitialData(overrides: Record<string, any> = {}) {
     Amount_Received__c: null,
     Department__c: null,
     GL_Account__c: null,
+    // PR #164 save-guard: every PAYMENT_EDITABLE_FIELDS entry must be
+    // present on the fixture (even as null) so the save handler doesn't
+    // block with SaveBlockedDialog. Missing keys trigger the load-gap
+    // detection by design — tests of happy-path save need complete data.
+    GL_Payment_Received__c: null,
+    Reconciled_with_Finance__c: false,
+    Payment_Estimate__c: false,
     Batch_Name__c: null,
     npe01__Written_Off__c: false,
     Write_off_reason__c: null,

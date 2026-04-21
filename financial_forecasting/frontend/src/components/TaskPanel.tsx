@@ -10,6 +10,7 @@ import {
   Select,
   MenuItem,
   FormControl,
+  FormHelperText,
   InputLabel,
   Divider,
   CircularProgress,
@@ -46,6 +47,21 @@ import { usePermissions } from '../contexts/PermissionsContext';
 import toast from 'react-hot-toast';
 import ConfirmSaveButton from './ConfirmSaveButton';
 import SaveStatusIndicator from './SaveStatusIndicator';
+import { fieldStatusProps, getFieldLoadStatus, findMissingFields } from '../utils/fieldLoadStatus';
+import SaveBlockedDialog from './SaveBlockedDialog';
+
+// Task fields the inline edit form can save. DriveLink is a UI-only stub
+// (tracked for removal in Lane B13 `pr-drivelink-stub-fix`), so it's
+// excluded — no SF field to compare against.
+const TASK_EDITABLE_FIELDS: readonly string[] = [
+  'Subject',
+  'Status',
+  'Priority',
+  'ActivityDate',
+  'OwnerId',
+  'WhatId',
+  'Description',
+] as const;
 
 interface Task {
   Id: string;
@@ -206,6 +222,7 @@ const TaskPanel: React.FC<TaskPanelProps> = ({ open, onClose, opportunity, users
   const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
   const [expandedTaskId, setExpandedTaskId] = useState<string | null>(null);
   const [taskSort, setTaskSort] = useState<'asc' | 'desc'>('asc');
+  const [saveBlockedMissing, setSaveBlockedMissing] = useState<string[]>([]);
 
   // New task form state
   const [newTask, setNewTask] = useState({
@@ -444,9 +461,18 @@ const TaskPanel: React.FC<TaskPanelProps> = ({ open, onClose, opportunity, users
   };
 
   const saveEdit = () => {
-    if (editingTaskId) {
-      updateTaskMutation.mutate({ taskId: editingTaskId, updates: editTask });
+    if (!editingTaskId) return;
+    // Block save if the task record is missing any editable field that the
+    // form binds. Prevents silent overwrite of SF data the dialog can't see.
+    const originalTask = tasks.find(t => t.Id === editingTaskId) || (orphanTask && orphanTask.Id === editingTaskId ? orphanTask : null);
+    if (originalTask) {
+      const missing = findMissingFields(TASK_EDITABLE_FIELDS, originalTask as unknown as Record<string, any>);
+      if (missing.length > 0) {
+        setSaveBlockedMissing(missing);
+        return;
+      }
     }
+    updateTaskMutation.mutate({ taskId: editingTaskId, updates: editTask });
   };
 
   const handleCreateTask = () => {
@@ -1039,6 +1065,13 @@ const TaskPanel: React.FC<TaskPanelProps> = ({ open, onClose, opportunity, users
           </Button>
         </DialogActions>
       </Dialog>
+
+      <SaveBlockedDialog
+        open={saveBlockedMissing.length > 0}
+        onClose={() => setSaveBlockedMissing([])}
+        missingFields={saveBlockedMissing}
+        recordLabel="task"
+      />
     </Drawer>
   );
 };
@@ -1097,34 +1130,55 @@ const TaskItem: React.FC<TaskItemProps> = ({
           fullWidth
           size="small"
           sx={{ mb: 1.5 }}
+          {...fieldStatusProps('Subject', task as unknown as Record<string, any>)}
         />
-        
+
         <Box sx={{ display: 'flex', gap: 1, mb: 1.5 }}>
-          <FormControl size="small" sx={{ flex: 1 }}>
-            <InputLabel>Status</InputLabel>
-            <Select
-              value={editTask.Status}
-              label="Status"
-              onChange={(e) => setEditTask({ ...editTask, Status: e.target.value })}
-            >
-              <MenuItem value="Not Started">Not Started</MenuItem>
-              <MenuItem value="In Progress">In Progress</MenuItem>
-              <MenuItem value="Completed">Completed</MenuItem>
-              <MenuItem value="Deferred">Deferred</MenuItem>
-            </Select>
-          </FormControl>
-          <FormControl size="small" sx={{ flex: 1 }}>
-            <InputLabel>Priority</InputLabel>
-            <Select
-              value={editTask.Priority}
-              label="Priority"
-              onChange={(e) => setEditTask({ ...editTask, Priority: e.target.value })}
-            >
-              <MenuItem value="High">🔴 High</MenuItem>
-              <MenuItem value="Normal">🔵 Normal</MenuItem>
-              <MenuItem value="Low">⚪ Low</MenuItem>
-            </Select>
-          </FormControl>
+          {(() => {
+            const statusLoad = getFieldLoadStatus('Status', task as unknown as Record<string, any>);
+            return (
+              <FormControl size="small" sx={{ flex: 1 }}>
+                <InputLabel>Status</InputLabel>
+                <Select
+                  value={editTask.Status}
+                  label="Status"
+                  onChange={(e) => setEditTask({ ...editTask, Status: e.target.value })}
+                >
+                  <MenuItem value="Not Started">Not Started</MenuItem>
+                  <MenuItem value="In Progress">In Progress</MenuItem>
+                  <MenuItem value="Completed">Completed</MenuItem>
+                  <MenuItem value="Deferred">Deferred</MenuItem>
+                </Select>
+                {statusLoad.helperText && (
+                  <FormHelperText sx={statusLoad.isWarning ? { color: 'warning.main' } : undefined}>
+                    {statusLoad.helperText}
+                  </FormHelperText>
+                )}
+              </FormControl>
+            );
+          })()}
+          {(() => {
+            const priorityLoad = getFieldLoadStatus('Priority', task as unknown as Record<string, any>);
+            return (
+              <FormControl size="small" sx={{ flex: 1 }}>
+                <InputLabel>Priority</InputLabel>
+                <Select
+                  value={editTask.Priority}
+                  label="Priority"
+                  onChange={(e) => setEditTask({ ...editTask, Priority: e.target.value })}
+                >
+                  <MenuItem value="High">🔴 High</MenuItem>
+                  <MenuItem value="Normal">🔵 Normal</MenuItem>
+                  <MenuItem value="Low">⚪ Low</MenuItem>
+                </Select>
+                {priorityLoad.helperText && (
+                  <FormHelperText sx={priorityLoad.isWarning ? { color: 'warning.main' } : undefined}>
+                    {priorityLoad.helperText}
+                  </FormHelperText>
+                )}
+              </FormControl>
+            );
+          })()}
         </Box>
 
         <TextField
@@ -1136,40 +1190,57 @@ const TaskItem: React.FC<TaskItemProps> = ({
           size="small"
           InputLabelProps={{ shrink: true }}
           sx={{ mb: 1.5 }}
+          {...fieldStatusProps('ActivityDate', task as unknown as Record<string, any>)}
         />
 
-        {users && users.length > 0 && (
-          <FormControl size="small" fullWidth sx={{ mb: 1.5 }}>
-            <InputLabel>Assign To</InputLabel>
-            <Select
-              value={editTask.OwnerId}
-              label="Assign To"
-              onChange={(e) => setEditTask({ ...editTask, OwnerId: e.target.value })}
-            >
-              <MenuItem value="">Unassigned</MenuItem>
-              {users.map(user => (
-                <MenuItem key={user.Id} value={user.Id}>{user.Name}</MenuItem>
-              ))}
-            </Select>
-          </FormControl>
-        )}
+        {users && users.length > 0 && (() => {
+          const ownerLoad = getFieldLoadStatus('OwnerId', task as unknown as Record<string, any>);
+          return (
+            <FormControl size="small" fullWidth sx={{ mb: 1.5 }}>
+              <InputLabel>Assign To</InputLabel>
+              <Select
+                value={editTask.OwnerId}
+                label="Assign To"
+                onChange={(e) => setEditTask({ ...editTask, OwnerId: e.target.value })}
+              >
+                <MenuItem value="">Unassigned</MenuItem>
+                {users.map(user => (
+                  <MenuItem key={user.Id} value={user.Id}>{user.Name}</MenuItem>
+                ))}
+              </Select>
+              {ownerLoad.helperText && (
+                <FormHelperText sx={ownerLoad.isWarning ? { color: 'warning.main' } : undefined}>
+                  {ownerLoad.helperText}
+                </FormHelperText>
+              )}
+            </FormControl>
+          );
+        })()}
 
-        {opportunities && opportunities.length > 0 && (
-          <FormControl size="small" fullWidth sx={{ mb: 1.5 }}>
-            <InputLabel>{isOppLocked && !canEditLockedOpp ? 'Opportunity (Locked)' : 'Opportunity'}</InputLabel>
-            <Select
-              value={editTask.WhatId}
-              label={isOppLocked && !canEditLockedOpp ? 'Opportunity (Locked)' : 'Opportunity'}
-              onChange={(e) => setEditTask({ ...editTask, WhatId: e.target.value })}
-              disabled={isOppLocked && !canEditLockedOpp}
-            >
-              <MenuItem value="">No Opportunity</MenuItem>
-              {opportunities.map(opp => (
-                <MenuItem key={opp.Id} value={opp.Id}>{opp.Name}</MenuItem>
-              ))}
-            </Select>
-          </FormControl>
-        )}
+        {opportunities && opportunities.length > 0 && (() => {
+          const whatIdLoad = getFieldLoadStatus('WhatId', task as unknown as Record<string, any>);
+          return (
+            <FormControl size="small" fullWidth sx={{ mb: 1.5 }}>
+              <InputLabel>{isOppLocked && !canEditLockedOpp ? 'Opportunity (Locked)' : 'Opportunity'}</InputLabel>
+              <Select
+                value={editTask.WhatId}
+                label={isOppLocked && !canEditLockedOpp ? 'Opportunity (Locked)' : 'Opportunity'}
+                onChange={(e) => setEditTask({ ...editTask, WhatId: e.target.value })}
+                disabled={isOppLocked && !canEditLockedOpp}
+              >
+                <MenuItem value="">No Opportunity</MenuItem>
+                {opportunities.map(opp => (
+                  <MenuItem key={opp.Id} value={opp.Id}>{opp.Name}</MenuItem>
+                ))}
+              </Select>
+              {whatIdLoad.helperText && (
+                <FormHelperText sx={whatIdLoad.isWarning ? { color: 'warning.main' } : undefined}>
+                  {whatIdLoad.helperText}
+                </FormHelperText>
+              )}
+            </FormControl>
+          );
+        })()}
 
         {/* Assign to Project */}
         {projects && projects.length > 0 && onLinkToProject && (
@@ -1199,6 +1270,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
           multiline
           rows={2}
           sx={{ mb: 1.5 }}
+          {...fieldStatusProps('Description', task as unknown as Record<string, any>)}
         />
 
         <TextField

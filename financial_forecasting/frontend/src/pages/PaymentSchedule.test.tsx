@@ -97,9 +97,13 @@ function sfPaymentRecord(overrides: Record<string, any> = {}) {
     Amount_Received__c: null,
     Department__c: null,
     GL_Account__c: null,
-    Batch_Name__c: null,
+    // PR #164 save-guard parity: PaymentEditDialog's save-guard checks
+    // PAYMENT_EDITABLE_FIELDS; tests that drive the save flow end-to-end
+    // must include the full editable set or the guard blocks the save.
+    GL_Payment_Received__c: null,
     Reconciled_with_Finance__c: false,
     Payment_Estimate__c: false,
+    Batch_Name__c: null,
     npe01__Written_Off__c: false,
     Write_off_reason__c: null,
     npe01__Opportunity__r: { Name: 'Acme Grant 2026', Account: { Name: 'Acme Foundation' } },

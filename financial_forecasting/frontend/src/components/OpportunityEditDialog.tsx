@@ -47,6 +47,36 @@ import { usePermissions } from '../contexts/PermissionsContext';
 import { COLLECTING_STAGES, CLOSED_STAGES } from '../types/salesforce';
 import { useOpportunityRecordTypes } from '../hooks/useOpportunityRecordTypes';
 import { useSchemaPicklist } from '../hooks/useSchemaPicklist';
+import { fieldStatusProps, findMissingFields } from '../utils/fieldLoadStatus';
+import SaveBlockedDialog from './SaveBlockedDialog';
+
+// Fields bound to `editForm.X` in this dialog that the save handler may patch.
+// A field absent from the loaded record + touched by the user → silent overwrite
+// of SF data the user can't see. We block save when any is missing so the user
+// reloads before editing. Read-only / joined fields (Account.Name, Owner.Name,
+// CreatedDate, LastModifiedDate, RecordType.Name, ExpectedRevenue, payment
+// rollups) are omitted — they can't be edited here and their absence from the
+// response doesn't cause data loss on save.
+const OPPORTUNITY_EDITABLE_FIELDS: readonly string[] = [
+  'Name',
+  'StageName',
+  'Amount',
+  'Probability',
+  'CloseDate',
+  'RecordTypeId',
+  'RenewalRepeat__c',
+  'Active_Opportunity__c',
+  'LeadSource',
+  'NextStep',
+  'Description',
+  'OwnerId',
+  'AccountId',
+  'Contract_Start_Date__c',
+  'Contract_End_Date__c',
+  'Payment_Terms__c',
+  'Billing_Frequency__c',
+  'Earliest_Scheduled_Payment__c',
+] as const;
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -181,6 +211,17 @@ const OpportunityEditDialog: React.FC<OpportunityEditDialogProps> = ({
   const [saving, setSaving] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [dialogTab, setDialogTab] = useState(0);
+  const [saveBlockedMissing, setSaveBlockedMissing] = useState<string[]>([]);
+
+  // Merge per-field validation error with load-status caption. Validation
+  // errors take priority (user is actively editing); "Not set" / "⚠ Couldn't
+  // load current value" show in steady state.
+  const getHelperProps = (fieldName: string) => {
+    if (errors[fieldName]) {
+      return { helperText: errors[fieldName], error: true };
+    }
+    return fieldStatusProps(fieldName, originalOpp);
+  };
 
   const [users, setUsers] = useState<UserOption[]>([]);
   const [accounts, setAccounts] = useState<AccountOption[]>([]);
@@ -334,6 +375,16 @@ const OpportunityEditDialog: React.FC<OpportunityEditDialogProps> = ({
   // ── Save handler ────────────────────────────────────────────────────────
   const handleSave = async () => {
     if (!opportunityId || !originalOpp) return;
+
+    // Block save if the loaded record is missing any editable field — the
+    // user could otherwise silently overwrite SF values the dialog never
+    // displayed. The per-field "⚠ Couldn't load current value" caption
+    // already flags the individual fields; this guard is the safety net.
+    const missing = findMissingFields(OPPORTUNITY_EDITABLE_FIELDS, originalOpp);
+    if (missing.length > 0) {
+      setSaveBlockedMissing(missing);
+      return;
+    }
 
     // Validate SF-required fields before saving
     const newErrors: Record<string, string> = {};
@@ -550,8 +601,7 @@ const OpportunityEditDialog: React.FC<OpportunityEditDialogProps> = ({
                   disabled={!canEdit}
                   value={editForm.Name || ''}
                   onChange={(e) => handleFieldChange('Name', e.target.value)}
-                  error={!!errors.Name}
-                  helperText={errors.Name}
+                  {...getHelperProps('Name')}
                 />
               </Grid>
               <Grid item xs={12} sm={6}>
@@ -569,8 +619,7 @@ const OpportunityEditDialog: React.FC<OpportunityEditDialogProps> = ({
                     disabled={!canEdit}
                     value={editForm.StageName || ''}
                     onChange={(e) => handleFieldChange('StageName', e.target.value)}
-                    error={!!errors.StageName}
-                    helperText={errors.StageName}
+                    {...getHelperProps('StageName')}
                   >
                     {stages.options.map((stage) => (
                       <MenuItem key={stage} value={stage}>
@@ -614,6 +663,7 @@ const OpportunityEditDialog: React.FC<OpportunityEditDialogProps> = ({
                   InputProps={{
                     startAdornment: <InputAdornment position="start">$</InputAdornment>,
                   }}
+                  {...getHelperProps('Amount')}
                 />
               </Grid>
               <Grid item xs={12} sm={6}>
@@ -626,6 +676,7 @@ const OpportunityEditDialog: React.FC<OpportunityEditDialogProps> = ({
                   value={editForm.Probability ?? ''}
                   onChange={(e) => handleFieldChange('Probability', e.target.value)}
                   inputProps={{ min: 0, max: 100 }}
+                  {...getHelperProps('Probability')}
                 />
               </Grid>
               <Grid item xs={12} sm={6}>
@@ -639,8 +690,7 @@ const OpportunityEditDialog: React.FC<OpportunityEditDialogProps> = ({
                   value={editForm.CloseDate || ''}
                   onChange={(e) => handleFieldChange('CloseDate', e.target.value)}
                   InputLabelProps={{ shrink: true }}
-                  error={!!errors.CloseDate}
-                  helperText={errors.CloseDate}
+                  {...getHelperProps('CloseDate')}
                 />
               </Grid>
               <Grid item xs={12} sm={6}>
@@ -658,6 +708,7 @@ const OpportunityEditDialog: React.FC<OpportunityEditDialogProps> = ({
                     disabled={!canEdit}
                     value={editForm.RecordTypeId || ''}
                     onChange={(e) => handleFieldChange('RecordTypeId', e.target.value)}
+                    {...getHelperProps('RecordTypeId')}
                   >
                     {recordTypes.options.map((rt) => (
                       <MenuItem key={rt.id} value={rt.id}>{rt.name}</MenuItem>
@@ -697,6 +748,7 @@ const OpportunityEditDialog: React.FC<OpportunityEditDialogProps> = ({
                     disabled={!canEdit}
                     value={editForm.RenewalRepeat__c || ''}
                     onChange={(e) => handleFieldChange('RenewalRepeat__c', e.target.value)}
+                    {...getHelperProps('RenewalRepeat__c')}
                   >
                     <MenuItem value="">None</MenuItem>
                     {renewalRepeat.options.map((v) => (
@@ -754,6 +806,7 @@ const OpportunityEditDialog: React.FC<OpportunityEditDialogProps> = ({
                   disabled={!canEdit}
                   value={editForm.LeadSource || ''}
                   onChange={(e) => handleFieldChange('LeadSource', e.target.value)}
+                  {...getHelperProps('LeadSource')}
                 />
               </Grid>
               <Grid item xs={12} sm={6}>
@@ -764,6 +817,7 @@ const OpportunityEditDialog: React.FC<OpportunityEditDialogProps> = ({
                   disabled={!canEdit}
                   value={editForm.NextStep || ''}
                   onChange={(e) => handleFieldChange('NextStep', e.target.value)}
+                  {...getHelperProps('NextStep')}
                 />
               </Grid>
               <Grid item xs={12}>
@@ -776,6 +830,7 @@ const OpportunityEditDialog: React.FC<OpportunityEditDialogProps> = ({
                   disabled={!canEdit}
                   value={editForm.Description || ''}
                   onChange={(e) => handleFieldChange('Description', e.target.value)}
+                  {...getHelperProps('Description')}
                 />
               </Grid>
               <Grid item xs={12}>
@@ -864,6 +919,7 @@ const OpportunityEditDialog: React.FC<OpportunityEditDialogProps> = ({
                         handleFieldChange('Earliest_Scheduled_Payment__c', e.target.value)
                       }
                       InputLabelProps={{ shrink: true }}
+                      {...getHelperProps('Earliest_Scheduled_Payment__c')}
                     />
                   </Grid>
                 </Grid>
@@ -1087,6 +1143,7 @@ const OpportunityEditDialog: React.FC<OpportunityEditDialogProps> = ({
                     handleFieldChange('Contract_Start_Date__c', e.target.value)
                   }
                   InputLabelProps={{ shrink: true }}
+                  {...getHelperProps('Contract_Start_Date__c')}
                 />
               </Grid>
               <Grid item xs={12} sm={6}>
@@ -1101,6 +1158,7 @@ const OpportunityEditDialog: React.FC<OpportunityEditDialogProps> = ({
                     handleFieldChange('Contract_End_Date__c', e.target.value)
                   }
                   InputLabelProps={{ shrink: true }}
+                  {...getHelperProps('Contract_End_Date__c')}
                 />
               </Grid>
               <Grid item xs={12} sm={6}>
@@ -1113,6 +1171,7 @@ const OpportunityEditDialog: React.FC<OpportunityEditDialogProps> = ({
                   onChange={(e) =>
                     handleFieldChange('Payment_Terms__c', e.target.value)
                   }
+                  {...getHelperProps('Payment_Terms__c')}
                 />
               </Grid>
               <Grid item xs={12} sm={6}>
@@ -1125,6 +1184,7 @@ const OpportunityEditDialog: React.FC<OpportunityEditDialogProps> = ({
                   onChange={(e) =>
                     handleFieldChange('Billing_Frequency__c', e.target.value)
                   }
+                  {...getHelperProps('Billing_Frequency__c')}
                 />
               </Grid>
             </Grid>
@@ -1211,6 +1271,13 @@ const OpportunityEditDialog: React.FC<OpportunityEditDialogProps> = ({
           setScheduleExpanded(true);
           paymentListQuery.refetch();
         }}
+      />
+
+      <SaveBlockedDialog
+        open={saveBlockedMissing.length > 0}
+        onClose={() => setSaveBlockedMissing([])}
+        missingFields={saveBlockedMissing}
+        recordLabel="opportunity"
       />
     </Drawer>
   );

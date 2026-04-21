@@ -23,6 +23,28 @@ import ConfirmSaveButton from './ConfirmSaveButton';
 import { apiService } from '../services/api';
 import { usePermissions } from '../contexts/PermissionsContext';
 import { useSchemaPicklist } from '../hooks/useSchemaPicklist';
+import { fieldStatusProps, findMissingFields } from '../utils/fieldLoadStatus';
+import SaveBlockedDialog from './SaveBlockedDialog';
+
+// Fields the dialog can save. Missing → silent overwrite risk; save-guard
+// blocks with SaveBlockedDialog. Per-field "⚠ Couldn't load" surfaces gaps.
+const PAYMENT_EDITABLE_FIELDS: readonly string[] = [
+  'npe01__Payment_Amount__c',
+  'npe01__Scheduled_Date__c',
+  'npe01__Payment_Date__c',
+  'npe01__Paid__c',
+  'npe01__Payment_Method__c',
+  'npe01__Check_Reference_Number__c',
+  'Amount_Received__c',
+  'Department__c',
+  'GL_Account__c',
+  'GL_Payment_Received__c',
+  'Reconciled_with_Finance__c',
+  'Payment_Estimate__c',
+  'Batch_Name__c',
+  'npe01__Written_Off__c',
+  'Write_off_reason__c',
+] as const;
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -95,6 +117,13 @@ const PaymentEditDialog: React.FC<PaymentEditDialogProps> = ({
   const [originalRecord, setOriginalRecord] = useState<Record<string, any> | null>(null);
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [saveBlockedMissing, setSaveBlockedMissing] = useState<string[]>([]);
+
+  // Per-field load-status helper. Payment dialog has no per-field validation
+  // errors today, so this is a thin wrapper — kept for parity with the other
+  // dialogs so future validation additions slot in cleanly.
+  const getHelperProps = (fieldName: string) =>
+    fieldStatusProps(fieldName, originalRecord);
 
   // Schema-driven picklists. Each hook shares the 30-min react-query cache keyed
   // on (sobject, fieldName) with every other caller so the SF describe fetch
@@ -132,6 +161,13 @@ const PaymentEditDialog: React.FC<PaymentEditDialogProps> = ({
   // ── Save handler ────────────────────────────────────────────────────────
   const handleSave = async () => {
     if (!paymentId || !originalRecord) return;
+
+    // Block save if the loaded record is missing any editable field.
+    const missing = findMissingFields(PAYMENT_EDITABLE_FIELDS, originalRecord);
+    if (missing.length > 0) {
+      setSaveBlockedMissing(missing);
+      return;
+    }
 
     // Diff: only send changed fields
     const updates: Record<string, any> = {};
@@ -248,6 +284,7 @@ const PaymentEditDialog: React.FC<PaymentEditDialogProps> = ({
                   InputProps={{
                     startAdornment: <InputAdornment position="start">$</InputAdornment>,
                   }}
+                  {...getHelperProps('npe01__Payment_Amount__c')}
                 />
               </Grid>
               <Grid item xs={12} sm={6}>
@@ -260,6 +297,7 @@ const PaymentEditDialog: React.FC<PaymentEditDialogProps> = ({
                   value={editForm.npe01__Scheduled_Date__c || ''}
                   onChange={(e) => handleFieldChange('npe01__Scheduled_Date__c', e.target.value)}
                   InputLabelProps={{ shrink: true }}
+                  {...getHelperProps('npe01__Scheduled_Date__c')}
                 />
               </Grid>
               <Grid item xs={12} sm={6}>
@@ -272,6 +310,7 @@ const PaymentEditDialog: React.FC<PaymentEditDialogProps> = ({
                   value={editForm.npe01__Payment_Date__c || ''}
                   onChange={(e) => handleFieldChange('npe01__Payment_Date__c', e.target.value)}
                   InputLabelProps={{ shrink: true }}
+                  {...getHelperProps('npe01__Payment_Date__c')}
                 />
               </Grid>
               <Grid item xs={12} sm={6}>
@@ -298,6 +337,7 @@ const PaymentEditDialog: React.FC<PaymentEditDialogProps> = ({
                     disabled={!canEdit}
                     value={editForm.npe01__Payment_Method__c || ''}
                     onChange={(e) => handleFieldChange('npe01__Payment_Method__c', e.target.value)}
+                    {...getHelperProps('npe01__Payment_Method__c')}
                   >
                     <MenuItem value="">None</MenuItem>
                     {paymentMethod.options.map((v) => (
@@ -332,6 +372,7 @@ const PaymentEditDialog: React.FC<PaymentEditDialogProps> = ({
                   disabled={!canEdit}
                   value={editForm.npe01__Check_Reference_Number__c || ''}
                   onChange={(e) => handleFieldChange('npe01__Check_Reference_Number__c', e.target.value)}
+                  {...getHelperProps('npe01__Check_Reference_Number__c')}
                 />
               </Grid>
             </Grid>
@@ -394,6 +435,7 @@ const PaymentEditDialog: React.FC<PaymentEditDialogProps> = ({
                   InputProps={{
                     startAdornment: <InputAdornment position="start">$</InputAdornment>,
                   }}
+                  {...getHelperProps('Amount_Received__c')}
                 />
               </Grid>
               <Grid item xs={12} sm={6}>
@@ -406,6 +448,7 @@ const PaymentEditDialog: React.FC<PaymentEditDialogProps> = ({
                     disabled={!canEdit}
                     value={editForm.Department__c || ''}
                     onChange={(e) => handleFieldChange('Department__c', e.target.value)}
+                    {...getHelperProps('Department__c')}
                   >
                     <MenuItem value="">None</MenuItem>
                     {department.options.map((v) => (
@@ -441,6 +484,7 @@ const PaymentEditDialog: React.FC<PaymentEditDialogProps> = ({
                     disabled={!canEdit}
                     value={editForm.GL_Account__c || ''}
                     onChange={(e) => handleFieldChange('GL_Account__c', e.target.value)}
+                    {...getHelperProps('GL_Account__c')}
                   >
                     <MenuItem value="">None</MenuItem>
                     {glAccount.options.map((v) => (
@@ -476,6 +520,7 @@ const PaymentEditDialog: React.FC<PaymentEditDialogProps> = ({
                   value={editForm.GL_Payment_Received__c || ''}
                   onChange={(e) => handleFieldChange('GL_Payment_Received__c', e.target.value)}
                   InputLabelProps={{ shrink: true }}
+                  {...getHelperProps('GL_Payment_Received__c')}
                 />
               </Grid>
               <Grid item xs={6} sm={3}>
@@ -512,6 +557,7 @@ const PaymentEditDialog: React.FC<PaymentEditDialogProps> = ({
                   disabled={!canEdit}
                   value={editForm.Batch_Name__c || ''}
                   onChange={(e) => handleFieldChange('Batch_Name__c', e.target.value)}
+                  {...getHelperProps('Batch_Name__c')}
                 />
               </Grid>
             </Grid>
@@ -545,6 +591,7 @@ const PaymentEditDialog: React.FC<PaymentEditDialogProps> = ({
                   disabled={!canEdit}
                   value={editForm.Write_off_reason__c || ''}
                   onChange={(e) => handleFieldChange('Write_off_reason__c', e.target.value)}
+                  {...getHelperProps('Write_off_reason__c')}
                 />
               </Grid>
             </Grid>
@@ -624,6 +671,13 @@ const PaymentEditDialog: React.FC<PaymentEditDialogProps> = ({
           Save
         </ConfirmSaveButton>
       </DialogActions>
+
+      <SaveBlockedDialog
+        open={saveBlockedMissing.length > 0}
+        onClose={() => setSaveBlockedMissing([])}
+        missingFields={saveBlockedMissing}
+        recordLabel="payment"
+      />
     </Dialog>
   );
 };
