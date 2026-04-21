@@ -430,6 +430,7 @@ export default function PaymentSchedule() {
         paymentId={detailPaymentId}
         initialData={detailPaymentData ?? undefined}
         onSaved={handleDetailSaved}
+        onDeleted={handleDetailSaved}
       />
     </Box>
   );

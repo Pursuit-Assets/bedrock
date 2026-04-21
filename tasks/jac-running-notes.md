@@ -51,7 +51,10 @@ For per-PR status of the 23 PRs in the plan, see the "PR sequence" table in `tas
 
 ## Progress log (newest first)
 
-### 2026-04-21 — PR #161 post-merge follow-up: always-visible Payment Schedule + Create 👀 in review
+### 2026-04-21 — PR #161 post-merge follow-up: always-visible Payment Schedule + Create + Delete 👀 in review
+
+**Delete addendum (2026-04-21 afternoon):** JP asked during the #161 work to also add delete, with the explicit constraint "don't allow quick delete from the dropdown schedule, but make sure there's a warning pop up before saving the deletion." Delivered as a `variant="outlined" color="error"` Delete button in the PaymentEditDialog footer that reuses `ConfirmSaveButton`'s 2-step popover pattern — click Delete → read destructive warning ("This permanently deletes the payment from Salesforce. This cannot be undone, and the parent opportunity's payment rollups will recalculate.") → click Delete again in the popover. No quick-delete icon was added to the accordion's row, per JP's constraint. New `DELETE /api/salesforce/payments/{id}` endpoint at `main.py`, `apiService.deleteSfPayment`, and `onDeleted` callback propagated to both the Opp accordion and the PaymentSchedule Edit Details flow so the list refreshes when a payment disappears. +2 frontend tests (destructive-confirm flow + permission-gated button hidden) and +3 backend tests (success, SF-rejects-400, invalid-id) in `TestSalesforcePaymentDelete`.
+
 
 - **Why.** Post-#159 smoke on a Qualifying-stage Opp surfaced that the inline Payment Schedule accordion was hidden (it was nested inside the Payment Summary stage-gate, which only renders at Collecting/Closed). JP: "Payment section doesn't appear on Opportunity if no Payments are created yet, it should show the section and allow creating Payments using the dialog stack." Two issues in one ask: (1) accordion visibility gated too tightly, (2) no way to CREATE new payments from the inline UI — only edit existing ones.
 - **Fix (frontend).**

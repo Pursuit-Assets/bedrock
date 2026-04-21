@@ -63,6 +63,7 @@ def mock_salesforce():
     service.query_all = AsyncMock(return_value={"records": []})
     service.create_record = AsyncMock(return_value={"id": "006NEW0000000001"})
     service.update_record = AsyncMock(return_value=True)
+    service.delete_record = AsyncMock(return_value=True)
     service.get_service_info = AsyncMock(return_value={
         "service": "salesforce",
         "authenticated": True,
@@ -605,6 +606,48 @@ class TestSalesforcePaymentCreate:
         )
         assert response.status_code == 422
         mock_client.salesforce.create_record.assert_not_called()
+
+
+# ===================================================================
+# 4a-bis. Salesforce Payments — DELETE single-record
+# ===================================================================
+
+class TestSalesforcePaymentDelete:
+    """Tests for DELETE /api/salesforce/payments/{id} (PR #161).
+
+    Destructive endpoint used by PaymentEditDialog's footer Delete button
+    (which surfaces a confirm-before-delete popover on the frontend).
+    """
+
+    # 15-char SF Id — validate_salesforce_id accepts 15 or 18 chars only.
+    PAYMENT_ID = "a0xTESTPAYMENT1"
+
+    def test_delete_payment_success(self, client, mock_client):
+        mock_client.salesforce.delete_record.return_value = True
+        response = client.delete(f"/api/salesforce/payments/{self.PAYMENT_ID}")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["success"] is True
+        assert body["data"]["id"] == self.PAYMENT_ID
+
+        # Verify the delete targeted the right SObject + Id
+        mock_client.salesforce.delete_record.assert_called_once_with(
+            "npe01__OppPayment__c", self.PAYMENT_ID,
+        )
+
+    def test_delete_payment_rejected_by_salesforce_returns_400(self, client, mock_client):
+        """If SF returns False (e.g., record already deleted, FK violation),
+        we surface a 400 rather than silently claiming success."""
+        mock_client.salesforce.delete_record.return_value = False
+        response = client.delete(f"/api/salesforce/payments/{self.PAYMENT_ID}")
+        assert response.status_code == 400
+
+    def test_delete_payment_invalid_id_rejected(self, client, mock_client):
+        """validate_salesforce_id runs before we touch Salesforce — an
+        obviously-bad id should 400 without ever calling delete_record."""
+        response = client.delete("/api/salesforce/payments/not-a-real-sf-id")
+        assert response.status_code in (400, 422)
+        mock_client.salesforce.delete_record.assert_not_called()
 
 
 # ===================================================================

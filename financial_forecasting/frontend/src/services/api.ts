@@ -333,6 +333,13 @@ export const apiService = {
   }) =>
     api.post('/api/salesforce/payments', data),
 
+  /** Permanently delete a Salesforce Payment record. Irreversible at the SF
+   *  level — UI callers (PaymentEditDialog) must surface a confirm dialog
+   *  before invoking. Backend: DELETE /api/salesforce/payments/{id} at
+   *  main.py's delete_payment handler. Permission-gated on `edit_payments`. */
+  deleteSfPayment: (paymentId: string) =>
+    api.delete(`/api/salesforce/payments/${paymentId}`),
+
   // Salesforce - Users
   getUsers: (params?: { limit?: number }) =>
     api.get('/api/salesforce/users', { params }),
