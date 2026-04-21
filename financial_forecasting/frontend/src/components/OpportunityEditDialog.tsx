@@ -18,18 +18,28 @@ import {
   Tabs,
   Tab,
   Chip,
+  Accordion,
+  AccordionSummary,
+  AccordionDetails,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableRow,
+  CircularProgress,
 } from '@mui/material';
 import {
   OpenInNew as OpenInNewIcon,
   History as HistoryIcon,
   Edit as EditIcon,
   Close as CloseIcon,
+  ExpandMore as ExpandMoreIcon,
 } from '@mui/icons-material';
-import { useQueryClient } from 'react-query';
-import { useNavigate } from 'react-router-dom';
+import { useQuery, useQueryClient } from 'react-query';
 import toast from 'react-hot-toast';
 import ConfirmSaveButton from './ConfirmSaveButton';
 import ActivityTimeline from './ActivityTimeline';
+import PaymentEditDialog from './PaymentEditDialog';
 import { apiService } from '../services/api';
 import { usePermissions } from '../contexts/PermissionsContext';
 import { COLLECTING_STAGES, CLOSED_STAGES } from '../types/salesforce';
@@ -143,10 +153,24 @@ const OpportunityEditDialog: React.FC<OpportunityEditDialogProps> = ({
   const stages = useSchemaPicklist('Opportunity', 'StageName');
   const renewalRepeat = useSchemaPicklist('Opportunity', 'RenewalRepeat__c');
 
-  // Navigation for the "View Payment Schedule" link (rendered inside the
-  // Payment Summary block below). Existing precedent: pages/Priorities.tsx:1509
-  // and pages/PaymentSchedule.tsx both consume useNavigate directly.
-  const navigate = useNavigate();
+  // Payment Schedule inline accordion. Read-first UX per JP direction:
+  // show the list when the user expands, and only enter edit mode when the
+  // per-row EditIcon is clicked (PaymentEditDialog stacks on this drawer).
+  // Lazy-fetch: `enabled: expanded` so we don't pay the SF round-trip when
+  // the user never cares about payments on this opp.
+  const [scheduleExpanded, setScheduleExpanded] = useState(false);
+  const [detailPayment, setDetailPayment] = useState<Record<string, any> | null>(null);
+  const paymentListQuery = useQuery(
+    ['opp-payment-list', opportunityId],
+    async () => {
+      const res = await apiService.getSfOpportunityPayments(opportunityId!);
+      return (Array.isArray(res.data) ? res.data : []) as Record<string, any>[];
+    },
+    {
+      enabled: !!opportunityId && scheduleExpanded,
+      staleTime: 30 * 1000, // 30s — payment rollups can change after a save
+    },
+  );
 
   // ── Local state ─────────────────────────────────────────────────────────
   const [editForm, setEditForm] = useState<Record<string, any>>({});
@@ -841,21 +865,107 @@ const OpportunityEditDialog: React.FC<OpportunityEditDialogProps> = ({
                   </Grid>
                 </Grid>
 
-                {/* Navigate to the opp-scoped PaymentSchedule page — enables
-                    drill-down into individual Payment records via the
-                    Edit Details flow there. Rendered inside the stage-gated
-                    Payment Summary block so it only appears when the opp
-                    has (or can have) payment records. */}
-                <Box sx={{ mt: 1.5, textAlign: 'right' }}>
-                  <Button
-                    size="small"
-                    variant="text"
-                    endIcon={<OpenInNewIcon fontSize="small" />}
-                    onClick={() => navigate(`/payment-schedule/${opportunityId}`)}
+                {/* Inline Payment Schedule list — read-first per JP direction.
+                    Expanding fetches the full SF payment records for this opp
+                    via getSfOpportunityPayments. Per-row EditIcon opens
+                    PaymentEditDialog as a stacked modal on top of the Opp
+                    drawer (no navigation away). Replaces an earlier
+                    "View Payment Schedule" nav link that dead-ended users
+                    on a separate page with no back nav. */}
+                <Accordion
+                  elevation={0}
+                  disableGutters
+                  expanded={scheduleExpanded}
+                  onChange={(_, isExpanded) => setScheduleExpanded(isExpanded)}
+                  sx={{
+                    mt: 1.5,
+                    border: 1,
+                    borderColor: 'divider',
+                    borderRadius: 1,
+                    '&:before': { display: 'none' },
+                  }}
+                >
+                  <AccordionSummary
+                    expandIcon={<ExpandMoreIcon fontSize="small" />}
+                    sx={{ minHeight: 40, '& .MuiAccordionSummary-content': { my: 0.5 } }}
                   >
-                    View Payment Schedule
-                  </Button>
-                </Box>
+                    <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                      Payment Schedule
+                      {paymentListQuery.data != null && (
+                        <Chip
+                          label={paymentListQuery.data.length}
+                          size="small"
+                          sx={{ ml: 1, height: 18, fontSize: 11 }}
+                        />
+                      )}
+                    </Typography>
+                  </AccordionSummary>
+                  <AccordionDetails sx={{ p: 0 }}>
+                    {paymentListQuery.isLoading && (
+                      <Box sx={{ display: 'flex', justifyContent: 'center', p: 2 }}>
+                        <CircularProgress size={20} />
+                      </Box>
+                    )}
+                    {paymentListQuery.error != null && (
+                      <Alert severity="error" sx={{ m: 1 }}>
+                        Could not load payments for this opportunity.
+                      </Alert>
+                    )}
+                    {paymentListQuery.data != null
+                      && paymentListQuery.data.length === 0 && (
+                      <Typography variant="body2" color="text.secondary" sx={{ p: 2 }}>
+                        No payments on file for this opportunity yet.
+                      </Typography>
+                    )}
+                    {paymentListQuery.data != null
+                      && paymentListQuery.data.length > 0 && (
+                      <Table size="small">
+                        <TableHead>
+                          <TableRow>
+                            <TableCell sx={{ fontWeight: 600 }}>Amount</TableCell>
+                            <TableCell sx={{ fontWeight: 600 }}>Scheduled</TableCell>
+                            <TableCell sx={{ fontWeight: 600 }}>Payment Date</TableCell>
+                            <TableCell sx={{ fontWeight: 600 }}>Status</TableCell>
+                            <TableCell width={40} />
+                          </TableRow>
+                        </TableHead>
+                        <TableBody>
+                          {paymentListQuery.data.map((p) => (
+                            <TableRow key={p.Id} hover>
+                              <TableCell>
+                                {p.npe01__Payment_Amount__c != null
+                                  ? `$${Number(p.npe01__Payment_Amount__c).toLocaleString()}`
+                                  : '—'}
+                              </TableCell>
+                              <TableCell>{formatDate(p.npe01__Scheduled_Date__c)}</TableCell>
+                              <TableCell>{formatDate(p.npe01__Payment_Date__c)}</TableCell>
+                              <TableCell>
+                                {p.npe01__Paid__c ? (
+                                  <Chip label="Paid" size="small" color="success" variant="outlined" />
+                                ) : p.Payment_Status__c ? (
+                                  <Chip label={p.Payment_Status__c} size="small" variant="outlined" />
+                                ) : (
+                                  '—'
+                                )}
+                              </TableCell>
+                              <TableCell>
+                                <Tooltip title="Edit payment details">
+                                  <IconButton
+                                    size="small"
+                                    onClick={() => setDetailPayment(p)}
+                                    aria-label={`Edit payment ${p.Name || p.Id}`}
+                                  >
+                                    <EditIcon fontSize="small" />
+                                  </IconButton>
+                                </Tooltip>
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    )}
+                  </AccordionDetails>
+                </Accordion>
               </>
             )}
 
@@ -1036,6 +1146,26 @@ const OpportunityEditDialog: React.FC<OpportunityEditDialogProps> = ({
           </ConfirmSaveButton>
         )}
       </Box>
+
+      {/*
+        PaymentEditDialog stacks on top of this Opp drawer when the user
+        clicks the edit icon on a row in the inline Payment Schedule
+        accordion. Mounting it inside the Drawer keeps it visually tied
+        to the Opp context. On save we refetch the inline list so the
+        user sees the updated row without closing the drawer. Mounted
+        unconditionally (`open` drives visibility) so MUI's Dialog
+        handles enter/exit transitions cleanly.
+      */}
+      <PaymentEditDialog
+        open={detailPayment !== null}
+        onClose={() => setDetailPayment(null)}
+        paymentId={detailPayment?.Id ?? null}
+        initialData={detailPayment ?? undefined}
+        onSaved={() => {
+          setDetailPayment(null);
+          paymentListQuery.refetch();
+        }}
+      />
     </Drawer>
   );
 };

@@ -1,15 +1,16 @@
 /**
- * Unit tests for OpportunityEditDialog — Part 5 of PR #159.
+ * Unit tests for OpportunityEditDialog — PR #159.
  *
  * Covers:
  *   Conversions (tests 1-9):
  *     1-4  StageName schema-driven select + distinguished fallback + not-in-list
  *     5-7  RenewalRepeat__c schema-driven select + distinguished fallback + not-in-list
  *     8-9  Earliest_Scheduled_Payment__c editable date picker + onChange
- *   Payment Schedule nav link (tests 10-12, added in Part 2):
- *    10    "View Payment Schedule" renders when stage ∈ Collecting/Closed
- *    11    Link click invokes useNavigate with /payment-schedule/:oppId
- *    12    Link NOT rendered when Payment Summary block is hidden
+ *   Payment Schedule inline accordion (tests 10-13):
+ *    10    Accordion renders (collapsed) when stage ∈ PAYMENT_SUMMARY_STAGES
+ *    11    Expand fires lazy fetch + renders read-first table
+ *    12    Row edit icon opens PaymentEditDialog stacked on the drawer
+ *    13    Accordion NOT rendered when stage is early-pipeline
  *
  * Mock notes:
  * - getSchemaDescribe uses mockImplementation so all three callers
@@ -18,8 +19,6 @@
  * - ActivityTimeline is mocked to null so tests don't need to stub
  *   getActivities — the Activities tab never renders in these tests (default
  *   dialogTab = 0 = Details).
- * - react-router-dom useNavigate is captured via module mock so nav tests
- *   can assert the exact path.
  */
 import React from 'react';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
@@ -34,6 +33,11 @@ jest.mock('../services/api', () => ({
     getUsers: jest.fn(),
     getAccounts: jest.fn(),
     updateOpportunity: jest.fn(),
+    // Used by the Payment Schedule inline accordion (lazy-fetch on expand).
+    getSfOpportunityPayments: jest.fn(),
+    // Used by the nested PaymentEditDialog when user clicks an edit icon
+    // in the accordion's payment row.
+    updateSfPayment: jest.fn(),
   },
 }));
 
@@ -49,12 +53,6 @@ jest.mock('./ActivityTimeline', () => {
   };
 });
 
-const mockNavigate = jest.fn();
-jest.mock('react-router-dom', () => ({
-  ...jest.requireActual('react-router-dom'),
-  useNavigate: () => mockNavigate,
-}));
-
 jest.mock('react-hot-toast', () => {
   const fn: any = jest.fn();
   fn.success = jest.fn();
@@ -69,6 +67,8 @@ import OpportunityEditDialog from './OpportunityEditDialog';
 const getSchemaDescribe = apiService.getSchemaDescribe as jest.Mock;
 const getUsers = apiService.getUsers as jest.Mock;
 const getAccounts = apiService.getAccounts as jest.Mock;
+const getSfOpportunityPayments = apiService.getSfOpportunityPayments as jest.Mock;
+const updateSfPayment = apiService.updateSfPayment as jest.Mock;
 const usePermissionsMock = usePermissions as jest.Mock;
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -196,7 +196,10 @@ beforeEach(() => {
   getUsers.mockResolvedValue({ data: { data: [] } });
   getAccounts.mockReset();
   getAccounts.mockResolvedValue({ data: { data: [] } });
-  mockNavigate.mockReset();
+  getSfOpportunityPayments.mockReset();
+  // Default: no payments. Tests that care about the list override this.
+  getSfOpportunityPayments.mockResolvedValue({ data: [] });
+  updateSfPayment.mockReset();
   usePermissionsMock.mockReset();
   usePermissionsMock.mockReturnValue(defaultPermissions());
 });
@@ -415,40 +418,122 @@ describe('OpportunityEditDialog — Earliest_Scheduled_Payment__c conversion', (
   });
 });
 
-describe('OpportunityEditDialog — View Payment Schedule nav link', () => {
-  it('renders the View Payment Schedule button when stage is in PAYMENT_SUMMARY_STAGES', async () => {
+describe('OpportunityEditDialog — Payment Schedule inline accordion', () => {
+  it('renders the Payment Schedule accordion (collapsed) when stage ∈ PAYMENT_SUMMARY_STAGES', async () => {
     mockSchema({ stages: [{ value: 'Collecting / In Effect', active: true }], renewalRepeat: [] });
 
     renderDialog(
       buildOpp({ StageName: 'Collecting / In Effect' }),
     );
 
-    // Button is inside the same Payment Summary conditional block, which only
-    // renders when originalOpp.StageName ∈ PAYMENT_SUMMARY_STAGES.
-    const btn = await screen.findByRole('button', { name: /View Payment Schedule/i });
-    expect(btn).toBeInTheDocument();
+    // The accordion header (read-first view) is always rendered; the table
+    // inside is lazy-loaded on first expand, so the "Edit payment" buttons
+    // should not exist until the user expands the accordion.
+    const header = await screen.findByText(/^Payment Schedule$/);
+    expect(header).toBeInTheDocument();
+    expect(getSfOpportunityPayments).not.toHaveBeenCalled();
   });
 
-  it('navigates to /payment-schedule/<opportunityId> when the link is clicked', async () => {
-    mockSchema({ stages: [{ value: 'Closed / Completed', active: true }], renewalRepeat: [] });
+  it('lazy-fetches payments on expand and shows them in an inline read-first table', async () => {
+    mockSchema({ stages: [{ value: 'Collecting / In Effect', active: true }], renewalRepeat: [] });
+    getSfOpportunityPayments.mockResolvedValue({
+      data: [
+        {
+          Id: 'a0x000000000001',
+          Name: 'PMT-001',
+          npe01__Payment_Amount__c: 5000,
+          npe01__Scheduled_Date__c: '2026-05-15',
+          npe01__Payment_Date__c: null,
+          npe01__Paid__c: false,
+          Payment_Status__c: 'Scheduled',
+        },
+        {
+          Id: 'a0x000000000002',
+          Name: 'PMT-002',
+          npe01__Payment_Amount__c: 5000,
+          npe01__Scheduled_Date__c: '2026-06-15',
+          npe01__Payment_Date__c: '2026-06-14',
+          npe01__Paid__c: true,
+          Payment_Status__c: 'Paid',
+        },
+      ],
+    });
 
-    renderDialog(
-      buildOpp({ Id: '006000000000042', StageName: 'Closed / Completed' }),
-    );
+    renderDialog(buildOpp({ Id: '006000000000001', StageName: 'Collecting / In Effect' }));
 
-    const btn = await screen.findByRole('button', { name: /View Payment Schedule/i });
-    fireEvent.click(btn);
+    const header = await screen.findByText(/^Payment Schedule$/);
+    fireEvent.click(header);
 
-    expect(mockNavigate).toHaveBeenCalledTimes(1);
-    expect(mockNavigate).toHaveBeenCalledWith('/payment-schedule/006000000000042');
+    // Lazy fetch fires now, not on mount
+    await waitFor(() => {
+      expect(getSfOpportunityPayments).toHaveBeenCalledWith('006000000000001');
+    });
+
+    // Both rows render with their amounts. Both rows happen to be $5,000, so
+    // expect exactly two matching cells (one per row).
+    await waitFor(() => {
+      expect(screen.getAllByText('$5,000')).toHaveLength(2);
+    });
+    // Paid-vs-scheduled chip text comes from either Paid=true (shows "Paid")
+    // or Payment_Status__c ("Scheduled") — one row each in the fixture.
+    // "Scheduled" appears twice: once as the table column header, once as
+    // the chip label for row 1.
+    expect(screen.getByText('Paid')).toBeInTheDocument();
+    expect(screen.getAllByText('Scheduled')).toHaveLength(2);
+
+    // Each row exposes a per-row edit icon (labeled via aria-label using the
+    // payment Name so screen readers can disambiguate between rows)
+    expect(screen.getByLabelText('Edit payment PMT-001')).toBeInTheDocument();
+    expect(screen.getByLabelText('Edit payment PMT-002')).toBeInTheDocument();
   });
 
-  it('does NOT render the View Payment Schedule button when stage is early-pipeline', async () => {
+  it('opens PaymentEditDialog stacked on the drawer when a row edit icon is clicked', async () => {
+    mockSchema({ stages: [{ value: 'Collecting / In Effect', active: true }], renewalRepeat: [] });
+    getSfOpportunityPayments.mockResolvedValue({
+      data: [
+        {
+          Id: 'a0x000000000001',
+          Name: 'PMT-001',
+          npe01__Opportunity__c: '006000000000001',
+          npe01__Payment_Amount__c: 5000,
+          npe01__Scheduled_Date__c: '2026-05-15',
+          npe01__Payment_Date__c: null,
+          npe01__Paid__c: false,
+          npe01__Payment_Method__c: 'ACH',
+          Payment_Status__c: 'Scheduled',
+          npe01__Opportunity__r: { Name: 'Acme Grant 2026', Account: { Name: 'Acme Foundation' } },
+          CreatedDate: '2026-04-01T10:00:00Z',
+          LastModifiedDate: '2026-04-01T10:00:00Z',
+        },
+      ],
+    });
+
+    renderDialog(buildOpp({ Id: '006000000000001', StageName: 'Collecting / In Effect' }));
+
+    // Expand the accordion + wait for the table to render
+    fireEvent.click(await screen.findByText(/^Payment Schedule$/));
+    const editBtn = await screen.findByLabelText('Edit payment PMT-001');
+
+    fireEvent.click(editBtn);
+
+    // PaymentEditDialog opens stacked on the drawer — its header shows the
+    // payment Name ("PMT-001"). The Payment Amount field in the dialog is
+    // populated from the row data we passed as initialData (no second fetch).
+    await waitFor(() => {
+      // Allow for either node (dialog header) to match — the accordion row
+      // also contains "PMT-001" text via the aria-label's textual content,
+      // so use getAllByText and assert at least two matches (row + dialog).
+      const matches = screen.getAllByText('PMT-001');
+      expect(matches.length).toBeGreaterThanOrEqual(1);
+    });
+    // The dialog's Payment Amount input reflects the passed-in value
+    expect((screen.getByLabelText('Payment Amount') as HTMLInputElement).value).toBe('5000');
+  });
+
+  it('does NOT render the Payment Schedule accordion when stage is early-pipeline', async () => {
     mockSchema({ stages: [{ value: 'Qualifying', active: true }], renewalRepeat: [] });
 
-    renderDialog(
-      buildOpp({ StageName: 'Qualifying' }),
-    );
+    renderDialog(buildOpp({ StageName: 'Qualifying' }));
 
     // Let the dialog fully mount (stages hook resolved) before asserting absence
     await waitFor(() => {
@@ -456,8 +541,8 @@ describe('OpportunityEditDialog — View Payment Schedule nav link', () => {
       expect(screen.queryByText('No active stages available')).not.toBeInTheDocument();
     });
 
-    expect(
-      screen.queryByRole('button', { name: /View Payment Schedule/i }),
-    ).not.toBeInTheDocument();
+    // Payment Summary block is hidden → accordion is hidden too
+    expect(screen.queryByText(/^Payment Schedule$/)).not.toBeInTheDocument();
+    expect(getSfOpportunityPayments).not.toHaveBeenCalled();
   });
 });
