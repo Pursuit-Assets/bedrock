@@ -1070,7 +1070,12 @@ async def delete_contact(
         success = await salesforce.delete_record("Contact", contact_id)
         if not success:
             raise HTTPException(400, "Salesforce rejected the delete")
+        # Task SOQL joins Who.Name when rendering Who-linked tasks; stale
+        # cached entries would keep showing the deleted contact's name until
+        # TTL. Cheap to evict these too.
         cache.invalidate_prefix("contacts:")
+        cache.invalidate_prefix("my-tasks:")
+        cache.invalidate_prefix("opportunity-tasks:")
         logger.info(f"Contact {contact_id} deleted by {user['user_id']}")
         return ApiResponse(
             success=True,
