@@ -446,8 +446,7 @@ const Progress: React.FC = () => {
   }, [opportunities]);
 
   // Per-owner progress for targets table. Shows ONLY users who match all
-  // three criteria (set by JP + Jac 2026-04-15; Progress Visibility override
-  // removed 2026-04-21, BUG-UI-19):
+  // three criteria (set by JP + Jac 2026-04-15):
   //   (a) FY revenue target set in Settings → Targets
   //   (b) IsActive=true in Salesforce
   //   (c) Owns at least one opportunity in Salesforce

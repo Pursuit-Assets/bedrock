@@ -41,7 +41,6 @@ from routes.sf_dependencies import router as sf_deps_router
 from routes.permissions import router as permissions_router, opp_router as opp_lock_router, check_permission, check_permission_or_internal, resolve_task_lock
 from routes.opportunities_extra import router as opp_extra_router
 from routes.owner_goals import router as owner_goals_router
-from routes.progress_tracking import router as progress_tracking_router
 from routes.payment_schedules import router as payment_schedules_router
 from routes.finance import router as finance_router
 from routes.sage import router as sage_router
@@ -117,7 +116,6 @@ app.include_router(opp_lock_router)
 # Phase 2 route files
 app.include_router(opp_extra_router)
 app.include_router(owner_goals_router)
-app.include_router(progress_tracking_router)
 app.include_router(payment_schedules_router)
 app.include_router(finance_router)
 app.include_router(sage_router)

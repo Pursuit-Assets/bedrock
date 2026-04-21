@@ -323,12 +323,6 @@ export const apiService = {
   getUsers: (params?: { limit?: number }) =>
     api.get('/api/salesforce/users', { params }),
 
-  // Progress Visibility override was removed 2026-04-21 (BUG-UI-19).
-  // The /api/progress-tracking/* routes still exist on the backend but
-  // are intentionally left orphaned — to be pruned once we've confirmed
-  // no external caller depends on them. Do not re-add client methods;
-  // use `apiService.getUsers()` for active SF users instead.
-
   // Sage Intacct - Invoices
   getInvoices: (params?: { customer_id?: string; limit?: number }) =>
     api.get('/api/intacct/invoices', { params }),

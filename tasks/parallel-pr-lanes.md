@@ -17,8 +17,9 @@ Plan's original `#147-#169` maps to actual numbers via the table below. Lane-int
 | — (singleton race fix) | #153 | ✅ merged 2026-04-21 |
 | — (parking-lot docs) | #154 | ✅ merged 2026-04-21 |
 | #149 (pagination — A1) | #155 | ✅ merged 2026-04-21 |
-| #153 (B1 schema-picklist hook) | **#156** | 👀 this PR (2026-04-21) |
-| #150 (RowCountCaption core) | **#157** (was #156) | ⏳ queued |
+| #153 (B1 schema-picklist hook) | **#156** | ✅ merged 2026-04-21 |
+| — (A2 activities-sync tests) | **#157** | ✅ merged 2026-04-21 |
+| A3 (progress-tracking orphan cleanup, est. #177) | **#158** | 👀 this PR (2026-04-21) |
 | ... | later targets locked at PR-open time — lane-interleaved | — |
 
 ## Blocking prerequisite
@@ -37,7 +38,7 @@ Priority: backend correctness first, then cross-cutting UI cleanups that touch i
 |---|---|---|---|---|
 | A1 👀 | #155 | `pr-contacts-accounts-pagination` | `main.py` (get_accounts 470, get_contacts 559, get_my_tasks 851, get_opportunity_tasks 924), `tests/test_api_endpoints.py`, `tests/conftest.py` (add `query_all` mock), plus comment trim in `OpportunityEditDialog.tsx` + `AccountCell.tsx` | #153 |
 | A2 👀 | #157 | `pr-activities-sync-tests` | `tests/test_activity_sync.py` NEW — 54 round-trip tests for `sync_activities()` + mappers + `_parse_sf_datetime` + `_upsert_activity` | #153 |
-| A3 | #177 | `pr-progress-tracking-orphan-cleanup` | `main.py:44, 120` (unregister router), DELETE `routes/progress_tracking.py`, DELETE `tests/test_progress_tracking.py`, `db/migrations/2026-04-21-drop-progress-tracked-override.sql` NEW (rollback), 3 FE stale comments (`Settings.tsx:680`, `Progress.tsx:~111-115`, `api.ts:~327`) | #153 |
+| A3 👀 | #158 | `pr-progress-tracking-orphan-cleanup` | `main.py:44, 120` (unregister router), DELETE `routes/progress_tracking.py`, DELETE `tests/test_progress_tracking.py`, `db/migrations/2026-04-21-drop-progress-tracked-override.sql` NEW (rollback), 5 FE stale BUG-UI-19 comments: delete `api.ts:~326-330`, `Settings.tsx:~223-226`, `Settings.tsx:~680-681`, trim `Progress.tsx:~450` parenthetical; `Progress.tsx:~114-118` intentionally left as-is per JP (architectural WHY-not above live useQuery) | #153 |
 | A4 | #159 | `pr-opp-type-deprecation` | `main.py` (lines 310, 322, 333, 352-353, 1591, 1619), `types/salesforce.ts:129`, `Opportunities.tsx:45,117,289-290,466-472`, `Opportunities/columns.tsx:36,83-85,157`, `PipelineFilterBar.tsx` (filter UI), DELETE `hooks/useOpportunityTypePicklist.ts`, DELETE `components/inline-edit/cells/TypeCell.tsx`, `conftest.py::make_sf_opportunity`, `test_api_endpoints.py` Type assertion | #153. See `tasks/opp-type-full-delete-decision.md` for full inventory. |
 | A5 | #175 | `pr-b8-progress-full-pipeline` | `pages/Progress.tsx` or `components/PipelineFunnel.tsx` — include Lost/Withdrawn/Did Not Fulfill | #153 |
 | A6 | #156 | `pr-rowcount-caption-details-tabs` | NEW `components/RowCountCaption.tsx` + test, migrate caption in `pages/Opportunities.tsx`, `pages/Accounts.tsx`, `pages/Contacts.tsx`, `pages/Tasks.tsx`. **Depends on A1 #155 for accurate totals** (query_all). | A1 |
