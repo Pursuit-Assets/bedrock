@@ -45,6 +45,10 @@ jest.mock('../services/api', () => ({
     // Used by the nested PaymentCreateDialog when user clicks the
     // "+" button in the accordion summary.
     createSfPayment: jest.fn(),
+    // PR #173: Primary Contact picker + Tasks tab.
+    getContacts: jest.fn(),
+    createContact: jest.fn(),
+    getOpportunityTasks: jest.fn(),
   },
 }));
 
@@ -207,6 +211,13 @@ beforeEach(() => {
   updateSfPayment.mockReset();
   createSfPayment.mockReset();
   deleteSfOpportunity.mockReset();
+  // PR #173 mocks — Primary Contact picker + Tasks tab both hit these
+  // on render. Default to empty lists; tests that care override.
+  (apiService.getContacts as jest.Mock).mockReset();
+  (apiService.getContacts as jest.Mock).mockResolvedValue({ data: { data: [] } });
+  (apiService.createContact as jest.Mock).mockReset();
+  (apiService.getOpportunityTasks as jest.Mock).mockReset();
+  (apiService.getOpportunityTasks as jest.Mock).mockResolvedValue({ data: { data: [] } });
   usePermissionsMock.mockReset();
   usePermissionsMock.mockReturnValue(defaultPermissions());
 });

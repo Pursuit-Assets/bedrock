@@ -154,6 +154,12 @@ export interface SalesforceOpportunity {
   Earliest_Scheduled_Payment__c: string | null;
   // Campaign (Primary Campaign Source)
   CampaignId: string | null;
+  // Primary Contact — NPSP writable lookup to Contact. Stored as the
+  // contact Id; joined relationship (npsp__Primary_Contact__r) carries
+  // Name + Email for display. Verified via Tooling API FieldDefinition:
+  // DataType Lookup(Contact), label "Primary Contact". Writable — an
+  // update PATCH with { "npsp__Primary_Contact__c": contactId } rebinds.
+  npsp__Primary_Contact__c: string | null;
   // Record Type — users can reclassify via the Edit Opportunity drawer (BUG-UI-9).
   RecordTypeId: string | null;
   // Nested relationship fields (from SOQL joins)
@@ -161,6 +167,7 @@ export interface SalesforceOpportunity {
   Owner?: { Name: string; Id?: string };
   RecordType?: { Name: string };
   Campaign?: { Name: string };
+  npsp__Primary_Contact__r?: { Id?: string; Name: string; Email?: string | null };
 }
 
 export interface SalesforceAccount {

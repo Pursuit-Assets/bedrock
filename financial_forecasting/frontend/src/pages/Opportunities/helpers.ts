@@ -73,6 +73,9 @@ export interface Opportunity {
   Description?: string;
   ForecastCategory?: string;
   ExpectedRevenue?: number;
+  // Primary Contact — NPSP writable lookup (PR #173).
+  npsp__Primary_Contact__c?: string | null;
+  npsp__Primary_Contact__r?: { Id?: string; Name: string; Email?: string | null };
   // Payment_Terms__c / Contract_Start_Date__c / Contract_End_Date__c /
   // Billing_Frequency__c removed 2026-04-21 — don't exist on Opportunity
   // in Pursuit's live SF org. See types/salesforce.ts comment + PR #168.

@@ -35,6 +35,10 @@ import {
   Close as CloseIcon,
   ExpandMore as ExpandMoreIcon,
   Add as AddIcon,
+  Assignment as TasksTabIcon,
+  CheckCircle as CheckCircleIcon,
+  RadioButtonUnchecked as UncheckedIcon,
+  PersonAdd as PersonAddIcon,
 } from '@mui/icons-material';
 import { useQuery, useQueryClient } from 'react-query';
 import toast from 'react-hot-toast';
@@ -42,6 +46,13 @@ import ConfirmSaveButton from './ConfirmSaveButton';
 import ActivityTimeline from './ActivityTimeline';
 import PaymentEditDialog from './PaymentEditDialog';
 import PaymentCreateDialog from './PaymentCreateDialog';
+import TaskPanel from './TaskPanel';
+import AccountEditDialog from './AccountEditDialog';
+import ContactEditDialog from './ContactEditDialog';
+import Dialog from '@mui/material/Dialog';
+import DialogTitle from '@mui/material/DialogTitle';
+import DialogContent from '@mui/material/DialogContent';
+import DialogActions from '@mui/material/DialogActions';
 import { apiService } from '../services/api';
 import { usePermissions } from '../contexts/PermissionsContext';
 import { COLLECTING_STAGES, CLOSED_STAGES } from '../types/salesforce';
@@ -72,6 +83,8 @@ const OPPORTUNITY_EDITABLE_FIELDS: readonly string[] = [
   'OwnerId',
   'AccountId',
   'Earliest_Scheduled_Payment__c',
+  // PR #173: Primary Contact lookup. NPSP writable Lookup(Contact).
+  'npsp__Primary_Contact__c',
   // NOTE: Contract_Start_Date__c, Contract_End_Date__c, Payment_Terms__c,
   // Billing_Frequency__c — bound in the dialog + declared on the TS
   // interface but DO NOT exist in Pursuit's live SF org (confirmed by
@@ -107,6 +120,13 @@ interface UserOption {
 interface AccountOption {
   Id: string;
   Name: string;
+}
+
+interface ContactOption {
+  Id: string;
+  Name: string;
+  Email?: string | null;
+  AccountId?: string | null;
 }
 
 // ── Constants ───────────────────────────────────────────────────────────────
@@ -237,6 +257,56 @@ const OpportunityEditDialog: React.FC<OpportunityEditDialogProps> = ({
   const [usersLoading, setUsersLoading] = useState(false);
   const [accountsLoading, setAccountsLoading] = useState(false);
 
+  // Primary Contact picker state (PR #173). Contacts are scoped to the
+  // currently-selected AccountId — a primary contact for an Opp almost
+  // always belongs to the funding org. If the saved primary contact turns
+  // out to belong to a different account (imported data, cross-account
+  // ties), the selectedPrimaryContact useMemo below synthesizes an option
+  // from the joined relationship so the field still displays correctly.
+  const [contacts, setContacts] = useState<ContactOption[]>([]);
+  const [contactsLoading, setContactsLoading] = useState(false);
+  // Inline create-contact dialog state. When the user clicks "+ New
+  // contact" we collect LastName (+ optional first/email/title/phone) and
+  // post to /api/salesforce/contacts with AccountId = editForm.AccountId.
+  // On success the new contact becomes the primary contact on this Opp.
+  const [createContactOpen, setCreateContactOpen] = useState(false);
+  const [newContactDraft, setNewContactDraft] = useState({
+    FirstName: '',
+    LastName: '',
+    Title: '',
+    Email: '',
+    Phone: '',
+  });
+  const [creatingContact, setCreatingContact] = useState(false);
+
+  // Click-through fallback (PR #173). Callers that mount OpportunityEditDialog
+  // outside the DialogStackContext (Priorities.tsx, Progress.tsx) don't pass
+  // `onOpenRelated`, so the original Open icon on the Account autocomplete
+  // was silently dropped. Fallback: when no parent handler is provided, open
+  // the sub-dialog locally. Preserves the DialogStack flow when a parent
+  // DOES manage the stack (Opportunities.tsx via DialogStackRenderer).
+  const [subAccountId, setSubAccountId] = useState<string | null>(null);
+  const [subContactId, setSubContactId] = useState<string | null>(null);
+  const handleOpenRelatedField = useCallback(
+    (type: 'opportunity' | 'account' | 'contact', id: string) => {
+      if (onOpenRelated) {
+        onOpenRelated(type, id);
+        return;
+      }
+      if (type === 'account') setSubAccountId(id);
+      else if (type === 'contact') setSubContactId(id);
+    },
+    [onOpenRelated],
+  );
+
+  // Tasks tab state (PR #173). TaskPanel is a drawer; from the Tasks tab we
+  // render it stacked over this dialog with `selectedTaskId` + `editOnOpen`
+  // to jump straight into edit mode for the clicked row. "+ Add Task" opens
+  // it without a selection so the add-form appears.
+  const [tasksPanelOpen, setTasksPanelOpen] = useState(false);
+  const [tasksPanelSelectedId, setTasksPanelSelectedId] = useState<string | null>(null);
+  const [tasksPanelEditOnOpen, setTasksPanelEditOnOpen] = useState(false);
+
   // ── Drawer resize ───────────────────────────────────────────────────────
   const MIN_WIDTH = 480;
   const MAX_WIDTH = 900;
@@ -350,6 +420,36 @@ const OpportunityEditDialog: React.FC<OpportunityEditDialogProps> = ({
     };
   }, [open]);
 
+  // Load Primary Contact picker options scoped to the currently-selected
+  // account (PR #173). Refetches whenever AccountId changes — e.g. user
+  // reassigns the Opp to a different account, the contact list updates
+  // to that account's contacts. Empty list when no account is set.
+  useEffect(() => {
+    if (!open) return;
+    if (!editForm.AccountId) {
+      setContacts([]);
+      return;
+    }
+    let cancelled = false;
+    setContactsLoading(true);
+    apiService
+      .getContacts({ account_id: editForm.AccountId })
+      .then((res) => {
+        if (cancelled) return;
+        const data = res.data?.data || res.data || [];
+        setContacts(Array.isArray(data) ? data : []);
+      })
+      .catch(() => {
+        if (!cancelled) setContacts([]);
+      })
+      .finally(() => {
+        if (!cancelled) setContactsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, editForm.AccountId]);
+
   // ── Derived values for Autocomplete ─────────────────────────────────────
   const selectedOwner = useMemo(
     () => users.find((u) => u.Id === editForm.OwnerId) || null,
@@ -372,6 +472,23 @@ const OpportunityEditDialog: React.FC<OpportunityEditDialogProps> = ({
     }
     return null;
   }, [accounts, editForm.AccountId, originalOpp]);
+
+  // Primary Contact selection — same synthesize-from-joined-relationship
+  // fallback pattern as Account. If the stored primary contact isn't in
+  // the account-scoped contact list (imported data, cross-account ties),
+  // fall back to the SOQL-joined npsp__Primary_Contact__r so the field
+  // still shows a meaningful label.
+  const selectedPrimaryContact = useMemo(() => {
+    const id = editForm.npsp__Primary_Contact__c;
+    if (!id) return null;
+    const fromList = contacts.find((c) => c.Id === id);
+    if (fromList) return fromList;
+    const joined = originalOpp?.npsp__Primary_Contact__r;
+    if (joined?.Name) {
+      return { Id: id, Name: joined.Name, Email: joined.Email ?? null } as ContactOption;
+    }
+    return null;
+  }, [contacts, editForm.npsp__Primary_Contact__c, originalOpp]);
 
   // ── Field change handler ────────────────────────────────────────────────
   const handleFieldChange = (field: string, value: any) => {
@@ -622,6 +739,7 @@ const OpportunityEditDialog: React.FC<OpportunityEditDialogProps> = ({
             >
               <Tab label="Details" icon={<EditIcon />} iconPosition="start" sx={{ textTransform: 'none' }} />
               <Tab label="Activities" icon={<HistoryIcon />} iconPosition="start" sx={{ textTransform: 'none' }} />
+              <Tab label="Tasks" icon={<TasksTabIcon />} iconPosition="start" sx={{ textTransform: 'none' }} />
             </Tabs>
 
             {/* ── Tab 0: Details (existing form) ─────────────────────── */}
@@ -828,7 +946,167 @@ const OpportunityEditDialog: React.FC<OpportunityEditDialogProps> = ({
               </Grid>
             </Grid>
 
-            {/* ── Section 2: Details ──────────────────────────────────── */}
+            {/* ── Section 2: Owner & Relationships ──────────────────────
+                Owner + Account + Primary Contact live up top per
+                feedback_ui_design_standards / PR #173 — these are the
+                most-queried relational fields on an Opp and were
+                previously buried below Payment Summary in an
+                "Ownership & Contract" section. The contract fields that
+                justified that label were removed in PR #168. */}
+            <Divider sx={{ my: 2 }} />
+            <Typography variant="subtitle2" sx={{ mb: 1.5, fontWeight: 600 }}>
+              Owner & Relationships
+            </Typography>
+            <Grid container spacing={2}>
+              <Grid item xs={12} sm={6}>
+                <Autocomplete
+                  options={[...users].sort((a, b) => {
+                    const aActive = a.IsActive !== false ? 0 : 1;
+                    const bActive = b.IsActive !== false ? 0 : 1;
+                    return aActive !== bActive ? aActive - bActive : (a.Name || '').localeCompare(b.Name || '');
+                  })}
+                  groupBy={(option: UserOption) => option.IsActive === false ? 'Inactive' : 'Active'}
+                  loading={usersLoading}
+                  getOptionLabel={(option: UserOption) => option.Name || ''}
+                  value={selectedOwner}
+                  onChange={(_e, newValue) =>
+                    handleFieldChange('OwnerId', newValue?.Id || editForm.OwnerId)
+                  }
+                  isOptionEqualToValue={(option, value) => option.Id === value?.Id}
+                  disabled={!canEditOwner}
+                  renderInput={(params) => (
+                    <TextField
+                      {...params}
+                      label="Owner"
+                      size="small"
+                      helperText={
+                        !canEditOwner
+                          ? 'Reassigning requires the Reassign Opportunities permission'
+                          : undefined
+                      }
+                    />
+                  )}
+                />
+              </Grid>
+              {canEditOwner && selectedOwner && originalOpp?.OwnerId !== selectedOwner?.Id
+                && selectedOwner?.Id !== sfUserId && !can('edit_all_opportunities') && (
+                <Grid item xs={12}>
+                  <Alert severity="warning" variant="outlined">
+                    <strong>Heads up:</strong> Reassigning to {selectedOwner.Name} means you won't be
+                    able to edit this opportunity afterward.
+                  </Alert>
+                </Grid>
+              )}
+              <Grid item xs={12} sm={6}>
+                {/* Account with always-visible click-through icon. Uses
+                    handleOpenRelatedField which defers to the parent's
+                    onOpenRelated when present (DialogStackContext),
+                    falling back to internal sub-dialog state otherwise.
+                    Previously the icon only rendered when a parent
+                    handler was wired, so Priorities/Progress users had
+                    no way to open the Account editor from here. */}
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                  <Autocomplete
+                    options={
+                      selectedAccount
+                      && !accounts.some((a) => a.Id === selectedAccount.Id)
+                        ? [selectedAccount, ...accounts]
+                        : accounts
+                    }
+                    loading={accountsLoading}
+                    getOptionLabel={(option: AccountOption) => option.Name || ''}
+                    value={selectedAccount}
+                    onChange={(_e, newValue) =>
+                      handleFieldChange('AccountId', newValue?.Id || editForm.AccountId)
+                    }
+                    isOptionEqualToValue={(option, value) => option.Id === value?.Id}
+                    disabled={!canEdit}
+                    sx={{ flex: 1 }}
+                    renderInput={(params) => (
+                      <TextField {...params} label="Account" size="small" />
+                    )}
+                  />
+                  {editForm.AccountId && (
+                    <Tooltip title="Open account">
+                      <IconButton
+                        size="small"
+                        onClick={() => handleOpenRelatedField('account', editForm.AccountId)}
+                      >
+                        <OpenInNewIcon fontSize="small" />
+                      </IconButton>
+                    </Tooltip>
+                  )}
+                </Box>
+              </Grid>
+              <Grid item xs={12} sm={6}>
+                {/* Primary Contact — npsp__Primary_Contact__c lookup. Scoped
+                    to the current Account; empty when no account selected.
+                    Open icon click-through (same fallback as Account).
+                    "+ New" opens the inline create-contact dialog. */}
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                  <Autocomplete
+                    options={
+                      selectedPrimaryContact
+                      && !contacts.some((c) => c.Id === selectedPrimaryContact.Id)
+                        ? [selectedPrimaryContact, ...contacts]
+                        : contacts
+                    }
+                    loading={contactsLoading}
+                    getOptionLabel={(option: ContactOption) => option.Name || ''}
+                    value={selectedPrimaryContact}
+                    onChange={(_e, newValue) =>
+                      handleFieldChange('npsp__Primary_Contact__c', newValue?.Id || null)
+                    }
+                    isOptionEqualToValue={(option, value) => option.Id === value?.Id}
+                    disabled={!canEdit || !editForm.AccountId}
+                    sx={{ flex: 1 }}
+                    renderInput={(params) => {
+                      // Merge: per-field load-status takes precedence (data-
+                      // integrity concern), else show a hint relevant to the
+                      // current state (account not set / contact's email).
+                      const loadHelper = getHelperProps('npsp__Primary_Contact__c');
+                      const hint = !editForm.AccountId
+                        ? 'Pick an account first'
+                        : selectedPrimaryContact?.Email || undefined;
+                      return (
+                        <TextField
+                          {...params}
+                          label="Primary Contact"
+                          size="small"
+                          {...loadHelper}
+                          helperText={loadHelper.helperText ?? hint}
+                        />
+                      );
+                    }}
+                  />
+                  {editForm.npsp__Primary_Contact__c && (
+                    <Tooltip title="Open contact">
+                      <IconButton
+                        size="small"
+                        onClick={() => handleOpenRelatedField('contact', editForm.npsp__Primary_Contact__c!)}
+                      >
+                        <OpenInNewIcon fontSize="small" />
+                      </IconButton>
+                    </Tooltip>
+                  )}
+                  {canEdit && editForm.AccountId && (
+                    <Tooltip title="New contact at this account">
+                      <IconButton
+                        size="small"
+                        onClick={() => {
+                          setNewContactDraft({ FirstName: '', LastName: '', Title: '', Email: '', Phone: '' });
+                          setCreateContactOpen(true);
+                        }}
+                      >
+                        <PersonAddIcon fontSize="small" />
+                      </IconButton>
+                    </Tooltip>
+                  )}
+                </Box>
+              </Grid>
+            </Grid>
+
+            {/* ── Section 3: Details ──────────────────────────────────── */}
             <Divider sx={{ my: 2 }} />
             <Typography variant="subtitle2" sx={{ mb: 1.5, fontWeight: 600 }}>
               Details
@@ -1083,105 +1361,6 @@ const OpportunityEditDialog: React.FC<OpportunityEditDialogProps> = ({
               </AccordionDetails>
             </Accordion>
 
-            {/* ── Section 4: Ownership & Contract ─────────────────────── */}
-            <Divider sx={{ my: 2 }} />
-            <Typography variant="subtitle2" sx={{ mb: 1.5, fontWeight: 600 }}>
-              Ownership & Contract
-            </Typography>
-
-            <Grid container spacing={2}>
-              <Grid item xs={12} sm={6}>
-                <Autocomplete
-                  options={[...users].sort((a, b) => {
-                    const aActive = a.IsActive !== false ? 0 : 1;
-                    const bActive = b.IsActive !== false ? 0 : 1;
-                    return aActive !== bActive ? aActive - bActive : (a.Name || '').localeCompare(b.Name || '');
-                  })}
-                  groupBy={(option: UserOption) => option.IsActive === false ? 'Inactive' : 'Active'}
-                  loading={usersLoading}
-                  getOptionLabel={(option: UserOption) => option.Name || ''}
-                  value={selectedOwner}
-                  onChange={(_e, newValue) =>
-                    handleFieldChange('OwnerId', newValue?.Id || editForm.OwnerId)
-                  }
-                  isOptionEqualToValue={(option, value) => option.Id === value?.Id}
-                  disabled={!canEditOwner}
-                  renderInput={(params) => (
-                    <TextField
-                      {...params}
-                      label="Owner"
-                      size="small"
-                      helperText={
-                        !canEditOwner
-                          ? 'Reassigning requires the Reassign Opportunities permission'
-                          : undefined
-                      }
-                    />
-                  )}
-                />
-              </Grid>
-              {canEditOwner && selectedOwner && originalOpp?.OwnerId !== selectedOwner?.Id
-                && selectedOwner?.Id !== sfUserId && !can('edit_all_opportunities') && (
-                <Grid item xs={12}>
-                  <Alert severity="warning" variant="outlined">
-                    <strong>Heads up:</strong> Reassigning to {selectedOwner.Name} means you won't be
-                    able to edit this opportunity afterward.
-                  </Alert>
-                </Grid>
-              )}
-              <Grid item xs={12} sm={6}>
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                  <Autocomplete
-                    // When the current account isn't in the loaded list
-                    // (2000-row cap), inject the synthesized selected
-                    // option into `options` too so MUI doesn't warn
-                    // "value is not in options" and the item renders in
-                    // the listbox if the user opens the dropdown.
-                    options={
-                      selectedAccount
-                      && !accounts.some((a) => a.Id === selectedAccount.Id)
-                        ? [selectedAccount, ...accounts]
-                        : accounts
-                    }
-                    loading={accountsLoading}
-                    getOptionLabel={(option: AccountOption) => option.Name || ''}
-                    value={selectedAccount}
-                    onChange={(_e, newValue) =>
-                      handleFieldChange('AccountId', newValue?.Id || editForm.AccountId)
-                    }
-                    isOptionEqualToValue={(option, value) => option.Id === value?.Id}
-                    disabled={!canEdit}
-                    sx={{ flex: 1 }}
-                    renderInput={(params) => (
-                      <TextField {...params} label="Account" size="small" />
-                    )}
-                  />
-                  {onOpenRelated && editForm.AccountId && (
-                    <Tooltip title="Open account">
-                      <IconButton
-                        size="small"
-                        onClick={() => onOpenRelated('account', editForm.AccountId)}
-                      >
-                        <OpenInNewIcon fontSize="small" />
-                      </IconButton>
-                    </Tooltip>
-                  )}
-                </Box>
-              </Grid>
-              {/* Contract_Start_Date__c / Contract_End_Date__c /
-                  Payment_Terms__c / Billing_Frequency__c removed
-                  2026-04-21 (PR #167 hotfix cause-analysis + #168
-                  cleanup). These were declared on the TypeScript
-                  interface and bound here, but the underlying custom
-                  fields don't exist on the Opportunity object in
-                  Pursuit's live SF org (confirmed by Jac when adding
-                  them to the SOQL broke get_opportunities in prod).
-                  Re-add when/if the fields are actually created in SF.
-                  The forecasting engine still references Payment_Terms__c
-                  — left untouched here; separate investigation tracks
-                  whether that code path is live or dead. */}
-            </Grid>
-
             {/* ── Read-only footer ────────────────────────────────────── */}
             {/* Record Type is intentionally omitted here — it's now editable
                 in the main form (BUG-UI-9). */}
@@ -1202,6 +1381,22 @@ const OpportunityEditDialog: React.FC<OpportunityEditDialogProps> = ({
             {/* ── Tab 1: Activities ──────────────────────────────────── */}
             {dialogTab === 1 && opportunityId && (
               <ActivityTimeline opportunityId={opportunityId} maxHeight={500} />
+            )}
+
+            {/* ── Tab 2: Tasks ───────────────────────────────────────────
+                Compact list of the opp's tasks with click-through to the
+                full TaskPanel drawer (stacked below). Rather than
+                re-implement inline editing here we reuse TaskPanel
+                wholesale — one source of truth for the task-edit UX. */}
+            {dialogTab === 2 && opportunityId && originalOpp && (
+              <OpportunityTasksTabPanel
+                opportunityId={opportunityId}
+                onOpenFull={(taskId) => {
+                  setTasksPanelSelectedId(taskId ?? null);
+                  setTasksPanelEditOnOpen(!!taskId);
+                  setTasksPanelOpen(true);
+                }}
+              />
             )}
           </>
         )}
@@ -1293,8 +1488,283 @@ const OpportunityEditDialog: React.FC<OpportunityEditDialogProps> = ({
         missingFields={saveBlockedMissing}
         recordLabel="opportunity"
       />
+
+      {/* Tasks tab drawer — TaskPanel stacked over this Opp drawer when
+          the user clicks an inline row ("Open in full editor") or the
+          "+ Add Task" button. Reuses the existing full task UX. */}
+      {tasksPanelOpen && originalOpp && (
+        <TaskPanel
+          open={tasksPanelOpen}
+          onClose={() => {
+            setTasksPanelOpen(false);
+            setTasksPanelSelectedId(null);
+            setTasksPanelEditOnOpen(false);
+            // Refresh the inline list inside this dialog on close (mutations
+            // in TaskPanel already invalidate 'opportunity-tasks' — this is
+            // defense-in-depth).
+            queryClient.invalidateQueries(['opportunity-tasks', opportunityId]);
+          }}
+          opportunity={{
+            Id: originalOpp.Id,
+            Name: originalOpp.Name,
+            Account: originalOpp.Account || null,
+            StageName: originalOpp.StageName,
+            Amount: originalOpp.Amount ?? null,
+            Probability: originalOpp.Probability ?? null,
+            CloseDate: originalOpp.CloseDate ?? null,
+            Owner: originalOpp.Owner || null,
+          }}
+          selectedTaskId={tasksPanelSelectedId}
+          editOnOpen={tasksPanelEditOnOpen}
+        />
+      )}
+
+      {/* Click-through sub-dialogs — render only when parent didn't
+          provide onOpenRelated (i.e., the dialog is mounted outside
+          DialogStackContext). When onOpenRelated IS provided, the
+          parent's stack renders its own copy of these dialogs, so we
+          keep these inert to avoid double-rendering. */}
+      {!onOpenRelated && subAccountId && (
+        <AccountEditDialog
+          open
+          onClose={() => setSubAccountId(null)}
+          accountId={subAccountId}
+          onDeleted={() => setSubAccountId(null)}
+          onSaved={() => {
+            queryClient.invalidateQueries('accounts');
+            queryClient.invalidateQueries('opportunities');
+            setSubAccountId(null);
+          }}
+        />
+      )}
+      {!onOpenRelated && subContactId && (
+        <ContactEditDialog
+          open
+          onClose={() => setSubContactId(null)}
+          contactId={subContactId}
+          onDeleted={() => {
+            // If the deleted contact was the primary, clear the lookup so
+            // it doesn't leave a stale foreign-key in editForm.
+            if (editForm.npsp__Primary_Contact__c === subContactId) {
+              handleFieldChange('npsp__Primary_Contact__c', null);
+            }
+            setSubContactId(null);
+          }}
+          onSaved={() => {
+            queryClient.invalidateQueries('all-contacts');
+            queryClient.invalidateQueries(['opportunity-contacts', editForm.AccountId]);
+            setSubContactId(null);
+          }}
+        />
+      )}
+
+      {/* Create Primary Contact inline dialog — mirrors the pattern in
+          NewOpportunity.tsx. On success, the new contact becomes the
+          Opp's primary contact (editForm.npsp__Primary_Contact__c) and
+          gets added to the contacts list so the Autocomplete renders
+          the new selection without another round-trip. */}
+      <Dialog open={createContactOpen} onClose={() => setCreateContactOpen(false)} maxWidth="sm" fullWidth>
+        <DialogTitle>New Contact at {originalOpp?.Account?.Name || 'this account'}</DialogTitle>
+        <DialogContent>
+          <Box sx={{ pt: 2, display: 'flex', flexDirection: 'column', gap: 2 }}>
+            <Grid container spacing={2}>
+              <Grid item xs={6}>
+                <TextField
+                  label="First Name"
+                  fullWidth
+                  size="small"
+                  value={newContactDraft.FirstName}
+                  onChange={(e) => setNewContactDraft({ ...newContactDraft, FirstName: e.target.value })}
+                />
+              </Grid>
+              <Grid item xs={6}>
+                <TextField
+                  label="Last Name"
+                  fullWidth
+                  size="small"
+                  required
+                  value={newContactDraft.LastName}
+                  onChange={(e) => setNewContactDraft({ ...newContactDraft, LastName: e.target.value })}
+                />
+              </Grid>
+            </Grid>
+            <TextField
+              label="Title"
+              fullWidth
+              size="small"
+              value={newContactDraft.Title}
+              onChange={(e) => setNewContactDraft({ ...newContactDraft, Title: e.target.value })}
+            />
+            <TextField
+              label="Email"
+              type="email"
+              fullWidth
+              size="small"
+              value={newContactDraft.Email}
+              onChange={(e) => setNewContactDraft({ ...newContactDraft, Email: e.target.value })}
+            />
+            <TextField
+              label="Phone"
+              fullWidth
+              size="small"
+              value={newContactDraft.Phone}
+              onChange={(e) => setNewContactDraft({ ...newContactDraft, Phone: e.target.value })}
+            />
+          </Box>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setCreateContactOpen(false)} disabled={creatingContact}>Cancel</Button>
+          <ConfirmSaveButton
+            loading={creatingContact}
+            disabled={!newContactDraft.LastName.trim() || !editForm.AccountId}
+            confirmTitle="Create in Salesforce?"
+            confirmMessage="This creates a new contact in Salesforce and sets it as the Primary Contact on this opportunity."
+            onConfirm={async () => {
+              if (!editForm.AccountId || !newContactDraft.LastName.trim()) return;
+              setCreatingContact(true);
+              try {
+                const res = await apiService.createContact({
+                  FirstName: newContactDraft.FirstName || undefined,
+                  LastName: newContactDraft.LastName.trim(),
+                  AccountId: editForm.AccountId,
+                  Title: newContactDraft.Title || undefined,
+                  Email: newContactDraft.Email || undefined,
+                  Phone: newContactDraft.Phone || undefined,
+                });
+                const payload = res.data?.data || res.data;
+                const newId: string | undefined = payload?.id || payload?.Id;
+                if (!newId) {
+                  toast.error('Contact created but server did not return an id — refresh to see it.');
+                  setCreateContactOpen(false);
+                  return;
+                }
+                // Wire the new contact as this Opp's primary contact + inject
+                // into the local contacts list so the Autocomplete renders
+                // the new selection without waiting on a refetch.
+                const displayName = [newContactDraft.FirstName, newContactDraft.LastName].filter(Boolean).join(' ').trim();
+                const injected: ContactOption = {
+                  Id: newId,
+                  Name: displayName || newContactDraft.LastName.trim(),
+                  Email: newContactDraft.Email || null,
+                  AccountId: editForm.AccountId,
+                };
+                setContacts((prev) => [injected, ...prev]);
+                handleFieldChange('npsp__Primary_Contact__c', newId);
+                toast.success('Contact created');
+                setCreateContactOpen(false);
+                queryClient.invalidateQueries('all-contacts');
+              } catch (err: any) {
+                const detail = err?.response?.data?.detail || err?.message || 'Failed to create contact';
+                toast.error(detail);
+              } finally {
+                setCreatingContact(false);
+              }
+            }}
+          >
+            Create Contact
+          </ConfirmSaveButton>
+        </DialogActions>
+      </Dialog>
     </Drawer>
   );
 };
+
+// ── Tasks tab panel ─────────────────────────────────────────────────────────
+
+/** Condensed task list rendered inside the Opp dialog's Tasks tab. Clicks
+ *  delegate to the shared TaskPanel drawer for the actual edit UX — this
+ *  component stays read-only so we don't duplicate the inline-edit logic
+ *  that lives in TaskPanel + PriorityTable. */
+interface OpportunityTasksTabPanelProps {
+  opportunityId: string;
+  onOpenFull: (taskId?: string) => void;
+}
+
+function OpportunityTasksTabPanel({ opportunityId, onOpenFull }: OpportunityTasksTabPanelProps): JSX.Element {
+  const { data, isLoading, error } = useQuery(
+    ['opportunity-tasks', opportunityId],
+    async () => {
+      const response = await apiService.getOpportunityTasks(opportunityId);
+      return response.data;
+    },
+    { enabled: !!opportunityId },
+  );
+  const tasks: Array<Record<string, any>> = data?.data || data?.tasks || [];
+  const openTasks = tasks.filter((t) => t.Status !== 'Completed');
+  const completedTasks = tasks.filter((t) => t.Status === 'Completed');
+  const hasError = !!error;
+
+  return (
+    <Box sx={{ width: '100%' }}>
+      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1 }}>
+        <Typography variant="body2" color="text.secondary">
+          {isLoading ? 'Loading…' : `${openTasks.length} open · ${completedTasks.length} completed`}
+        </Typography>
+        <Button size="small" startIcon={<AddIcon />} onClick={() => onOpenFull()}>
+          Add Task
+        </Button>
+      </Box>
+      {hasError && (
+        <Alert severity="error" sx={{ mb: 1 }}>Could not load tasks for this opportunity.</Alert>
+      )}
+      {!isLoading && tasks.length === 0 && (
+        <Alert severity="info">No tasks yet. Click "Add Task" to create one.</Alert>
+      )}
+      {tasks.length > 0 && (
+        <Table size="small">
+          <TableHead>
+            <TableRow>
+              <TableCell sx={{ width: 28 }} />
+              <TableCell sx={{ fontWeight: 600 }}>Subject</TableCell>
+              <TableCell sx={{ fontWeight: 600, width: 110 }}>Due Date</TableCell>
+              <TableCell sx={{ fontWeight: 600, width: 110 }}>Status</TableCell>
+              <TableCell sx={{ fontWeight: 600, width: 90 }}>Priority</TableCell>
+              <TableCell sx={{ fontWeight: 600, width: 140 }}>Owner</TableCell>
+              <TableCell sx={{ width: 40 }} />
+            </TableRow>
+          </TableHead>
+          <TableBody>
+            {[...openTasks, ...completedTasks].map((task) => (
+              <TableRow
+                key={task.Id}
+                hover
+                sx={{ cursor: 'pointer' }}
+                onClick={() => onOpenFull(task.Id)}
+              >
+                <TableCell>
+                  {task.Status === 'Completed' ? (
+                    <CheckCircleIcon sx={{ fontSize: 16, color: 'success.main' }} />
+                  ) : (
+                    <UncheckedIcon sx={{ fontSize: 16, color: 'text.disabled' }} />
+                  )}
+                </TableCell>
+                <TableCell sx={{ textDecoration: task.Status === 'Completed' ? 'line-through' : 'none' }}>
+                  {task.Subject || '(no subject)'}
+                </TableCell>
+                <TableCell>
+                  {task.ActivityDate
+                    ? new Date(task.ActivityDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+                    : '—'}
+                </TableCell>
+                <TableCell>
+                  <Chip label={task.Status || 'Not Started'} size="small" variant="outlined" sx={{ height: 20, fontSize: 11 }} />
+                </TableCell>
+                <TableCell>{task.Priority || 'Normal'}</TableCell>
+                <TableCell>{task.OwnerName || task.Owner?.Name || '—'}</TableCell>
+                <TableCell>
+                  <Tooltip title="Open in full editor">
+                    <IconButton size="small" onClick={(e) => { e.stopPropagation(); onOpenFull(task.Id); }}>
+                      <OpenInNewIcon fontSize="small" />
+                    </IconButton>
+                  </Tooltip>
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      )}
+    </Box>
+  );
+}
 
 export default OpportunityEditDialog;

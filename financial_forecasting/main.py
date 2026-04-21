@@ -325,7 +325,11 @@ async def get_opportunities(
 
         salesforce = client.salesforce
 
-        # Build SOQL query — field list matches proven simple_server.py query
+        # Build SOQL query — field list matches proven simple_server.py query.
+        # npsp__Primary_Contact__c is the NPSP writable lookup to Contact
+        # (verified via Tooling API describe — DataType Lookup(Contact),
+        # label "Primary Contact"). Relationship fields pull the contact's
+        # Name + Email for display without a second query.
         query = """
         SELECT Id, AccountId, Account.Name, Name, StageName, Amount, Probability,
                CloseDate, ForecastCategory, LeadSource, NextStep,
@@ -335,6 +339,8 @@ async def get_opportunities(
                Last_Actual_Payment__c, npe01__Number_of_Payments__c,
                PaymentDate__c, Earliest_Scheduled_Payment__c,
                RenewalRepeat__c,
+               npsp__Primary_Contact__c,
+               npsp__Primary_Contact__r.Name, npsp__Primary_Contact__r.Email,
                RecordTypeId, RecordType.Name, Active_Opportunity__c
         FROM Opportunity
         """
