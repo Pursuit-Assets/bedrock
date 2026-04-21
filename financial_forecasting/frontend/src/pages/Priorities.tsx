@@ -813,7 +813,6 @@ const Priorities: React.FC = () => {
       CloseDate: opp.CloseDate || '',
       Probability: opp.Probability || 0,
       OwnerId: opp.OwnerId,
-      Type: opp.Type || '',
       RenewalRepeat: opp.RenewalRepeat__c || opp.RenewalRepeat || '',
       Account: opp.Account,
       LastModifiedDate: opp.LastModifiedDate,

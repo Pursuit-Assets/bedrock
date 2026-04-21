@@ -126,7 +126,6 @@ export interface SalesforceOpportunity {
   CloseDate: string | null;
   ExpectedRevenue: number | null;
   ForecastCategory: string | null;
-  Type: string | null;
   LeadSource: string | null;
   NextStep: string | null;
   Description: string | null;

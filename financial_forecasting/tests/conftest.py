@@ -52,11 +52,15 @@ def make_sf_opportunity(overrides: Dict[str, Any] = None) -> Dict[str, Any]:
         "LeadSource": "Web",
         "NextStep": "Submit proposal",
         "Description": "Test opportunity",
-        # Type = the SF secondary-categorization picklist. Missing from the
-        # factory until 2026-04-19, which let B2 (Type field not surfacing
-        # in the UI) regress undetected. Default to a PBC-flavored value
-        # so tests exercising Type-dependent UI paths pass by default.
-        "Type": "Other fee for service",
+        # RecordType.Name is the canonical label for "how we categorize this
+        # opportunity" (e.g. Philanthropy vs. Other fee for service). The B2
+        # 2026-04-19 fixture added Opportunity.Type with this value; A4
+        # (2026-04-21) corrected the misdiagnosis — "Other fee for service"
+        # is a RecordType.Name value, not a Type value. RecordTypeId is a
+        # mock 18-char ID; RecordType.Name round-trips via the SOQL join in
+        # get_opportunities (main.py SELECT includes RecordType.Name).
+        "RecordTypeId": "012TESTRECORDTYPE01",
+        "RecordType": {"Name": "Other fee for service"},
         "OwnerId": "005TESTOWNER00001",
         "CreatedDate": "2026-01-15T10:00:00.000+0000",
         "LastModifiedDate": "2026-03-10T14:30:00.000+0000",

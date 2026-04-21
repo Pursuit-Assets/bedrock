@@ -21,15 +21,14 @@ export type ViewMode = 'open' | 'collecting' | 'closed';
  * entry. The key does NOT include `viewMode` — stage filtering happens
  * client-side on the shared dataset (see `opportunities` memo below).
  */
-export const oppQueryKey = (philanthropyOnly: boolean, pbcOnly: boolean) =>
-  (philanthropyOnly || pbcOnly)
-    ? ['opportunities', { philanthropyOnly, pbcOnly }]
+export const oppQueryKey = (philanthropyOnly: boolean) =>
+  philanthropyOnly
+    ? ['opportunities', { philanthropyOnly }]
     : 'opportunities';
 
 export function useOpportunityData(
   viewMode: ViewMode,
   philanthropyOnly: boolean,
-  pbcOnly: boolean,
 ) {
   const queryClient = useQueryClient();
 
@@ -44,9 +43,9 @@ export function useOpportunityData(
 
   // Always fetch unfiltered by stage so tab counts reflect the full dataset.
   // Stage-filtering for the visible grid happens client-side below.
-  // Share cache with Priorities/Dashboard/etc. when no philanthropy/pbc filter.
-  const useFilteredFetch = philanthropyOnly || pbcOnly;
-  const queryKey = oppQueryKey(philanthropyOnly, pbcOnly);
+  // Share cache with Priorities/Dashboard/etc. when no philanthropy filter.
+  const useFilteredFetch = philanthropyOnly;
+  const queryKey = oppQueryKey(philanthropyOnly);
 
   const { data: opportunitiesData, isLoading, error } = useQuery(
     queryKey,
@@ -54,10 +53,6 @@ export function useOpportunityData(
       const params: any = {};
       if (philanthropyOnly) {
         params.record_type = 'Philanthropy';
-        params.active_only = true;
-      }
-      if (pbcOnly) {
-        params.opp_type = 'PBC';
         params.active_only = true;
       }
       const response = await apiService.getOpportunities(
