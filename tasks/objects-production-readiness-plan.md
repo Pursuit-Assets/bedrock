@@ -271,12 +271,15 @@ For Progress (file rename only — component is already `Progress`):
 
 ### PR #154 — `pr-dialog-audit-opportunity`
 
-Uses `useSchemaPicklist` (PR #153).
+> **Numbering + scope update (2026-04-21):** This plan entry's "#154" maps to actual PR **#159** per the shift table in `tasks/parallel-pr-lanes.md` (A1 #155, B1 #156, A2 #157, A3 #158, B2 #159). **Scope expanded mid-plan** (2026-04-21): bundled with a Payment-navigation feature — "View Payment Schedule" link in the Opp dialog's Payment Summary block routes to the existing `/payment-schedule/:oppId` page, which is enhanced with a per-row "Edit Details" button that opens (and thereby wires up) the previously-orphan `PaymentEditDialog`. Bundling surfaced a `FALLBACK_PAYMENT_METHODS`-hardcoded anti-pattern inside `PaymentEditDialog` (violating `feedback_no_demo_versions`) — converted its three picklists (Payment Method, Department, GL Account) to `useSchemaPicklist` as part of the same PR. Bulk-save-overwrite footgun in `routes/payment_schedules.py:132-138` flagged in the PR body + progress log as pre-existing; full fix deferred to a follow-up PR.
 
-- Add editable `Earliest_Scheduled_Payment__c` (date picker).
-- Convert hardcoded `OPPORTUNITY_STAGES` array usage → `useSchemaPicklist('Opportunity', 'StageName')`. If schema fetch fails, render a disabled select with helper text — NOT a hardcoded legacy array.
+Uses `useSchemaPicklist` (PR #153, actual #156).
+
+- Add editable `Earliest_Scheduled_Payment__c` (date picker) inside the Payment Summary block (stage-gated).
+- Convert hardcoded `OPPORTUNITY_STAGES` array usage → `useSchemaPicklist('Opportunity', 'StageName')`. If schema fetch fails, render a disabled select with helper text — NOT a hardcoded legacy array. Preserves not-in-list stored values via a disabled `(inactive)` MenuItem per `feedback_sf_stages_sacred`.
 - Convert `RenewalRepeat__c` similarly.
-- Tests: form-render assertions for each converted field.
+- Tests: form-render assertions for each converted field (12 tests in `OpportunityEditDialog.test.tsx`).
+- **(Scope expansion, see callout above):** Navigation link → PaymentSchedule page → Edit Details clickthrough → PaymentEditDialog; orphan PaymentEditDialog picklists refactored. 6 tests in new `PaymentEditDialog.test.tsx`, 3 tests in new `PaymentSchedule.test.tsx`.
 
 ---
 

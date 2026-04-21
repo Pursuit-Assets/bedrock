@@ -26,13 +26,15 @@ import {
   Close as CloseIcon,
 } from '@mui/icons-material';
 import { useQueryClient } from 'react-query';
+import { useNavigate } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import ConfirmSaveButton from './ConfirmSaveButton';
 import ActivityTimeline from './ActivityTimeline';
 import { apiService } from '../services/api';
 import { usePermissions } from '../contexts/PermissionsContext';
-import { OPPORTUNITY_STAGES, COLLECTING_STAGES, CLOSED_STAGES } from '../types/salesforce';
+import { COLLECTING_STAGES, CLOSED_STAGES } from '../types/salesforce';
 import { useOpportunityRecordTypes } from '../hooks/useOpportunityRecordTypes';
+import { useSchemaPicklist } from '../hooks/useSchemaPicklist';
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -131,6 +133,20 @@ const OpportunityEditDialog: React.FC<OpportunityEditDialogProps> = ({
   // the Renewal/Repeat field below — what RMs actually want to classify is the
   // Record Type (Philanthropy / Employer Service / etc).
   const recordTypes = useOpportunityRecordTypes();
+
+  // Schema-driven picklists for StageName and RenewalRepeat__c. Each hook owns
+  // its own react-query cache key ((sobject, fieldName)) and fetches schema
+  // independently — the underlying endpoint is the same one record-types hits,
+  // so the browser coalesces subsequent opens within the 30-min stale window.
+  // Empty options → disabled fallback with distinguished helper text
+  // (error vs empty) per feedback_sf_stages_sacred.
+  const stages = useSchemaPicklist('Opportunity', 'StageName');
+  const renewalRepeat = useSchemaPicklist('Opportunity', 'RenewalRepeat__c');
+
+  // Navigation for the "View Payment Schedule" link (rendered inside the
+  // Payment Summary block below). Existing precedent: pages/Priorities.tsx:1509
+  // and pages/PaymentSchedule.tsx both consume useNavigate directly.
+  const navigate = useNavigate();
 
   // ── Local state ─────────────────────────────────────────────────────────
   const [editForm, setEditForm] = useState<Record<string, any>>({});
@@ -512,24 +528,52 @@ const OpportunityEditDialog: React.FC<OpportunityEditDialogProps> = ({
                 />
               </Grid>
               <Grid item xs={12} sm={6}>
-                <TextField
-                  label="Stage"
-                  fullWidth
-                  size="small"
-                  select
-                  required
-                  disabled={!canEdit}
-                  value={editForm.StageName || ''}
-                  onChange={(e) => handleFieldChange('StageName', e.target.value)}
-                  error={!!errors.StageName}
-                  helperText={errors.StageName}
-                >
-                  {OPPORTUNITY_STAGES.map((stage) => (
-                    <MenuItem key={stage} value={stage}>
-                      {stage}
-                    </MenuItem>
-                  ))}
-                </TextField>
+                {/* Stage — schema-driven (replaces hardcoded OPPORTUNITY_STAGES
+                    which silently drifted from SF). Disabled fallback shows
+                    the stored value so a picklist deactivation never hides
+                    data, per feedback_sf_stages_sacred. */}
+                {stages.options.length > 0 ? (
+                  <TextField
+                    label="Stage"
+                    fullWidth
+                    size="small"
+                    select
+                    required
+                    disabled={!canEdit}
+                    value={editForm.StageName || ''}
+                    onChange={(e) => handleFieldChange('StageName', e.target.value)}
+                    error={!!errors.StageName}
+                    helperText={errors.StageName}
+                  >
+                    {stages.options.map((stage) => (
+                      <MenuItem key={stage} value={stage}>
+                        {stage}
+                      </MenuItem>
+                    ))}
+                    {/* Preserve a stored stage SF deactivated since the record
+                        was saved (picklist drift). */}
+                    {editForm.StageName
+                      && !stages.options.some((s) => s === editForm.StageName) && (
+                      <MenuItem value={editForm.StageName} disabled>
+                        {editForm.StageName} (inactive)
+                      </MenuItem>
+                    )}
+                  </TextField>
+                ) : (
+                  <TextField
+                    label="Stage"
+                    fullWidth
+                    size="small"
+                    required
+                    disabled
+                    value={editForm.StageName || ''}
+                    error={!!errors.StageName}
+                    helperText={errors.StageName
+                      || (stages.error
+                        ? 'Stage list unavailable'
+                        : 'No active stages available')}
+                  />
+                )}
               </Grid>
               <Grid item xs={12} sm={6}>
                 <TextField
@@ -613,20 +657,43 @@ const OpportunityEditDialog: React.FC<OpportunityEditDialogProps> = ({
                 )}
               </Grid>
               <Grid item xs={12} sm={6}>
-                <TextField
-                  label="Renewal / Repeat"
-                  fullWidth
-                  size="small"
-                  select
-                  disabled={!canEdit}
-                  value={editForm.RenewalRepeat__c || ''}
-                  onChange={(e) => handleFieldChange('RenewalRepeat__c', e.target.value)}
-                >
-                  <MenuItem value="">None</MenuItem>
-                  <MenuItem value="New">New</MenuItem>
-                  <MenuItem value="Renewal">Renewal</MenuItem>
-                  <MenuItem value="Upsell">Upsell</MenuItem>
-                </TextField>
+                {/* Renewal / Repeat — schema-driven (was hardcoded
+                    None/New/Renewal/Upsell). Nullable field, so the
+                    editable branch always prepends an explicit "None" option
+                    users can re-select to clear. */}
+                {renewalRepeat.options.length > 0 ? (
+                  <TextField
+                    label="Renewal / Repeat"
+                    fullWidth
+                    size="small"
+                    select
+                    disabled={!canEdit}
+                    value={editForm.RenewalRepeat__c || ''}
+                    onChange={(e) => handleFieldChange('RenewalRepeat__c', e.target.value)}
+                  >
+                    <MenuItem value="">None</MenuItem>
+                    {renewalRepeat.options.map((v) => (
+                      <MenuItem key={v} value={v}>{v}</MenuItem>
+                    ))}
+                    {editForm.RenewalRepeat__c
+                      && !renewalRepeat.options.some((v) => v === editForm.RenewalRepeat__c) && (
+                      <MenuItem value={editForm.RenewalRepeat__c} disabled>
+                        {editForm.RenewalRepeat__c} (inactive)
+                      </MenuItem>
+                    )}
+                  </TextField>
+                ) : (
+                  <TextField
+                    label="Renewal / Repeat"
+                    fullWidth
+                    size="small"
+                    disabled
+                    value={editForm.RenewalRepeat__c || ''}
+                    helperText={renewalRepeat.error
+                      ? 'Renewal / Repeat list unavailable'
+                      : 'No active Renewal / Repeat values available'}
+                  />
+                )}
               </Grid>
               <Grid item xs={12} sm={6}>
                 <FormControlLabel
@@ -754,12 +821,41 @@ const OpportunityEditDialog: React.FC<OpportunityEditDialogProps> = ({
                     </Typography>
                   </Grid>
                   <Grid item xs={6}>
-                    <Typography variant="body2" color="text.secondary">
-                      <strong>Next Scheduled:</strong>{' '}
-                      {formatDate(editForm.Earliest_Scheduled_Payment__c)}
-                    </Typography>
+                    {/* Next Scheduled — editable date picker (was read-only
+                        display). Mirrors the Close Date / Contract Start /
+                        Contract End pattern: TextField type="date" with
+                        InputLabelProps={{shrink:true}}. Stays inside the
+                        stage-gated Payment Summary block per JP direction. */}
+                    <TextField
+                      label="Next Scheduled Payment"
+                      fullWidth
+                      size="small"
+                      type="date"
+                      disabled={!canEdit}
+                      value={editForm.Earliest_Scheduled_Payment__c || ''}
+                      onChange={(e) =>
+                        handleFieldChange('Earliest_Scheduled_Payment__c', e.target.value)
+                      }
+                      InputLabelProps={{ shrink: true }}
+                    />
                   </Grid>
                 </Grid>
+
+                {/* Navigate to the opp-scoped PaymentSchedule page — enables
+                    drill-down into individual Payment records via the
+                    Edit Details flow there. Rendered inside the stage-gated
+                    Payment Summary block so it only appears when the opp
+                    has (or can have) payment records. */}
+                <Box sx={{ mt: 1.5, textAlign: 'right' }}>
+                  <Button
+                    size="small"
+                    variant="text"
+                    endIcon={<OpenInNewIcon fontSize="small" />}
+                    onClick={() => navigate(`/payment-schedule/${opportunityId}`)}
+                  >
+                    View Payment Schedule
+                  </Button>
+                </Box>
               </>
             )}
 

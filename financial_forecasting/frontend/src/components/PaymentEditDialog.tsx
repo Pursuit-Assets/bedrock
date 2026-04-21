@@ -22,6 +22,7 @@ import toast from 'react-hot-toast';
 import ConfirmSaveButton from './ConfirmSaveButton';
 import { apiService } from '../services/api';
 import { usePermissions } from '../contexts/PermissionsContext';
+import { useSchemaPicklist } from '../hooks/useSchemaPicklist';
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -31,12 +32,6 @@ interface PaymentEditDialogProps {
   paymentId: string | null;
   initialData?: Record<string, any>;
   onSaved?: (paymentId: string, updates: Record<string, any>) => void;
-}
-
-interface PicklistValue {
-  value: string;
-  label: string;
-  active: boolean;
 }
 
 // ── Constants ───────────────────────────────────────────────────────────────
@@ -64,12 +59,6 @@ const READONLY_FIELDS = new Set([
   'npe01__Opportunity__c', // Parent opportunity — not changeable via edit
 ]);
 
-// Hardcoded fallback picklist values
-const FALLBACK_PAYMENT_METHODS = [
-  'ACH', 'Benevity', 'Cash', 'Check', 'Credit Card',
-  'Cryptocurrency', 'Direct Pay', 'Loan Forgiveness', 'PayPal', 'QuickBooks',
-];
-
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 function formatDate(iso: string | null | undefined): string {
@@ -80,14 +69,6 @@ function formatDate(iso: string | null | undefined): string {
 function formatCurrency(val: number | null | undefined): string {
   if (val == null) return '—';
   return `$${Number(val).toLocaleString()}`;
-}
-
-function extractPicklistValues(fields: any[], fieldName: string): string[] {
-  const field = fields.find((f: any) => f.name === fieldName);
-  if (!field?.picklistValues) return [];
-  return field.picklistValues
-    .filter((pv: PicklistValue) => pv.active)
-    .map((pv: PicklistValue) => pv.value);
 }
 
 // ── Component ───────────────────────────────────────────────────────────────
@@ -107,10 +88,13 @@ const PaymentEditDialog: React.FC<PaymentEditDialogProps> = ({
   const [originalRecord, setOriginalRecord] = useState<Record<string, any> | null>(null);
   const [saving, setSaving] = useState(false);
 
-  // Picklist values from SF schema
-  const [paymentMethodValues, setPaymentMethodValues] = useState<string[]>(FALLBACK_PAYMENT_METHODS);
-  const [departmentValues, setDepartmentValues] = useState<string[]>([]);
-  const [glAccountValues, setGlAccountValues] = useState<string[]>([]);
+  // Schema-driven picklists. Each hook shares the 30-min react-query cache keyed
+  // on (sobject, fieldName) with every other caller so the SF describe fetch
+  // dedupes. Empty options → disabled fallback below; distinguished helper text
+  // explains error vs empty-but-no-error.
+  const paymentMethod = useSchemaPicklist('npe01__OppPayment__c', 'npe01__Payment_Method__c');
+  const department = useSchemaPicklist('npe01__OppPayment__c', 'Department__c');
+  const glAccount = useSchemaPicklist('npe01__OppPayment__c', 'GL_Account__c');
 
   // ── Permission checks ───────────────────────────────────────────────────
   const canEdit = isAdmin || can('edit_payments');
@@ -131,28 +115,6 @@ const PaymentEditDialog: React.FC<PaymentEditDialogProps> = ({
       setEditForm({});
     }
   }, [open, paymentId, initialData]);
-
-  // ── Fetch picklists when dialog opens ──────────────────────────────────
-  useEffect(() => {
-    if (!open) return;
-    let cancelled = false;
-
-    apiService.getSchemaDescribe('npe01__OppPayment__c')
-      .then((res) => {
-        if (cancelled) return;
-        const fields = res.data?.fields || [];
-        const extract = (name: string) => extractPicklistValues(fields, name);
-        const methods = extract('npe01__Payment_Method__c');
-        if (methods.length) setPaymentMethodValues(methods);
-        const depts = extract('Department__c');
-        if (depts.length) setDepartmentValues(depts);
-        const gls = extract('GL_Account__c');
-        if (gls.length) setGlAccountValues(gls);
-      })
-      .catch(() => { /* Use fallback values */ });
-
-    return () => { cancelled = true; };
-  }, [open]);
 
   // ── Field change handler ────────────────────────────────────────────────
   const handleFieldChange = useCallback((field: string, value: any) => {
@@ -292,20 +254,40 @@ const PaymentEditDialog: React.FC<PaymentEditDialogProps> = ({
                 />
               </Grid>
               <Grid item xs={12} sm={6}>
-                <TextField
-                  label="Payment Method"
-                  fullWidth
-                  size="small"
-                  select
-                  disabled={!canEdit}
-                  value={editForm.npe01__Payment_Method__c || ''}
-                  onChange={(e) => handleFieldChange('npe01__Payment_Method__c', e.target.value)}
-                >
-                  <MenuItem value="">None</MenuItem>
-                  {paymentMethodValues.map((v) => (
-                    <MenuItem key={v} value={v}>{v}</MenuItem>
-                  ))}
-                </TextField>
+                {paymentMethod.options.length > 0 ? (
+                  <TextField
+                    label="Payment Method"
+                    fullWidth
+                    size="small"
+                    select
+                    disabled={!canEdit}
+                    value={editForm.npe01__Payment_Method__c || ''}
+                    onChange={(e) => handleFieldChange('npe01__Payment_Method__c', e.target.value)}
+                  >
+                    <MenuItem value="">None</MenuItem>
+                    {paymentMethod.options.map((v) => (
+                      <MenuItem key={v} value={v}>{v}</MenuItem>
+                    ))}
+                    {/* Preserve the stored value if SF deactivated it (picklist drift). */}
+                    {editForm.npe01__Payment_Method__c
+                      && !paymentMethod.options.some((v) => v === editForm.npe01__Payment_Method__c) && (
+                      <MenuItem value={editForm.npe01__Payment_Method__c} disabled>
+                        {editForm.npe01__Payment_Method__c} (inactive)
+                      </MenuItem>
+                    )}
+                  </TextField>
+                ) : (
+                  <TextField
+                    label="Payment Method"
+                    fullWidth
+                    size="small"
+                    disabled
+                    value={editForm.npe01__Payment_Method__c || ''}
+                    helperText={paymentMethod.error
+                      ? 'Payment Method list unavailable'
+                      : 'No active payment methods available'}
+                  />
+                )}
               </Grid>
               <Grid item xs={12} sm={6}>
                 <TextField
@@ -379,8 +361,8 @@ const PaymentEditDialog: React.FC<PaymentEditDialogProps> = ({
                   }}
                 />
               </Grid>
-              {departmentValues.length > 0 && (
-                <Grid item xs={12} sm={6}>
+              <Grid item xs={12} sm={6}>
+                {department.options.length > 0 ? (
                   <TextField
                     label="Department"
                     fullWidth
@@ -391,14 +373,31 @@ const PaymentEditDialog: React.FC<PaymentEditDialogProps> = ({
                     onChange={(e) => handleFieldChange('Department__c', e.target.value)}
                   >
                     <MenuItem value="">None</MenuItem>
-                    {departmentValues.map((v) => (
+                    {department.options.map((v) => (
                       <MenuItem key={v} value={v}>{v}</MenuItem>
                     ))}
+                    {editForm.Department__c
+                      && !department.options.some((v) => v === editForm.Department__c) && (
+                      <MenuItem value={editForm.Department__c} disabled>
+                        {editForm.Department__c} (inactive)
+                      </MenuItem>
+                    )}
                   </TextField>
-                </Grid>
-              )}
-              {glAccountValues.length > 0 && (
-                <Grid item xs={12} sm={6}>
+                ) : (
+                  <TextField
+                    label="Department"
+                    fullWidth
+                    size="small"
+                    disabled
+                    value={editForm.Department__c || ''}
+                    helperText={department.error
+                      ? 'Department list unavailable'
+                      : 'No active departments available'}
+                  />
+                )}
+              </Grid>
+              <Grid item xs={12} sm={6}>
+                {glAccount.options.length > 0 ? (
                   <TextField
                     label="GL Account"
                     fullWidth
@@ -409,12 +408,29 @@ const PaymentEditDialog: React.FC<PaymentEditDialogProps> = ({
                     onChange={(e) => handleFieldChange('GL_Account__c', e.target.value)}
                   >
                     <MenuItem value="">None</MenuItem>
-                    {glAccountValues.map((v) => (
+                    {glAccount.options.map((v) => (
                       <MenuItem key={v} value={v}>{v}</MenuItem>
                     ))}
+                    {editForm.GL_Account__c
+                      && !glAccount.options.some((v) => v === editForm.GL_Account__c) && (
+                      <MenuItem value={editForm.GL_Account__c} disabled>
+                        {editForm.GL_Account__c} (inactive)
+                      </MenuItem>
+                    )}
                   </TextField>
-                </Grid>
-              )}
+                ) : (
+                  <TextField
+                    label="GL Account"
+                    fullWidth
+                    size="small"
+                    disabled
+                    value={editForm.GL_Account__c || ''}
+                    helperText={glAccount.error
+                      ? 'GL Account list unavailable'
+                      : 'No active GL accounts available'}
+                  />
+                )}
+              </Grid>
               <Grid item xs={12} sm={6}>
                 <TextField
                   label="GL Payment Received"
