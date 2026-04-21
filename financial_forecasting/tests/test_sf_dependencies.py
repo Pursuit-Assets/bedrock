@@ -16,10 +16,32 @@ from fastapi.testclient import TestClient
 from main import app, get_current_user, get_mcp_client
 from auth import require_auth
 from db import get_db
+import routes.permissions as _perms_mod
 
 # Disable startup/shutdown events
 app.router.on_startup.clear()
 app.router.on_shutdown.clear()
+
+# Bypass the real get_user_permissions so individual tests can override
+# mock_db.fetchrow freely without breaking the permission check. The
+# endpoints under test here require view_projects and edit_projects, which
+# are local-only permissions — they gate reads/writes of bedrock rows that
+# *reference* Salesforce IDs, never writes to Salesforce itself.
+_original_get_user_permissions = _perms_mod.get_user_permissions
+
+
+async def _fake_admin_perms(email, db):
+    return {
+        "id": str(uuid.uuid4()),
+        "org_user_id": str(uuid.uuid4()),
+        "sf_user_id": "005TESTSFUSER0001",
+        "email": email,
+        "name": "Test User",
+        "is_active": True,
+        "profile_id": str(uuid.uuid4()),
+        "profile_name": "Admin",
+        "permissions": {k: True for k in _perms_mod.PERMISSION_KEYS},
+    }
 
 # ---------------------------------------------------------------------------
 # Auth override
@@ -122,6 +144,7 @@ def mock_client(mock_salesforce):
 
 @pytest.fixture
 def client(mock_db, mock_client):
+    _perms_mod.get_user_permissions = _fake_admin_perms
     app.dependency_overrides[get_current_user] = override_get_current_user
     app.dependency_overrides[require_auth] = override_get_current_user
     app.dependency_overrides[get_db] = lambda: mock_db
@@ -131,6 +154,7 @@ def client(mock_db, mock_client):
         yield c
 
     app.dependency_overrides.clear()
+    _perms_mod.get_user_permissions = _original_get_user_permissions
 
 
 # ===========================================================================
