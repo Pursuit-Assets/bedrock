@@ -44,6 +44,9 @@ pydantic>=2.7
 # PostgreSQL (async)
 asyncpg==0.30.0
 
+# Excel parsing (scripts/import_aiji_tracker.py)
+openpyxl>=3.1.0
+
 # Background scheduler
 APScheduler==3.10.4
 
