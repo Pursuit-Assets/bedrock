@@ -128,7 +128,7 @@ This table is the source of truth for per-PR status. Each PR that ships updates 
 | #155 | `pr-dialog-audit-account` | Account dialog: convert `npsp__Matching_Gift_Request_Deadline__c` to date, convert all picklists | S-M | ⏳ Queued |
 | #156 | `pr-dialog-audit-contact` | Contact dialog: add `npe01__AlternateEmail__c`, convert picklists | S-M | ⏳ Queued |
 | #157 | `pr-dialog-audit-taskpanel` | TaskPanel: convert Status + Priority picklists | S | ⏳ Queued |
-| #158 (= actual #160) | `pr-opp-type-deprecation` | Full delete of Opportunity.Type (backend + frontend + types + tests); `isRenewal` rewrite to use canonical `RenewalRepeat__c`; RecordType.Name replaces Type in fixture + test assertion | M | 👀 in review |
+| #153 carve-out (= actual #160) | `pr-opp-type-deprecation` | Full delete of Opportunity.Type (backend + frontend + types + tests); `isRenewal` rewrite to use canonical `RenewalRepeat__c`; RecordType.Name replaces Type in fixture + test assertion. Carved out of the original #153 `pr-use-schema-picklist` scope per the callout at the bottom of this file. | M | 👀 in review |
 | #158 | `pr-activities-list-page` | New `pages/Activities.tsx` + Reports tab (replaces Leads tab) | M | ⏳ Queued |
 | #159 (= actual #157) | `pr-activities-sync-tests` | `data_sync.sync_activities()` round-trip tests — 54 tests across 5 classes (ParseSfDatetime, MapSfTask, MapSfEvent, UpsertActivity, SyncActivitiesRoundTrip). Zero impl changes — the landed code held up. | M | 👀 in review |
 | #160 | `pr-activities-detail-tabs` | `ActivityTimeline` component + Activities tabs on Opportunity / Account / Contact detail dialogs | M | ⏳ Queued |
