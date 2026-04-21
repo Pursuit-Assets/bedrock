@@ -361,9 +361,24 @@ const AddTaskRow: React.FC<AddTaskRowProps> = ({ oppId, users, onCreated }) => {
     setSaving(true);
     try {
       const res = await apiService.createTask(oppId, { Subject: trimmed, Status: 'Not Started', Priority: 'Normal' });
-      const created = res.data?.task || res.data;
+      // Backend returns ApiResponse → axios res.data = {success, data: {id, message}}.
+      // Must pull the real SF id from res.data.data.id; prior code looked for
+      // res.data.task / res.data.Id (neither exists) and fell back to a
+      // synthetic "new-TIMESTAMP" string, which meant every subsequent inline
+      // edit on the new row hit the backend with an invalid id and 400'd at
+      // validate_salesforce_id. Bail on the optimistic insert if the backend
+      // didn't return a real id — surfaces the problem instead of silently
+      // creating an un-editable row in the UI.
+      const payload = res.data?.data || res.data;
+      const realId = payload?.id || payload?.Id;
+      if (!realId || typeof realId !== 'string') {
+        toast.error('Task created but server did not return an id — refresh to see it.');
+        setSubject('');
+        setActive(false);
+        return;
+      }
       onCreated({
-        Id: created?.Id || `new-${Date.now()}`,
+        Id: realId,
         Subject: trimmed,
         ActivityDate: '',
         Priority: 'Normal',
@@ -1139,7 +1154,26 @@ const PriorityTable: React.FC<PriorityTableProps> = ({ opportunities, onAddTask,
                       <Collapse in={isExpanded} timeout="auto" unmountOnExit>
                         <Box sx={{ py: 1.5, pl: 5, pr: 2 }}>
                           {/* Pending tasks sub-table */}
-                          <Table ref={subTableRef} size="small" sx={{ mb: 1 }}>
+                          {/* stickyHeader + shared sticky sx on every head
+                              TableCell so the task-field labels (Subject,
+                              Description, Due Date, Status, Priority,
+                              Owner) stay pinned while the user scrolls
+                              through a long expansion. `top: 37` slots
+                              the sub-header just below the outer table's
+                              stickyHeader (MUI small TableCell head is
+                              ~37px tall); zIndex 1 puts it under the
+                              outer header when they overlap. bgcolor
+                              required because sticky elements otherwise
+                              bleed through. */}
+                          <Table ref={subTableRef} size="small" stickyHeader sx={{
+                            mb: 1,
+                            '& thead th': {
+                              position: 'sticky',
+                              top: 37,
+                              zIndex: 1,
+                              bgcolor: 'grey.50',
+                            },
+                          }}>
                             <TableHead>
                               <TableRow>
                                 <TableCell sx={{ width: 24, px: 0.5 }} />
