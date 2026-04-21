@@ -71,11 +71,15 @@ const OPPORTUNITY_EDITABLE_FIELDS: readonly string[] = [
   'Description',
   'OwnerId',
   'AccountId',
-  'Contract_Start_Date__c',
-  'Contract_End_Date__c',
-  'Payment_Terms__c',
-  'Billing_Frequency__c',
   'Earliest_Scheduled_Payment__c',
+  // NOTE: Contract_Start_Date__c, Contract_End_Date__c, Payment_Terms__c,
+  // Billing_Frequency__c — bound in the dialog + declared on the TS
+  // interface but DO NOT exist in Pursuit's live SF org (confirmed by
+  // Jac 2026-04-21 when PR #162 added them to the SOQL and broke the
+  // endpoint, reverted in PR #167). Not in this list because the
+  // backend doesn't return them, so the save-guard would fire on every
+  // Opp save. Separate cleanup PR strips the dead bindings + the TS
+  // interface entries.
 ] as const;
 
 // ── Types ───────────────────────────────────────────────────────────────────
