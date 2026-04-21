@@ -760,7 +760,11 @@ export const apiService = {
   prospectImportWriteToCrm: (sessionId?: string) =>
     api.post('/api/prospect-import/write-to-crm', { session_id: sessionId }),
 
-  // Platform Intake (bug/feature submissions → public.platform_intake)
+  // Bedrock intake (bug/feature submissions → public.pd_tickets with
+  // source='bedrock'). The URL path is still `/api/platform-intake`
+  // for backwards compatibility with the form component — renaming
+  // the route would cascade into the frontend Layout, App routes, and
+  // any bookmarks, and isn't worth the churn for a comment.
   // Accepts FormData so the optional attachment can ride along. Axios
   // leaves the Content-Type header off when the body is FormData so the
   // browser can set the correct multipart boundary.

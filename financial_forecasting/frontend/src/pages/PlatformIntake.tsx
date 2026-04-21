@@ -28,6 +28,9 @@ type Priority = 'urgent' | 'high' | 'medium' | 'low';
 
 // Dropdown values kept in sync with ALLOWED_COMPONENTS in
 // routes/platform_intake.py — edit both if you add/remove items.
+// Submissions land in public.pd_tickets with source='bedrock' and the
+// chosen component shown as a **Component:** header at the top of the
+// ticket description.
 const COMPONENTS: { value: string; label: string }[] = [
   { value: 'priorities', label: 'Priorities' },
   { value: 'details', label: 'Details (tables)' },
