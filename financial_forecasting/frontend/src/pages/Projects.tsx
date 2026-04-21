@@ -158,9 +158,14 @@ const Projects: React.FC = () => {
                   </IconButton>
                 </Tooltip>
               )}
-              <Typography variant="h5" fontWeight={700}>
-                {projectName || 'Projects'}
-              </Typography>
+              {/* Only show the project name here; the toolbar already shows
+                  "Projects" as the page title so the generic fallback would
+                  duplicate it (PR126-5). */}
+              {projectName && (
+                <Typography variant="h5" fontWeight={700}>
+                  {projectName}
+                </Typography>
+              )}
               {projects.length > 1 && prefs.sidebarCollapsed && (
                 <Typography variant="caption" color="text.secondary">
                   ({projects.length} projects)

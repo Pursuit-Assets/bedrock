@@ -43,6 +43,7 @@ import OwnerSelector, { OwnerOption, loadStoredOwnerSelection } from '../compone
 import { useOwnerGoals } from '../hooks/useOwnerGoals';
 import { OPEN_STAGES } from '../types/salesforce';
 import ConnectPrompt from '../components/ConnectPrompt';
+import OpportunityEditDialog from '../components/OpportunityEditDialog';
 
 
 interface Opportunity {
@@ -87,6 +88,9 @@ const Progress: React.FC = () => {
   const [selectedOwnerIds, setSelectedOwnerIds] = useState<string[]>([]);
   const [hasInitializedSelection, setHasInitializedSelection] = useState(false);
   const [expandedOwnerId, setExpandedOwnerId] = useState<string | null>(null);
+  // Opportunity edit drawer — opened by clicking a row inside the owner
+  // expansion (Wins or Open Pipeline). See BUG-UI-1.
+  const [editOpp, setEditOpp] = useState<Opportunity | null>(null);
 
   // Fetch opportunities
   const { data: opportunitiesData, isLoading: oppsLoading } = useQuery(
@@ -107,38 +111,38 @@ const Progress: React.FC = () => {
     [opportunitiesData],
   );
 
-  // Fetch active SF users enriched with the Bedrock "progress-tracked" override.
-  // The override lives in bedrock.progress_tracked_override and is managed by
-  // admins in Settings → Progress Visibility. Untoggled users default to
-  // tracked (visible). See routes/progress_tracking.py.
-  const { data: progressUsersData, isLoading: usersLoading } = useQuery(
-    'progress-tracked-users',
-    async () => (await apiService.getProgressTrackedUsers()).data,
+  // Fetch active SF users directly. The Bedrock "progress-tracked override"
+  // concept was removed (BUG-UI-19, 2026-04-21): service accounts and
+  // non-revenue-tracked staff are filtered out naturally by (a) the absence
+  // of a revenue target in Settings → Targets and (b) not owning any open
+  // opportunities in Salesforce — no third per-user toggle needed.
+  const { data: sfUsersData, isLoading: usersLoading } = useQuery(
+    'sf-users-progress',
+    async () => {
+      const res = await apiService.getUsers({ limit: 1000 });
+      return res.data?.data || res.data?.users || res.data || [];
+    },
     { staleTime: 300000 },
   );
 
-  // Normalize to the {Id, Name, IsActive} shape the rest of this component
-  // already uses (leftovers from when we hit /api/salesforce/users); carry
-  // is_tracked through for the filter below.
+  // Normalize to the {Id, Name, IsActive} shape the rest of this component uses.
   const allUsers = useMemo<
-    Array<{ Id: string; Name: string; IsActive: boolean; is_tracked: boolean }>
+    Array<{ Id: string; Name: string; IsActive: boolean }>
   >(
     () =>
-      (Array.isArray(progressUsersData) ? progressUsersData : []).map((u: any) => ({
-        Id: u.sf_user_id,
-        Name: u.name,
-        IsActive: u.is_active !== false,
-        is_tracked: u.is_tracked !== false,
+      (Array.isArray(sfUsersData) ? sfUsersData : []).map((u: any) => ({
+        Id: u.Id,
+        Name: u.Name,
+        IsActive: u.IsActive !== false,
       })),
-    [progressUsersData],
+    [sfUsersData],
   );
 
-  // IsActive is guaranteed true by the backend (WHERE IsActive=true) but we
-  // keep the check as belt-and-suspenders. The load-bearing filter here is
-  // is_tracked — admins toggle this via Settings to hide bots / ex-employees
-  // from the Progress page without touching Salesforce.
+  // IsActive is guaranteed true by the backend (WHERE IsActive=true) but
+  // the belt-and-suspenders filter here also guards against any future
+  // endpoint change that widens the query.
   const activeUsers = useMemo(
-    () => allUsers.filter((u) => u.IsActive && u.is_tracked),
+    () => allUsers.filter((u) => u.IsActive),
     [allUsers],
   );
 
@@ -442,15 +446,14 @@ const Progress: React.FC = () => {
   }, [opportunities]);
 
   // Per-owner progress for targets table. Shows ONLY users who match all
-  // three criteria (set by JP + Jac 2026-04-15):
+  // three criteria (set by JP + Jac 2026-04-15; Progress Visibility override
+  // removed 2026-04-21, BUG-UI-19):
   //   (a) FY revenue target set in Settings → Targets
-  //   (b) IsActive=true in Salesforce AND visible via Bedrock override
-  //       (Settings → Progress Visibility)
+  //   (b) IsActive=true in Salesforce
   //   (c) Owns at least one opportunity in Salesforce
-  // Users missing a target are counted separately (see `missingTargetCount`
-  // below) and surfaced as a caption under the section header so admins know
-  // how many targets still need setting — without filling the table with
-  // "Target not set" placeholder rows.
+  // Users missing a target are simply omitted from this table — no
+  // "Target not set" placeholder rows. (A banner that counted them and
+  // pointed at a not-yet-shipped Bulk Edit page was removed 2026-04-20.)
   const ownerIdsWithOpps = useMemo(() => {
     const ids = new Set<string>();
     for (const o of opportunities) if (o.OwnerId) ids.add(o.OwnerId);
@@ -584,17 +587,6 @@ const Progress: React.FC = () => {
     availableOpenOwners,
     ownerProgress,
   ]);
-
-  // Count of users who SHOULD have a target but don't. Definition:
-  // active (SF IsActive + visible via override) AND owns at least one
-  // opportunity AND does NOT have a goal set. Service accounts (no opps)
-  // and hidden users don't count — only "real revenue-tracked staff
-  // who we haven't onboarded to targets yet".
-  const missingTargetCount = useMemo(() => {
-    return activeUsers.filter(
-      (u) => ownerIdsWithOpps.has(u.Id) && !goalHoldersWithAmount.has(u.Id),
-    ).length;
-  }, [activeUsers, ownerIdsWithOpps, goalHoldersWithAmount]);
 
   // Aggregate totals for the "Team total" row at the top of Individual
   // Goals & Pipelines. Since the table now only contains targeted users
@@ -774,11 +766,6 @@ const Progress: React.FC = () => {
         <Typography variant="body2" color="textSecondary">
           FY{currentFiscalYear.toString().slice(-2)} revenue goal vs. actuals per team member.
         </Typography>
-        {missingTargetCount > 0 && (
-          <Typography variant="caption" color="text.disabled" sx={{ display: 'block', mt: 0.5 }}>
-            {missingTargetCount} active SF user{missingTargetCount === 1 ? '' : 's'} lack a target. Clean up in Bulk Edit page (coming soon).
-          </Typography>
-        )}
       </Box>
 
       {ownerProgress.length === 0 ? (
@@ -821,7 +808,12 @@ const Progress: React.FC = () => {
                         position: 'absolute', left: '50%', top: '50%',
                         transform: 'translate(-50%, -50%)',
                         fontWeight: 700, fontSize: '0.65rem',
-                        color: teamTotals.pct > 0.35 ? 'white' : 'text.primary',
+                        // Label is center-anchored at the 50% mark, so white
+                        // text only becomes readable once the fill clearly
+                        // passes that point (~0.55 accounts for half the
+                        // text width). Below the threshold, keep dark text
+                        // so it renders on the light-grey unfilled track.
+                        color: teamTotals.pct > 0.55 ? 'white' : 'text.primary',
                       }}
                     >
                       {(teamTotals.pct * 100).toFixed(0)}%
@@ -909,10 +901,14 @@ const Progress: React.FC = () => {
                                 }}
                               />
                             </MuiTooltip>
-                            {/* Percentage label */}
+                            {/* Percentage label — dark until fill clearly
+                                passes the center-anchored label position
+                                (~0.55 threshold accounts for half the text
+                                width). See matching threshold on the team
+                                total row above. */}
                             <Typography
                               variant="caption"
-                              sx={{ position: 'absolute', left: '50%', top: '50%', transform: 'translate(-50%, -50%)', fontWeight: 700, fontSize: '0.65rem', color: row.pct > 0.35 ? 'white' : 'text.primary', zIndex: 2 }}
+                              sx={{ position: 'absolute', left: '50%', top: '50%', transform: 'translate(-50%, -50%)', fontWeight: 700, fontSize: '0.65rem', color: row.pct > 0.55 ? 'white' : 'text.primary', zIndex: 2 }}
                             >
                               {(row.pct * 100).toFixed(0)}%
                             </Typography>
@@ -973,7 +969,12 @@ const Progress: React.FC = () => {
                                   <Table size="small">
                                     <TableBody>
                                       {row.wonOpps.slice(0, 10).map((opp: Opportunity) => (
-                                        <TableRow key={opp.Id}>
+                                        <TableRow
+                                          key={opp.Id}
+                                          hover
+                                          onClick={() => setEditOpp(opp)}
+                                          sx={{ cursor: 'pointer' }}
+                                        >
                                           <TableCell sx={{ py: 0.5, pl: 0 }}>
                                             <Typography variant="body2" noWrap sx={{ maxWidth: 250 }}>{opp.Name}</Typography>
                                           </TableCell>
@@ -1016,7 +1017,12 @@ const Progress: React.FC = () => {
                                             .sort((a: Opportunity, b: Opportunity) => ((b.Amount || 0) * (b.Probability || 0)) - ((a.Amount || 0) * (a.Probability || 0)))
                                             .slice(0, 10)
                                             .map((opp: Opportunity) => (
-                                              <TableRow key={opp.Id}>
+                                              <TableRow
+                                                key={opp.Id}
+                                                hover
+                                                onClick={() => setEditOpp(opp)}
+                                                sx={{ cursor: 'pointer' }}
+                                              >
                                                 <TableCell sx={{ py: 0.5, pl: 0 }}>
                                                   <Typography variant="body2" noWrap sx={{ maxWidth: 220 }}>{opp.Name}</Typography>
                                                   <Typography variant="caption" color="text.secondary">{opp.StageName} &middot; {opp.Probability}%</Typography>
@@ -1076,6 +1082,15 @@ const Progress: React.FC = () => {
 
       {/* Below-fold: Cash Flow + charts (lazy-loaded for faster initial paint) */}
       {/* Below-fold financial charts hidden — not ready yet */}
+
+      {/* Opportunity Edit Dialog — opened from Wins / Open Pipeline rows */}
+      <OpportunityEditDialog
+        open={!!editOpp}
+        onClose={() => setEditOpp(null)}
+        opportunityId={editOpp?.Id ?? null}
+        initialData={editOpp as any}
+        onSaved={() => setEditOpp(null)}
+      />
     </Box>
   );
 };

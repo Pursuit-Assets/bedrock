@@ -28,7 +28,7 @@ OPPORTUNITY_FETCHED_FIELDS = {
     "Number_of_Payments_Received__c", "Most_Recent_Payment_Date__c",
     "Last_Actual_Payment__c", "npe01__Number_of_Payments__c",
     "PaymentDate__c", "Earliest_Scheduled_Payment__c",
-    "RecordType.Name", "Active_Opportunity__c",
+    "RecordTypeId", "RecordType.Name", "Active_Opportunity__c",
     "Payment_Terms__c", "Contract_Start_Date__c", "Contract_End_Date__c",
     "Billing_Frequency__c", "ExpectedRevenue",
     "npe01__Amount_Outstanding__c", "npe01__Amount_Written_Off__c",
@@ -162,11 +162,30 @@ async def describe_sobject(
             if not custom_only or f.get("custom", False)
         ]
 
+        # Record Types — SF's describe() response includes `recordTypeInfos`
+        # alongside fields. Expose the active ones so the frontend can render a
+        # RecordType picklist without a second network call. See BUG-UI-9.
+        record_types_raw: List[Dict[str, Any]] = result.get("recordTypeInfos", []) or []
+        record_types = [
+            {
+                "id": rt.get("recordTypeId"),
+                "name": rt.get("name"),
+                "developerName": rt.get("developerName"),
+                "available": rt.get("available", True),
+                "defaultRecordTypeMapping": rt.get("defaultRecordTypeMapping", False),
+                "master": rt.get("master", False),
+            }
+            for rt in record_types_raw
+            # Exclude the Master record type (always present, never user-facing)
+            if not rt.get("master", False)
+        ]
+
         response: Dict[str, Any] = {
             "sobject": sobject,
             "totalFields": len(fields_raw),
             "returnedFields": len(fields),
             "fields": fields,
+            "recordTypes": record_types,
         }
 
         if compare and fetched_set is not None:

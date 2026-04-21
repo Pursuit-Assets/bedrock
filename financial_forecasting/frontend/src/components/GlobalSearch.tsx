@@ -265,6 +265,12 @@ const GlobalSearch: React.FC<GlobalSearchProps> = ({
       setHistoryVersion((v) => v + 1);
       handleClear();
       handleClose();
+      // Blur the input before opening the drawer. The drawer's focus-trap
+      // briefly pops focus back to the document; without this, focus lands
+      // on the still-focused search input, refires onFocus, and reopens
+      // the popover over the drawer showing RECENT SEARCHES.
+      inputRef.current?.blur();
+      if (mobileOpen) setMobileOpen(false);
 
       switch (type) {
         case 'Opportunity':
@@ -281,7 +287,7 @@ const GlobalSearch: React.FC<GlobalSearchProps> = ({
           break;
       }
     },
-    [query, handleClear, handleClose, onOpenOpportunity, onOpenAccount, onOpenContact, onOpenTask],
+    [query, handleClear, handleClose, mobileOpen, onOpenOpportunity, onOpenAccount, onOpenContact, onOpenTask],
   );
 
   const handleViewInPipeline = useCallback(
@@ -290,8 +296,9 @@ const GlobalSearch: React.FC<GlobalSearchProps> = ({
       setHistoryVersion((v) => v + 1);
       handleClear();
       handleClose();
+      inputRef.current?.blur();
       if (mobileOpen) setMobileOpen(false);
-      navigate(`/reports?tab=${TAB_NAMES[type]}&search=${encodeURIComponent(name)}`);
+      navigate(`/details?tab=${TAB_NAMES[type]}&search=${encodeURIComponent(name)}`);
     },
     [query, handleClear, handleClose, mobileOpen, navigate],
   );
@@ -671,7 +678,7 @@ const GlobalSearch: React.FC<GlobalSearchProps> = ({
   const searchInput = (
     <InputBase
       inputRef={inputRef}
-      placeholder="Search / Quick loads cache / Pulls all"
+      placeholder="Search Salesforce"
       value={query}
       onChange={(e) => setQuery(e.target.value)}
       onFocus={(e) => handleOpen(e.currentTarget.parentElement as HTMLElement)}

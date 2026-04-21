@@ -83,10 +83,10 @@ const ALL_MENU_ITEMS = [
     path: '/priorities',
   },
   {
-    text: 'Reports',
+    text: 'Details',
     subtitle: 'Configurable inline-editable tables for Opportunities, Accounts, Contacts, Leads, and Tasks.',
     icon: <TableChartIcon />,
-    path: '/reports',
+    path: '/details',
   },
   {
     text: 'Projects',
@@ -102,7 +102,7 @@ const ALL_MENU_ITEMS = [
   },
 ];
 
-const MVP_PATHS = new Set(['/priorities', '/dashboard', '/reports', '/projects', '/settings']);
+const MVP_PATHS = new Set(['/priorities', '/dashboard', '/details', '/projects', '/settings']);
 
 // Map nav paths to required permissions (undefined = no permission needed)
 const NAV_PERMISSIONS: Record<string, string | ((can: (k: string) => boolean) => boolean) | undefined> = {
@@ -121,7 +121,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
 
   const [mobileOpen, setMobileOpen] = useState(false);
 
-  // MVP nav: show Priorities, Progress, Reports, Projects, Settings. Set REACT_APP_NAV_PHASE=FULL for all pages.
+  // MVP nav: show Priorities, Progress, Details, Projects, Settings. Set REACT_APP_NAV_PHASE=FULL for all pages.
   const navPhase = process.env.REACT_APP_NAV_PHASE || 'MVP';
   const menuItems = useMemo(() => {
     let items = ALL_MENU_ITEMS;
@@ -141,9 +141,13 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
   // We match against ALL_MENU_ITEMS (not the permission-filtered `menuItems`)
   // so the header still renders on pages the user can navigate to directly by
   // URL even if the item is hidden from their sidebar. We also handle the
-  // legacy /pipeline alias so the redirect target still matches Reports.
+  // legacy /pipeline + /reports aliases so the redirect target still matches
+  // the renamed Details page.
   const currentMenuItem = useMemo(() => {
-    const path = location.pathname === '/pipeline' ? '/reports' : location.pathname;
+    const path =
+      location.pathname === '/pipeline' || location.pathname === '/reports'
+        ? '/details'
+        : location.pathname;
     return ALL_MENU_ITEMS.find((item) => item.path === path);
   }, [location.pathname]);
 
@@ -661,20 +665,9 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
       >
         <Toolbar sx={{ minHeight: '48px !important', height: 48 }} />
         <PlatformIdentityBanner />
-        {/* Page identity header — single source of truth from ALL_MENU_ITEMS.
-            Renders title + subtitle on every top-level page so users always
-            know what page they're on and what it's for. Pages keep their own
-            section-specific headers below (e.g. date ranges, project names). */}
-        {currentMenuItem && (
-          <Box sx={{ mb: 2 }}>
-            <Typography variant="h5" sx={{ fontWeight: 600, lineHeight: 1.2 }}>
-              {currentMenuItem.text}
-            </Typography>
-            <Typography variant="body2" color="text.secondary" sx={{ mt: 0.25 }}>
-              {currentMenuItem.subtitle}
-            </Typography>
-          </Box>
-        )}
+        {/* Page-identity H5 + subtitle removed (PR126-5) — it duplicated the
+            title already rendered in the top toolbar. Pages keep their own
+            section-specific headers. Subtitles live in the sidebar tooltip. */}
         {children}
       </Box>
 

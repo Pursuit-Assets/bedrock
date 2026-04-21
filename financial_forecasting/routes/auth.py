@@ -404,8 +404,15 @@ async def _refresh_sf_token(refresh_token: str) -> Optional[dict]:
 
 
 @router.get("/auth/salesforce/status")
-async def salesforce_status(request: Request):
-    """Check the current user's Salesforce connection status."""
+async def salesforce_status(request: Request, response: Response):
+    """Check the current user's Salesforce connection status.
+
+    If the access token has expired but we have a refresh token, refresh it
+    in-band and persist the new tokens back to the sf_tokens cookie so that
+    subsequent requests see a fresh session. (Previously the refreshed token
+    was only returned in the response body and silently dropped, leaving the
+    client stuck with an expired cookie — see BUG-AUTH-1.)
+    """
     user = await get_current_user(request)
     if not user:
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -418,7 +425,6 @@ async def salesforce_status(request: Request):
     if not tokens:
         return {"connected": False, "message": "Invalid token data"}
 
-    # Verify the connection works
     try:
         instance = tokens["instance_url"].replace("https://", "").replace("http://", "")
         test_sf = Salesforce(instance=instance, session_id=tokens["access_token"])
@@ -435,12 +441,28 @@ async def salesforce_status(request: Request):
         if refresh_token:
             new_tokens = await _refresh_sf_token(refresh_token)
             if new_tokens:
-                new_tokens["user_name"] = tokens.get("user_name")
+                merged = {
+                    "access_token": new_tokens["access_token"],
+                    "refresh_token": new_tokens.get("refresh_token") or refresh_token,
+                    "instance_url": new_tokens["instance_url"],
+                    "user_id": new_tokens.get("user_id") or tokens.get("user_id"),
+                    "user_name": tokens.get("user_name"),
+                    "issued_at": tokens.get("issued_at"),
+                }
+                try:
+                    response.set_cookie(
+                        key="sf_tokens",
+                        value=encrypt_tokens(merged),
+                        **cookie_params(),
+                    )
+                except Exception as cookie_err:
+                    logger.error(f"Failed to persist refreshed SF tokens: {cookie_err}")
+
                 return {
                     "connected": True,
-                    "user_id": new_tokens.get("user_id"),
-                    "user_name": new_tokens.get("user_name"),
-                    "instance_url": new_tokens.get("instance_url"),
+                    "user_id": merged["user_id"],
+                    "user_name": merged["user_name"],
+                    "instance_url": merged["instance_url"],
                     "refreshed": True,
                 }
 

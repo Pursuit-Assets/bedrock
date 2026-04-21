@@ -644,19 +644,7 @@ const Accounts: React.FC = () => {
         />
       ),
     },
-    {
-      // Read-only in the account drawer; the full-edit dialog on the
-      // Opportunities page handles Type edits.
-      field: 'Type',
-      headerName: 'Type',
-      flex: 0.8,
-      minWidth: 140,
-      renderCell: (params: GridRenderCellParams) => (
-        <Box component="span" sx={{ color: params.value ? 'text.primary' : 'text.disabled' }}>
-          {(params.value as string) || '—'}
-        </Box>
-      ),
-    },
+    // Opportunity.Type column removed (BUG-UI-9) — duplicated RenewalRepeat__c.
     {
       field: 'Amount',
       headerName: 'Amount',

@@ -248,19 +248,35 @@ export function useNotifications(
     }));
     items.push(...permissionNotifications);
 
+    // -- Dedupe by id (SF can emit multiple OpportunityFieldHistory rows
+    //    for the same opp+timestamp after a bulk reassignment; keep first) --
+    const seen = new Set<string>();
+    const deduped = items.filter((i) => {
+      if (seen.has(i.id)) return false;
+      seen.add(i.id);
+      return true;
+    });
+
     // -- Sort by timestamp descending, limit ----------------------------
-    items.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+    deduped.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
 
     // -- Prune stale readIds (keep only IDs that exist in current set) --
-    const currentIds = new Set(items.map((i) => i.id));
-    const pruned = notifState.readIds.filter((rid) => currentIds.has(rid));
-    if (pruned.length !== notifState.readIds.length) {
-      const next = { readIds: pruned };
-      // Defer to avoid setState during render
-      queueMicrotask(() => { setNotifState(next); writeState(next); });
+    // IMPORTANT: only prune once data has actually loaded, otherwise the
+    // first render (while queries are in-flight) sees an empty id set and
+    // wipes every readId from localStorage, resurrecting every notification
+    // as "new" on refresh.
+    const dataReady = Boolean(oppsData) && Boolean(ownershipData);
+    if (dataReady) {
+      const currentIds = new Set(deduped.map((i) => i.id));
+      const pruned = notifState.readIds.filter((rid) => currentIds.has(rid));
+      if (pruned.length !== notifState.readIds.length) {
+        const next = { readIds: pruned };
+        // Defer to avoid setState during render
+        queueMicrotask(() => { setNotifState(next); writeState(next); });
+      }
     }
 
-    return items.slice(0, MAX_NOTIFICATIONS);
+    return deduped.slice(0, MAX_NOTIFICATIONS);
   }, [tasks, oppsData, ownershipData, unlockRequests, sfUserId, sfUserName, notifState]);
 
   // ---- Badge ----------------------------------------------------------

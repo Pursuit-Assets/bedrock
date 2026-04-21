@@ -58,7 +58,6 @@ import TaskInbox, { InboxTask } from '../components/TaskInbox';
 import TaskPanel from '../components/TaskPanel';
 import OpportunityEditDialog from '../components/OpportunityEditDialog';
 import GoalTracker from '../components/GoalTracker';
-import { DEFAULT_GOAL } from '../config/goals';
 import { useOwnerGoals } from '../hooks/useOwnerGoals';
 import DateRangeSelector, { type DateRangeValue } from '../components/DateRangeSelector';
 import type { Opportunity } from './Opportunities/helpers';
@@ -686,6 +685,11 @@ const Priorities: React.FC = () => {
   // Filtered opportunities — by selected user or all
   const sfUserId = user?.salesforce_user_id;
   const resolvedFilterId = prefs.filterUserId === 'me' ? (sfUserId || 'all') : (prefs.filterUserId || 'all');
+  // Revenue Snapshot is hidden when viewing the team ("All Pipeline") OR when
+  // the selected owner has no target configured in Settings → Targets.
+  // Previously we fell back to a hard-coded $2M placeholder — see BUG-UI-7.
+  const revenueTarget = resolvedFilterId !== 'all' ? ownerGoals[resolvedFilterId]?.goal_amount : undefined;
+  const hasRevenueTarget = typeof revenueTarget === 'number' && revenueTarget > 0;
   const filteredOpportunities = useMemo(() => {
     if (resolvedFilterId === 'all') return allOpportunities;
     return allOpportunities.filter((opp: any) => opp.OwnerId === resolvedFilterId);
@@ -960,7 +964,7 @@ const Priorities: React.FC = () => {
       source += `, ${format(new Date(), 'MMMM yyyy')}`;
     }
 
-    navigate('/reports', {
+    navigate('/details', {
       state: { dashboardFilters: { owners, closeDateStart, closeDateEnd, source } },
     });
   }, [prefs.dateRange, resolvedFilterId, sfUsers, navigate]);
@@ -1351,7 +1355,9 @@ const Priorities: React.FC = () => {
         )}
       </Section>
 
-      {/* Section 3: Revenue Snapshot */}
+      {/* Section 3: Revenue Snapshot — only rendered when the selected owner
+          has a target set in Settings → Targets (see BUG-UI-7). */}
+      {hasRevenueTarget && (
       <Section
         id="revenue"
         title="Revenue Snapshot"
@@ -1380,7 +1386,7 @@ const Priorities: React.FC = () => {
         <Grid container spacing={2}>
           <Grid item xs={12} md={5}>
             <GoalTracker
-              goalAmount={ownerGoals[resolvedFilterId]?.goal_amount ?? DEFAULT_GOAL}
+              goalAmount={revenueTarget as number}
               allOpportunities={allOpportunities}
               filterUserId={resolvedFilterId}
               ownerName={
@@ -1477,6 +1483,7 @@ const Priorities: React.FC = () => {
           </Grid>
         </Grid>
       </Section>
+      )}
 
       {/* Task Panel drawer */}
       <TaskPanel

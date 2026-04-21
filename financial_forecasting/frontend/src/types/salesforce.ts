@@ -152,6 +152,8 @@ export interface SalesforceOpportunity {
   Earliest_Scheduled_Payment__c: string | null;
   // Campaign (Primary Campaign Source)
   CampaignId: string | null;
+  // Record Type — users can reclassify via the Edit Opportunity drawer (BUG-UI-9).
+  RecordTypeId: string | null;
   // Nested relationship fields (from SOQL joins)
   Account?: { Name: string; Id?: string };
   Owner?: { Name: string; Id?: string };

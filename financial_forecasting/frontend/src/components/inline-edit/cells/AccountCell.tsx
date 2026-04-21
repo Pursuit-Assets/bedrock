@@ -16,6 +16,16 @@ interface Account {
 interface AccountCellProps {
   value: string;
   accounts: Account[];
+  /**
+   * Pre-joined Account.Name from the parent record's SOQL query (e.g.
+   * `opp.Account.Name`). Used as the authoritative display-mode label so
+   * we don't depend on the bulk `/api/salesforce/accounts` list — which
+   * is currently capped at 2000 rows and therefore drops some accounts
+   * alphabetically (pending JP's `pr-contacts-accounts-pagination`).
+   * Without this fallback, any opp whose Account sorts after the 2000th
+   * renders as "No Account" in the grid even though it IS linked in SF.
+   */
+  displayName?: string | null;
   fieldName?: string;
   objectType?: string;
   onSave: (newAccountId: string) => void | Promise<void>;
@@ -27,6 +37,7 @@ interface AccountCellProps {
 export const AccountCell: React.FC<AccountCellProps> = ({
   value,
   accounts,
+  displayName,
   fieldName = 'AccountId',
   objectType = 'Opportunity',
   onSave,
@@ -42,12 +53,21 @@ export const AccountCell: React.FC<AccountCellProps> = ({
     [accounts],
   );
 
+  // Preference order for display label:
+  //   1. `displayName` prop (from opp's Account.Name SOQL join) — always
+  //      accurate, never truncated.
+  //   2. Lookup in local `accounts` list — accurate only for the first
+  //      2000 rows; kept as a fallback so call sites that haven't yet
+  //      passed `displayName` still render something reasonable.
+  //   3. Literal "No Account" — means the record really has no AccountId.
   const formatDisplay = useMemo(() => {
     return (v: string) => {
+      if (!v) return 'No Account';
+      if (displayName) return displayName;
       const acct = accounts.find((a) => a.Id === v);
       return acct?.Name || 'No Account';
     };
-  }, [accounts]);
+  }, [accounts, displayName]);
 
   return (
     <InlineEditable<string>

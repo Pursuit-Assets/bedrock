@@ -133,7 +133,18 @@ const NotificationDropdown: React.FC<NotificationDropdownProps> = ({
         onClose={handleClose}
         anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
         transformOrigin={{ vertical: 'top', horizontal: 'right' }}
-        slotProps={{ paper: { sx: { width: 380, maxHeight: 520 } } }}
+        slotProps={{
+          paper: {
+            sx: {
+              width: 380,
+              maxHeight: 520,
+              // Prevent horizontal scroll when a long subtitle / chip label
+              // overflows the fixed 380px width. Children are responsible for
+              // wrapping / truncating via `noWrap` or `wordBreak`.
+              overflowX: 'hidden',
+            },
+          },
+        }}
       >
         {/* Header */}
         <Box sx={{ px: 2, py: 1.5, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -217,16 +228,41 @@ const NotificationDropdown: React.FC<NotificationDropdownProps> = ({
                           />
                         )}
                       </Box>
-                      <Typography variant="caption" color="text.secondary" noWrap>
+                      <Typography
+                        variant="caption"
+                        color="text.secondary"
+                        noWrap
+                        component="div"
+                      >
                         {n.subtitle}
                       </Typography>
                     </Box>
 
-                    {/* Time + expand */}
+                    {/* Time + per-item check-off + expand.
+                        The check-off icon is shown for unread items only and
+                        lets users dismiss a single notification without having
+                        to expand it first. Uses stopPropagation so the row
+                        doesn't toggle when the icon is clicked. */}
                     <Box sx={{ ml: 1, display: 'flex', alignItems: 'center', flexShrink: 0 }}>
                       <Typography variant="caption" color="text.disabled" sx={{ whiteSpace: 'nowrap', mr: 0.25 }}>
                         {relativeTime(n.timestamp)}
                       </Typography>
+                      {n.isNew && (
+                        <Tooltip title="Mark as read">
+                          <IconButton
+                            size="small"
+                            onClick={(e) => { e.stopPropagation(); onMarkOneRead(n.id); }}
+                            sx={{
+                              p: 0.25,
+                              mr: 0.25,
+                              color: 'text.disabled',
+                              '&:hover': { color: 'primary.main', bgcolor: 'transparent' },
+                            }}
+                          >
+                            <CheckCircleIcon sx={{ fontSize: 16 }} />
+                          </IconButton>
+                        </Tooltip>
+                      )}
                       {isExpanded ? (
                         <ExpandLessIcon sx={{ fontSize: 16, color: 'text.disabled' }} />
                       ) : (
@@ -264,7 +300,7 @@ const NotificationDropdown: React.FC<NotificationDropdownProps> = ({
                       )}
 
                       {n.type === 'close-date-warning' && (
-                        <Box sx={{ mb: 1 }}>
+                        <Box sx={{ mb: 1, maxWidth: '100%' }}>
                           <Chip
                             label={n.subtitle}
                             size="small"
@@ -272,19 +308,26 @@ const NotificationDropdown: React.FC<NotificationDropdownProps> = ({
                               bgcolor: getStageHexColor(n.subtitle.split('(')[0].trim()) + '20',
                               fontSize: '0.7rem',
                               height: 22,
+                              maxWidth: '100%',
+                              '& .MuiChip-label': { overflow: 'hidden', textOverflow: 'ellipsis' },
                             }}
                           />
                         </Box>
                       )}
 
                       {n.type === 'permission-request' && (
-                        <Box sx={{ mb: 1 }}>
+                        <Box sx={{ mb: 1, maxWidth: '100%' }}>
                           <Chip
                             label={n.subtitle}
                             size="small"
                             color="info"
                             variant="outlined"
-                            sx={{ fontSize: '0.7rem', height: 22 }}
+                            sx={{
+                              fontSize: '0.7rem',
+                              height: 22,
+                              maxWidth: '100%',
+                              '& .MuiChip-label': { overflow: 'hidden', textOverflow: 'ellipsis' },
+                            }}
                           />
                         </Box>
                       )}
@@ -332,7 +375,7 @@ const NotificationDropdown: React.FC<NotificationDropdownProps> = ({
           </Button>
           <Button
             size="small"
-            onClick={() => { handleClose(); navigate('/reports'); }}
+            onClick={() => { handleClose(); navigate('/details'); }}
             sx={{ textTransform: 'none', fontSize: '0.75rem' }}
           >
             View Pipeline

@@ -196,7 +196,7 @@ const Settings: React.FC = () => {
     const tab = searchParams.get('tab');
     if (
       tab === 'users' || tab === 'profiles' || tab === 'connections' ||
-      tab === 'goals' || tab === 'targets' || tab === 'progress-visibility'
+      tab === 'goals' || tab === 'targets'
     ) return tab;
     return 'connections';
   });
@@ -220,38 +220,11 @@ const Settings: React.FC = () => {
     { onSuccess: () => { queryClient.invalidateQueries('app-users'); toast.success('User updated'); } }
   );
 
-  // Progress-page visibility override — Settings → Progress Visibility tab.
-  // Data and mutation are scoped to admins; non-admins don't see the tab.
-  const { data: progressUsersData } = useQuery(
-    'progress-tracked-users',
-    async () => {
-      const res = await apiService.getProgressTrackedUsers();
-      return res.data || [];
-    },
-    { enabled: isAdmin && settingsTab === 'progress-visibility' }
-  );
-  const progressUsers: Array<{
-    sf_user_id: string;
-    name: string;
-    email: string | null;
-    is_active: boolean;
-    is_tracked: boolean;
-  }> = progressUsersData || [];
+  // Progress-page visibility override was removed 2026-04-21 (BUG-UI-19).
+  // The per-user Visible toggle was redundant with (a) active status in SF
+  // and (b) whether the user had a target configured in Settings → Targets.
+  // Any orphan callers should fall back to `apiService.getUsers()`.
 
-  const setProgressOverrideMutation = useMutation(
-    async ({ sfUserId, isTracked }: { sfUserId: string; isTracked: boolean }) =>
-      apiService.setProgressTrackedOverride(sfUserId, isTracked),
-    {
-      onSuccess: () => {
-        // Invalidate both Settings-panel data and the Progress-page data
-        // source so the changed state reflects immediately on both screens.
-        queryClient.invalidateQueries('progress-tracked-users');
-      },
-      onError: (err: any) => {
-        toast.error(err?.response?.data?.detail || 'Failed to update visibility');
-      },
-    }
-  );
   const createProfileMutation = useMutation(
     async (data: any) => apiService.createPermissionProfile(data),
     { onSuccess: () => { queryClient.invalidateQueries('permission-profiles'); toast.success('Profile created'); } }
@@ -351,14 +324,10 @@ const Settings: React.FC = () => {
 
   return (
     <Box sx={{ maxWidth: 1000, mx: 'auto' }}>
-      <Typography variant="h5" gutterBottom sx={{ fontWeight: 600, mb: 1 }}>
-        Settings
-      </Typography>
-
+      {/* "Settings" H5 removed (PR126-5) — duplicated the toolbar title. */}
       <Tabs value={settingsTab} onChange={(_, v) => setSettingsTab(v)} sx={{ mb: 3, borderBottom: 1, borderColor: 'divider' }}>
         <Tab label="Connections" value="connections" />
         {isAdmin && <Tab label="Users" value="users" />}
-        {isAdmin && <Tab label="Progress Visibility" value="progress-visibility" />}
         {canEditProfiles && <Tab label="Permission Profiles" value="profiles" />}
         {canManageTargets && <Tab label="Targets" value="targets" />}
       </Tabs>
@@ -708,75 +677,8 @@ const Settings: React.FC = () => {
       </Card>
     )}
 
-    {/* ── Progress Visibility Tab (Admin only) ──
-         Lists every IsActive=true Salesforce user with a toggle that
-         controls whether they appear on the Progress page Individual
-         Progress table. The override is Bedrock-only; it doesn't modify
-         Salesforce. Default (no row in bedrock.progress_tracked_override)
-         is visible — toggle off to hide service accounts or ex-employees
-         who are still IsActive=true in SF.
-         Backed by routes/progress_tracking.py. */}
-    {settingsTab === 'progress-visibility' && isAdmin && (
-      <Card>
-        <CardContent>
-          <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 0.5 }}>
-            Progress Page Visibility
-          </Typography>
-          <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-            Toggle off to hide a Salesforce user from the Progress page
-            Individual Progress table. Useful for service accounts
-            (Slackbot, Integration User, etc.) and employees who shouldn't
-            be revenue-tracked. This is a Bedrock-only setting — it
-            doesn't change Salesforce.
-          </Typography>
-          <Table size="small">
-            <TableHead>
-              <TableRow>
-                <TableCell sx={{ fontWeight: 600 }}>Name</TableCell>
-                <TableCell sx={{ fontWeight: 600 }}>Email</TableCell>
-                <TableCell sx={{ fontWeight: 600 }}>SF User ID</TableCell>
-                <TableCell sx={{ fontWeight: 600, width: 140 }}>Progress Page</TableCell>
-              </TableRow>
-            </TableHead>
-            <TableBody>
-              {progressUsers.map((u) => (
-                <TableRow key={u.sf_user_id}>
-                  <TableCell>{u.name || '\u2014'}</TableCell>
-                  <TableCell>{u.email || '\u2014'}</TableCell>
-                  <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>{u.sf_user_id}</TableCell>
-                  <TableCell>
-                    <Stack direction="row" spacing={1} alignItems="center">
-                      <Switch
-                        checked={u.is_tracked}
-                        onChange={(e) =>
-                          setProgressOverrideMutation.mutate({
-                            sfUserId: u.sf_user_id,
-                            isTracked: e.target.checked,
-                          })
-                        }
-                        size="small"
-                      />
-                      <Typography variant="caption" color="text.secondary">
-                        {u.is_tracked ? 'Visible' : 'Hidden'}
-                      </Typography>
-                    </Stack>
-                  </TableCell>
-                </TableRow>
-              ))}
-              {progressUsers.length === 0 && (
-                <TableRow>
-                  <TableCell colSpan={4}>
-                    <Typography variant="body2" color="text.secondary" sx={{ py: 2, textAlign: 'center' }}>
-                      No active Salesforce users found. Check that Salesforce is connected in the Connections tab.
-                    </Typography>
-                  </TableCell>
-                </TableRow>
-              )}
-            </TableBody>
-          </Table>
-        </CardContent>
-      </Card>
-    )}
+    {/* Progress Visibility tab removed 2026-04-21 (BUG-UI-19). See note
+        on the removed useQuery above. */}
 
     {/* ── Permission Profiles Tab (Admin only) ── */}
     {settingsTab === 'profiles' && canEditProfiles && (

@@ -658,8 +658,11 @@ const ActivityTimeline: React.FC<ActivityTimelineProps> = ({
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-      {/* Filter bar */}
-      <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', mb: 2, flexWrap: 'wrap' }}>
+      {/* Filter bar.
+          alignItems:'flex-start' on the outer row keeps the RIGHT action
+          buttons pinned to the top line (Type/Date) even when the LEFT group
+          wraps Search onto a second row in a narrow drawer (BUG-UI-11). */}
+      <Box sx={{ display: 'flex', gap: 1, alignItems: 'flex-start', mb: 2, flexWrap: 'wrap' }}>
         {/* LEFT group: filters */}
         <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', flex: 1, flexWrap: 'wrap', minWidth: 0 }}>
           {/* Type filter */}
@@ -737,15 +740,17 @@ const ActivityTimeline: React.FC<ActivityTimelineProps> = ({
           )}
         </Box>
 
-        {/* RIGHT group: action buttons */}
-        <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center', flexShrink: 0 }}>
+        {/* RIGHT group: action buttons.
+            Heights are pinned to 40px so they line up with the size="small"
+            Select / TextField inputs in the LEFT group (BUG-UI-11). */}
+        <Box sx={{ display: 'flex', gap: 0.75, alignItems: 'center', flexShrink: 0 }}>
           {canSync && (
             <Button
               size="small"
               variant="outlined"
               startIcon={<SyncIcon />}
               onClick={(e) => setSyncAnchorEl(e.currentTarget)}
-              sx={{ textTransform: 'none', fontSize: '0.75rem' }}
+              sx={{ textTransform: 'none', fontSize: '0.8125rem', height: 40 }}
             >
               Sync
             </Button>
@@ -756,7 +761,7 @@ const ActivityTimeline: React.FC<ActivityTimelineProps> = ({
               variant={insightsOpen ? 'contained' : 'outlined'}
               startIcon={<AutoAwesomeIcon />}
               onClick={handleInsightsToggle}
-              sx={{ textTransform: 'none', fontSize: '0.75rem' }}
+              sx={{ textTransform: 'none', fontSize: '0.8125rem', height: 40 }}
             >
               AI Insights
             </Button>
@@ -766,7 +771,7 @@ const ActivityTimeline: React.FC<ActivityTimelineProps> = ({
             variant="contained"
             startIcon={<AddIcon />}
             onClick={() => setLogDialogOpen(true)}
-            sx={{ textTransform: 'none', fontSize: '0.75rem' }}
+            sx={{ textTransform: 'none', fontSize: '0.8125rem', height: 40 }}
           >
             Add Activity
           </Button>

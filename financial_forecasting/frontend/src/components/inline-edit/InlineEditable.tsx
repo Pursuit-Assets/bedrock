@@ -81,7 +81,24 @@ export interface InlineEditableProps<TValue = unknown>
 const HOVER_LOCK_SX = {
   // Show the lock icon on cell hover; hide it otherwise so display mode
   // stays clean. Targeted via a parent class so we don't need React state.
+  //
+  // Use `position: absolute` (not just `visibility: hidden`) so the
+  // hidden icon does NOT reserve layout width. Previously the ~22px
+  // IconButton slot was reserved even when invisible, pushing the
+  // displayed value left of the cell's right edge in right-aligned
+  // columns (Amount, Prob). That caused the header text — which has
+  // no icon slot — to look ~20px to the right of the value, breaking
+  // column alignment (BUG-UI-10).
+  //
+  // With absolute positioning, the icon floats in the cell's right
+  // padding area on hover and the host Box's width collapses to just
+  // the text content, so right-aligned headers and values share a
+  // common right edge.
   visibility: 'hidden',
+  position: 'absolute',
+  right: '-22px',
+  top: '50%',
+  transform: 'translateY(-50%)',
   '.inline-editable-host:hover &': { visibility: 'visible' },
 };
 
@@ -346,6 +363,10 @@ export function InlineEditable<TValue = unknown>(
           gap: 0.25,
           maxWidth: '100%',
           borderRadius: 1,
+          // `position: relative` anchors the hover-lock IconButton's
+          // `position: absolute` (HOVER_LOCK_SX) so the icon floats in
+          // the cell's right padding area without reserving layout width.
+          position: 'relative',
           transition: 'box-shadow 120ms ease, background-color 120ms ease',
           // Active edit-or-unlock mode — bold blue ring + subtle blue tint
           // so the targeted cell is unmistakable the instant you click,

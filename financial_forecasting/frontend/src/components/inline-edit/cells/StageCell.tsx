@@ -3,7 +3,7 @@
  * canonical stage list + per-stage color palette, and declares the
  * Opportunity.StageName classification (sensitive — affects pipeline metrics).
  *
- * Used by Reports columns and any other surface that edits opportunity stage.
+ * Used by Details columns and any other surface that edits opportunity stage.
  */
 import React from 'react';
 import {

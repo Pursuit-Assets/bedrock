@@ -10,12 +10,10 @@
  */
 import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate, useLocation, useSearchParams } from 'react-router-dom';
-import { formatDollarMillions } from '../utils/formatters';
 import {
   Box,
   Card,
   CardContent,
-  Typography,
   Button,
   Dialog,
   DialogTitle,
@@ -34,7 +32,7 @@ import {
 } from '@mui/icons-material';
 import { DataGrid, GridToolbar, GridRenderCellParams } from '@mui/x-data-grid';
 import toast from 'react-hot-toast';
-import { parseISO, differenceInDays } from 'date-fns';
+import { parseISO, differenceInDays, startOfDay } from 'date-fns';
 
 import { apiService } from '../services/api';
 import PaymentScheduleModal from '../components/PaymentScheduleModal';
@@ -365,13 +363,18 @@ const Opportunities: React.FC = () => {
       filtered = filtered.filter((opp) => opp.CloseDate && opp.CloseDate <= f.closeDateEnd);
     }
 
-    // Stale toggle (30+ days since last activity)
+    // Stale toggle (30+ days since last activity).
+    // Predicate MUST stay in sync with:
+    //   - SummaryCards.tsx "Stale Deals" card count
+    //   - the `initialFilter === 'stale'` click-through below
+    // Definition: LastModifiedDate older than 30 days. No past-due-by-CloseDate
+    // component (that's a different concept — "overdue" — and would need its own
+    // card if we want to surface it).
     if (f.staleOnly) {
-      const now = new Date();
-      filtered = filtered.filter((opp) => {
-        const lastMod = opp.LastModifiedDate ? parseISO(opp.LastModifiedDate) : parseISO(opp.CreatedDate);
-        return differenceInDays(now, lastMod) > 30;
-      });
+      const today = startOfDay(new Date());
+      filtered = filtered.filter(
+        (opp) => opp.LastModifiedDate && differenceInDays(today, parseISO(opp.LastModifiedDate)) > 30,
+      );
     }
 
     return filtered;
@@ -390,13 +393,14 @@ const Opportunities: React.FC = () => {
       return inQ && atRisk;
     });
   } else if (initialFilter === 'stale') {
-    const now = new Date();
-    visibleOpps = visibleOpps.filter((opp) => {
-      if (!opp.CloseDate) return false;
-      const isPastDue = parseISO(opp.CloseDate) < now;
-      const lastMod = opp.LastModifiedDate ? parseISO(opp.LastModifiedDate) : parseISO(opp.CreatedDate);
-      return isPastDue || differenceInDays(now, lastMod) > 30;
-    });
+    // Must match SummaryCards.tsx "Stale Deals" card count predicate and the
+    // pipelineFilters.staleOnly predicate above. Previously this filter added
+    // an `isPastDue` OR leg and a CloseDate-required AND leg that the card
+    // count didn't share, producing a card-vs-table mismatch (e.g. 388 vs 473).
+    const today = startOfDay(new Date());
+    visibleOpps = visibleOpps.filter(
+      (opp) => opp.LastModifiedDate && differenceInDays(today, parseISO(opp.LastModifiedDate)) > 30,
+    );
   } else if (initialFilter === 'closingMonth') {
     const now = new Date();
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
@@ -524,25 +528,7 @@ const Opportunities: React.FC = () => {
       {/* Data grid */}
       <Card>
         <CardContent>
-          {visibleOpps.length > 0 && viewMode !== 'closed' && (
-            <Box sx={{ p: 2, mb: 2, bgcolor: 'background.paper', borderRadius: 1, display: 'flex', gap: 3, flexWrap: 'wrap', border: '1px solid', borderColor: 'divider' }}>
-              <Typography variant="body2" sx={{ fontWeight: 'bold' }}>Showing: {visibleOpps.length} opportunities</Typography>
-              {viewMode === 'open' && (
-                <>
-                  <Typography variant="body2">Total Value: {formatDollarMillions(visibleOpps.reduce((s, o) => s + (o.Amount || 0), 0))}</Typography>
-                  <Typography variant="body2">Weighted Value: {formatDollarMillions(visibleOpps.reduce((s, o) => s + ((o.Amount || 0) * (o.Probability || 0)) / 100, 0))}</Typography>
-                  <Typography variant="body2">Avg Probability: {visibleOpps.length > 0 ? Math.round(visibleOpps.reduce((s, o) => s + (o.Probability || 0), 0) / visibleOpps.length) : 0}%</Typography>
-                </>
-              )}
-              {viewMode === 'collecting' && (
-                <>
-                  <Typography variant="body2">Total Amount: {formatDollarMillions(visibleOpps.reduce((s, o) => s + (o.Amount || 0), 0))}</Typography>
-                  <Typography variant="body2">Received: {formatDollarMillions(visibleOpps.reduce((s, o) => s + (o.npe01__Payments_Made__c || 0), 0))}</Typography>
-                  <Typography variant="body2">Outstanding: {formatDollarMillions(visibleOpps.reduce((s, o) => s + ((o.Amount || 0) - (o.npe01__Payments_Made__c || 0)), 0))}</Typography>
-                </>
-              )}
-            </Box>
-          )}
+          {/* Summary strip removed — duplicated the topline cards above. */}
 
           <Box sx={{ height: 'calc(100vh - 500px)', minHeight: 600, width: '100%' }}>
             <DataGrid

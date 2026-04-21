@@ -93,6 +93,20 @@ function formatDate(iso: string | null | undefined): string {
   try { return new Date(iso).toLocaleString(); } catch { return iso; }
 }
 
+/** Short "MMM d, yyyy" — used in the sticky metadata header. */
+function formatDateShort(iso: string | null | undefined): string {
+  if (!iso) return '';
+  try {
+    return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  } catch {
+    return iso;
+  }
+}
+
+/** Shared drawer header gradient — matches TaskPanel + Opp + Account drawers
+ * so all four drawers read as one visual family. */
+const DRAWER_HEADER_GRADIENT = 'linear-gradient(135deg, #1976d2 0%, #1565c0 100%)';
+
 function extractPicklistValues(fields: any[], fieldName: string): string[] {
   const field = fields.find((f: any) => f.name === fieldName);
   if (!field?.picklistValues) return [];
@@ -365,19 +379,52 @@ const ContactEditDialog: React.FC<ContactEditDialogProps> = ({
         }}
       />
 
-      {/* Header */}
-      <Box sx={{ px: 3, py: 2, borderBottom: 1, borderColor: 'divider', display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between' }}>
-        <Box>
-          <Typography variant="h6">Edit Contact</Typography>
-          {originalRecord && (
-            <Typography variant="subtitle2" color="text.secondary" sx={{ mt: 0.25 }}>
-              {originalRecord.FirstName} {originalRecord.LastName}
+      {/* Header — matches TaskPanel / Opp / Account drawer gradient style. */}
+      <Box sx={{
+        p: 2.5,
+        background: DRAWER_HEADER_GRADIENT,
+        color: 'white',
+        position: 'sticky',
+        top: 0,
+        zIndex: 10,
+      }}>
+        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+          <Box sx={{ flex: 1, mr: 1, minWidth: 0 }}>
+            <Typography variant="subtitle1" sx={{ fontWeight: 700, lineHeight: 1.3, mb: 0.5, wordBreak: 'break-word' }}>
+              {originalRecord
+                ? `${originalRecord.FirstName || ''} ${originalRecord.LastName || ''}`.trim() || 'Edit Contact'
+                : 'Edit Contact'}
             </Typography>
-          )}
+            {originalRecord && (originalRecord.Account?.Name || originalRecord.Title) && (
+              <Typography variant="body2" sx={{ opacity: 0.85, wordBreak: 'break-word' }}>
+                {[originalRecord.Title, originalRecord.Account?.Name].filter(Boolean).join(' · ')}
+              </Typography>
+            )}
+          </Box>
+          <IconButton onClick={onClose} size="small" sx={{ color: 'white', mt: -0.5 }}>
+            <CloseIcon />
+          </IconButton>
         </Box>
-        <IconButton onClick={onClose} size="small" sx={{ mt: 0.5 }}>
-          <CloseIcon />
-        </IconButton>
+
+        {originalRecord && (
+          <Box sx={{ display: 'flex', gap: 1.5, mt: 1.5, flexWrap: 'wrap', alignItems: 'center' }}>
+            {originalRecord.Email && (
+              <Typography variant="body2" sx={{ opacity: 0.9, wordBreak: 'break-all' }}>
+                {originalRecord.Email}
+              </Typography>
+            )}
+            {originalRecord.Phone && (
+              <Typography variant="body2" sx={{ opacity: 0.9 }}>
+                {originalRecord.Phone}
+              </Typography>
+            )}
+            {(originalRecord.Last_Activity_Date__c || originalRecord.LastActivityDate) && (
+              <Typography variant="body2" sx={{ opacity: 0.9 }}>
+                Last Activity: {formatDateShort(originalRecord.Last_Activity_Date__c || originalRecord.LastActivityDate)}
+              </Typography>
+            )}
+          </Box>
+        )}
       </Box>
 
       {/* Scrollable content */}

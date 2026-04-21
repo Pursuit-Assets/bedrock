@@ -16,7 +16,7 @@ import ErrorBoundary from './components/ErrorBoundary';
 import Layout from './components/Layout';
 import Login from './pages/Login';
 import Progress from './pages/Progress';
-import Reports from './pages/Reports';
+import Details from './pages/Details';
 import Settings from './pages/Settings';
 import SalesforceCallback from './pages/SalesforceCallback';
 import Priorities from './pages/Priorities';
@@ -160,18 +160,21 @@ function App() {
                 }
               />
               <Route
-                path="/reports"
+                path="/details"
                 element={
                   <ProtectedRoute>
                     <Layout>
-                      <Reports />
+                      <Details />
                     </Layout>
                   </ProtectedRoute>
                 }
               />
-              {/* Back-compat: old /pipeline links still resolve. Safe to drop
-                  after one release cycle once no bookmarks / shared URLs point here. */}
-              <Route path="/pipeline" element={<Navigate to="/reports" replace />} />
+              {/* Back-compat: old /reports links (from pre-rename bookmarks,
+                  Slack messages, external links) still resolve to /details.
+                  Same for the older /pipeline alias. Safe to drop both after
+                  one release cycle once no bookmarks/shared URLs point here. */}
+              <Route path="/reports" element={<Navigate to="/details" replace />} />
+              <Route path="/pipeline" element={<Navigate to="/details" replace />} />
               <Route
                 path="/automation-review"
                 element={

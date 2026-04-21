@@ -683,7 +683,7 @@ const PriorityTable: React.FC<PriorityTableProps> = ({ opportunities, onAddTask,
   const hasActiveFilters = filters.aijiOnly || filters.stage.length > 0 || filters.closeDateRange !== 'all' || filters.hasTasks !== 'all' || filters.amountMin !== null;
 
   const handleOpenInPipeline = (opp: PriorityOpp) => {
-    window.open(`/reports?search=${encodeURIComponent(opp.Name)}`, '_blank');
+    window.open(`/details?search=${encodeURIComponent(opp.Name)}`, '_blank');
   };
 
   const handleTaskCountClick = (oppId: string) => {
@@ -876,6 +876,7 @@ const PriorityTable: React.FC<PriorityTableProps> = ({ opportunities, onAddTask,
                   active={oppSort.field === 'name'}
                   direction={oppSort.field === 'name' ? oppSort.dir : 'asc'}
                   onClick={() => handleOppSortClick('name')}
+                  hideSortIcon
                 >
                   Opportunity
                 </TableSortLabel>
@@ -897,6 +898,7 @@ const PriorityTable: React.FC<PriorityTableProps> = ({ opportunities, onAddTask,
                   active={oppSort.field === 'stage'}
                   direction={oppSort.field === 'stage' ? oppSort.dir : 'asc'}
                   onClick={() => handleOppSortClick('stage')}
+                  hideSortIcon
                 >
                   Stage
                 </TableSortLabel>
@@ -906,6 +908,7 @@ const PriorityTable: React.FC<PriorityTableProps> = ({ opportunities, onAddTask,
                   active={oppSort.field === 'amount'}
                   direction={oppSort.field === 'amount' ? oppSort.dir : 'asc'}
                   onClick={() => handleOppSortClick('amount')}
+                  hideSortIcon
                 >
                   Amount
                 </TableSortLabel>
@@ -915,6 +918,7 @@ const PriorityTable: React.FC<PriorityTableProps> = ({ opportunities, onAddTask,
                   active={oppSort.field === 'close'}
                   direction={oppSort.field === 'close' ? oppSort.dir : 'asc'}
                   onClick={() => handleOppSortClick('close')}
+                  hideSortIcon
                 >
                   Close
                 </TableSortLabel>
@@ -924,6 +928,7 @@ const PriorityTable: React.FC<PriorityTableProps> = ({ opportunities, onAddTask,
                   active={oppSort.field === 'prob'}
                   direction={oppSort.field === 'prob' ? oppSort.dir : 'asc'}
                   onClick={() => handleOppSortClick('prob')}
+                  hideSortIcon
                 >
                   Prob
                 </TableSortLabel>
@@ -941,6 +946,7 @@ const PriorityTable: React.FC<PriorityTableProps> = ({ opportunities, onAddTask,
                   active={oppSort.field === 'tasks'}
                   direction={oppSort.field === 'tasks' ? oppSort.dir : 'asc'}
                   onClick={() => handleOppSortClick('tasks')}
+                  hideSortIcon
                 >
                   Tasks
                 </TableSortLabel>
@@ -962,12 +968,17 @@ const PriorityTable: React.FC<PriorityTableProps> = ({ opportunities, onAddTask,
               return (
                 <React.Fragment key={opp.Id}>
                   <TableRow hover sx={{ '&:last-child td': { borderBottom: 0 } }}>
-                    {/* Rank */}
+                    {/* Rank — single color.
+                        Previously encoded urgency semantically (orange=overdue,
+                        green=renewal/upsell/closing in, blue=other urgency,
+                        grey=none) with no legend. That information is already
+                        surfaced explicitly in the Alerts column, so the rank
+                        pip is now a neutral ordinal marker only. */}
                     <TableCell sx={{ px: 1 }}>
                       <Box
                         sx={{
-                          bgcolor: overdueTasks > 0 ? '#e65100' : urgency.reasons.some((r: string) => /closing in|renewal|upsell/i.test(r)) ? '#2e7d32' : urgency.reasons.length > 0 ? '#1565c0' : 'grey.200',
-                          color: overdueTasks > 0 || urgency.reasons.length > 0 ? 'white' : 'text.secondary',
+                          bgcolor: 'primary.main',
+                          color: 'white',
                           borderRadius: '50%',
                           width: 24,
                           height: 24,
@@ -1022,12 +1033,15 @@ const PriorityTable: React.FC<PriorityTableProps> = ({ opportunities, onAddTask,
                     </TableCell>
 
                     {/* Close date — safe (with bounds) via DateCell.
-                        Custom display preserves the existing red-on-overdue color. */}
+                        Custom display preserves the existing red-on-overdue color.
+                        Includes year (``'25``-style 2-digit suffix) so rows that
+                        span FY boundaries are unambiguous without widening the
+                        column. */}
                     <TableCell>
                       <DateCell
                         value={opp.CloseDate || ''}
                         onSave={(v) => handleInlineOppSave(opp.Id, 'CloseDate', v)}
-                        displayFormat="MMM d"
+                        displayFormat="MMM d, ''yy"
                         recordLock={lockMap.get(opp.Id) ?? null}
                         recordLockedByName={resolveLockerName(opp.Id)}
                         renderDisplay={(formatted) => (

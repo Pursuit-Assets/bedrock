@@ -93,10 +93,33 @@ function formatDate(iso: string | null | undefined): string {
   try { return new Date(iso).toLocaleString(); } catch { return iso; }
 }
 
+/** Short "MMM d, yyyy" — used in the sticky metadata header. */
+function formatDateShort(iso: string | null | undefined): string {
+  if (!iso) return '';
+  try {
+    return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  } catch {
+    return iso;
+  }
+}
+
 function formatCurrency(val: number | null | undefined): string {
   if (val == null) return '—';
   return `$${Number(val).toLocaleString()}`;
 }
+
+/** Compact currency for header chips: "$1.2M" / "$450K" / "$7.8K". */
+function formatCurrencyShort(val: number | null | undefined): string {
+  if (val == null) return '';
+  const n = Math.abs(val);
+  if (n >= 1_000_000) return `$${(val / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `$${Math.round(val / 1_000)}K`;
+  return `$${Math.round(val)}`;
+}
+
+/** Shared drawer header gradient — matches TaskPanel + OpportunityEditDialog
+ * so the four drawers read as one visual family. */
+const DRAWER_HEADER_GRADIENT = 'linear-gradient(135deg, #1976d2 0%, #1565c0 100%)';
 
 function extractPicklistValues(fields: any[], fieldName: string): string[] {
   const field = fields.find((f: any) => f.name === fieldName);
@@ -386,19 +409,52 @@ const AccountEditDialog: React.FC<AccountEditDialogProps> = ({
         }}
       />
 
-      {/* Header */}
-      <Box sx={{ px: 3, py: 2, borderBottom: 1, borderColor: 'divider', display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between' }}>
-        <Box>
-          <Typography variant="h6">Edit Account</Typography>
-          {originalRecord?.Name && (
-            <Typography variant="subtitle2" color="text.secondary" sx={{ mt: 0.25 }}>
-              {originalRecord.Name}
+      {/* Header — matches TaskPanel / Opp drawer gradient style. */}
+      <Box sx={{
+        p: 2.5,
+        background: DRAWER_HEADER_GRADIENT,
+        color: 'white',
+        position: 'sticky',
+        top: 0,
+        zIndex: 10,
+      }}>
+        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+          <Box sx={{ flex: 1, mr: 1, minWidth: 0 }}>
+            <Typography variant="subtitle1" sx={{ fontWeight: 700, lineHeight: 1.3, mb: 0.5, wordBreak: 'break-word' }}>
+              {originalRecord?.Name || 'Edit Account'}
             </Typography>
-          )}
+            {originalRecord && (originalRecord.Industry || originalRecord.Type) && (
+              <Typography variant="body2" sx={{ opacity: 0.85 }}>
+                {originalRecord.Industry || originalRecord.Type}
+              </Typography>
+            )}
+          </Box>
+          <IconButton onClick={onClose} size="small" sx={{ color: 'white', mt: -0.5 }}>
+            <CloseIcon />
+          </IconButton>
         </Box>
-        <IconButton onClick={onClose} size="small" sx={{ mt: 0.5 }}>
-          <CloseIcon />
-        </IconButton>
+
+        {originalRecord && (
+          <Box sx={{ display: 'flex', gap: 1.5, mt: 1.5, flexWrap: 'wrap', alignItems: 'center' }}>
+            {originalRecord.Account_Tier__c && (
+              <Chip
+                label={originalRecord.Account_Tier__c}
+                size="small"
+                sx={{ bgcolor: 'rgba(255,255,255,0.2)', color: 'white', fontWeight: 600, fontSize: '0.75rem' }}
+              />
+            )}
+            {originalRecord.npo02__TotalOppAmount__c != null && (
+              <Typography variant="body2" sx={{ opacity: 0.9 }}>
+                Total Gifts: {formatCurrencyShort(originalRecord.npo02__TotalOppAmount__c)}
+              </Typography>
+            )}
+            {originalRecord.npo02__LastCloseDate__c && (
+              <Typography variant="body2" sx={{ opacity: 0.9 }}>
+                Last Gift: {formatDateShort(originalRecord.npo02__LastCloseDate__c)}
+              </Typography>
+            )}
+          </Box>
+        )}
       </Box>
 
       {/* Scrollable content */}
