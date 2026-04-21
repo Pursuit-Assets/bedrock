@@ -263,14 +263,12 @@ const OpportunityEditDialog: React.FC<OpportunityEditDialogProps> = ({
     [users, editForm.OwnerId],
   );
 
-  // Prefer the account from the loaded list (which carries any richer
-  // fields the Autocomplete might surface later). If the opp's linked
-  // Account.Id isn't in the list — which happens today because
-  // `/api/salesforce/accounts` truncates at 2000 rows alphabetically,
-  // pending JP's `pr-contacts-accounts-pagination` — synthesize a
-  // minimal option from the opp's SOQL-joined Account.Name so the field
-  // displays correctly instead of appearing empty. The id stays stable,
-  // so saving without touching the field does not reassign.
+  // Prefer the account from the loaded list (which carries richer fields
+  // the Autocomplete may surface later). If the opp's linked Account.Id
+  // isn't in the list — transient states like pre-load or fetch failure —
+  // synthesize a minimal option from the opp's SOQL-joined Account.Name
+  // so the field displays correctly instead of appearing empty. The id
+  // stays stable, so saving without touching the field does not reassign.
   const selectedAccount = useMemo(() => {
     if (!editForm.AccountId) return null;
     const fromList = accounts.find((a) => a.Id === editForm.AccountId);

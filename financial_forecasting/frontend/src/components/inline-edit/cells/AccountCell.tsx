@@ -19,11 +19,11 @@ interface AccountCellProps {
   /**
    * Pre-joined Account.Name from the parent record's SOQL query (e.g.
    * `opp.Account.Name`). Used as the authoritative display-mode label so
-   * we don't depend on the bulk `/api/salesforce/accounts` list — which
-   * is currently capped at 2000 rows and therefore drops some accounts
-   * alphabetically (pending JP's `pr-contacts-accounts-pagination`).
-   * Without this fallback, any opp whose Account sorts after the 2000th
-   * renders as "No Account" in the grid even though it IS linked in SF.
+   * we don't depend on the bulk `/api/salesforce/accounts` list being
+   * loaded or complete — guards against transient states (pre-load,
+   * fetch error) where the accounts list doesn't yet contain the linked
+   * Account. Without this, any opp whose Account isn't in the list
+   * renders as "No Account" even though it IS linked in SF.
    */
   displayName?: string | null;
   fieldName?: string;

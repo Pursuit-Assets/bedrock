@@ -275,6 +275,7 @@ def mock_salesforce_service():
     """Create a mock Salesforce MCP service."""
     service = AsyncMock()
     service.query = AsyncMock(return_value={"records": []})
+    service.query_all = AsyncMock(return_value={"records": []})
     service.create_record = AsyncMock(return_value={"id": "006NEW0000000001"})
     service.update_record = AsyncMock(return_value=True)
     service.get_record = AsyncMock(return_value=make_sf_opportunity())

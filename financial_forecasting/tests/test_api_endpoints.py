@@ -34,6 +34,7 @@ from conftest import (
     make_sf_opportunity,
     make_sf_account,
     make_sf_contact,
+    make_sf_task,
     make_intacct_invoice,
     make_intacct_payment,
 )
@@ -59,6 +60,7 @@ def mock_salesforce():
     """Create a mock Salesforce service."""
     service = AsyncMock()
     service.query = AsyncMock(return_value={"records": []})
+    service.query_all = AsyncMock(return_value={"records": []})
     service.create_record = AsyncMock(return_value={"id": "006NEW0000000001"})
     service.update_record = AsyncMock(return_value=True)
     service.get_service_info = AsyncMock(return_value={
@@ -423,7 +425,7 @@ class TestSalesforceAccounts:
 
     def test_get_accounts_returns_list(self, client, mock_client):
         acct = make_sf_account()
-        mock_client.salesforce.query.return_value = {"records": [acct]}
+        mock_client.salesforce.query_all.return_value = {"records": [acct]}
         response = client.get("/api/salesforce/accounts")
         assert response.status_code == 200
         data = response.json()
@@ -431,10 +433,21 @@ class TestSalesforceAccounts:
         assert data[0]["Name"] == "Test Foundation Inc"
 
     def test_get_accounts_empty(self, client, mock_client):
-        mock_client.salesforce.query.return_value = {"records": []}
+        mock_client.salesforce.query_all.return_value = {"records": []}
         response = client.get("/api/salesforce/accounts")
         assert response.status_code == 200
         assert response.json() == []
+
+    def test_get_accounts_paginates_beyond_2000(self, client, mock_client):
+        """Default limit=None drives query_all pagination with no SOQL LIMIT,
+        so results are NOT silently capped at 2000."""
+        accounts = [make_sf_account({"Id": f"001BIG{i:04d}"}) for i in range(2500)]
+        mock_client.salesforce.query_all.return_value = {"records": accounts}
+        response = client.get("/api/salesforce/accounts")
+        assert response.status_code == 200
+        assert len(response.json()) == 2500
+        soql = mock_client.salesforce.query_all.call_args[0][0]
+        assert "LIMIT" not in soql
 
     def test_create_account_success(self, client, mock_client):
         mock_client.salesforce.create_record.return_value = {"id": "001NEW001"}
@@ -466,7 +479,7 @@ class TestSalesforceContacts:
 
     def test_get_contacts_returns_list(self, client, mock_client):
         contact = make_sf_contact()
-        mock_client.salesforce.query.return_value = {"records": [contact]}
+        mock_client.salesforce.query_all.return_value = {"records": [contact]}
         response = client.get("/api/salesforce/contacts")
         assert response.status_code == 200
         data = response.json()
@@ -474,19 +487,161 @@ class TestSalesforceContacts:
         assert data[0]["LastName"] == "Donor"
 
     def test_get_contacts_with_account_filter(self, client, mock_client):
-        mock_client.salesforce.query.return_value = {"records": []}
+        mock_client.salesforce.query_all.return_value = {"records": []}
         response = client.get(
             "/api/salesforce/contacts",
             params={"account_id": "001TESTACCOUNT001A"},
         )
         assert response.status_code == 200
-        soql = mock_client.salesforce.query.call_args[0][0]
+        soql = mock_client.salesforce.query_all.call_args[0][0]
         assert "AccountId = '001TESTACCOUNT001A'" in soql
 
     def test_get_contacts_service_error(self, client, mock_client):
-        mock_client.salesforce.query.side_effect = RuntimeError("timeout")
+        mock_client.salesforce.query_all.side_effect = RuntimeError("timeout")
         response = client.get("/api/salesforce/contacts")
         assert response.status_code == 500
+
+    def test_get_contacts_paginates_beyond_2000(self, client, mock_client):
+        """Default limit=None drives query_all pagination with no SOQL LIMIT,
+        so results are NOT silently capped at 2000."""
+        contacts = [make_sf_contact({"Id": f"003BIG{i:04d}"}) for i in range(2500)]
+        mock_client.salesforce.query_all.return_value = {"records": contacts}
+        response = client.get("/api/salesforce/contacts")
+        assert response.status_code == 200
+        assert len(response.json()) == 2500
+        soql = mock_client.salesforce.query_all.call_args[0][0]
+        assert "LIMIT" not in soql
+
+
+# ===================================================================
+# 4a. Salesforce Opportunity-Tasks (nested under opportunity)
+# ===================================================================
+
+class TestSalesforceOpportunityTasks:
+    """Tests for GET /api/salesforce/opportunities/{id}/tasks."""
+
+    # 15-char valid SF ID; longer forms fail validate_salesforce_id at the
+    # path-param layer with HTTP 400 before the handler body runs.
+    OPP_ID = "006TESTOPPORT01"
+
+    def test_get_opportunity_tasks_returns_list(self, client, mock_client):
+        task = make_sf_task()
+        mock_client.salesforce.query_all.return_value = {"records": [task]}
+        response = client.get(f"/api/salesforce/opportunities/{self.OPP_ID}/tasks")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["success"] is True
+        assert body["meta"]["count"] == 1
+        assert body["data"][0]["Subject"] == "Follow up on grant proposal"
+
+    def test_get_opportunity_tasks_paginates_beyond_2000(self, client, mock_client):
+        """Default limit=None drives query_all pagination with no SOQL LIMIT."""
+        tasks = [make_sf_task({"Id": f"00T0000000BIG{i:04d}"}) for i in range(2500)]
+        mock_client.salesforce.query_all.return_value = {"records": tasks}
+        response = client.get(f"/api/salesforce/opportunities/{self.OPP_ID}/tasks")
+        assert response.status_code == 200
+        body = response.json()
+        assert len(body["data"]) == 2500
+        soql = mock_client.salesforce.query_all.call_args[0][0]
+        assert "LIMIT" not in soql
+
+    def test_opportunity_tasks_limit_capped_at_2000(self, client):
+        """Explicit `limit` above 2000 should be rejected by FastAPI validation."""
+        response = client.get(
+            f"/api/salesforce/opportunities/{self.OPP_ID}/tasks",
+            params={"limit": 2001},
+        )
+        assert response.status_code == 422
+
+
+# ===================================================================
+# 4b. Salesforce My-Tasks (current user's open tasks, scope-bounded)
+# ===================================================================
+
+class TestSalesforceMyTasks:
+    """Tests for GET /api/salesforce/my-tasks.
+
+    Unlike the other list endpoints, my-tasks intentionally stays on
+    salesforce.query() (single-page) — the WHERE clause `IsClosed = false`
+    plus optional date range is scope-bounded per user, so at Pursuit's
+    team-of-4 scale per-user counts stay well under the 2000 cap. These
+    tests guard that contract along with the default-limit change."""
+
+    def test_get_my_tasks_returns_list(self, client, mock_client):
+        task = make_sf_task({"IsClosed": False})
+        mock_client.salesforce.query.return_value = {"records": [task]}
+        response = client.get("/api/salesforce/my-tasks")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["success"] is True
+        assert body["meta"]["count"] == 1
+        assert body["data"][0]["Subject"] == "Follow up on grant proposal"
+
+    def test_get_my_tasks_empty(self, client, mock_client):
+        mock_client.salesforce.query.return_value = {"records": []}
+        response = client.get("/api/salesforce/my-tasks")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["data"] == []
+
+    def test_get_my_tasks_with_date_range(self, client, mock_client):
+        mock_client.salesforce.query.return_value = {"records": []}
+        response = client.get(
+            "/api/salesforce/my-tasks",
+            params={"start": "2026-04-01", "end": "2026-04-30"},
+        )
+        assert response.status_code == 200
+        soql = mock_client.salesforce.query.call_args[0][0]
+        assert "ActivityDate >= 2026-04-01" in soql
+        assert "ActivityDate <= 2026-04-30" in soql
+
+    def test_get_my_tasks_no_date_range(self, client, mock_client):
+        """Without start/end, SOQL WHERE clause has only IsClosed = false."""
+        mock_client.salesforce.query.return_value = {"records": []}
+        response = client.get("/api/salesforce/my-tasks")
+        assert response.status_code == 200
+        soql = mock_client.salesforce.query.call_args[0][0]
+        assert "IsClosed = false" in soql
+        assert "ActivityDate >=" not in soql
+        assert "ActivityDate <=" not in soql
+
+    def test_get_my_tasks_default_limit_is_2000(self, client, mock_client):
+        """Default `limit` was bumped from 200 to 2000 — guard the new default."""
+        mock_client.salesforce.query.return_value = {"records": []}
+        response = client.get("/api/salesforce/my-tasks")
+        assert response.status_code == 200
+        soql = mock_client.salesforce.query.call_args[0][0]
+        assert "LIMIT 2000" in soql
+
+    def test_my_tasks_limit_capped_at_2000(self, client):
+        """Explicit `limit` above 2000 should be rejected by FastAPI validation."""
+        response = client.get("/api/salesforce/my-tasks", params={"limit": 2001})
+        assert response.status_code == 422
+
+    def test_get_my_tasks_uses_query_not_query_all(self, client, mock_client):
+        """Intentional decision: my-tasks stays on single-page query() because
+        its WHERE clause scope-bounds per-user Task counts well under the cap."""
+        mock_client.salesforce.query.return_value = {"records": []}
+        response = client.get("/api/salesforce/my-tasks")
+        assert response.status_code == 200
+        assert mock_client.salesforce.query.called
+        assert not mock_client.salesforce.query_all.called
+
+    def test_get_my_tasks_where_has_isclosed_false(self, client, mock_client):
+        """Guard the scope-bounding assumption: IsClosed = false is always
+        in the WHERE clause — removing it would invalidate the decision to
+        stay on query() instead of query_all()."""
+        mock_client.salesforce.query.return_value = {"records": []}
+        response = client.get("/api/salesforce/my-tasks")
+        assert response.status_code == 200
+        soql = mock_client.salesforce.query.call_args[0][0]
+        assert "IsClosed = false" in soql
+
+    def test_get_my_tasks_service_error(self, client, mock_client):
+        mock_client.salesforce.query.side_effect = RuntimeError("sf down")
+        response = client.get("/api/salesforce/my-tasks")
+        assert response.status_code == 500
+        assert "sf down" in response.json()["detail"]
 
 
 # ===================================================================

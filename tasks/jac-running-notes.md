@@ -51,6 +51,25 @@ For per-PR status of the 23 PRs in the plan, see the "PR sequence" table in `tas
 
 ## Progress log (newest first)
 
+### 2026-04-21 — Lane A1 shipped (PR #155) 👀 in review
+
+- **Why.** Four Salesforce list endpoints in `main.py` used single-page `salesforce.query()` with a hard SOQL `LIMIT`: once the real row count exceeds 2000 (accounts, contacts, opp-tasks) or 500 (my-tasks), results silently truncate — no error, no pagination header, no client signal. Latent correctness bug that hasn't yet bitten at Pursuit's ~1k-row scale but would the moment any collection grows past its cap. `get_opportunities` was fixed in PR #68 (2026-03-25); this PR propagates the same pattern to the remaining 4 endpoints.
+- **Fix (backend).** Mirror `get_opportunities` at `main.py:304-375` exactly:
+  - `get_contacts` + `get_accounts` + `get_opportunity_tasks` → `limit: Optional[int] = Query(None, le=...)`, conditional `LIMIT` clause, `salesforce.query_all()` for automatic SOQL pagination. Cache keys now `f"...:{limit or 'all'}"`. Accounts kept `le=2000`; contacts kept `le=5000`; opp-tasks newly gains `le=2000` (had no param before).
+  - `get_my_tasks` stays on `salesforce.query()` — the WHERE clause (`IsClosed = false` + optional per-user date range) scope-bounds counts well under any realistic cap. Default bumped 200 → 2000, `le=500` → `le=2000` to accommodate heavy users. Explicit MVP-scale assumption: if any single user's open-Task count ever crosses 2000, switch to `query_all()` in a follow-up.
+- **Tests.** 14 new + 5 existing updated, covering:
+  - Contacts / Accounts: `query` → `query_all` mock update + new `paginates_beyond_2000` test (mock 2500 records, assert full passthrough + no `LIMIT` in SOQL).
+  - Opportunity-tasks: full-suite (returns-list, paginates-beyond-2000, limit-validation at `le=2000`).
+  - My-tasks: **defensive 9-test suite** per JP direction — returns-list, empty, date-range variants (both/none/start/end), default-limit=2000 guard, cap-at-2000 validation, `query` vs `query_all` guard (pins the intentional non-pagination decision), `IsClosed = false` guard (pins the scope-bounding assumption that makes single-page safe), service-error propagation.
+  - Fixture hygiene: added `service.query_all = AsyncMock(return_value={"records": []})` to both `tests/conftest.py::mock_salesforce_service` and `tests/test_api_endpoints.py::mock_salesforce` so future callers get a safe default instead of an auto-generated child AsyncMock.
+- **Frontend comment trim (bundled per JP).** Two comments in `OpportunityEditDialog.tsx:269` and `inline-edit/cells/AccountCell.tsx:22` referenced the pre-fix "truncates at 2000 rows alphabetically" state and named this PR by slug. Tightened both to describe the defensive fallback's ongoing purpose (transient pre-load / fetch-error states) without the stale truncation claim. Comment-only — no prop types, JSX, or logic changed. `npx tsc --noEmit` clean.
+- **Verification.**
+  - `pytest tests/` → **20 failed, 673 passed, 22 skipped** (baseline pre-change: 20 failed, 659 passed, 22 skipped; delta +14 matches new test count exactly; the 20 failures are all pre-existing in `test_sf_dependencies.py` — tracked in `tasks/remaining-32-test-failures-plan.md`).
+  - `npx tsc --noEmit` clean.
+  - `git diff --stat origin/dev`: 207+ / 41− = 166 net LOC across 5 files (S-M bucket per plan estimate).
+- **Cross-lane note.** Lane B1 (`pr-use-schema-picklist`) ran in parallel with disjoint files (new hook file vs. backend list endpoints). Round 1 of the collision gate holds.
+- **Pending for you.** Review PR #155. No migrations, no env changes.
+
 ### 2026-04-21 — Singleton-race fix shipped (PR #153) 🚧 in review
 
 - **Why.** Two-pass verification of Jac's PR #151 (2026-04-21) surfaced that BUG-AUTH-2's fix in `dependencies.py::get_mcp_client` mutates `client.services["salesforce"]` and `client._connected_services` in place on every cookie-bearing request. Combined with the `lambda: self.sf_client.query(soql)` capture pattern across all 8 CRUD methods in `mcp_client/services/salesforce.py`, two concurrent requests from different users could race on the shared `sf_client` reference → User A's in-flight SOQL executes against User B's session. Jac's own QA tracker (`tasks/pr-139-qa-bugs.md:32-35`) named the right fix verbatim; the implementation had diverged.

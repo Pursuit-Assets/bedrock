@@ -469,15 +469,11 @@ async def update_opportunity(
 
 @app.get("/api/salesforce/accounts")
 async def get_accounts(
-    # Cap matches GET /api/salesforce/opportunities (main.py:308) at le=2000.
-    # Security-positive vs the prior le=5000: shrinks the max data pull on a
-    # compromised or misbehaving client. All frontend callers use the default
-    # or a lower explicit value, so no caller regresses.
-    # NOTE: this endpoint uses salesforce.query() (single-page), not
-    # query_all(). If Pursuit's real Account row count ever exceeds 2000,
-    # results get silently truncated. Tracked separately in
-    # tasks/accounts-endpoint-pagination-followup.md.
-    limit: int = Query(2000, le=2000),
+    # `le=2000` matches GET /api/salesforce/opportunities — defensive upper
+    # bound for callers that want a capped response. Default `None` means
+    # "return all" via query_all() pagination; the frontend relies on this
+    # to avoid silent truncation when Pursuit's Account count exceeds 2000.
+    limit: Optional[int] = Query(None, le=2000),
     client: UnifiedMCPClient = Depends(get_mcp_client),
     user = Depends(require_auth)
 ):
@@ -485,14 +481,14 @@ async def get_accounts(
     try:
         if "salesforce" not in (client.connected_services or []):
             return []
-        cache_key = f"accounts:{limit}"
+        cache_key = f"accounts:{limit or 'all'}"
         cached = cache.get(cache_key)
         if cached is not None:
             return cached
 
         salesforce = client.salesforce
 
-        query = f"""
+        query = """
         SELECT Id, Name, Type, Industry, Phone, Fax, Website, Description,
                BillingStreet, BillingCity, BillingState, BillingPostalCode, BillingCountry,
                AnnualRevenue, NumberOfEmployees, AccountSource, OwnerId, Owner.Name,
@@ -518,10 +514,11 @@ async def get_accounts(
                Last_Activity_Date__c, Date_of_First_Pursuit_Hire__c
         FROM Account
         ORDER BY Name ASC
-        LIMIT {limit}
         """
+        if limit is not None:
+            query += f" LIMIT {limit}"
 
-        result = await salesforce.query(query)
+        result = await salesforce.query_all(query)
         records = result.get("records", [])
         cache.set(cache_key, records, CACHE_TTL_ACCOUNTS)
         return records
@@ -559,7 +556,10 @@ async def create_account(
 @app.get("/api/salesforce/contacts")
 async def get_contacts(
     account_id: Optional[str] = None,
-    limit: int = Query(2000, le=5000),
+    # `le=5000` retained from prior behavior (contacts cap was deliberately
+    # looser than accounts). Default `None` means "return all" via query_all
+    # pagination; the frontend relies on this to avoid silent truncation.
+    limit: Optional[int] = Query(None, le=5000),
     client: UnifiedMCPClient = Depends(get_mcp_client),
     user = Depends(require_auth)
 ):
@@ -567,14 +567,14 @@ async def get_contacts(
     try:
         if "salesforce" not in (client.connected_services or []):
             return []
-        cache_key = f"contacts:{account_id}:{limit}"
+        cache_key = f"contacts:{account_id}:{limit or 'all'}"
         cached = cache.get(cache_key)
         if cached is not None:
             return cached
 
         salesforce = client.salesforce
 
-        query = f"""
+        query = """
         SELECT Id, AccountId, Account.Name, FirstName, LastName, Name,
                Salutation, Title, Department, Email, Phone, MobilePhone,
                MailingStreet, MailingCity, MailingState, MailingPostalCode, MailingCountry,
@@ -598,10 +598,12 @@ async def get_contacts(
         if account_id:
             validate_salesforce_id(account_id, "account_id")
             query += f" WHERE AccountId = '{account_id}'"
-        
-        query += f" ORDER BY LastName ASC LIMIT {limit}"
-        
-        result = await salesforce.query(query)
+
+        query += " ORDER BY LastName ASC"
+        if limit is not None:
+            query += f" LIMIT {limit}"
+
+        result = await salesforce.query_all(query)
         contacts = result.get("records", [])
         cache.set(cache_key, contacts, CACHE_TTL_ACCOUNTS)
         return contacts
@@ -852,7 +854,11 @@ async def get_users(
 async def get_my_tasks(
     start: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
     end: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
-    limit: int = Query(200, le=500),
+    # Stays on salesforce.query() (not query_all): the WHERE clause
+    # (IsClosed = false + optional date range) scope-bounds per-user open
+    # Task counts well under 2000 at Pursuit's team-of-4 scale. Revisit if
+    # any single user's open-Task count ever approaches the cap.
+    limit: int = Query(2000, le=2000),
     client: UnifiedMCPClient = Depends(get_mcp_client),
     user=Depends(require_auth),
 ):
@@ -924,6 +930,9 @@ class TaskDuplicateRequest(BaseModel):
 @app.get("/api/salesforce/opportunities/{opportunity_id}/tasks")
 async def get_opportunity_tasks(
     opportunity_id: str,
+    # Default `None` returns all Tasks for the opportunity via query_all
+    # pagination. `le=2000` caps callers that request an explicit limit.
+    limit: Optional[int] = Query(None, le=2000),
     client: UnifiedMCPClient = Depends(get_mcp_client),
     user=Depends(require_auth),
 ):
@@ -939,7 +948,10 @@ async def get_opportunity_tasks(
         WHERE WhatId = '{opportunity_id}'
         ORDER BY ActivityDate DESC NULLS LAST
         """
-        result = await salesforce.query(query)
+        if limit is not None:
+            query += f" LIMIT {limit}"
+
+        result = await salesforce.query_all(query)
         tasks = result.get("records", [])
 
         formatted = []
