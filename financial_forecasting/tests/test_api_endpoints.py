@@ -332,11 +332,20 @@ class TestSalesforceOpportunities:
         data = response.json()
         assert len(data) == 1
         assert data[0]["Id"] == opp["Id"]
-        # Type round-trip: the 2026-04-17 B2 incident was that Opportunity.Type
-        # never surfaced in the UI. The root cause was frontend (no column),
-        # but this assertion guards the API contract so regressions here get
-        # caught even if the frontend regresses separately.
-        assert data[0]["Type"] == "Other fee for service"
+        # RecordType round-trip: the 2026-04-17 B2 incident root cause was
+        # that the "Other fee for service" categorization wasn't surfacing.
+        # The Type field was misdiagnosed (A4 2026-04-21 deletion); the
+        # canonical label field is RecordType.Name. This assertion guards
+        # the API contract so regressions here get caught even if the
+        # frontend regresses separately.
+        assert data[0]["RecordType"]["Name"] == "Other fee for service"
+        # RenewalRepeat__c SOQL-inclusion guard. 2026-04-21 adversarial
+        # verification caught that this custom field was missing from the
+        # SOQL SELECT even though Progress.tsx's isRenewal() helper and
+        # the OpportunityEditDialog's picker both depend on it. Pin the
+        # invariant so future regressions fail the test.
+        soql = mock_client.salesforce.query_all.call_args[0][0]
+        assert "RenewalRepeat__c" in soql
 
     def test_get_opportunities_with_stage_filter(self, client, mock_client):
         opp = make_sf_opportunity({"StageName": "Qualifying"})

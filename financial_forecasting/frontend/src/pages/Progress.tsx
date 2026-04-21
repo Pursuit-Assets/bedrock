@@ -57,7 +57,7 @@ interface Opportunity {
   CloseDate: string;
   CreatedDate: string;
   LastModifiedDate: string;
-  Type?: string;
+  RenewalRepeat__c?: string;
   OwnerId: string;
   Owner?: { Name: string; Id?: string };
   First_Payment_Date__c?: string;
@@ -189,7 +189,7 @@ const Progress: React.FC = () => {
     );
 
     const weightedValue = (opp: Opportunity) => ((opp.Amount || 0) * (opp.Probability || 0)) / 100;
-    const isRenewal = (opp: Opportunity) => opp.Type === 'Renewal';
+    const isRenewal = (opp: Opportunity) => opp.RenewalRepeat__c === 'Renewal';
 
     // Won opps (Collecting / Closed Won / Closed Completed) — count at full value (100%)
     const allWonOpps = opportunities.filter((opp: Opportunity) =>

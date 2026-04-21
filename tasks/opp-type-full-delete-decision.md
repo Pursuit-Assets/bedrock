@@ -77,3 +77,20 @@ Medium (200-500 LOC diff). Clean subtractive deletion. No behavior change for us
 - [ ] `pytest tests/test_api_endpoints.py` — no `Type` assertion failures
 - [ ] Manual smoke: open Opp list, confirm Type filter chip is gone from PipelineFilterBar, confirm grid still renders correctly, confirm edit drawer has RecordType (not Type), confirm filter count is still accurate
 - [ ] Grep `Type` across the touched files one more time — any remaining reference is intentional (Account.Type, Task.Type) or needs removal
+
+## Shipped 2026-04-21 — actual PR #160 (lane-interleaved; B2 claimed #159 first)
+
+This doc was written pre-A1/A2/A3, so line numbers drifted by −2 (backend, A3 deleted imports) and +10 (search_opportunities region, A1 pagination elsewhere in file). Content-verified re-location completed; all 22 enumerated edit points landed with updated line numbers. See `tasks/parallel-pr-lanes.md` for the final A4 row (numbering + scope-expansion).
+
+**4 additional consumers surfaced during verification (JP-approved scope expansion):**
+
+1. **`Opportunities.tsx:346-348`** — Type filter predicate `if (f.types.length > 0) { filtered = filtered.filter((opp) => opp.Type && f.types.includes(opp.Type)); }`. Deletion cascade from the PipelineFilterBar `types: string[]` removal — tsc-required.
+2. **`pbcOnly` dead state cascade** — `Opportunities.tsx:63` useState + `useOpportunityData.ts` param + `useOpportunityData.ts:59-62` `params.opp_type = 'PBC'` branch + `services/api.ts:143` method signature. `setPbcOnly` is never called anywhere in the codebase (verified full-repo grep); dead code leftover from 2026-03-03. Cleaned per `feedback_production_discipline` "no stubs" rule.
+3. **`Progress.tsx:192 isRenewal`** — `const isRenewal = (opp) => opp.Type === 'Renewal'` used on 6 callsites in base-case/downside forecast calculations. Rewrite to `opp.RenewalRepeat__c === 'Renewal'` aligns with canonical `utils/priorityScoring.ts:110-112` pattern and the `OpportunityEditDialog.tsx:625-628` Renewal/Repeat picklist `{'New', 'Renewal', 'Upsell'}`. Latent-bug fix. Required adding `RenewalRepeat__c?: string;` to the local `Opportunity` interface in `Progress.tsx:49-68` (replaces the deleted `Type?: string;` field).
+4. **`Priorities.tsx:816` + `priorityScoring.ts:14`** — dead `Type: opp.Type || ''` mapping + `Type?: string;` interface field on `PriorityOpp`. Full-repo grep confirmed no consumer reads `PriorityOpp.Type`; renewal semantics use `.RenewalRepeat` (priorityScoring.ts:110). Dropped both.
+
+**Test-assertion correction.** The B2 2026-04-19 regression guard in `test_api_endpoints.py:336` asserted `data[0]["Type"] == "Other fee for service"`. Per JP 2026-04-21: "Other fee for service" is a RecordType.Name value, not a Type value — B2 misdiagnosed the field. A4 swapped the assertion to `assert data[0]["RecordType"]["Name"] == "Other fee for service"` and the `make_sf_opportunity` fixture to provide `RecordTypeId: "012TESTRECORDTYPE01"` + `RecordType: {"Name": "Other fee for service"}` (the backend SOQL already selects RecordType.Name at main.py:336 and returns records raw at main.py:369 — no backend change needed).
+
+**Verification results.** `pytest` 20/718/22 (baseline unchanged — net test-count delta 0). `tsc --noEmit` clean. `CI=true npm test` 25/25 suites / 367/367 tests. Full-repo grep zero Opportunity.Type stragglers; remaining `Type` hits are Account.Type, Task.Type, Content-Type header, or archive/deprecated files.
+
+**Post-review fix — RenewalRepeat__c was missing from SOQL.** 3-pass adversarial verification caught that `main.py` get_opportunities SOQL never selected `RenewalRepeat__c`, even though the frontend interface declared the field and the OpportunityEditDialog bound it. A4's `isRenewal` rewrite would have silently always returned false (renewals drop from base-case/downside forecasts). Fix: added `RenewalRepeat__c` to SOQL SELECT; added fixture default + SOQL-content test assertion pinning the invariant. Also resolves pre-existing display bug in OpportunityEditDialog Renewal/Repeat picker.

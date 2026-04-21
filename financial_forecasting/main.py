@@ -305,7 +305,6 @@ async def get_opportunities(
     stages: Optional[List[str]] = Query(None),
     limit: Optional[int] = Query(None, le=2000),
     record_type: Optional[str] = Query(None, description="Filter by RecordType.Name (e.g. 'Philanthropy')"),
-    opp_type: Optional[str] = Query(None, description="Filter by Opportunity Type field"),
     active_only: bool = Query(False, description="Only return Active_Opportunity__c = true"),
     client: UnifiedMCPClient = Depends(get_mcp_client),
     user = Depends(require_auth)
@@ -317,7 +316,7 @@ async def get_opportunities(
         # Server-side cache — key encodes all filter params
         stage_val = stage.value if stage else None
         stages_key = ",".join(sorted(stages)) if stages else None
-        cache_key = f"opps:{stage_val}:{stages_key}:{record_type}:{opp_type}:{active_only}:{limit}"
+        cache_key = f"opps:{stage_val}:{stages_key}:{record_type}:{active_only}:{limit}"
         cached = cache.get(cache_key)
         if cached is not None:
             return cached
@@ -328,11 +327,12 @@ async def get_opportunities(
         query = """
         SELECT Id, AccountId, Account.Name, Name, StageName, Amount, Probability,
                CloseDate, ForecastCategory, LeadSource, NextStep,
-               Description, Type, OwnerId, Owner.Name, CreatedDate, LastModifiedDate,
+               Description, OwnerId, Owner.Name, CreatedDate, LastModifiedDate,
                npe01__Payments_Made__c, Outstanding_Payments__c,
                Number_of_Payments_Received__c, Most_Recent_Payment_Date__c,
                Last_Actual_Payment__c, npe01__Number_of_Payments__c,
                PaymentDate__c, Earliest_Scheduled_Payment__c,
+               RenewalRepeat__c,
                RecordTypeId, RecordType.Name, Active_Opportunity__c
         FROM Opportunity
         """
@@ -347,8 +347,6 @@ async def get_opportunities(
                 where_clauses.append(f"StageName IN ({stage_list})")
         if record_type:
             where_clauses.append(f"RecordType.Name = '{escape_soql_string(record_type)}'")
-        if opp_type:
-            where_clauses.append(f"Type = '{escape_soql_string(opp_type)}'")
         if active_only:
             where_clauses.append("Active_Opportunity__c = true")
         if where_clauses:
@@ -1660,7 +1658,7 @@ async def search_opportunities(
 
         fields = (
             "Id, Name, AccountId, Account.Name, Amount, StageName, "
-            "CloseDate, Description, Type"
+            "CloseDate, Description"
         )
 
         if q:
@@ -1688,7 +1686,6 @@ async def search_opportunities(
                 "StageName": record.get("StageName"),
                 "CloseDate": record.get("CloseDate"),
                 "Description": record.get("Description"),
-                "Type": record.get("Type"),
             }
 
             if customer_name or invoice_amount or invoice_date:

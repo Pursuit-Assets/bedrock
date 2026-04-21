@@ -140,7 +140,7 @@ export const apiService = {
   servicesHealth: () => api.get('/health/services'),
 
   // Salesforce - Opportunities
-  getOpportunities: (params?: { stage?: string; stages?: readonly string[]; limit?: number; record_type?: string; opp_type?: string; active_only?: boolean }) =>
+  getOpportunities: (params?: { stage?: string; stages?: readonly string[]; limit?: number; record_type?: string; active_only?: boolean }) =>
     api.get('/api/salesforce/opportunities', {
       params,
       paramsSerializer: (p: Record<string, string | string[] | number | boolean | undefined | null>) => {

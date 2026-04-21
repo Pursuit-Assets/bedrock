@@ -11,7 +11,6 @@ export interface PriorityOpp {
   CloseDate: string;
   Probability: number;
   OwnerId?: string;
-  Type?: string;
   RenewalRepeat?: string;
   Account?: { Name: string; Id?: string };
   LastModifiedDate?: string;
