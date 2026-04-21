@@ -37,6 +37,8 @@ import asyncpg
 import openpyxl
 from dotenv import load_dotenv
 
+from scripts._owner_parser import build_user_map, parse_owner_string
+
 # Match main.py's env loading so DATABASE_URL from financial_forecasting/.env
 # is picked up without the caller having to export it manually.
 load_dotenv(override=False)
@@ -136,6 +138,7 @@ class TaskRow:
     updates: str
     links: List[str]
     sort_order: int
+    owner_ids: List[uuid.UUID] = field(default_factory=list)
 
 
 @dataclass
@@ -148,6 +151,7 @@ class MilestoneRow:
     source_links: List[str]
     sort_order: int
     tasks: List[TaskRow] = field(default_factory=list)
+    owner_ids: List[uuid.UUID] = field(default_factory=list)
 
 
 @dataclass
@@ -554,23 +558,57 @@ async def run_import_tx(
             for ms in ws_row.milestones:
                 ms_id = await conn.fetchval(
                     "INSERT INTO bedrock.milestone "
-                    "(workstream_id, title, status, priority, owner, description, source_links, sort_order) "
-                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id",
-                    ws_id, ms.title, ms.status, ms.priority, ms.owner,
+                    "(workstream_id, title, status, priority, owner, owner_ids, description, source_links, sort_order) "
+                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id",
+                    ws_id, ms.title, ms.status, ms.priority, ms.owner, ms.owner_ids,
                     ms.description, ms.source_links, ms.sort_order,
                 )
                 counts["milestones"] += 1
                 for t in ms.tasks:
                     await conn.execute(
                         "INSERT INTO bedrock.project_task "
-                        "(milestone_id, title, status, owner, deadline, start_date, "
+                        "(milestone_id, title, status, owner, owner_ids, deadline, start_date, "
                         " description, updates, links, sort_order) "
-                        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
-                        ms_id, t.title, t.status, t.owner, t.deadline, t.start_date,
+                        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+                        ms_id, t.title, t.status, t.owner, t.owner_ids, t.deadline, t.start_date,
                         t.description, t.updates, t.links, t.sort_order,
                     )
                     counts["tasks"] += 1
     return counts
+
+
+async def resolve_owner_ids(conn: asyncpg.Connection, tree: ParsedTree) -> Dict[str, int]:
+    """Read the active-user roster, parse each milestone/task owner string,
+    populate owner_ids, and reduce owner TEXT to only unmatched tokens.
+
+    Modifies the tree in place. Returns counts of matches / residuals for the
+    dry-run summary.
+    """
+    user_rows = await conn.fetch(
+        "SELECT id, display_name FROM public.org_users "
+        "WHERE COALESCE(is_active, true) = true AND display_name IS NOT NULL"
+    )
+    user_map = build_user_map([dict(r) for r in user_rows])
+
+    stats = {"ms_mapped": 0, "ms_with_other": 0, "t_mapped": 0, "t_with_other": 0}
+    for ws_row in tree.workstreams:
+        for ms in ws_row.milestones:
+            ids, other = parse_owner_string(ms.owner, user_map)
+            ms.owner_ids = ids
+            ms.owner = other
+            if ids:
+                stats["ms_mapped"] += 1
+            if other:
+                stats["ms_with_other"] += 1
+            for t in ms.tasks:
+                t_ids, t_other = parse_owner_string(t.owner, user_map)
+                t.owner_ids = t_ids
+                t.owner = t_other
+                if t_ids:
+                    stats["t_mapped"] += 1
+                if t_other:
+                    stats["t_with_other"] += 1
+    return stats
 
 
 # ---- CLI ----
@@ -627,12 +665,9 @@ async def _amain(args: argparse.Namespace) -> int:
         return 2
 
     tree = parse_workbook(path)
-    _print_summary(tree, args.project_id, dry_run=args.dry_run)
 
-    if args.dry_run:
-        print("Dry run only. No DB writes performed.")
-        return 0
-
+    # Owner-ID resolution needs the DB too — even in dry-run, we connect
+    # read-only so the summary can show the real UUID mapping + residual Other.
     dsn = (os.getenv("DATABASE_URL") or "").strip()
     if not dsn:
         print(
@@ -657,6 +692,20 @@ async def _amain(args: argparse.Namespace) -> int:
 
     conn = await asyncpg.connect(dsn)
     try:
+        owner_stats = await resolve_owner_ids(conn, tree)
+        _print_summary(tree, args.project_id, dry_run=args.dry_run)
+        print(
+            "Owner resolution:  "
+            f"milestones_mapped={owner_stats['ms_mapped']}  "
+            f"milestones_with_other={owner_stats['ms_with_other']}  "
+            f"tasks_mapped={owner_stats['t_mapped']}  "
+            f"tasks_with_other={owner_stats['t_with_other']}"
+        )
+
+        if args.dry_run:
+            print("\nDry run only. No DB writes performed.")
+            return 0
+
         proj = await conn.fetchrow(
             "SELECT id, name, description, owner_email "
             "FROM bedrock.project WHERE id = $1 AND deleted_at IS NULL",
