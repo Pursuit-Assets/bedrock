@@ -26,6 +26,57 @@ import toast from 'react-hot-toast';
 import ConfirmSaveButton from './ConfirmSaveButton';
 import { apiService } from '../services/api';
 import { usePermissions } from '../contexts/PermissionsContext';
+import { fieldStatusProps, findMissingFields } from '../utils/fieldLoadStatus';
+import SaveBlockedDialog from './SaveBlockedDialog';
+
+// Fields the dialog can save. A field bound here that's absent from the
+// loaded record → silent overwrite risk on save. Per-field "⚠ Couldn't
+// load current value" captions flag individual gaps; the save handler
+// blocks with SaveBlockedDialog when any are missing.
+const ACCOUNT_EDITABLE_FIELDS: readonly string[] = [
+  'Name',
+  'Type',
+  'Industry',
+  'AccountSource',
+  'Account_Tier__c',
+  'Company_Size__c',
+  'Phone',
+  'Website',
+  'Active__c',
+  'Description',
+  'BillingStreet',
+  'BillingCity',
+  'BillingState',
+  'BillingPostalCode',
+  'OwnerId',
+  'ParentId',
+  // Mission-tag booleans (Section 3)
+  'Philanthropy__c',
+  'Fee_For_Service__c',
+  'Hiring__c',
+  'Investment__c',
+  'Volunteering__c',
+  'Fellow_Recruitment__c',
+  'Media_Marketing__c',
+  'Influence__c',
+  'Startup__c',
+  // NPSP matching-gift block
+  'npsp__Matching_Gift_Company__c',
+  'npsp__Matching_Gift_Percent__c',
+  'npsp__Matching_Gift_Amount_Max__c',
+  'npsp__Matching_Gift_Amount_Min__c',
+  'npsp__Matching_Gift_Annual_Employee_Max__c',
+  'npsp__Matching_Gift_Administrator_Name__c',
+  'npsp__Matching_Gift_Email__c',
+  'npsp__Matching_Gift_Phone__c',
+  'npsp__Matching_Gift_Request_Deadline__c',
+  'npsp__Matching_Gift_Comments__c',
+  // Multipicklist fields — saved via handleMultipicklistChange (not the
+  // standard handleFieldChange), so easy to miss in this list. Silent-
+  // overwrite risk if the backend response omits them.
+  'npsp__Funding_Focus__c',
+  'Organization_Focus_Area_s__c',
+] as const;
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -144,8 +195,19 @@ const AccountEditDialog: React.FC<AccountEditDialogProps> = ({
   // ── Local state ─────────────────────────────────────────────────────────
   const [editForm, setEditForm] = useState<Record<string, any>>({});
   const [originalRecord, setOriginalRecord] = useState<Record<string, any> | null>(null);
+  const [saveBlockedMissing, setSaveBlockedMissing] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
+
+  // Merge per-field validation error with load-status caption. Validation
+  // wins (user is editing); "Not set" / "⚠ Couldn't load current value"
+  // show in steady state. Mirrors OpportunityEditDialog's helper.
+  const getHelperProps = (fieldName: string) => {
+    if (errors[fieldName]) {
+      return { helperText: errors[fieldName], error: true };
+    }
+    return fieldStatusProps(fieldName, originalRecord);
+  };
   const [matchingGiftExpanded, setMatchingGiftExpanded] = useState(false);
 
   const [users, setUsers] = useState<UserOption[]>([]);
@@ -309,6 +371,13 @@ const AccountEditDialog: React.FC<AccountEditDialogProps> = ({
   // ── Save handler ────────────────────────────────────────────────────────
   const handleSave = async () => {
     if (!accountId || !originalRecord) return;
+
+    // Block save if any bound field wasn't loaded — prevents silent overwrite.
+    const missing = findMissingFields(ACCOUNT_EDITABLE_FIELDS, originalRecord);
+    if (missing.length > 0) {
+      setSaveBlockedMissing(missing);
+      return;
+    }
 
     // Required field validation
     const newErrors: Record<string, string> = {};
@@ -484,8 +553,7 @@ const AccountEditDialog: React.FC<AccountEditDialogProps> = ({
                   disabled={!canEdit}
                   value={editForm.Name || ''}
                   onChange={(e) => handleFieldChange('Name', e.target.value)}
-                  error={!!errors.Name}
-                  helperText={errors.Name}
+                  {...getHelperProps('Name')}
                 />
               </Grid>
               <Grid item xs={12} sm={6}>
@@ -497,6 +565,7 @@ const AccountEditDialog: React.FC<AccountEditDialogProps> = ({
                   disabled={!canEdit}
                   value={editForm.Type || ''}
                   onChange={(e) => handleFieldChange('Type', e.target.value)}
+                  {...getHelperProps('Type')}
                 >
                   <MenuItem value="">None</MenuItem>
                   {typeValues.map((v) => (
@@ -513,6 +582,7 @@ const AccountEditDialog: React.FC<AccountEditDialogProps> = ({
                   disabled={!canEdit}
                   value={editForm.Industry || ''}
                   onChange={(e) => handleFieldChange('Industry', e.target.value)}
+                  {...getHelperProps('Industry')}
                 >
                   <MenuItem value="">None</MenuItem>
                   {industryValues.map((v) => (
@@ -529,6 +599,7 @@ const AccountEditDialog: React.FC<AccountEditDialogProps> = ({
                   disabled={!canEdit}
                   value={editForm.AccountSource || ''}
                   onChange={(e) => handleFieldChange('AccountSource', e.target.value)}
+                  {...getHelperProps('AccountSource')}
                 >
                   <MenuItem value="">None</MenuItem>
                   {accountSourceValues.map((v) => (
@@ -545,6 +616,7 @@ const AccountEditDialog: React.FC<AccountEditDialogProps> = ({
                   disabled={!canEdit}
                   value={editForm.Account_Tier__c || ''}
                   onChange={(e) => handleFieldChange('Account_Tier__c', e.target.value)}
+                  {...getHelperProps('Account_Tier__c')}
                 >
                   <MenuItem value="">None</MenuItem>
                   {tierValues.map((v) => (
@@ -561,6 +633,7 @@ const AccountEditDialog: React.FC<AccountEditDialogProps> = ({
                   disabled={!canEdit}
                   value={editForm.Company_Size__c || ''}
                   onChange={(e) => handleFieldChange('Company_Size__c', e.target.value)}
+                  {...getHelperProps('Company_Size__c')}
                 >
                   <MenuItem value="">None</MenuItem>
                   {companySizeValues.map((v) => (
@@ -577,6 +650,7 @@ const AccountEditDialog: React.FC<AccountEditDialogProps> = ({
                   disabled={!canEdit}
                   value={editForm.Phone || ''}
                   onChange={(e) => handleFieldChange('Phone', e.target.value)}
+                  {...getHelperProps('Phone')}
                 />
               </Grid>
               <Grid item xs={12} sm={6}>
@@ -587,6 +661,7 @@ const AccountEditDialog: React.FC<AccountEditDialogProps> = ({
                   disabled={!canEdit}
                   value={editForm.Website || ''}
                   onChange={(e) => handleFieldChange('Website', e.target.value)}
+                  {...getHelperProps('Website')}
                 />
               </Grid>
               <Grid item xs={12} sm={6}>
@@ -612,6 +687,7 @@ const AccountEditDialog: React.FC<AccountEditDialogProps> = ({
                   disabled={!canEdit}
                   value={editForm.Description || ''}
                   onChange={(e) => handleFieldChange('Description', e.target.value)}
+                  {...getHelperProps('Description')}
                 />
               </Grid>
             </Grid>
@@ -630,6 +706,7 @@ const AccountEditDialog: React.FC<AccountEditDialogProps> = ({
                   disabled={!canEdit}
                   value={editForm.BillingStreet || ''}
                   onChange={(e) => handleFieldChange('BillingStreet', e.target.value)}
+                  {...getHelperProps('BillingStreet')}
                 />
               </Grid>
               <Grid item xs={12} sm={4}>
@@ -640,6 +717,7 @@ const AccountEditDialog: React.FC<AccountEditDialogProps> = ({
                   disabled={!canEdit}
                   value={editForm.BillingCity || ''}
                   onChange={(e) => handleFieldChange('BillingCity', e.target.value)}
+                  {...getHelperProps('BillingCity')}
                 />
               </Grid>
               <Grid item xs={6} sm={4}>
@@ -650,6 +728,7 @@ const AccountEditDialog: React.FC<AccountEditDialogProps> = ({
                   disabled={!canEdit}
                   value={editForm.BillingState || ''}
                   onChange={(e) => handleFieldChange('BillingState', e.target.value)}
+                  {...getHelperProps('BillingState')}
                 />
               </Grid>
               <Grid item xs={6} sm={4}>
@@ -660,6 +739,7 @@ const AccountEditDialog: React.FC<AccountEditDialogProps> = ({
                   disabled={!canEdit}
                   value={editForm.BillingPostalCode || ''}
                   onChange={(e) => handleFieldChange('BillingPostalCode', e.target.value)}
+                  {...getHelperProps('BillingPostalCode')}
                 />
               </Grid>
             </Grid>
@@ -813,6 +893,7 @@ const AccountEditDialog: React.FC<AccountEditDialogProps> = ({
                     InputProps={{
                       endAdornment: <InputAdornment position="end">%</InputAdornment>,
                     }}
+                    {...getHelperProps('npsp__Matching_Gift_Percent__c')}
                   />
                 </Grid>
                 <Grid item xs={12} sm={6}>
@@ -829,6 +910,7 @@ const AccountEditDialog: React.FC<AccountEditDialogProps> = ({
                     InputProps={{
                       startAdornment: <InputAdornment position="start">$</InputAdornment>,
                     }}
+                    {...getHelperProps('npsp__Matching_Gift_Amount_Max__c')}
                   />
                 </Grid>
                 <Grid item xs={12} sm={6}>
@@ -845,6 +927,7 @@ const AccountEditDialog: React.FC<AccountEditDialogProps> = ({
                     InputProps={{
                       startAdornment: <InputAdornment position="start">$</InputAdornment>,
                     }}
+                    {...getHelperProps('npsp__Matching_Gift_Amount_Min__c')}
                   />
                 </Grid>
                 <Grid item xs={12} sm={6}>
@@ -861,6 +944,7 @@ const AccountEditDialog: React.FC<AccountEditDialogProps> = ({
                     InputProps={{
                       startAdornment: <InputAdornment position="start">$</InputAdornment>,
                     }}
+                    {...getHelperProps('npsp__Matching_Gift_Annual_Employee_Max__c')}
                   />
                 </Grid>
                 <Grid item xs={12} sm={6}>
@@ -873,6 +957,7 @@ const AccountEditDialog: React.FC<AccountEditDialogProps> = ({
                     onChange={(e) =>
                       handleFieldChange('npsp__Matching_Gift_Administrator_Name__c', e.target.value)
                     }
+                    {...getHelperProps('npsp__Matching_Gift_Administrator_Name__c')}
                   />
                 </Grid>
                 <Grid item xs={12} sm={6}>
@@ -886,6 +971,7 @@ const AccountEditDialog: React.FC<AccountEditDialogProps> = ({
                     onChange={(e) =>
                       handleFieldChange('npsp__Matching_Gift_Email__c', e.target.value)
                     }
+                    {...getHelperProps('npsp__Matching_Gift_Email__c')}
                   />
                 </Grid>
                 <Grid item xs={12} sm={6}>
@@ -899,6 +985,7 @@ const AccountEditDialog: React.FC<AccountEditDialogProps> = ({
                     onChange={(e) =>
                       handleFieldChange('npsp__Matching_Gift_Phone__c', e.target.value)
                     }
+                    {...getHelperProps('npsp__Matching_Gift_Phone__c')}
                   />
                 </Grid>
                 <Grid item xs={12} sm={6}>
@@ -911,6 +998,7 @@ const AccountEditDialog: React.FC<AccountEditDialogProps> = ({
                     onChange={(e) =>
                       handleFieldChange('npsp__Matching_Gift_Request_Deadline__c', e.target.value)
                     }
+                    {...getHelperProps('npsp__Matching_Gift_Request_Deadline__c')}
                   />
                 </Grid>
                 <Grid item xs={12}>
@@ -925,6 +1013,7 @@ const AccountEditDialog: React.FC<AccountEditDialogProps> = ({
                     onChange={(e) =>
                       handleFieldChange('npsp__Matching_Gift_Comments__c', e.target.value)
                     }
+                    {...getHelperProps('npsp__Matching_Gift_Comments__c')}
                   />
                 </Grid>
               </Grid>
@@ -1057,6 +1146,13 @@ const AccountEditDialog: React.FC<AccountEditDialogProps> = ({
           Save
         </ConfirmSaveButton>
       </Box>
+
+      <SaveBlockedDialog
+        open={saveBlockedMissing.length > 0}
+        onClose={() => setSaveBlockedMissing([])}
+        missingFields={saveBlockedMissing}
+        recordLabel="account"
+      />
     </Drawer>
   );
 };

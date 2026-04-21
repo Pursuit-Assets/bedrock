@@ -30,6 +30,55 @@ import ConfirmSaveButton from './ConfirmSaveButton';
 import ActivityTimeline from './ActivityTimeline';
 import { apiService } from '../services/api';
 import { usePermissions } from '../contexts/PermissionsContext';
+import { fieldStatusProps, findMissingFields } from '../utils/fieldLoadStatus';
+import SaveBlockedDialog from './SaveBlockedDialog';
+
+// Fields the dialog can save. Mirrors OpportunityEditDialog /
+// AccountEditDialog — absent field in loaded record + touched by user →
+// silent overwrite of unseen SF data. SaveBlockedDialog prevents that.
+const CONTACT_EDITABLE_FIELDS: readonly string[] = [
+  'Salutation',
+  'FirstName',
+  'LastName',
+  'Preferred_Name__c',
+  'Pronouns__c',
+  'Gender__c',
+  'Birthdate',
+  'npsp__Primary_Affiliation__c',
+  'Title',
+  'Department',
+  'Email',
+  'npe01__WorkEmail__c',
+  'npe01__HomeEmail__c',
+  'npe01__Preferred_Email__c',
+  'Phone',
+  'MobilePhone',
+  'npe01__WorkPhone__c',
+  'npe01__PreferredPhone__c',
+  'MailingStreet',
+  'MailingCity',
+  'MailingState',
+  'MailingPostalCode',
+  'Philanthropic_Contact__c',
+  'Philanthropy__c',
+  'Volunteer__c',
+  'Added_to_Slack__c',
+  'Board_Status__c',
+  'LeadSource',
+  'LinkedIn_URL__c',
+  'AccountId',
+  'OwnerId',
+  'Description',
+  // Communication Preferences — rendered as Switches in a .map() loop at
+  // the bottom of the form. Bound via handleFieldChange (through the
+  // {field, label} array at ~line 957) and saved through the diff loop,
+  // so a missing key would silently overwrite SF data on save. Switches
+  // don't surface helperText, but the save-guard still catches it.
+  'DoNotCall',
+  'HasOptedOutOfEmail',
+  'npsp__Do_Not_Contact__c',
+  'npsp__Deceased__c',
+] as const;
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -131,8 +180,17 @@ const ContactEditDialog: React.FC<ContactEditDialogProps> = ({
   // ── Local state ─────────────────────────────────────────────────────────
   const [editForm, setEditForm] = useState<Record<string, any>>({});
   const [originalRecord, setOriginalRecord] = useState<Record<string, any> | null>(null);
+  const [saveBlockedMissing, setSaveBlockedMissing] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
+
+  // Merge per-field validation error with load-status caption.
+  const getHelperProps = (fieldName: string) => {
+    if (errors[fieldName]) {
+      return { helperText: errors[fieldName], error: true };
+    }
+    return fieldStatusProps(fieldName, originalRecord);
+  };
   const [dialogTab, setDialogTab] = useState(0);
 
   const [users, setUsers] = useState<UserOption[]>([]);
@@ -284,6 +342,13 @@ const ContactEditDialog: React.FC<ContactEditDialogProps> = ({
   // ── Save handler ────────────────────────────────────────────────────────
   const handleSave = async () => {
     if (!contactId || !originalRecord) return;
+
+    // Block save if the loaded record is missing any editable field.
+    const missing = findMissingFields(CONTACT_EDITABLE_FIELDS, originalRecord);
+    if (missing.length > 0) {
+      setSaveBlockedMissing(missing);
+      return;
+    }
 
     // Required field validation
     const newErrors: Record<string, string> = {};
@@ -467,6 +532,7 @@ const ContactEditDialog: React.FC<ContactEditDialogProps> = ({
                   disabled={!canEdit}
                   value={editForm.Salutation || ''}
                   onChange={(e) => handleFieldChange('Salutation', e.target.value)}
+                  {...getHelperProps('Salutation')}
                 >
                   <MenuItem value="">None</MenuItem>
                   {salutationValues.map((v) => (
@@ -482,6 +548,7 @@ const ContactEditDialog: React.FC<ContactEditDialogProps> = ({
                   disabled={!canEdit}
                   value={editForm.FirstName || ''}
                   onChange={(e) => handleFieldChange('FirstName', e.target.value)}
+                  {...getHelperProps('FirstName')}
                 />
               </Grid>
               <Grid item xs={12} sm={4.5}>
@@ -493,8 +560,7 @@ const ContactEditDialog: React.FC<ContactEditDialogProps> = ({
                   disabled={!canEdit}
                   value={editForm.LastName || ''}
                   onChange={(e) => handleFieldChange('LastName', e.target.value)}
-                  error={!!errors.LastName}
-                  helperText={errors.LastName}
+                  {...getHelperProps('LastName')}
                 />
               </Grid>
               <Grid item xs={12} sm={4}>
@@ -505,6 +571,7 @@ const ContactEditDialog: React.FC<ContactEditDialogProps> = ({
                   disabled={!canEdit}
                   value={editForm.Preferred_Name__c || ''}
                   onChange={(e) => handleFieldChange('Preferred_Name__c', e.target.value)}
+                  {...getHelperProps('Preferred_Name__c')}
                 />
               </Grid>
               <Grid item xs={12} sm={4}>
@@ -515,6 +582,7 @@ const ContactEditDialog: React.FC<ContactEditDialogProps> = ({
                   disabled={!canEdit}
                   value={editForm.Pronouns__c || ''}
                   onChange={(e) => handleFieldChange('Pronouns__c', e.target.value)}
+                  {...getHelperProps('Pronouns__c')}
                 />
               </Grid>
               <Grid item xs={12} sm={4}>
@@ -527,6 +595,7 @@ const ContactEditDialog: React.FC<ContactEditDialogProps> = ({
                     disabled={!canEdit}
                     value={editForm.Gender__c || ''}
                     onChange={(e) => handleFieldChange('Gender__c', e.target.value)}
+                    {...getHelperProps('Gender__c')}
                   >
                     <MenuItem value="">None</MenuItem>
                     {genderValues.map((v) => (
@@ -541,6 +610,7 @@ const ContactEditDialog: React.FC<ContactEditDialogProps> = ({
                     disabled={!canEdit}
                     value={editForm.Gender__c || ''}
                     onChange={(e) => handleFieldChange('Gender__c', e.target.value)}
+                    {...getHelperProps('Gender__c')}
                   />
                 )}
               </Grid>
@@ -554,6 +624,7 @@ const ContactEditDialog: React.FC<ContactEditDialogProps> = ({
                   value={editForm.Birthdate || ''}
                   onChange={(e) => handleFieldChange('Birthdate', e.target.value)}
                   InputLabelProps={{ shrink: true }}
+                  {...getHelperProps('Birthdate')}
                 />
               </Grid>
             </Grid>
@@ -588,6 +659,7 @@ const ContactEditDialog: React.FC<ContactEditDialogProps> = ({
                   disabled={!canEdit}
                   value={editForm.Title || ''}
                   onChange={(e) => handleFieldChange('Title', e.target.value)}
+                  {...getHelperProps('Title')}
                 />
               </Grid>
               <Grid item xs={12} sm={6}>
@@ -598,6 +670,7 @@ const ContactEditDialog: React.FC<ContactEditDialogProps> = ({
                   disabled={!canEdit}
                   value={editForm.Department || ''}
                   onChange={(e) => handleFieldChange('Department', e.target.value)}
+                  {...getHelperProps('Department')}
                 />
               </Grid>
             </Grid>
@@ -617,6 +690,7 @@ const ContactEditDialog: React.FC<ContactEditDialogProps> = ({
                   disabled={!canEdit}
                   value={editForm.Email || ''}
                   onChange={(e) => handleFieldChange('Email', e.target.value)}
+                  {...getHelperProps('Email')}
                 />
               </Grid>
               <Grid item xs={12} sm={6}>
@@ -628,6 +702,7 @@ const ContactEditDialog: React.FC<ContactEditDialogProps> = ({
                   disabled={!canEdit}
                   value={editForm.npe01__WorkEmail__c || ''}
                   onChange={(e) => handleFieldChange('npe01__WorkEmail__c', e.target.value)}
+                  {...getHelperProps('npe01__WorkEmail__c')}
                 />
               </Grid>
               <Grid item xs={12} sm={6}>
@@ -639,6 +714,7 @@ const ContactEditDialog: React.FC<ContactEditDialogProps> = ({
                   disabled={!canEdit}
                   value={editForm.npe01__HomeEmail__c || ''}
                   onChange={(e) => handleFieldChange('npe01__HomeEmail__c', e.target.value)}
+                  {...getHelperProps('npe01__HomeEmail__c')}
                 />
               </Grid>
               <Grid item xs={12} sm={6}>
@@ -651,6 +727,7 @@ const ContactEditDialog: React.FC<ContactEditDialogProps> = ({
                     disabled={!canEdit}
                     value={editForm.npe01__Preferred_Email__c || ''}
                     onChange={(e) => handleFieldChange('npe01__Preferred_Email__c', e.target.value)}
+                    {...getHelperProps('npe01__Preferred_Email__c')}
                   >
                     <MenuItem value="">None</MenuItem>
                     {preferredEmailValues.map((v) => (
@@ -665,6 +742,7 @@ const ContactEditDialog: React.FC<ContactEditDialogProps> = ({
                     disabled={!canEdit}
                     value={editForm.npe01__Preferred_Email__c || ''}
                     onChange={(e) => handleFieldChange('npe01__Preferred_Email__c', e.target.value)}
+                    {...getHelperProps('npe01__Preferred_Email__c')}
                   />
                 )}
               </Grid>
@@ -677,6 +755,7 @@ const ContactEditDialog: React.FC<ContactEditDialogProps> = ({
                   disabled={!canEdit}
                   value={editForm.Phone || ''}
                   onChange={(e) => handleFieldChange('Phone', e.target.value)}
+                  {...getHelperProps('Phone')}
                 />
               </Grid>
               <Grid item xs={12} sm={4}>
@@ -688,6 +767,7 @@ const ContactEditDialog: React.FC<ContactEditDialogProps> = ({
                   disabled={!canEdit}
                   value={editForm.MobilePhone || ''}
                   onChange={(e) => handleFieldChange('MobilePhone', e.target.value)}
+                  {...getHelperProps('MobilePhone')}
                 />
               </Grid>
               <Grid item xs={12} sm={4}>
@@ -699,6 +779,7 @@ const ContactEditDialog: React.FC<ContactEditDialogProps> = ({
                   disabled={!canEdit}
                   value={editForm.npe01__WorkPhone__c || ''}
                   onChange={(e) => handleFieldChange('npe01__WorkPhone__c', e.target.value)}
+                  {...getHelperProps('npe01__WorkPhone__c')}
                 />
               </Grid>
               {preferredPhoneValues.length > 0 && (
@@ -711,6 +792,7 @@ const ContactEditDialog: React.FC<ContactEditDialogProps> = ({
                     disabled={!canEdit}
                     value={editForm.npe01__PreferredPhone__c || ''}
                     onChange={(e) => handleFieldChange('npe01__PreferredPhone__c', e.target.value)}
+                    {...getHelperProps('npe01__PreferredPhone__c')}
                   >
                     <MenuItem value="">None</MenuItem>
                     {preferredPhoneValues.map((v) => (
@@ -735,6 +817,7 @@ const ContactEditDialog: React.FC<ContactEditDialogProps> = ({
                   disabled={!canEdit}
                   value={editForm.MailingStreet || ''}
                   onChange={(e) => handleFieldChange('MailingStreet', e.target.value)}
+                  {...getHelperProps('MailingStreet')}
                 />
               </Grid>
               <Grid item xs={12} sm={4}>
@@ -745,6 +828,7 @@ const ContactEditDialog: React.FC<ContactEditDialogProps> = ({
                   disabled={!canEdit}
                   value={editForm.MailingCity || ''}
                   onChange={(e) => handleFieldChange('MailingCity', e.target.value)}
+                  {...getHelperProps('MailingCity')}
                 />
               </Grid>
               <Grid item xs={6} sm={4}>
@@ -755,6 +839,7 @@ const ContactEditDialog: React.FC<ContactEditDialogProps> = ({
                   disabled={!canEdit}
                   value={editForm.MailingState || ''}
                   onChange={(e) => handleFieldChange('MailingState', e.target.value)}
+                  {...getHelperProps('MailingState')}
                 />
               </Grid>
               <Grid item xs={6} sm={4}>
@@ -765,6 +850,7 @@ const ContactEditDialog: React.FC<ContactEditDialogProps> = ({
                   disabled={!canEdit}
                   value={editForm.MailingPostalCode || ''}
                   onChange={(e) => handleFieldChange('MailingPostalCode', e.target.value)}
+                  {...getHelperProps('MailingPostalCode')}
                 />
               </Grid>
             </Grid>
@@ -835,6 +921,7 @@ const ContactEditDialog: React.FC<ContactEditDialogProps> = ({
                   disabled={!canEdit}
                   value={editForm.Board_Status__c || ''}
                   onChange={(e) => handleFieldChange('Board_Status__c', e.target.value)}
+                  {...getHelperProps('Board_Status__c')}
                 />
               </Grid>
               {leadSourceValues.length > 0 && (
@@ -847,6 +934,7 @@ const ContactEditDialog: React.FC<ContactEditDialogProps> = ({
                     disabled={!canEdit}
                     value={editForm.LeadSource || ''}
                     onChange={(e) => handleFieldChange('LeadSource', e.target.value)}
+                    {...getHelperProps('LeadSource')}
                   >
                     <MenuItem value="">None</MenuItem>
                     {leadSourceValues.map((v) => (
@@ -863,6 +951,7 @@ const ContactEditDialog: React.FC<ContactEditDialogProps> = ({
                   disabled={!canEdit}
                   value={editForm.LinkedIn_URL__c || ''}
                   onChange={(e) => handleFieldChange('LinkedIn_URL__c', e.target.value)}
+                  {...getHelperProps('LinkedIn_URL__c')}
                 />
               </Grid>
             </Grid>
@@ -991,6 +1080,7 @@ const ContactEditDialog: React.FC<ContactEditDialogProps> = ({
                   disabled={!canEdit}
                   value={editForm.Description || ''}
                   onChange={(e) => handleFieldChange('Description', e.target.value)}
+                  {...getHelperProps('Description')}
                 />
               </>
             )}
@@ -1004,6 +1094,13 @@ const ContactEditDialog: React.FC<ContactEditDialogProps> = ({
           </>
         )}
       </Box>
+
+      <SaveBlockedDialog
+        open={saveBlockedMissing.length > 0}
+        onClose={() => setSaveBlockedMissing([])}
+        missingFields={saveBlockedMissing}
+        recordLabel="contact"
+      />
 
       {/* Sticky footer */}
       <Box sx={{ px: 3, py: 1.5, borderTop: 1, borderColor: 'divider', display: 'flex', justifyContent: 'flex-end', gap: 1 }}>
