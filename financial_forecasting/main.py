@@ -332,6 +332,7 @@ async def get_opportunities(
                Number_of_Payments_Received__c, Most_Recent_Payment_Date__c,
                Last_Actual_Payment__c, npe01__Number_of_Payments__c,
                PaymentDate__c, Earliest_Scheduled_Payment__c,
+               RenewalRepeat__c,
                RecordTypeId, RecordType.Name, Active_Opportunity__c
         FROM Opportunity
         """

@@ -336,6 +336,13 @@ class TestSalesforceOpportunities:
         # the API contract so regressions here get caught even if the
         # frontend regresses separately.
         assert data[0]["RecordType"]["Name"] == "Other fee for service"
+        # RenewalRepeat__c SOQL-inclusion guard. 2026-04-21 adversarial
+        # verification caught that this custom field was missing from the
+        # SOQL SELECT even though Progress.tsx's isRenewal() helper and
+        # the OpportunityEditDialog's picker both depend on it. Pin the
+        # invariant so future regressions fail the test.
+        soql = mock_client.salesforce.query_all.call_args[0][0]
+        assert "RenewalRepeat__c" in soql
 
     def test_get_opportunities_with_stage_filter(self, client, mock_client):
         opp = make_sf_opportunity({"StageName": "Qualifying"})
