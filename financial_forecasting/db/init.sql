@@ -120,6 +120,16 @@ CREATE INDEX IF NOT EXISTS idx_workstream_not_deleted ON bedrock.workstream(dele
 CREATE INDEX IF NOT EXISTS idx_milestone_not_deleted ON bedrock.milestone(deleted_at) WHERE deleted_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_project_task_not_deleted ON bedrock.project_task(deleted_at) WHERE deleted_at IS NULL;
 
+-- ---------------------------------------------------------------------------
+-- Multi-owner support (2026-04-21) — owner_ids references public.org_users.id
+-- owner TEXT is repurposed as the free-text "Other" escape hatch
+-- (for non-user labels like McKinsey, Hudson Ferris, PBD, TBD).
+-- ---------------------------------------------------------------------------
+ALTER TABLE bedrock.milestone     ADD COLUMN IF NOT EXISTS owner_ids UUID[] NOT NULL DEFAULT '{}';
+ALTER TABLE bedrock.project_task  ADD COLUMN IF NOT EXISTS owner_ids UUID[] NOT NULL DEFAULT '{}';
+CREATE INDEX IF NOT EXISTS idx_milestone_owner_ids     ON bedrock.milestone    USING GIN(owner_ids);
+CREATE INDEX IF NOT EXISTS idx_project_task_owner_ids  ON bedrock.project_task USING GIN(owner_ids);
+
 -- Updated-at trigger
 CREATE OR REPLACE FUNCTION bedrock.set_updated_at()
 RETURNS TRIGGER AS $$

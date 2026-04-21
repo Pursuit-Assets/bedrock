@@ -13,6 +13,7 @@ services:
       - pgdata:/var/lib/postgresql/data
       - ./db/init.sql:/docker-entrypoint-initdb.d/01-init.sql
       - ./db/seed.sql:/docker-entrypoint-initdb.d/02-seed.sql
+      - ./db/seed_active_users.sql:/docker-entrypoint-initdb.d/03-seed-active-users.sql
     restart: unless-stopped
 
   backend:
