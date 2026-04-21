@@ -244,6 +244,64 @@ class TestCreateProjectTask:
         assert resp.status_code == 200
         assert resp.json()["success"] is True
 
+    def test_creates_task_with_multi_owner(self, authed_client, mock_db):
+        """owner_ids flows through the INSERT and the server converts str → UUID."""
+        mock_db.fetchrow = AsyncMock(return_value=MockDBRow(id=TASK_ID))
+        owner_a = str(uuid.uuid4())
+        owner_b = str(uuid.uuid4())
+        resp = authed_client.post(
+            f"/api/milestones/{MILESTONE_ID}/tasks",
+            json={"title": "Research", "owner_ids": [owner_a, owner_b], "owner": "McKinsey"},
+        )
+        assert resp.status_code == 200
+        # INSERT call params: milestone_id, title, status, owner, owner_ids, …
+        insert_call = mock_db.fetchrow.call_args_list[0]
+        args = insert_call[0]
+        assert args[4] == "McKinsey"  # owner (the "Other" free-text)
+        assert args[5] == [uuid.UUID(owner_a), uuid.UUID(owner_b)]  # owner_ids
+
+
+class TestUpdateMilestoneMultiOwner:
+    def test_updates_owner_ids(self, authed_client, mock_db):
+        """owner_ids are converted from str → uuid.UUID before the parameterized UPDATE."""
+        mock_db.execute = AsyncMock(return_value="UPDATE 1")
+        new_id = str(uuid.uuid4())
+        resp = authed_client.put(
+            f"/api/milestones/{MILESTONE_ID}",
+            json={"owner_ids": [new_id], "owner": "Hudson Ferris"},
+        )
+        assert resp.status_code == 200
+        call_args = mock_db.execute.call_args_list[0][0]
+        # Find the owner_ids list argument and assert the inner element is a UUID.
+        owner_ids_list = next(a for a in call_args if isinstance(a, list))
+        assert owner_ids_list == [uuid.UUID(new_id)]
+
+
+class TestListActiveUsers:
+    def test_returns_active_users(self, authed_client, mock_db):
+        uid_a, uid_b = uuid.uuid4(), uuid.uuid4()
+        mock_db.fetch = AsyncMock(return_value=[
+            MockDBRow(id=uid_a, email="laura@pursuit.org", display_name="Laura Capucilli", sf_user_id=None),
+            MockDBRow(id=uid_b, email="nick.simmons@pursuit.org", display_name="Nick Simmons", sf_user_id="005XNICK"),
+        ])
+        resp = authed_client.get("/api/users/active")
+        assert resp.status_code == 200
+        data = resp.json()["data"]
+        assert len(data) == 2
+        assert data[0]["display_name"] == "Laura Capucilli"
+        assert data[0]["is_in_sf"] is False
+        assert data[1]["display_name"] == "Nick Simmons"
+        assert data[1]["is_in_sf"] is True
+
+    def test_excludes_systems_admin_via_sql_filter(self, authed_client, mock_db):
+        """The SQL query filters Systems Admin out at the DB layer."""
+        mock_db.fetch = AsyncMock(return_value=[])
+        authed_client.get("/api/users/active")
+        call_sql = mock_db.fetch.call_args_list[0][0][0]
+        assert "systems admin" in call_sql.lower(), (
+            "Active-users query must filter Systems Admin by display_name"
+        )
+
 
 class TestUpdateProjectTask:
     def test_updates_task(self, authed_client, mock_db):

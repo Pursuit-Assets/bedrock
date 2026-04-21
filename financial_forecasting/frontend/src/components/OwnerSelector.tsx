@@ -12,6 +12,10 @@ interface OwnerSelectorProps {
   onChange: (next: string[]) => void;
   /** localStorage key suffix for persistence; pass undefined to skip persistence */
   storageKey?: string;
+  /** TextField label. Defaults to the Opportunity filter copy for backward compat. */
+  label?: string;
+  /** Placeholder when no chips are selected. */
+  placeholder?: string;
 }
 
 const STORAGE_KEY_PREFIX = 'walloprogress.selectedOwners.v1';
@@ -50,6 +54,8 @@ const OwnerSelector: React.FC<OwnerSelectorProps> = ({
   value,
   onChange,
   storageKey,
+  label = 'Filter by Opportunity Owner',
+  placeholder = 'Pick one or more owners…',
 }) => {
   // Skip the very first render's localStorage write so we don't clobber the
   // user's stored selection before the parent has a chance to read it via
@@ -104,8 +110,8 @@ const OwnerSelector: React.FC<OwnerSelectorProps> = ({
       renderInput={(params) => (
         <TextField
           {...params}
-          label="Filter by Opportunity Owner"
-          placeholder={value.length === 0 ? 'Pick one or more owners…' : ''}
+          label={label}
+          placeholder={value.length === 0 ? placeholder : ''}
           size="small"
         />
       )}

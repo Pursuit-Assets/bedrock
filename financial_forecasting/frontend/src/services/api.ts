@@ -617,6 +617,13 @@ export const apiService = {
   getProjectUsers: () =>
     api.get('/api/projects/users'),
 
+  /** Active staff eligible to be selected as task/milestone owners.
+   *  Broader than getProjectUsers (which is edit_projects-gated) — this covers
+   *  every active Pursuit teammate including those without project-edit rights.
+   *  Service accounts (Systems Admin) are excluded server-side. */
+  getActiveUsers: () =>
+    api.get('/api/users/active'),
+
   addProjectContributor: (projectId: string, data: { user_email: string }) =>
     api.post(`/api/projects/${projectId}/contributors`, data),
 
@@ -635,19 +642,19 @@ export const apiService = {
   deleteWorkstream: (workstreamId: string) =>
     api.delete(`/api/workstreams/${workstreamId}`),
 
-  createMilestone: (workstreamId: string, data: { title: string; status?: string; priority?: string; owner?: string; description?: string }) =>
+  createMilestone: (workstreamId: string, data: { title: string; status?: string; priority?: string; owner?: string; owner_ids?: string[]; description?: string }) =>
     api.post(`/api/workstreams/${workstreamId}/milestones`, data),
 
-  updateMilestone: (milestoneId: string, data: { title?: string; status?: string; priority?: string; owner?: string; description?: string }) =>
+  updateMilestone: (milestoneId: string, data: { title?: string; status?: string; priority?: string; owner?: string; owner_ids?: string[]; description?: string }) =>
     api.put(`/api/milestones/${milestoneId}`, data),
 
   deleteMilestone: (milestoneId: string) =>
     api.delete(`/api/milestones/${milestoneId}`),
 
-  createProjectTask: (milestoneId: string, data: { title: string; status?: string; owner?: string; deadline?: string; start_date?: string; description?: string }) =>
+  createProjectTask: (milestoneId: string, data: { title: string; status?: string; owner?: string; owner_ids?: string[]; deadline?: string; start_date?: string; description?: string }) =>
     api.post(`/api/milestones/${milestoneId}/tasks`, data),
 
-  updateProjectTask: (taskId: string, data: { title?: string; status?: string; owner?: string; deadline?: string; start_date?: string; description?: string; updates?: string }) =>
+  updateProjectTask: (taskId: string, data: { title?: string; status?: string; owner?: string; owner_ids?: string[]; deadline?: string; start_date?: string; description?: string; updates?: string }) =>
     api.put(`/api/project-tasks/${taskId}`, data),
 
   deleteProjectTask: (taskId: string) =>

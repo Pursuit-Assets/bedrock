@@ -120,6 +120,7 @@ export function buildGanttRows(workstreams: Workstream[], collapsedIds: Set<stri
         dependsOn: [],
         isCollapsed: mCollapsed,
         owner: m.owner,
+        ownerIds: m.owner_ids,
         milestonePriority: m.priority,
       });
 
@@ -137,6 +138,7 @@ export function buildGanttRows(workstreams: Workstream[], collapsedIds: Set<stri
           progress: t.status === 'Completed' ? 100 : t.status === 'In Progress' ? 50 : 0,
           dependsOn: t.dependsOn || [],
           owner: t.owner,
+          ownerIds: t.owner_ids,
         });
       }
     }
@@ -244,19 +246,6 @@ export function buildDependencyEdges(rows: GanttRow[]): DependencyEdge[] {
 
 // ── Filter helpers ──
 
-export function getUniqueOwners(workstreams: Workstream[]): string[] {
-  const owners = new Set<string>();
-  for (const ws of workstreams) {
-    for (const m of ws.milestones) {
-      if (m.owner) owners.add(m.owner);
-      for (const t of m.tasks) {
-        if (t.owner) owners.add(t.owner);
-      }
-    }
-  }
-  return Array.from(owners).sort();
-}
-
 export function applyFilters(workstreams: Workstream[], filters: FilterState): Workstream[] {
   let filtered = workstreams;
 
@@ -265,16 +254,47 @@ export function applyFilters(workstreams: Workstream[], filters: FilterState): W
   }
 
   if (filters.owners.length > 0) {
+    const selected = new Set(filters.owners);
+    const ownerIdsMatch = (ids?: string[]): boolean =>
+      (ids || []).some(id => selected.has(id));
     filtered = filtered.map(ws => ({
       ...ws,
       milestones: ws.milestones.map(m => ({
         ...m,
-        tasks: m.tasks.filter(t => filters.owners.includes(t.owner)),
-      })).filter(m => m.tasks.length > 0 || filters.owners.includes(m.owner)),
+        tasks: m.tasks.filter(t => ownerIdsMatch(t.owner_ids)),
+      })).filter(m => m.tasks.length > 0 || ownerIdsMatch(m.owner_ids)),
     })).filter(ws => ws.milestones.length > 0);
   }
 
   return filtered;
+}
+
+// ── Owner display helpers ──
+
+export interface DisplayOwner {
+  id: string;
+  name: string;
+}
+
+export function resolveOwners(
+  ownerIds: string[] | undefined,
+  activeUsers: { id: string; display_name: string }[],
+): DisplayOwner[] {
+  if (!ownerIds || ownerIds.length === 0) return [];
+  const idMap = new Map(activeUsers.map(u => [u.id, u.display_name]));
+  return ownerIds
+    .map(id => ({ id, name: idMap.get(id) || '' }))
+    .filter(o => o.name !== '');
+}
+
+export function initials(name: string): string {
+  return name
+    .split(/\s+/)
+    .filter(Boolean)
+    .map(w => w[0]!)
+    .join('')
+    .slice(0, 2)
+    .toUpperCase();
 }
 
 // ── Relative deadline formatting ──

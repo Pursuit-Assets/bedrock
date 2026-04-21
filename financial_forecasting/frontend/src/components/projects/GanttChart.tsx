@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useRef, useCallback } from 'react';
 import { Box, Typography, ToggleButtonGroup, ToggleButton } from '@mui/material';
 import { Panel, Group as PanelGroup, Separator as PanelResizeHandle } from 'react-resizable-panels';
-import type { Workstream, ProjectMutations, FlatTask, GanttZoom } from './types';
+import type { ActiveUser, Workstream, ProjectMutations, FlatTask, GanttZoom } from './types';
 import { GANTT_DAY_WIDTHS } from './constants';
 import { buildGanttRows, getTimelineRange, buildDependencyEdges, flattenTasks } from './helpers';
 import GanttTaskList from './GanttTaskList';
@@ -11,9 +11,10 @@ import TaskDetailDialog from './TaskDetailDialog';
 interface GanttChartProps {
   workstreams: Workstream[];
   mutations: ProjectMutations;
+  activeUsers: ActiveUser[];
 }
 
-const GanttChart: React.FC<GanttChartProps> = ({ workstreams, mutations }) => {
+const GanttChart: React.FC<GanttChartProps> = ({ workstreams, mutations, activeUsers }) => {
   const [collapsedIds, setCollapsedIds] = useState<Set<string>>(new Set());
   const [zoom, setZoom] = useState<GanttZoom>('week');
   const [selectedTask, setSelectedTask] = useState<FlatTask | null>(null);
@@ -105,6 +106,7 @@ const GanttChart: React.FC<GanttChartProps> = ({ workstreams, mutations }) => {
         task={selectedTask}
         onClose={() => setSelectedTask(null)}
         mutations={mutations}
+        activeUsers={activeUsers}
       />
     </Box>
   );
