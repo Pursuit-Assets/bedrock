@@ -36,7 +36,7 @@ Priority: backend correctness first, then cross-cutting UI cleanups that touch i
 | Order | # (target) | Slug | Touches | Depends on |
 |---|---|---|---|---|
 | A1 👀 | #155 | `pr-contacts-accounts-pagination` | `main.py` (get_accounts 470, get_contacts 559, get_my_tasks 851, get_opportunity_tasks 924), `tests/test_api_endpoints.py`, `tests/conftest.py` (add `query_all` mock), plus comment trim in `OpportunityEditDialog.tsx` + `AccountCell.tsx` | #153 |
-| A2 | #166 | `pr-activities-sync-tests` | `tests/test_activity_sync.py` NEW (or extension of `test_activities.py`) | #153 |
+| A2 👀 | #157 | `pr-activities-sync-tests` | `tests/test_activity_sync.py` NEW — 54 round-trip tests for `sync_activities()` + mappers + `_parse_sf_datetime` + `_upsert_activity` | #153 |
 | A3 | #177 | `pr-progress-tracking-orphan-cleanup` | `main.py:44, 120` (unregister router), DELETE `routes/progress_tracking.py`, DELETE `tests/test_progress_tracking.py`, `db/migrations/2026-04-21-drop-progress-tracked-override.sql` NEW (rollback), 3 FE stale comments (`Settings.tsx:680`, `Progress.tsx:~111-115`, `api.ts:~327`) | #153 |
 | A4 | #159 | `pr-opp-type-deprecation` | `main.py` (lines 310, 322, 333, 352-353, 1591, 1619), `types/salesforce.ts:129`, `Opportunities.tsx:45,117,289-290,466-472`, `Opportunities/columns.tsx:36,83-85,157`, `PipelineFilterBar.tsx` (filter UI), DELETE `hooks/useOpportunityTypePicklist.ts`, DELETE `components/inline-edit/cells/TypeCell.tsx`, `conftest.py::make_sf_opportunity`, `test_api_endpoints.py` Type assertion | #153. See `tasks/opp-type-full-delete-decision.md` for full inventory. |
 | A5 | #175 | `pr-b8-progress-full-pipeline` | `pages/Progress.tsx` or `components/PipelineFunnel.tsx` — include Lost/Withdrawn/Did Not Fulfill | #153 |

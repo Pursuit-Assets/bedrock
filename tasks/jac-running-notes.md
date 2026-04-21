@@ -51,6 +51,24 @@ For per-PR status of the 23 PRs in the plan, see the "PR sequence" table in `tas
 
 ## Progress log (newest first)
 
+### 2026-04-21 — Lane A2 shipped (PR #157) 👀 in review
+
+- **Why.** `data_sync.py::sync_activities()` at lines 55-162 mirrors SF Tasks + Events into `bedrock.activity` (Sprint 9A impl already landed in commit `a7a...`). `tests/test_activities.py` has HTTP-layer coverage (sync_count, sync_trigger, sync_status) but never exercised the service-layer mapping + upsert + control-flow logic. Next refactor of `_map_sf_task` / `_map_sf_event` / `_upsert_activity` could silently mis-mirror production data.
+- **Fix.** New `financial_forecasting/tests/test_activity_sync.py` — 54 tests across 5 classes, 607 LOC:
+  1. `TestParseSfDatetime` (8) — Salesforce date/datetime parsing + UTC-aware-out invariants.
+  2. `TestMapSfTask` (19) — email/call/note type decision, WhatId 006/001 routing, WhoId 003 routing, call-duration sec→min conversion, identity preservation, ActivityDate fallback to CreatedDate.
+  3. `TestMapSfEvent` (11) — IsAllDayEvent → calendar-event vs meeting, WhatId/WhoId routing mirrored, Location → meeting_location, DurationInMinutes direct (NOT divided unlike Task's seconds), StartDateTime fallback.
+  4. `TestUpsertActivity` (4) — `"INSERT 0 1"` → "upserted", `"INSERT 0 0"` → "skipped_deleted", `deleted_at IS NULL` guard in SQL, 15 positional params in correct order.
+  5. `TestSyncActivitiesRoundTrip` (12) — skips when no db_pool / no SF, queries both objects, processes mixed batch (3 Tasks + 2 Events → 5 upserts), watermark-in-SOQL only when prior rows exist, soft-deleted counted separately, survives per-row mapping error + per-query failure, history entry shape.
+  - Pins **all 5 plan canonical cases** (email subtype → email, call type → call, all-day → calendar-event, WhatId 006/001, soft-delete preservation).
+- **Bugs found during test-writing.** Zero. The landed impl held up on every invariant. `data_sync.py` unchanged.
+- **Verification.**
+  - `pytest tests/` → **20 failed, 727 passed, 22 skipped** (baseline 20/673/22 post-#155; delta +54 matches new test count exactly — no regressions).
+  - `pytest tests/test_activity_sync.py -v` → 54/54 pass in 0.05s.
+  - Segundo-db spot-check: 6039 rows in `bedrock.activity` (JP ran queries locally).
+- **Cross-lane note.** Parallel with Lane B1 `pr-use-schema-picklist` (JP's worktree, merged as #156). Fully disjoint — new test file + new hook file. No collision.
+- **Pending for you.** Review PR #157. Manual segundo-db smoke post-merge (trigger sync via `/api/activities/sync/trigger`, spot-check row count + synced_at delta).
+
 ### 2026-04-21 — Lane B1 schema-picklist hook shipped (PR #156) 👀 in review
 
 - **Why.** Four downstream dialog-audit PRs (B2 Opportunity, B3 Account, B4 Contact, B6 TaskPanel) all need to replace hardcoded `FALLBACK_TYPES` / `OPPORTUNITY_STAGES` / `FALLBACK_SALUTATIONS` / etc. arrays with live Salesforce picklist data — otherwise a Stage/Type rename in SF silently drifts from the frontend until someone notices. Lane B1 ships the shared hook so each dialog-audit PR downstream can stay focused on UI conversion instead of reimplementing caching/dedupe/active-filter logic. No user-visible change in this PR.

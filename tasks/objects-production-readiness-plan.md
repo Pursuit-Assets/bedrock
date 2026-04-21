@@ -129,7 +129,7 @@ This table is the source of truth for per-PR status. Each PR that ships updates 
 | #156 | `pr-dialog-audit-contact` | Contact dialog: add `npe01__AlternateEmail__c`, convert picklists | S-M | ⏳ Queued |
 | #157 | `pr-dialog-audit-taskpanel` | TaskPanel: convert Status + Priority picklists | S | ⏳ Queued |
 | #158 | `pr-activities-list-page` | New `pages/Activities.tsx` + Reports tab (replaces Leads tab) | M | ⏳ Queued |
-| #159 | `pr-activities-sync` | `data_sync.sync_activities()` round-trip tests + manual verification (Sprint 9A; impl already landed) | S-M | ⏳ Queued |
+| #159 (= actual #157) | `pr-activities-sync-tests` | `data_sync.sync_activities()` round-trip tests — 54 tests across 5 classes (ParseSfDatetime, MapSfTask, MapSfEvent, UpsertActivity, SyncActivitiesRoundTrip). Zero impl changes — the landed code held up. | M | 👀 in review |
 | #160 | `pr-activities-detail-tabs` | `ActivityTimeline` component + Activities tabs on Opportunity / Account / Contact detail dialogs | M | ⏳ Queued |
 | #161 | `pr-b4a-task-title-true` | Fix: task title coerces to "True" on save | S | ⏳ Queued |
 | #162 | `pr-b4b-task-description-400` | Fix: description save returns 400 | S | ⏳ Queued |
