@@ -226,6 +226,37 @@ def test_base_connected_services_list_not_shared_with_wrapper(base_client):
     assert "salesforce" not in base_client._connected_services
 
 
+def test_base_clients_dict_not_shared_with_wrapper(base_client):
+    """Same defense-in-depth for ``clients`` — if a future route handler
+    ever calls ``client.disconnect_service(...)`` or mutates
+    ``client.clients`` directly, the mutation must not leak to the base
+    singleton where it would affect other users' MCP transport wiring.
+
+    We shallow-copy the dict on wrap: the ``MCPClient`` instances inside
+    stay shared (intentional — they're startup-wired transports), but the
+    dict container itself is distinct.
+    """
+    # Pre-populate base.clients with a sentinel so we can detect leakage
+    base_client.clients["sentinel"] = "base-value"
+
+    request = _make_request(cookies={"sf_tokens": "valid-blob"})
+    with patch("auth.decrypt_tokens", return_value=_valid_tokens()), \
+         patch("simple_salesforce.Salesforce", return_value=MagicMock()):
+        wrapper = get_mcp_client(request)
+
+    # Wrapper sees the pre-existing sentinel (shallow copy preserves entries)
+    assert wrapper.clients["sentinel"] == "base-value"
+
+    # Mutating wrapper.clients does NOT mutate base.clients
+    wrapper.clients["request_scoped"] = "leaked?"
+    assert "request_scoped" not in base_client.clients
+
+    # And deleting from wrapper.clients doesn't affect base (catches the
+    # latent risk in `disconnect_service` if ever called on a wrapper)
+    del wrapper.clients["sentinel"]
+    assert base_client.clients["sentinel"] == "base-value"
+
+
 @pytest.mark.asyncio
 async def test_concurrent_requests_get_distinct_sf_services(base_client):
     """Two concurrent cookie-bearing requests (different users) each get

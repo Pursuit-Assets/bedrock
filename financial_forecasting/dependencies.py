@@ -35,9 +35,18 @@ class _PerRequestMCPClient(UnifiedMCPClient):
     ``self.sf_client`` by value) in the ``run_in_executor`` lambda.
 
     Intentionally does NOT call ``super().__init__()`` — that would reset
-    the base class's services/clients/connected dicts. Instead we copy the
-    base's state at wrap time so mutations to ``self.services`` never leak
-    back to the base singleton.
+    the base class's services/clients/connected dicts. Instead we
+    shallow-copy the base's three state containers at wrap time so any
+    mutation a route handler might perform on ``self.services``,
+    ``self.clients``, or ``self._connected_services`` stays request-scoped
+    and never leaks back to the base singleton.
+
+    The ``MCPClient`` and ``SalesforceMCPService`` instances inside those
+    containers are still shared references — the isolation guarantee is at
+    the container level (dict/list), not at the object level. For the SF
+    slot specifically we swap in a per-request ``SalesforceMCPService``
+    below, so SF CRUD on a wrapper touches no objects shared with the base
+    singleton.
 
     All ``@property`` accessors on ``UnifiedMCPClient`` (``.salesforce``,
     ``.connected_services``, ``.get_service``, the other typed accessors)
@@ -50,13 +59,15 @@ class _PerRequestMCPClient(UnifiedMCPClient):
         base: UnifiedMCPClient,
         sf_service: Any,  # SalesforceMCPService — kept Any to avoid a top-level import
     ) -> None:
-        # Shared — ``clients`` is populated at startup and never mutated at
-        # request time, so sharing the dict is safe and saves a copy.
-        self.clients = base.clients
-        # Copy — so overriding the SF slot doesn't mutate the base singleton.
+        # All three containers are shallow-copied so no mutation via the
+        # wrapper leaks back to the base singleton. The contained objects
+        # (MCPClient instances, other service instances) are shared refs —
+        # that's intentional, because a route handler shouldn't be
+        # mutating those anyway; sharing is cheap and keeps behavior
+        # transparent.
+        self.clients = dict(base.clients)
         self.services = dict(base.services)
         self.services["salesforce"] = sf_service
-        # Copy — so appending "salesforce" doesn't mutate the base list.
         self._connected_services = list(base._connected_services)
         if "salesforce" not in self._connected_services:
             self._connected_services.append("salesforce")
