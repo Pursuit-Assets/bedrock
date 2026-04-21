@@ -54,12 +54,17 @@ async def _gather_changes(
     extra = "AND w.project_id = $1" if project_uuid else ""
     params = [project_uuid] if project_uuid else []
 
+    # Idempotency: only migrate rows whose owner_ids is empty. Once a row
+    # has been migrated, its `owner` TEXT only holds unmatched ("Other") tokens,
+    # and re-parsing would incorrectly try to clear owner_ids back to [].
+    idempotency = "AND (m.owner_ids IS NULL OR cardinality(m.owner_ids) = 0)"
+    idempotency_t = "AND (t.owner_ids IS NULL OR cardinality(t.owner_ids) = 0)"
     ms_rows = await conn.fetch(
         f"""
         SELECT m.id, m.title, m.owner, m.owner_ids
         FROM bedrock.milestone m
         JOIN bedrock.workstream w ON w.id = m.workstream_id
-        WHERE m.deleted_at IS NULL AND m.owner <> '' {extra}
+        WHERE m.deleted_at IS NULL AND m.owner <> '' {idempotency} {extra}
         ORDER BY m.created_at
         """,
         *params,
@@ -70,7 +75,7 @@ async def _gather_changes(
         FROM bedrock.project_task t
         JOIN bedrock.milestone m ON m.id = t.milestone_id
         JOIN bedrock.workstream w ON w.id = m.workstream_id
-        WHERE t.deleted_at IS NULL AND t.owner <> '' {extra}
+        WHERE t.deleted_at IS NULL AND t.owner <> '' {idempotency_t} {extra}
         ORDER BY t.created_at
         """,
         *params,
