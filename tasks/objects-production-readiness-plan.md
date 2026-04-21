@@ -1,5 +1,7 @@
 # Objects production-readiness — MVP launch plan
 
+> **⚠️ Superseded 2026-04-21 by updated sequence in `tasks/parallel-pr-lanes.md`.** This doc is preserved as the 2026-04-20 snapshot before Jac's PR #151 (QA polish pack) landed. The 22-PR sequence below is still the scope source of truth for WHAT to ship, but the PR numbers are pre-shift — add **+4** to every queued number (`#149 → #153`, `#150 → #154`, etc.) because `#149, #150, #151, #152` were taken by Jac's QA pack + release rollups. Also a new `#153 pr-singleton-race-fix` inserts at the front of the sequence (see `tasks/pr153-singleton-race-fix-plan.md`). A new `#158 pr-opp-type-deprecation` replaces part of the original `#153 pr-use-schema-picklist` scope (see `tasks/opp-type-full-delete-decision.md`). **Always cross-reference `tasks/parallel-pr-lanes.md` for current numbering and lane assignment.**
+
 **Created:** 2026-04-20
 **Status:** PR #147 merged 2026-04-20. PR #148 (page-rename cleanup) open for review; PRs #149-#169 queued below. See live per-PR status in the "PR sequence" table.
 **Scope:** The five core Salesforce-backed objects used in daily workflows — **Opportunities, Accounts, Contacts, Tasks, Activities** — brought to production-ready quality for MVP launch.

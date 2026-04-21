@@ -51,6 +51,16 @@ For per-PR status of the 23 PRs in the plan, see the "PR sequence" table in `tas
 
 ## Progress log (newest first)
 
+### 2026-04-21 — Singleton-race fix shipped (PR #153) 🚧 in review
+
+- **Why.** Two-pass verification of Jac's PR #151 (2026-04-21) surfaced that BUG-AUTH-2's fix in `dependencies.py::get_mcp_client` mutates `client.services["salesforce"]` and `client._connected_services` in place on every cookie-bearing request. Combined with the `lambda: self.sf_client.query(soql)` capture pattern across all 8 CRUD methods in `mcp_client/services/salesforce.py`, two concurrent requests from different users could race on the shared `sf_client` reference → User A's in-flight SOQL executes against User B's session. Jac's own QA tracker (`tasks/pr-139-qa-bugs.md:32-35`) named the right fix verbatim; the implementation had diverged.
+- **Fix.** Added `_PerRequestMCPClient(UnifiedMCPClient)` subclass in `dependencies.py`. On each cookie-bearing request, `get_mcp_client` now builds a fresh `SalesforceMCPService` from the decrypted cookie and wraps it in `_PerRequestMCPClient` whose `__init__` copies the base's `services` dict + `_connected_services` list (no mutation of the singleton) and overrides the SF slot. The inherited `@property` accessors (`.salesforce`, `.connected_services`) resolve through the copied attrs. Non-cookie path returns the base client unchanged — service-account path (background sync, forecasting_engine, data_sync) preserved.
+- **Tests.** New `tests/test_per_request_sf_client.py` — 9 tests covering: no cookie → base returned, invalid cookie → base returned, missing-tokens cookie → base returned, valid cookie → wrapper with fresh SF service, wrapper builds SF from cookie when base has no SF, **base singleton never mutated after 3 distinct-cookie requests** (the critical invariant), services-dict isolation, connected_services-list isolation, concurrent `asyncio.gather` requests get distinct `SalesforceMCPService` instances.
+- **Verification.** `pytest tests/` — 658 passed, 20 failed (same 20 pre-existing failures in `test_projects_endpoints.py` / `test_sf_dependencies.py` / `test_mcp_services.py` / `test_permissions.py` per `tasks/remaining-32-test-failures-plan.md`). Baseline was 649 passed; +9 matches exactly the new test count. No regressions. No frontend changes.
+- **Numbering.** Plan's original `#149` → actual `#153` after Jac's `#151` + rollups `#150, #152` took intermediate numbers. All downstream PR numbers in `tasks/objects-production-readiness-plan.md` shift by +4. See `tasks/parallel-pr-lanes.md` for the authoritative current sequence.
+- **Unblocks.** Lanes A and B can now run in parallel per `tasks/parallel-pr-lanes.md`. Next PRs: Lane A `#154 pr-contacts-accounts-pagination`, Lane B `#159 pr-use-schema-picklist`.
+- **Pending for you.** Review PR #153 diff (dependencies.py + new test file). No migrations, no env changes, no frontend impact.
+
 ### 2026-04-20 — Page-rename cleanup shipped (PR #148)
 
 - **Why.** PR #147 plan-verification surfaced a file/component name drift: the **Priorities** sidebar entry routed to `pages/MyDashboard.tsx` (component inside was `const MyDashboard`), and the **Progress** sidebar entry routed to `pages/Overview.tsx` (component inside was already correctly named `Progress`, but file name was stale — asymmetric).
