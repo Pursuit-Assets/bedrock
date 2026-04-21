@@ -14,10 +14,11 @@ Plan's original `#147-#169` is now `#147-#152` done (Jac's #151 QA polish pack +
 | #148 (page rename) | #148 | ✅ merged 2026-04-20 |
 | — (Jac's QA pack) | #151 | ✅ merged 2026-04-21 |
 | — (rollups) | #149, #150, #152 | ✅ release branches |
-| — (NEW, blocks all) | **#153** | 🚧 next |
-| #149 (pagination) | #154 | queued |
-| #150 (RowCountCaption core) | #155 | queued |
-| ... | +4 from here | — |
+| — (singleton race fix) | #153 | ✅ merged 2026-04-21 |
+| — (parking-lot docs) | #154 | 🚧 this PR |
+| #149 (pagination) | **#155** | ⏳ Lane A next |
+| #150 (RowCountCaption core) | **#156** | ⏳ queued |
+| ... | **+5 from original plan numbers from here** | — |
 
 ## Blocking prerequisite
 
@@ -29,19 +30,21 @@ Plan's original `#147-#169` is now `#147-#152` done (Jac's #151 QA polish pack +
 
 Priority: backend correctness first, then cross-cutting UI cleanups that touch isolated files.
 
-| Order | # | Slug | Touches | Depends on |
+> **Numbering note (2026-04-21):** After the parking-lot docs PR landed as `#154`, the queue bumped +1. The `# (target)` column below is an *estimate* — the actual number comes from GitHub at PR-open time. Before opening a branch, run `gh pr list --state all --limit 1 --json number --jq '.[0].number'`, add 1 = your target. If the number drifts again, update this file's rows + the collision-gate table as part of your PR's doc bundle.
+
+| Order | # (target) | Slug | Touches | Depends on |
 |---|---|---|---|---|
-| A1 | #154 | `pr-contacts-accounts-pagination` | `main.py` (get_accounts 470, get_contacts 559, get_my_tasks 851, get_opportunity_tasks 924), `tests/test_api_endpoints.py`, `tests/conftest.py` (add `query_all` mock) | #153 |
-| A2 | #165 | `pr-activities-sync-tests` | `tests/test_activity_sync.py` NEW (or extension of `test_activities.py`) | #153 |
-| A3 | #176 | `pr-progress-tracking-orphan-cleanup` | `main.py:44, 120` (unregister router), DELETE `routes/progress_tracking.py`, DELETE `tests/test_progress_tracking.py`, `db/migrations/2026-04-21-drop-progress-tracked-override.sql` NEW (rollback), 3 FE stale comments (`Settings.tsx:680`, `Progress.tsx:~111-115`, `api.ts:~327`) | #153 |
-| A4 | #158 | `pr-opp-type-deprecation` | `main.py` (lines 310, 322, 333, 352-353, 1591, 1619), `types/salesforce.ts:129`, `Opportunities.tsx:45,117,289-290,466-472`, `Opportunities/columns.tsx:36,83-85,157`, `PipelineFilterBar.tsx` (filter UI), DELETE `hooks/useOpportunityTypePicklist.ts`, DELETE `components/inline-edit/cells/TypeCell.tsx`, `conftest.py::make_sf_opportunity`, `test_api_endpoints.py` Type assertion | #153. See `tasks/opp-type-full-delete-decision.md` for full inventory. |
-| A5 | #174 | `pr-b8-progress-full-pipeline` | `pages/Progress.tsx` or `components/PipelineFunnel.tsx` — include Lost/Withdrawn/Did Not Fulfill | #153 |
-| A6 | #155 | `pr-rowcount-caption-details-tabs` | NEW `components/RowCountCaption.tsx` + test, migrate caption in `pages/Opportunities.tsx`, `pages/Accounts.tsx`, `pages/Contacts.tsx`, `pages/Tasks.tsx`. **Depends on A1 #154 for accurate totals** (query_all). | A1 |
-| A7 | #156 | `pr-rowcount-caption-other-surfaces` | `pages/Priorities.tsx`, `pages/Progress.tsx`, `pages/WeeklyPriorities.tsx`, `pages/Accounts.tsx` (nested grid), 6 finance pages (`UnpaidBills`, `ReceivedPayments`, `PendingInvoices`, `PaymentProcessing`, `GivingCapacity`, `FinanceDashboard`) | A6 |
-| A8 | #173 | `pr-b7-dropdown-position` | `components/inline-edit/cells/*Cell.tsx` (MUI Autocomplete/Select PopperProps anchor) | #153 |
-| A9 | #172 | `pr-b5-inline-edit-softening` | `components/inline-edit/InlineEditable.tsx`, `utils/fieldSensitivity.ts` — soften gate on Amount + Probability, keep Stage | #153 |
-| A10 | #175 | `pr-b9-inline-edit-affordance` | `components/inline-edit/InlineEditable.tsx` — blue-highlight field when in edit mode | A9 (same file) |
-| A11 | #166 | `pr-activities-detail-tabs` | `components/AccountEditDialog.tsx` — add Activities tab wired to ActivityTimeline | B3 (#161) done (both touch AccountEditDialog.tsx) |
+| A1 | #155 | `pr-contacts-accounts-pagination` | `main.py` (get_accounts 470, get_contacts 559, get_my_tasks 851, get_opportunity_tasks 924), `tests/test_api_endpoints.py`, `tests/conftest.py` (add `query_all` mock) | #153 |
+| A2 | #166 | `pr-activities-sync-tests` | `tests/test_activity_sync.py` NEW (or extension of `test_activities.py`) | #153 |
+| A3 | #177 | `pr-progress-tracking-orphan-cleanup` | `main.py:44, 120` (unregister router), DELETE `routes/progress_tracking.py`, DELETE `tests/test_progress_tracking.py`, `db/migrations/2026-04-21-drop-progress-tracked-override.sql` NEW (rollback), 3 FE stale comments (`Settings.tsx:680`, `Progress.tsx:~111-115`, `api.ts:~327`) | #153 |
+| A4 | #159 | `pr-opp-type-deprecation` | `main.py` (lines 310, 322, 333, 352-353, 1591, 1619), `types/salesforce.ts:129`, `Opportunities.tsx:45,117,289-290,466-472`, `Opportunities/columns.tsx:36,83-85,157`, `PipelineFilterBar.tsx` (filter UI), DELETE `hooks/useOpportunityTypePicklist.ts`, DELETE `components/inline-edit/cells/TypeCell.tsx`, `conftest.py::make_sf_opportunity`, `test_api_endpoints.py` Type assertion | #153. See `tasks/opp-type-full-delete-decision.md` for full inventory. |
+| A5 | #175 | `pr-b8-progress-full-pipeline` | `pages/Progress.tsx` or `components/PipelineFunnel.tsx` — include Lost/Withdrawn/Did Not Fulfill | #153 |
+| A6 | #156 | `pr-rowcount-caption-details-tabs` | NEW `components/RowCountCaption.tsx` + test, migrate caption in `pages/Opportunities.tsx`, `pages/Accounts.tsx`, `pages/Contacts.tsx`, `pages/Tasks.tsx`. **Depends on A1 #155 for accurate totals** (query_all). | A1 |
+| A7 | #157 | `pr-rowcount-caption-other-surfaces` | `pages/Priorities.tsx`, `pages/Progress.tsx`, `pages/WeeklyPriorities.tsx`, `pages/Accounts.tsx` (nested grid), 6 finance pages (`UnpaidBills`, `ReceivedPayments`, `PendingInvoices`, `PaymentProcessing`, `GivingCapacity`, `FinanceDashboard`) | A6 |
+| A8 | #174 | `pr-b7-dropdown-position` | `components/inline-edit/cells/*Cell.tsx` (MUI Autocomplete/Select PopperProps anchor) | #153 |
+| A9 | #173 | `pr-b5-inline-edit-softening` | `components/inline-edit/InlineEditable.tsx`, `utils/fieldSensitivity.ts` — soften gate on Amount + Probability, keep Stage | #153 |
+| A10 | #176 | `pr-b9-inline-edit-affordance` | `components/inline-edit/InlineEditable.tsx` — blue-highlight field when in edit mode | A9 (same file) |
+| A11 | #167 | `pr-activities-detail-tabs` | `components/AccountEditDialog.tsx` — add Activities tab wired to ActivityTimeline | B3 done (both touch AccountEditDialog.tsx) |
 
 ---
 
@@ -49,22 +52,21 @@ Priority: backend correctness first, then cross-cutting UI cleanups that touch i
 
 Priority: dialog audits first (foundation), then TaskPanel stream (WhoId then picklists then bug fixes), then closing items.
 
-| Order | # | Slug | Touches | Depends on |
+| Order | # (target) | Slug | Touches | Depends on |
 |---|---|---|---|---|
-| B1 | #159 | `pr-use-schema-picklist` | NEW `hooks/useSchemaPicklist.ts` + small test | #153 |
-| B2 | #160 | `pr-dialog-audit-opportunity` | `components/OpportunityEditDialog.tsx` only — convert `OPPORTUNITY_STAGES` → `useSchemaPicklist('Opportunity', 'StageName')`, convert `RenewalRepeat__c` picklist, add editable `Earliest_Scheduled_Payment__c` | B1 |
-| B3 | #161 | `pr-dialog-audit-account` | `components/AccountEditDialog.tsx` only — convert `FALLBACK_TYPES`, `FALLBACK_TIERS`, all remaining hardcoded picklists → `useSchemaPicklist`; convert `npsp__Matching_Gift_Request_Deadline__c` text → date picker | B1 |
-| B4 | #162 | `pr-dialog-audit-contact` | `components/ContactEditDialog.tsx` only — convert `FALLBACK_SALUTATIONS` → schema, add editable `npe01__AlternateEmail__c` | B1 |
-| B5 | #157 | `pr-tasks-whoid` | `main.py:900-918` (`TaskCreateRequest`, `TaskUpdateRequest` add `WhoId`), `main.py` task create/update handlers, `components/TaskPanel.tsx` (Contact autocomplete), `tests/test_api_endpoints.py` (WhoId round-trip) | #153 |
-| B6 | #163 | `pr-dialog-audit-taskpanel` | `components/TaskPanel.tsx` — convert hardcoded Status + Priority MenuItems → `useSchemaPicklist('Task', 'Status')` + `useSchemaPicklist('Task', 'Priority')` | B1 + B5 |
-| B7 | #167 | `pr-b4a-task-title-true` | `components/TaskPanel.tsx` — trace + fix title-coerces-to-"True" on save | B6 (same file) |
-| B8 | #168 | `pr-b4b-task-description-400` | `components/TaskPanel.tsx` + `main.py::update_task` (if backend body mismatch) | B7 |
-| B9 | #169 | `pr-b4c-task-title-not-persisting` | `components/TaskPanel.tsx` — fix title-on-create | B8 |
-| B10 | #170 | `pr-b4d-task-wrong-opportunity` | `components/TaskPanel.tsx` — fix WhatId binding on create | B9 |
-| B11 | #171 | `pr-b4e-task-delete-no-refresh` | `components/TaskPanel.tsx` + react-query cache-key invalidation | B10 |
-| B12 | #164 | `pr-activities-list-page` | NEW `pages/Activities.tsx`, `pages/Details.tsx` (drop Leads tab + TAB_MAP, add Activities tab), `components/Layout.tsx:86-90` subtitle | #153 |
-| B13 | #177 | `pr-drivelink-stub-fix` | `components/TaskPanel.tsx` — decision point inside PR: strip DriveLink UI, OR wire through to SF custom field (ask JP first) | B11 (same file) |
-| B14 | #166 (crossed) | `pr-activities-detail-tabs` | ALREADY IN LANE A — listed here for reference (depends on B3) | — |
+| B1 | #160 | `pr-use-schema-picklist` | NEW `hooks/useSchemaPicklist.ts` + small test | #153 |
+| B2 | #161 | `pr-dialog-audit-opportunity` | `components/OpportunityEditDialog.tsx` only — convert `OPPORTUNITY_STAGES` → `useSchemaPicklist('Opportunity', 'StageName')`, convert `RenewalRepeat__c` picklist, add editable `Earliest_Scheduled_Payment__c` | B1 |
+| B3 | #162 | `pr-dialog-audit-account` | `components/AccountEditDialog.tsx` only — convert `FALLBACK_TYPES`, `FALLBACK_TIERS`, all remaining hardcoded picklists → `useSchemaPicklist`; convert `npsp__Matching_Gift_Request_Deadline__c` text → date picker | B1 |
+| B4 | #163 | `pr-dialog-audit-contact` | `components/ContactEditDialog.tsx` only — convert `FALLBACK_SALUTATIONS` → schema, add editable `npe01__AlternateEmail__c` | B1 |
+| B5 | #158 | `pr-tasks-whoid` | `main.py:900-918` (`TaskCreateRequest`, `TaskUpdateRequest` add `WhoId`), `main.py` task create/update handlers, `components/TaskPanel.tsx` (Contact autocomplete), `tests/test_api_endpoints.py` (WhoId round-trip) | #153 |
+| B6 | #164 | `pr-dialog-audit-taskpanel` | `components/TaskPanel.tsx` — convert hardcoded Status + Priority MenuItems → `useSchemaPicklist('Task', 'Status')` + `useSchemaPicklist('Task', 'Priority')` | B1 + B5 |
+| B7 | #168 | `pr-b4a-task-title-true` | `components/TaskPanel.tsx` — trace + fix title-coerces-to-"True" on save | B6 (same file) |
+| B8 | #169 | `pr-b4b-task-description-400` | `components/TaskPanel.tsx` + `main.py::update_task` (if backend body mismatch) | B7 |
+| B9 | #170 | `pr-b4c-task-title-not-persisting` | `components/TaskPanel.tsx` — fix title-on-create | B8 |
+| B10 | #171 | `pr-b4d-task-wrong-opportunity` | `components/TaskPanel.tsx` — fix WhatId binding on create | B9 |
+| B11 | #172 | `pr-b4e-task-delete-no-refresh` | `components/TaskPanel.tsx` + react-query cache-key invalidation | B10 |
+| B12 | #165 | `pr-activities-list-page` | NEW `pages/Activities.tsx`, `pages/Details.tsx` (drop Leads tab + TAB_MAP, add Activities tab), `components/Layout.tsx:86-90` subtitle | #153 |
+| B13 | #178 | `pr-drivelink-stub-fix` | `components/TaskPanel.tsx` — decision point inside PR: strip DriveLink UI, OR wire through to SF custom field (ask JP first) | B11 (same file) |
 
 ---
 
@@ -76,19 +78,19 @@ Before merging a PR in one lane, check if the concurrent PR in the other lane to
 
 | Round | Lane A | Lane B | Shared files? |
 |---|---|---|---|
-| 1 | A1 #154 pagination | B1 #159 useSchemaPicklist | ❌ none (main.py list endpoints vs new hook file) |
-| 2 | A2 #165 sync tests | B2 #160 Opp dialog audit | ❌ none |
-| 3 | A3 #176 orphan cleanup | B3 #161 Account dialog | ❌ none (#176 touches `Progress.tsx` comment only — not AccountEditDialog) |
-| 4 | A4 #158 Opp.Type delete | B4 #162 Contact dialog | ❌ none (A4 touches Opp-related + PipelineFilterBar; B4 is ContactEditDialog only) |
-| 5 | A5 #174 Progress full pipeline | B5 #157 Tasks WhoId | ❌ none (A5 touches `Progress.tsx`/`PipelineFunnel.tsx`; B5 touches `main.py:900-918` + `TaskPanel.tsx`) |
-| 6 | A6 #155 RowCountCaption core | B6 #163 TaskPanel picklists | ❌ none (A6 touches `Tasks.tsx` grid; B6 touches `TaskPanel.tsx` drawer — **different files**) |
-| 7 | A7 #156 RowCountCaption elsewhere | B7 #167 B4a task title | ❌ none (A7 touches pages; B7 touches TaskPanel.tsx) |
-| 8 | A8 #173 dropdown position | B8 #168 task description 400 | ❌ none (A8 touches inline-edit cells; B8 touches TaskPanel.tsx + `main.py::update_task` — different main.py region from A1) |
-| 9 | A9 #172 inline-edit softening | B9 #169 task title persist | ❌ none |
-| 10 | A10 #175 inline-edit affordance | B10 #170 task wrong opp | ❌ none |
-| 11 | A11 #166 Activities on Account | B11 #171 task delete refresh | ❌ none (A11 touches AccountEditDialog AFTER B3 merged; B11 touches TaskPanel.tsx) |
-| 12 | Lane A idle | B12 #164 Activities list page | n/a |
-| 13 | Lane A idle | B13 #177 DriveLink fix | n/a |
+| 1 | A1 pagination | B1 useSchemaPicklist | ❌ none (main.py list endpoints vs new hook file) |
+| 2 | A2 sync tests | B2 Opp dialog audit | ❌ none |
+| 3 | A3 orphan cleanup | B3 Account dialog | ❌ none (A3 touches `Progress.tsx` comment only — not AccountEditDialog) |
+| 4 | A4 Opp.Type delete | B4 Contact dialog | ❌ none (A4 touches Opp-related + PipelineFilterBar; B4 is ContactEditDialog only) |
+| 5 | A5 Progress full pipeline | B5 Tasks WhoId | ❌ none (A5 touches `Progress.tsx`/`PipelineFunnel.tsx`; B5 touches `main.py:900-918` + `TaskPanel.tsx`) |
+| 6 | A6 RowCountCaption core | B6 TaskPanel picklists | ❌ none (A6 touches `Tasks.tsx` grid; B6 touches `TaskPanel.tsx` drawer — **different files**) |
+| 7 | A7 RowCountCaption elsewhere | B7 B4a task title | ❌ none (A7 touches pages; B7 touches TaskPanel.tsx) |
+| 8 | A8 dropdown position | B8 task description 400 | ❌ none (A8 touches inline-edit cells; B8 touches TaskPanel.tsx + `main.py::update_task` — different main.py region from A1) |
+| 9 | A9 inline-edit softening | B9 task title persist | ❌ none |
+| 10 | A10 inline-edit affordance | B10 task wrong opp | ❌ none |
+| 11 | A11 Activities on Account | B11 task delete refresh | ❌ none (A11 touches AccountEditDialog AFTER B3 merged; B11 touches TaskPanel.tsx) |
+| 12 | Lane A idle | B12 Activities list page | n/a |
+| 13 | Lane A idle | B13 DriveLink fix | n/a |
 
 **Collision red flags to watch for during actual execution** (if a PR's scope grows beyond this table):
 
