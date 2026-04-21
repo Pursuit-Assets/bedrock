@@ -35,6 +35,8 @@ jest.mock('../services/api', () => ({
     getUsers: jest.fn(),
     getAccounts: jest.fn(),
     updateOpportunity: jest.fn(),
+    // PR #169: destructive Delete on the Details footer.
+    deleteSfOpportunity: jest.fn(),
     // Used by the Payment Schedule inline accordion (lazy-fetch on expand).
     getSfOpportunityPayments: jest.fn(),
     // Used by the nested PaymentEditDialog when user clicks an edit icon
@@ -75,6 +77,7 @@ const getAccounts = apiService.getAccounts as jest.Mock;
 const getSfOpportunityPayments = apiService.getSfOpportunityPayments as jest.Mock;
 const updateSfPayment = apiService.updateSfPayment as jest.Mock;
 const createSfPayment = apiService.createSfPayment as jest.Mock;
+const deleteSfOpportunity = apiService.deleteSfOpportunity as jest.Mock;
 const usePermissionsMock = usePermissions as jest.Mock;
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -203,6 +206,7 @@ beforeEach(() => {
   getSfOpportunityPayments.mockResolvedValue({ data: [] });
   updateSfPayment.mockReset();
   createSfPayment.mockReset();
+  deleteSfOpportunity.mockReset();
   usePermissionsMock.mockReset();
   usePermissionsMock.mockReturnValue(defaultPermissions());
 });
@@ -590,5 +594,57 @@ describe('OpportunityEditDialog — Payment Schedule inline accordion', () => {
 
     await screen.findByText(/^Payment Schedule$/);
     expect(screen.queryByRole('button', { name: /Add payment/i })).not.toBeInTheDocument();
+  });
+});
+
+// PR #169 test 16 — destructive Delete on Details footer. Locks down the
+// two-step popover flow + parent's onDeleted wiring. Mirrors the patterns
+// in PaymentEditDialog.test.tsx:353-400 and AccountEditDialog.test.tsx.
+describe('OpportunityEditDialog — destructive delete', () => {
+  it('shows a warning popover before firing deleteSfOpportunity on confirm', async () => {
+    mockSchema({
+      stages: [{ value: 'Qualifying', active: true }],
+      renewalRepeat: [],
+    });
+    deleteSfOpportunity.mockResolvedValue({ data: { success: true } });
+    const onDeleted = jest.fn();
+    const onClose = jest.fn();
+
+    render(
+      <OpportunityEditDialog
+        open
+        onClose={onClose}
+        onDeleted={onDeleted}
+        opportunityId="006000000000001"
+        initialData={buildOpp({ StageName: 'Qualifying' })}
+      />,
+      { wrapper: createWrapper() },
+    );
+
+    // Footer Delete button (popover closed).
+    const footerDelete = await screen.findByRole('button', { name: 'Delete' });
+    fireEvent.click(footerDelete);
+
+    await screen.findByText('Delete Opportunity?');
+    expect(
+      screen.getByText(/This permanently deletes the opportunity from Salesforce/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/This cannot be undone/),
+    ).toBeInTheDocument();
+
+    // Popover open → network call must NOT have fired yet.
+    expect(deleteSfOpportunity).not.toHaveBeenCalled();
+
+    // Popover's focus-trap hides the footer Delete; the only accessible
+    // "Delete" role-name is the popover's Confirm button.
+    const confirmDelete = screen.getByRole('button', { name: 'Delete' });
+    fireEvent.click(confirmDelete);
+
+    await waitFor(() => {
+      expect(deleteSfOpportunity).toHaveBeenCalledWith('006000000000001');
+      expect(onDeleted).toHaveBeenCalledWith('006000000000001');
+      expect(onClose).toHaveBeenCalled();
+    });
   });
 });

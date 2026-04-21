@@ -900,10 +900,13 @@ const TaskPanel: React.FC<TaskPanelProps> = ({ open, onClose, opportunity, users
               {/* Status: schema-driven via useSchemaPicklist('Task', 'Status').
                   Fall back to the four common SF defaults (Not Started /
                   In Progress / Completed / Deferred) when the schema
-                  describe is unavailable. */}
+                  describe is unavailable. id/labelId wire the InputLabel
+                  to the Select's aria-labelledby so screen readers + tests
+                  can resolve the field's accessible name. */}
               <FormControl size="small" sx={{ flex: 1 }}>
-                <InputLabel>Status</InputLabel>
+                <InputLabel id="task-create-status-label">Status</InputLabel>
                 <Select
+                  labelId="task-create-status-label"
                   value={newTask.Status}
                   label="Status"
                   onChange={(e) => setNewTask({ ...newTask, Status: e.target.value })}
@@ -921,8 +924,9 @@ const TaskPanel: React.FC<TaskPanelProps> = ({ open, onClose, opportunity, users
                   the emoji prefixes — SF doesn't store them, and they'd
                   break if SF ever adds a new priority value. */}
               <FormControl size="small" sx={{ flex: 1 }}>
-                <InputLabel>Priority</InputLabel>
+                <InputLabel id="task-create-priority-label">Priority</InputLabel>
                 <Select
+                  labelId="task-create-priority-label"
                   value={newTask.Priority}
                   label="Priority"
                   onChange={(e) => setNewTask({ ...newTask, Priority: e.target.value })}
@@ -1263,8 +1267,9 @@ const TaskItem: React.FC<TaskItemProps> = ({
             const showInactive = currentValue && !opts.includes(currentValue);
             return (
               <FormControl size="small" sx={{ flex: 1 }}>
-                <InputLabel>Status</InputLabel>
+                <InputLabel id={`task-edit-status-label-${task.Id}`}>Status</InputLabel>
                 <Select
+                  labelId={`task-edit-status-label-${task.Id}`}
                   value={currentValue}
                   label="Status"
                   onChange={(e) => setEditTask({ ...editTask, Status: e.target.value })}
@@ -1293,8 +1298,9 @@ const TaskItem: React.FC<TaskItemProps> = ({
             const showInactive = currentValue && !opts.includes(currentValue);
             return (
               <FormControl size="small" sx={{ flex: 1 }}>
-                <InputLabel>Priority</InputLabel>
+                <InputLabel id={`task-edit-priority-label-${task.Id}`}>Priority</InputLabel>
                 <Select
+                  labelId={`task-edit-priority-label-${task.Id}`}
                   value={currentValue}
                   label="Priority"
                   onChange={(e) => setEditTask({ ...editTask, Priority: e.target.value })}
