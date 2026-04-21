@@ -261,7 +261,11 @@ class TestUpdateProjectTask:
 
 
 class TestSoftDeleteProject:
+    # M19 added an ownership SELECT at the top of delete_project; these tests
+    # mock fetchrow to return a non-None owner row so the route reaches the
+    # UPDATE branch. The admin-perm test user bypasses the email-match check.
     def test_soft_delete_returns_moved_to_trash(self, authed_client, mock_db):
+        mock_db.fetchrow = AsyncMock(return_value=MockDBRow(owner_email="test@pursuit.org"))
         mock_db.execute = AsyncMock(return_value="UPDATE 1")
         resp = authed_client.delete(f"/api/projects/{PROJECT_ID}")
         assert resp.status_code == 200
@@ -277,6 +281,7 @@ class TestSoftDeleteProject:
             assert "DELETE" not in sql
 
     def test_soft_delete_cascades_to_children(self, authed_client, mock_db):
+        mock_db.fetchrow = AsyncMock(return_value=MockDBRow(owner_email="test@pursuit.org"))
         mock_db.execute = AsyncMock(return_value="UPDATE 1")
         authed_client.delete(f"/api/projects/{PROJECT_ID}")
         # 4 UPDATEs: project, workstreams, milestones, tasks
@@ -288,6 +293,7 @@ class TestSoftDeleteProject:
         assert resp.status_code == 404
 
     def test_soft_delete_sets_deleted_by(self, authed_client, mock_db):
+        mock_db.fetchrow = AsyncMock(return_value=MockDBRow(owner_email="test@pursuit.org"))
         mock_db.execute = AsyncMock(return_value="UPDATE 1")
         authed_client.delete(f"/api/projects/{PROJECT_ID}")
         first_call = mock_db.execute.call_args_list[0]
@@ -356,8 +362,11 @@ class TestSoftDeleteTask:
 class TestTrashList:
     def test_list_deleted_projects(self, authed_client, mock_db):
         deleted_at = datetime(2026, 3, 28, tzinfo=timezone.utc)
+        # list_deleted_projects reads owner_email for each row (M19)
         mock_db.fetch = AsyncMock(return_value=[
-            MockDBRow(id=uuid.UUID(PROJECT_ID), name="Old Project", description="", deleted_at=deleted_at, deleted_by="test@pursuit.org"),
+            MockDBRow(id=uuid.UUID(PROJECT_ID), name="Old Project", description="",
+                      owner_email="test@pursuit.org", deleted_at=deleted_at,
+                      deleted_by="test@pursuit.org"),
         ])
         resp = authed_client.get("/api/projects/trash")
         assert resp.status_code == 200
@@ -421,7 +430,12 @@ class TestRestoreProject:
 
 class TestPurgeProject:
     def test_purge_hard_deletes(self, admin_client, mock_db):
-        mock_db.fetchrow = AsyncMock(return_value=MockDBRow(id=uuid.UUID(PROJECT_ID)))
+        # purge enforces a 60-day soft-delete retention window; use an old
+        # deleted_at so `age >= retention` and the hard DELETE runs.
+        old_deleted_at = datetime(2025, 1, 1, tzinfo=timezone.utc)
+        mock_db.fetchrow = AsyncMock(return_value=MockDBRow(
+            id=uuid.UUID(PROJECT_ID), deleted_at=old_deleted_at,
+        ))
         mock_db.execute = AsyncMock(return_value="DELETE 1")
         resp = admin_client.delete(f"/api/projects/{PROJECT_ID}/purge")
         assert resp.status_code == 200
@@ -551,8 +565,11 @@ class TestProjectPermissions:
 
     def test_pm_can_create_project(self, mock_db):
         row = _make_perm_user_row(PM_PERMS, "Project Manager", PM_PROFILE_ID)
+        # M19 create_project RETURNING selects id, name, description, owner_email,
+        # created_by, created_at — all six must be present on the mock row.
         new_project = MockDBRow(
             id=PROJECT_ID, name="New Project", description="",
+            owner_email="test@pursuit.org", created_by="test@pursuit.org",
             created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
             updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
         )
