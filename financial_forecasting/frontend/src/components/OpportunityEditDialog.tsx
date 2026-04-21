@@ -1075,58 +1075,18 @@ const OpportunityEditDialog: React.FC<OpportunityEditDialogProps> = ({
                   )}
                 </Box>
               </Grid>
-              <Grid item xs={12} sm={6}>
-                <TextField
-                  label="Contract Start Date"
-                  fullWidth
-                  size="small"
-                  type="date"
-                  disabled={!canEdit}
-                  value={editForm.Contract_Start_Date__c || ''}
-                  onChange={(e) =>
-                    handleFieldChange('Contract_Start_Date__c', e.target.value)
-                  }
-                  InputLabelProps={{ shrink: true }}
-                />
-              </Grid>
-              <Grid item xs={12} sm={6}>
-                <TextField
-                  label="Contract End Date"
-                  fullWidth
-                  size="small"
-                  type="date"
-                  disabled={!canEdit}
-                  value={editForm.Contract_End_Date__c || ''}
-                  onChange={(e) =>
-                    handleFieldChange('Contract_End_Date__c', e.target.value)
-                  }
-                  InputLabelProps={{ shrink: true }}
-                />
-              </Grid>
-              <Grid item xs={12} sm={6}>
-                <TextField
-                  label="Payment Terms"
-                  fullWidth
-                  size="small"
-                  disabled={!canEdit}
-                  value={editForm.Payment_Terms__c || ''}
-                  onChange={(e) =>
-                    handleFieldChange('Payment_Terms__c', e.target.value)
-                  }
-                />
-              </Grid>
-              <Grid item xs={12} sm={6}>
-                <TextField
-                  label="Billing Frequency"
-                  fullWidth
-                  size="small"
-                  disabled={!canEdit}
-                  value={editForm.Billing_Frequency__c || ''}
-                  onChange={(e) =>
-                    handleFieldChange('Billing_Frequency__c', e.target.value)
-                  }
-                />
-              </Grid>
+              {/* Contract_Start_Date__c / Contract_End_Date__c /
+                  Payment_Terms__c / Billing_Frequency__c removed
+                  2026-04-21 (PR #167 hotfix cause-analysis + #168
+                  cleanup). These were declared on the TypeScript
+                  interface and bound here, but the underlying custom
+                  fields don't exist on the Opportunity object in
+                  Pursuit's live SF org (confirmed by Jac when adding
+                  them to the SOQL broke get_opportunities in prod).
+                  Re-add when/if the fields are actually created in SF.
+                  The forecasting engine still references Payment_Terms__c
+                  — left untouched here; separate investigation tracks
+                  whether that code path is live or dead. */}
             </Grid>
 
             {/* ── Read-only footer ────────────────────────────────────── */}

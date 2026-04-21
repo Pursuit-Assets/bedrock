@@ -70,10 +70,13 @@ def make_sf_opportunity(overrides: Dict[str, Any] = None) -> Dict[str, Any]:
         "OwnerId": "005TESTOWNER00001",
         "CreatedDate": "2026-01-15T10:00:00.000+0000",
         "LastModifiedDate": "2026-03-10T14:30:00.000+0000",
-        "Payment_Terms__c": "Net 30",
-        "Contract_Start_Date__c": None,
-        "Contract_End_Date__c": None,
-        "Billing_Frequency__c": None,
+        # NOTE: Payment_Terms__c / Contract_Start_Date__c /
+        # Contract_End_Date__c / Billing_Frequency__c removed 2026-04-21
+        # — they don't exist on Opportunity in Pursuit's live SF org.
+        # test_forecasting_engine and test_forecasting_integration still
+        # pass Payment_Terms__c via explicit overrides (forecasting code
+        # reads it); not reintroducing as a default here since that's
+        # misleading about Pursuit's real schema.
     }
     if overrides:
         opp.update(overrides)

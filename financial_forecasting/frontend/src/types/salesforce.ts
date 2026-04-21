@@ -132,10 +132,13 @@ export interface SalesforceOpportunity {
   OwnerId: string;
   CreatedDate: string | null;
   LastModifiedDate: string | null;
-  Payment_Terms__c: string | null;
-  Contract_Start_Date__c: string | null;
-  Contract_End_Date__c: string | null;
-  Billing_Frequency__c: string | null;
+  // Payment_Terms__c / Contract_Start_Date__c / Contract_End_Date__c /
+  // Billing_Frequency__c removed 2026-04-21 — these custom fields don't
+  // exist on the Opportunity object in Pursuit's live SF org. PR #162
+  // added them to the SOQL and broke the endpoint (SF rejects SELECTs
+  // on unknown fields); PR #167 reverted the SOQL; PR #168 strips the
+  // dead TS + dialog bindings. Re-add when/if the fields are actually
+  // created in SF.
   // Pursuit custom fields
   RenewalRepeat__c: string | null;
   Active_Opportunity__c: boolean | null;

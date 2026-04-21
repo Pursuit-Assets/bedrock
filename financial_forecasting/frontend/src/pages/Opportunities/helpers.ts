@@ -73,8 +73,7 @@ export interface Opportunity {
   Description?: string;
   ForecastCategory?: string;
   ExpectedRevenue?: number;
-  Payment_Terms__c?: string;
-  Contract_Start_Date__c?: string;
-  Contract_End_Date__c?: string;
-  Billing_Frequency__c?: string;
+  // Payment_Terms__c / Contract_Start_Date__c / Contract_End_Date__c /
+  // Billing_Frequency__c removed 2026-04-21 — don't exist on Opportunity
+  // in Pursuit's live SF org. See types/salesforce.ts comment + PR #168.
 }
