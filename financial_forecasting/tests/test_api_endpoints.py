@@ -340,18 +340,21 @@ class TestSalesforceOpportunities:
         # the API contract so regressions here get caught even if the
         # frontend regresses separately.
         assert data[0]["RecordType"]["Name"] == "Other fee for service"
-        # SOQL-inclusion guards. 2026-04-21 adversarial verification
-        # discovered that several custom fields bound in OpportunityEditDialog
-        # were missing from the SOQL SELECT — saved values would silently not
-        # round-trip to the dialog on reopen. RenewalRepeat__c fixed in PR #160;
-        # Contract/Payment/Billing fields fixed in this PR. Pin each invariant
-        # so future regressions fail the test.
+        # SOQL-inclusion guard for RenewalRepeat__c — A4 adversarial
+        # verification caught it was missing from the SELECT despite being
+        # bound in OpportunityEditDialog + Progress.tsx isRenewal.
+        #
+        # PR #162 added 4 more pins (Contract_Start_Date__c,
+        # Contract_End_Date__c, Payment_Terms__c, Billing_Frequency__c)
+        # but Pursuit's SF org doesn't actually have those custom fields —
+        # SF rejected the whole SELECT with an unknown-field error,
+        # breaking the Opportunities endpoint in prod 2026-04-21. Hotfix
+        # PR #167 reverted the 4 additions from the SOQL and removed the
+        # pins. The frontend still binds them (speculative TS interface +
+        # OpportunityEditDialog inputs) — that ghost-binding is a
+        # separate latent bug tracked for follow-up cleanup.
         soql = mock_client.salesforce.query_all.call_args[0][0]
         assert "RenewalRepeat__c" in soql
-        assert "Contract_Start_Date__c" in soql
-        assert "Contract_End_Date__c" in soql
-        assert "Payment_Terms__c" in soql
-        assert "Billing_Frequency__c" in soql
 
     def test_get_opportunities_with_stage_filter(self, client, mock_client):
         opp = make_sf_opportunity({"StageName": "Qualifying"})
