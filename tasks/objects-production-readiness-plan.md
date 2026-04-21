@@ -259,10 +259,12 @@ For Progress (file rename only — component is already `Progress`):
 
 ### PR #153 — `pr-use-schema-picklist`
 
+> **Numbering update (2026-04-21):** This plan entry's "#153" now maps to actual PR **#156** per the shift table in `tasks/parallel-pr-lanes.md` (A1 landed at #155 first; B1 opened right after). Scope preserved as written below, with one correction in the second bullet — see callout.
+
 **Foundation for PRs #154-#157. No user-visible change.**
 
 - Generalize `frontend/src/hooks/useOpportunityTypePicklist.ts` → `frontend/src/hooks/useSchemaPicklist.ts`. Signature: `useSchemaPicklist(sobject: string, fieldName: string)`. React-query cache keyed on `['schema-picklist', sobject, fieldName]`, 30-min staleTime.
-- Retire `useOpportunityTypePicklist` as a thin wrapper: `export const useOpportunityTypePicklist = () => useSchemaPicklist('Opportunity', 'Type');`. Callers unchanged.
+- ~~Retire `useOpportunityTypePicklist` as a thin wrapper: `export const useOpportunityTypePicklist = () => useSchemaPicklist('Opportunity', 'Type');`. Callers unchanged.~~ **Superseded (2026-04-21):** `useOpportunityTypePicklist` is deleted outright by Lane A4 (`pr-opp-type-deprecation`) along with its consumers (`TypeCell.tsx`, inline-edit grid column, `PipelineFilterBar` Type filter, `main.py` Type references). See `tasks/opp-type-full-delete-decision.md` for the full inventory. B1's PR does not touch the old hook — A4 handles deletion cleanly; thin-wrapper path would duplicate A4's work.
 - Tests: unit test with mocked `apiService.getSchemaDescribe`.
 
 ---

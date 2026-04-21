@@ -6,7 +6,7 @@
 
 ## Numbering shift
 
-Plan's original `#147-#169` is now `#147-#152` done (Jac's #151 QA polish pack + rollups), remaining shifted +4.
+Plan's original `#147-#169` maps to actual numbers via the table below. Lane-interleaved execution means a single shift number no longer applies cleanly; each PR locks its actual number at `gh pr create` time and updates this table.
 
 | Original plan # | Actual # | Status |
 |---|---|---|
@@ -15,10 +15,11 @@ Plan's original `#147-#169` is now `#147-#152` done (Jac's #151 QA polish pack +
 | — (Jac's QA pack) | #151 | ✅ merged 2026-04-21 |
 | — (rollups) | #149, #150, #152 | ✅ release branches |
 | — (singleton race fix) | #153 | ✅ merged 2026-04-21 |
-| — (parking-lot docs) | #154 | 🚧 this PR |
-| #149 (pagination) | **#155** | ⏳ Lane A next |
-| #150 (RowCountCaption core) | **#156** | ⏳ queued |
-| ... | **+5 from original plan numbers from here** | — |
+| — (parking-lot docs) | #154 | ✅ merged 2026-04-21 |
+| #149 (pagination — A1) | #155 | ✅ merged 2026-04-21 |
+| #153 (B1 schema-picklist hook) | **#156** | 👀 this PR (2026-04-21) |
+| #150 (RowCountCaption core) | **#157** (was #156) | ⏳ queued |
+| ... | later targets locked at PR-open time — lane-interleaved | — |
 
 ## Blocking prerequisite
 
@@ -52,9 +53,11 @@ Priority: backend correctness first, then cross-cutting UI cleanups that touch i
 
 Priority: dialog audits first (foundation), then TaskPanel stream (WhoId then picklists then bug fixes), then closing items.
 
+> **Numbering note (2026-04-21, updated after B1 shipped at #156):** A1 merged at #155 (on-schedule for its plan slot), then B1 opened immediately after at #156 — so the original `#160-#178` Lane B estimates shift down by 4. The `# (target)` column below is an *estimate*; the actual number comes from GitHub at PR-open time. Same procedure as Lane A: before cutting a branch, run `gh pr list --state all --limit 1 --json number --jq '.[0].number'`, add 1 = your target, update this file's row + the collision-gate numbering if it drifts further.
+
 | Order | # (target) | Slug | Touches | Depends on |
 |---|---|---|---|---|
-| B1 | #160 | `pr-use-schema-picklist` | NEW `hooks/useSchemaPicklist.ts` + small test | #153 |
+| B1 | **#156** 👀 | `pr-use-schema-picklist` | NEW `hooks/useSchemaPicklist.ts` + `useSchemaPicklist.test.tsx` + bundled doc updates (this file + `jac-running-notes.md` + `objects-production-readiness-plan.md` PR #153 scope tweak) | #153 |
 | B2 | #161 | `pr-dialog-audit-opportunity` | `components/OpportunityEditDialog.tsx` only — convert `OPPORTUNITY_STAGES` → `useSchemaPicklist('Opportunity', 'StageName')`, convert `RenewalRepeat__c` picklist, add editable `Earliest_Scheduled_Payment__c` | B1 |
 | B3 | #162 | `pr-dialog-audit-account` | `components/AccountEditDialog.tsx` only — convert `FALLBACK_TYPES`, `FALLBACK_TIERS`, all remaining hardcoded picklists → `useSchemaPicklist`; convert `npsp__Matching_Gift_Request_Deadline__c` text → date picker | B1 |
 | B4 | #163 | `pr-dialog-audit-contact` | `components/ContactEditDialog.tsx` only — convert `FALLBACK_SALUTATIONS` → schema, add editable `npe01__AlternateEmail__c` | B1 |
