@@ -32,6 +32,12 @@ interface PaymentEditDialogProps {
   paymentId: string | null;
   initialData?: Record<string, any>;
   onSaved?: (paymentId: string, updates: Record<string, any>) => void;
+  /** Fires after a successful destructive delete from the footer Delete
+   *  button. Parent is responsible for invalidating any payment list caches
+   *  (the Opp accordion's `paymentListQuery.refetch()` or PaymentSchedule's
+   *  `loadPaymentSchedule()`). Distinct from onSaved because semantics differ
+   *  — no updates dict, record is gone rather than modified. */
+  onDeleted?: (paymentId: string) => void;
 }
 
 // ── Constants ───────────────────────────────────────────────────────────────
@@ -79,6 +85,7 @@ const PaymentEditDialog: React.FC<PaymentEditDialogProps> = ({
   paymentId,
   initialData,
   onSaved,
+  onDeleted,
 }) => {
   const queryClient = useQueryClient();
   const { can, isAdmin } = usePermissions();
@@ -87,6 +94,7 @@ const PaymentEditDialog: React.FC<PaymentEditDialogProps> = ({
   const [editForm, setEditForm] = useState<Record<string, any>>({});
   const [originalRecord, setOriginalRecord] = useState<Record<string, any> | null>(null);
   const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   // Schema-driven picklists. Each hook shares the 30-min react-query cache keyed
   // on (sobject, fieldName) with every other caller so the SF describe fetch
@@ -167,6 +175,33 @@ const PaymentEditDialog: React.FC<PaymentEditDialogProps> = ({
       toast.error(detail);
     } finally {
       setSaving(false);
+    }
+  };
+
+  // ── Delete handler ──────────────────────────────────────────────────────
+  // Destructive and irreversible at the SF level. The Delete button in the
+  // footer uses ConfirmSaveButton's popover pattern with explicit scary
+  // wording so the click chain is always a 2-step opt-in (click Delete →
+  // read the warning → click Delete in the popover).
+  const handleDelete = async () => {
+    if (!paymentId) return;
+    setDeleting(true);
+    try {
+      await apiService.deleteSfPayment(paymentId);
+      toast.success('Payment deleted');
+      // Rollup fields on the parent Opp change when a payment goes away.
+      queryClient.invalidateQueries('opportunities');
+      if (onDeleted) onDeleted(paymentId);
+      onClose();
+    } catch (error: any) {
+      const detail =
+        error?.response?.data?.detail ||
+        error?.response?.data?.error ||
+        error?.message ||
+        'Failed to delete payment';
+      toast.error(detail);
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -558,11 +593,33 @@ const PaymentEditDialog: React.FC<PaymentEditDialogProps> = ({
       </DialogContent>
 
       <DialogActions sx={{ px: 3, py: 1.5 }}>
-        <Button onClick={onClose}>Cancel</Button>
+        {/*
+          Destructive delete: left-aligned via marginRight:auto so the primary
+          Save action stays on the right. ConfirmSaveButton handles the
+          2-step opt-in (click Delete → read warning in popover → confirm).
+          Hidden until the record has loaded (!originalRecord) — nothing to
+          delete yet — and locked behind edit_payments permission.
+        */}
+        {originalRecord && canEdit && (
+          <ConfirmSaveButton
+            onConfirm={handleDelete}
+            loading={deleting}
+            disabled={!paymentId}
+            variant="outlined"
+            color="error"
+            confirmTitle="Delete Payment?"
+            confirmMessage="This permanently deletes the payment from Salesforce. This cannot be undone, and the parent opportunity's payment rollups will recalculate."
+            confirmLabel="Delete"
+            sx={{ mr: 'auto' }}
+          >
+            Delete
+          </ConfirmSaveButton>
+        )}
+        <Button onClick={onClose} disabled={saving || deleting}>Cancel</Button>
         <ConfirmSaveButton
           onConfirm={handleSave}
           loading={saving}
-          disabled={!canEdit || !originalRecord}
+          disabled={!canEdit || !originalRecord || deleting}
         >
           Save
         </ConfirmSaveButton>

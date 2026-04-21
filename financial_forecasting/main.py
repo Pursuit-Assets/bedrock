@@ -826,6 +826,42 @@ async def update_payment(
         raise HTTPException(status_code=400, detail=error_msg)
 
 
+@app.delete("/api/salesforce/payments/{payment_id}")
+async def delete_payment(
+    payment_id: str,
+    client: UnifiedMCPClient = Depends(get_mcp_client),
+    user = Depends(check_permission("edit_payments")),
+):
+    """Delete a Salesforce Payment (npe01__OppPayment__c).
+
+    Destructive and irreversible at the SF level — the frontend caller
+    (PaymentEditDialog) is expected to surface a confirm-before-delete
+    dialog. Permission-gated on `edit_payments` (the same gate used for
+    create and update)."""
+    validate_salesforce_id(payment_id, "payment_id")
+    try:
+        salesforce = client.salesforce
+        success = await salesforce.delete_record("npe01__OppPayment__c", payment_id)
+        if not success:
+            raise HTTPException(400, "Salesforce rejected the delete")
+        # Same cache-invalidation surface as create: rollup fields on the
+        # parent Opportunity update when a payment goes away.
+        cache.invalidate_prefix("payments:")
+        cache.invalidate_prefix("opp-payments:")
+        cache.invalidate_prefix("opportunities:")
+        logger.info(f"Payment {payment_id} deleted by {user['user_id']}")
+        return ApiResponse(
+            success=True,
+            data={"id": payment_id, "message": "Payment deleted"},
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        error_msg = str(e)
+        logger.error(f"Error deleting payment {payment_id}: {error_msg}")
+        raise HTTPException(status_code=400, detail=error_msg)
+
+
 @app.post("/api/salesforce/payments")
 async def create_payment(
     create_request: PaymentCreateRequest,

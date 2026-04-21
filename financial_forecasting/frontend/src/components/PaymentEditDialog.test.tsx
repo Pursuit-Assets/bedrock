@@ -23,6 +23,7 @@ jest.mock('../services/api', () => ({
   apiService: {
     getSchemaDescribe: jest.fn(),
     updateSfPayment: jest.fn(),
+    deleteSfPayment: jest.fn(),
   },
 }));
 
@@ -45,6 +46,7 @@ import PaymentEditDialog from './PaymentEditDialog';
 
 const getSchemaDescribe = apiService.getSchemaDescribe as jest.Mock;
 const updateSfPayment = apiService.updateSfPayment as jest.Mock;
+const deleteSfPayment = apiService.deleteSfPayment as jest.Mock;
 const usePermissionsMock = usePermissions as jest.Mock;
 const mockToast = toast as unknown as jest.Mock & { success: jest.Mock; error: jest.Mock };
 
@@ -121,6 +123,7 @@ function mockSchemaWith(paymentMethods: Array<{ value: string; active: boolean }
 beforeEach(() => {
   getSchemaDescribe.mockReset();
   updateSfPayment.mockReset();
+  deleteSfPayment.mockReset();
   mockToast.mockReset();
   mockToast.success.mockReset();
   mockToast.error.mockReset();
@@ -338,6 +341,78 @@ describe('PaymentEditDialog', () => {
     });
     // No API call made when there are no changes
     expect(updateSfPayment).not.toHaveBeenCalled();
+  });
+
+  it('shows a destructive warning popover before firing deleteSfPayment on confirm', async () => {
+    mockSchemaWith([{ value: 'ACH', active: true }]);
+    deleteSfPayment.mockResolvedValue({ data: { success: true } });
+    const onDeleted = jest.fn();
+    const onClose = jest.fn();
+
+    render(
+      <PaymentEditDialog
+        open
+        onClose={onClose}
+        onDeleted={onDeleted}
+        paymentId="a0x000000000001"
+        initialData={buildInitialData()}
+      />,
+      { wrapper: createWrapper() },
+    );
+
+    // Only one "Delete" button exists initially (popover closed). Click it
+    // to open the ConfirmSaveButton popover — it does NOT fire the delete
+    // directly; user must confirm in the popover.
+    const footerDelete = await screen.findByRole('button', { name: 'Delete' });
+    fireEvent.click(footerDelete);
+
+    // Destructive warning language surfaces in the popover
+    await screen.findByText('Delete Payment?');
+    expect(
+      screen.getByText(/This permanently deletes the payment from Salesforce/),
+    ).toBeInTheDocument();
+    // Irreversibility is called out in the message
+    expect(
+      screen.getByText(/This cannot be undone/),
+    ).toBeInTheDocument();
+
+    // Guard: opening the popover alone has NOT fired the network call
+    expect(deleteSfPayment).not.toHaveBeenCalled();
+
+    // When the popover opens, MUI focus-traps inside it and aria-hides the
+    // rest of the dialog. testing-library's getByRole respects that, so the
+    // only accessible "Delete" button is now the popover's confirm button.
+    const confirmDelete = screen.getByRole('button', { name: 'Delete' });
+    fireEvent.click(confirmDelete);
+
+    await waitFor(() => {
+      expect(deleteSfPayment).toHaveBeenCalledWith('a0x000000000001');
+      expect(onDeleted).toHaveBeenCalledWith('a0x000000000001');
+      expect(onClose).toHaveBeenCalled();
+    });
+  });
+
+  it('hides the Delete button when the user lacks edit_payments permission', async () => {
+    mockSchemaWith([{ value: 'ACH', active: true }]);
+    usePermissionsMock.mockReturnValue(defaultPermissionsResult({
+      isAdmin: false,
+      can: jest.fn().mockReturnValue(false),
+      permissions: {},
+    }));
+
+    render(
+      <PaymentEditDialog
+        open
+        onClose={jest.fn()}
+        paymentId="a0x000000000001"
+        initialData={buildInitialData()}
+      />,
+      { wrapper: createWrapper() },
+    );
+
+    // Wait for the "no permission" banner (a proxy for full render)
+    await screen.findByText(/You don't have permission to edit payments/i);
+    expect(screen.queryByRole('button', { name: 'Delete' })).not.toBeInTheDocument();
   });
 
   it('disables every editable field when the user has no edit_payments permission', async () => {

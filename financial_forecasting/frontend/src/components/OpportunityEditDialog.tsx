@@ -1186,6 +1186,12 @@ const OpportunityEditDialog: React.FC<OpportunityEditDialogProps> = ({
           setDetailPayment(null);
           paymentListQuery.refetch();
         }}
+        onDeleted={() => {
+          // Same refresh semantics as onSaved — the record is now gone, the
+          // inline accordion needs a re-fetch to drop it from the list.
+          setDetailPayment(null);
+          paymentListQuery.refetch();
+        }}
       />
 
       {/*
