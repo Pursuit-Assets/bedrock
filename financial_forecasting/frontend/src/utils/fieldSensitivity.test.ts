@@ -27,6 +27,15 @@ describe('classifyField', () => {
       expect(classifyField('Task', 'Priority').sensitivity).toBe('safe');
       expect(classifyField('Task', 'Subject').sensitivity).toBe('safe');
     });
+    // A9 (mega-B, 2026-04-22): Amount + Probability softened from
+    // 'sensitive' to 'safe' — RM daily-edit velocity. StageName stays
+    // sensitive (sf_stages_sacred).
+    it('Opportunity Amount is safe (softened in A9)', () => {
+      expect(classifyField('Opportunity', 'Amount').sensitivity).toBe('safe');
+    });
+    it('Opportunity Probability is safe (softened in A9)', () => {
+      expect(classifyField('Opportunity', 'Probability').sensitivity).toBe('safe');
+    });
   });
 
   describe('sensitive fields', () => {
@@ -34,12 +43,6 @@ describe('classifyField', () => {
       const c = classifyField('Opportunity', 'StageName');
       expect(c.sensitivity).toBe('sensitive');
       expect(c.lockReason).toBeTruthy();
-    });
-    it('Opportunity Amount is sensitive', () => {
-      expect(classifyField('Opportunity', 'Amount').sensitivity).toBe('sensitive');
-    });
-    it('Opportunity Probability is sensitive', () => {
-      expect(classifyField('Opportunity', 'Probability').sensitivity).toBe('sensitive');
     });
     it('Opportunity OwnerId is sensitive', () => {
       expect(classifyField('Opportunity', 'OwnerId').sensitivity).toBe('sensitive');

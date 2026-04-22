@@ -46,9 +46,15 @@ export interface FieldClassification {
 const FIELD_CLASSIFICATIONS: Record<string, Record<string, FieldClassification>> = {
   Opportunity: {
     Name:                 { sensitivity: 'safe' },
+    // StageName stays sensitive per feedback_sf_stages_sacred — stage changes
+    // drive pipeline bucketing and funnel reporting, fat-finger risk is high.
     StageName:            { sensitivity: 'sensitive',        lockReason: 'Stage changes affect pipeline metrics. Click to confirm.' },
-    Amount:               { sensitivity: 'sensitive',        lockReason: 'Amount changes affect financial rollups. Click to confirm.' },
-    Probability:          { sensitivity: 'sensitive',        lockReason: 'Probability affects weighted pipeline. Click to confirm.' },
+    // Amount + Probability softened to 'safe' in A9 (mega-B, 2026-04-22).
+    // Previously required per-edit unlock; friction outweighed the fat-finger
+    // risk for RM daily-edit workflow. Reverting is a single-line flip back
+    // to 'sensitive' + lockReason if the softening turns out to be wrong.
+    Amount:               { sensitivity: 'safe' },
+    Probability:          { sensitivity: 'safe' },
     CloseDate:            { sensitivity: 'safe' },
     OwnerId:              { sensitivity: 'sensitive',        lockReason: 'Reassigning changes accountability. Click to confirm.' },
     AccountId:            { sensitivity: 'sensitive',        lockReason: 'Changing the account affects commission rollups. Click to confirm.' },
