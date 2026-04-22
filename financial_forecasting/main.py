@@ -13,7 +13,7 @@ import logging
 from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.sessions import SessionMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, validator
 import uvicorn
 
 # Import our MCP client and models
@@ -41,7 +41,6 @@ from routes.sf_dependencies import router as sf_deps_router
 from routes.permissions import router as permissions_router, opp_router as opp_lock_router, check_permission, check_permission_or_internal, resolve_task_lock
 from routes.opportunities_extra import router as opp_extra_router
 from routes.owner_goals import router as owner_goals_router
-from routes.progress_tracking import router as progress_tracking_router
 from routes.payment_schedules import router as payment_schedules_router
 from routes.finance import router as finance_router
 from routes.sage import router as sage_router
@@ -54,6 +53,7 @@ from routes.salesforce_schema import router as sf_schema_router
 from routes.admin_sf_drift import router as admin_sf_drift_router
 from routes.admin_company_match import router as admin_company_match_router
 from routes.activities import router as activities_router
+from routes.platform_intake import router as platform_intake_router
 from auth import get_current_user_dep, require_auth, IS_PRODUCTION, JWT_SECRET_KEY
 from security import validate_salesforce_id, escape_soql_string
 from services.crm_parser import refresh_opp_cache as _refresh_opp_cache
@@ -117,7 +117,6 @@ app.include_router(opp_lock_router)
 # Phase 2 route files
 app.include_router(opp_extra_router)
 app.include_router(owner_goals_router)
-app.include_router(progress_tracking_router)
 app.include_router(payment_schedules_router)
 app.include_router(finance_router)
 app.include_router(sage_router)
@@ -130,6 +129,7 @@ app.include_router(sf_schema_router)
 app.include_router(admin_sf_drift_router)
 app.include_router(admin_company_match_router)
 app.include_router(activities_router)
+app.include_router(platform_intake_router)
 
 # Service singletons — shared with dependencies.py so route files can use
 # Depends(get_mcp_client) without circular imports.
@@ -307,7 +307,6 @@ async def get_opportunities(
     stages: Optional[List[str]] = Query(None),
     limit: Optional[int] = Query(None, le=2000),
     record_type: Optional[str] = Query(None, description="Filter by RecordType.Name (e.g. 'Philanthropy')"),
-    opp_type: Optional[str] = Query(None, description="Filter by Opportunity Type field"),
     active_only: bool = Query(False, description="Only return Active_Opportunity__c = true"),
     client: UnifiedMCPClient = Depends(get_mcp_client),
     user = Depends(require_auth)
@@ -319,22 +318,29 @@ async def get_opportunities(
         # Server-side cache — key encodes all filter params
         stage_val = stage.value if stage else None
         stages_key = ",".join(sorted(stages)) if stages else None
-        cache_key = f"opps:{stage_val}:{stages_key}:{record_type}:{opp_type}:{active_only}:{limit}"
+        cache_key = f"opps:{stage_val}:{stages_key}:{record_type}:{active_only}:{limit}"
         cached = cache.get(cache_key)
         if cached is not None:
             return cached
 
         salesforce = client.salesforce
 
-        # Build SOQL query — field list matches proven simple_server.py query
+        # Build SOQL query — field list matches proven simple_server.py query.
+        # npsp__Primary_Contact__c is the NPSP writable lookup to Contact
+        # (verified via Tooling API describe — DataType Lookup(Contact),
+        # label "Primary Contact"). Relationship fields pull the contact's
+        # Name + Email for display without a second query.
         query = """
         SELECT Id, AccountId, Account.Name, Name, StageName, Amount, Probability,
                CloseDate, ForecastCategory, LeadSource, NextStep,
-               Description, Type, OwnerId, Owner.Name, CreatedDate, LastModifiedDate,
+               Description, OwnerId, Owner.Name, CreatedDate, LastModifiedDate,
                npe01__Payments_Made__c, Outstanding_Payments__c,
                Number_of_Payments_Received__c, Most_Recent_Payment_Date__c,
                Last_Actual_Payment__c, npe01__Number_of_Payments__c,
                PaymentDate__c, Earliest_Scheduled_Payment__c,
+               RenewalRepeat__c,
+               npsp__Primary_Contact__c,
+               npsp__Primary_Contact__r.Name, npsp__Primary_Contact__r.Email,
                RecordTypeId, RecordType.Name, Active_Opportunity__c
         FROM Opportunity
         """
@@ -349,8 +355,6 @@ async def get_opportunities(
                 where_clauses.append(f"StageName IN ({stage_list})")
         if record_type:
             where_clauses.append(f"RecordType.Name = '{escape_soql_string(record_type)}'")
-        if opp_type:
-            where_clauses.append(f"Type = '{escape_soql_string(opp_type)}'")
         if active_only:
             where_clauses.append("Active_Opportunity__c = true")
         if where_clauses:
@@ -467,17 +471,72 @@ async def update_opportunity(
         raise HTTPException(status_code=400, detail=error_msg)
 
 
+@app.delete("/api/salesforce/opportunities/{opportunity_id}")
+@limiter.limit("30/minute")
+async def delete_opportunity(
+    request: Request,
+    opportunity_id: str,
+    client: UnifiedMCPClient = Depends(get_mcp_client),
+    user = Depends(check_permission_or_internal("edit_own_opportunities")),
+):
+    """Delete a Salesforce Opportunity.
+
+    Destructive and irreversible at the SF level — the frontend caller
+    (OpportunityEditDialog) surfaces a confirm-before-delete popover.
+
+    Auth (PR #169): `check_permission_or_internal("edit_own_opportunities")`
+    is the outer gate — matches update_opportunity's permission key so the
+    permission profile already grants the right users. `_enforce_record_ownership`
+    then restricts deletes to the opp's owner, admins, or users with
+    `edit_all_opportunities`. Service callers (is_service=True) short-circuit
+    inside the helper for Pebble CRM-write.
+
+    Cascade invalidation: child tasks/payments + stage rollups all become
+    stale when an opp goes away.
+    """
+    validate_salesforce_id(opportunity_id, "opportunity_id")
+    try:
+        salesforce = client.salesforce
+        await _enforce_record_ownership(
+            salesforce, "Opportunity", opportunity_id, user, "edit_all_opportunities",
+        )
+        success = await salesforce.delete_record("Opportunity", opportunity_id)
+        if not success:
+            raise HTTPException(400, "Salesforce rejected the delete")
+        # Opp list caches (get_opportunities at main.py:304 uses "opps:")
+        cache.invalidate_prefix("opps:")
+        # stage_history:30 — direct key invalidation (set at main.py:454 under
+        # update_opportunity; stage rollups change when an opp is removed).
+        cache.invalidate("stage_history:30")
+        # opp-payments: / payments: — child payments now orphaned.
+        cache.invalidate_prefix("opp-payments:")
+        cache.invalidate_prefix("payments:")
+        # my-tasks: — child Tasks still have WhatId pointing at the deleted opp.
+        cache.invalidate_prefix("my-tasks:")
+        # opportunities: — Payment endpoints invalidate this prefix defensively.
+        cache.invalidate_prefix("opportunities:")
+        logger.info(f"Opportunity {opportunity_id} deleted by {user['user_id']}")
+        return ApiResponse(
+            success=True,
+            data={"id": opportunity_id, "message": "Opportunity deleted"},
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting opportunity {opportunity_id}: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=400,
+            detail="Failed to delete opportunity. Check server logs or contact support.",
+        )
+
+
 @app.get("/api/salesforce/accounts")
 async def get_accounts(
-    # Cap matches GET /api/salesforce/opportunities (main.py:308) at le=2000.
-    # Security-positive vs the prior le=5000: shrinks the max data pull on a
-    # compromised or misbehaving client. All frontend callers use the default
-    # or a lower explicit value, so no caller regresses.
-    # NOTE: this endpoint uses salesforce.query() (single-page), not
-    # query_all(). If Pursuit's real Account row count ever exceeds 2000,
-    # results get silently truncated. Tracked separately in
-    # tasks/accounts-endpoint-pagination-followup.md.
-    limit: int = Query(2000, le=2000),
+    # `le=2000` matches GET /api/salesforce/opportunities — defensive upper
+    # bound for callers that want a capped response. Default `None` means
+    # "return all" via query_all() pagination; the frontend relies on this
+    # to avoid silent truncation when Pursuit's Account count exceeds 2000.
+    limit: Optional[int] = Query(None, le=2000),
     client: UnifiedMCPClient = Depends(get_mcp_client),
     user = Depends(require_auth)
 ):
@@ -485,14 +544,14 @@ async def get_accounts(
     try:
         if "salesforce" not in (client.connected_services or []):
             return []
-        cache_key = f"accounts:{limit}"
+        cache_key = f"accounts:{limit or 'all'}"
         cached = cache.get(cache_key)
         if cached is not None:
             return cached
 
         salesforce = client.salesforce
 
-        query = f"""
+        query = """
         SELECT Id, Name, Type, Industry, Phone, Fax, Website, Description,
                BillingStreet, BillingCity, BillingState, BillingPostalCode, BillingCountry,
                AnnualRevenue, NumberOfEmployees, AccountSource, OwnerId, Owner.Name,
@@ -518,10 +577,11 @@ async def get_accounts(
                Last_Activity_Date__c, Date_of_First_Pursuit_Hire__c
         FROM Account
         ORDER BY Name ASC
-        LIMIT {limit}
         """
+        if limit is not None:
+            query += f" LIMIT {limit}"
 
-        result = await salesforce.query(query)
+        result = await salesforce.query_all(query)
         records = result.get("records", [])
         cache.set(cache_key, records, CACHE_TTL_ACCOUNTS)
         return records
@@ -559,7 +619,10 @@ async def create_account(
 @app.get("/api/salesforce/contacts")
 async def get_contacts(
     account_id: Optional[str] = None,
-    limit: int = Query(2000, le=5000),
+    # `le=5000` retained from prior behavior (contacts cap was deliberately
+    # looser than accounts). Default `None` means "return all" via query_all
+    # pagination; the frontend relies on this to avoid silent truncation.
+    limit: Optional[int] = Query(None, le=5000),
     client: UnifiedMCPClient = Depends(get_mcp_client),
     user = Depends(require_auth)
 ):
@@ -567,14 +630,14 @@ async def get_contacts(
     try:
         if "salesforce" not in (client.connected_services or []):
             return []
-        cache_key = f"contacts:{account_id}:{limit}"
+        cache_key = f"contacts:{account_id}:{limit or 'all'}"
         cached = cache.get(cache_key)
         if cached is not None:
             return cached
 
         salesforce = client.salesforce
 
-        query = f"""
+        query = """
         SELECT Id, AccountId, Account.Name, FirstName, LastName, Name,
                Salutation, Title, Department, Email, Phone, MobilePhone,
                MailingStreet, MailingCity, MailingState, MailingPostalCode, MailingCountry,
@@ -598,10 +661,12 @@ async def get_contacts(
         if account_id:
             validate_salesforce_id(account_id, "account_id")
             query += f" WHERE AccountId = '{account_id}'"
-        
-        query += f" ORDER BY LastName ASC LIMIT {limit}"
-        
-        result = await salesforce.query(query)
+
+        query += " ORDER BY LastName ASC"
+        if limit is not None:
+            query += f" LIMIT {limit}"
+
+        result = await salesforce.query_all(query)
         contacts = result.get("records", [])
         cache.set(cache_key, contacts, CACHE_TTL_ACCOUNTS)
         return contacts
@@ -736,17 +801,154 @@ class PaymentUpdateRequest(BaseModel):
     reason: Optional[str] = None
 
 
+class PaymentCreateRequest(BaseModel):
+    """Request body for single-record Payment create.
+
+    Distinct from routes/payment_schedules.py's bulk CreatePaymentScheduleRequest,
+    which wipes and re-creates every payment for an opportunity. This endpoint
+    appends a single new npe01__OppPayment__c record to whatever already exists.
+
+    Hardened 2026-04-21 post-adversarial review (PR #161): amount bounded and
+    positive-only (blocks negative-amount exploit + NaN/Infinity); scheduled_date
+    strict YYYY-MM-DD (blocks 10MB-string DoS + SOQL-payload fuzzing); extra
+    fields forbidden (blocks field-injection probing).
+    """
+    opportunity_id: str
+    amount: float
+    scheduled_date: str  # YYYY-MM-DD
+    payment_method: Optional[str] = None
+    paid: bool = False
+
+    class Config:
+        extra = "forbid"
+
+    @validator("amount")
+    def _amount_positive_and_bounded(cls, v):
+        import math
+        if math.isnan(v) or math.isinf(v):
+            raise ValueError("amount must be a finite number")
+        if v <= 0:
+            raise ValueError("amount must be greater than 0")
+        # Sanity bound — no single payment should be larger than $1 trillion.
+        # Catches accidental 1e308 / precision-loss attacks.
+        if v > 1_000_000_000_000:
+            raise ValueError("amount is unreasonably large")
+        return v
+
+    @validator("scheduled_date")
+    def _scheduled_date_strict_iso(cls, v):
+        from datetime import datetime as _dt
+        if not isinstance(v, str) or len(v) != 10:
+            raise ValueError("scheduled_date must be exactly YYYY-MM-DD")
+        try:
+            _dt.strptime(v, "%Y-%m-%d")
+        except ValueError:
+            raise ValueError("scheduled_date must be a valid YYYY-MM-DD date")
+        return v
+
+    @validator("payment_method")
+    def _payment_method_bounded(cls, v):
+        if v is None:
+            return v
+        if not isinstance(v, str):
+            raise ValueError("payment_method must be a string")
+        # SF picklist values max at 255 chars; anything larger is an attack
+        # payload or a mistake.
+        if len(v) > 255:
+            raise ValueError("payment_method exceeds 255 chars")
+        return v
+
+
+async def _enforce_record_ownership(
+    salesforce,
+    sobject: str,
+    record_id: str,
+    user: Dict[str, Any],
+    edit_all_perm: Optional[str] = None,
+) -> None:
+    """Raise HTTPException(403/404) unless `user` may mutate `record_id` on `sobject`.
+
+    Generalized 2026-04-21 (PR #169) from the Opp-only helper shipped in PR #163
+    so Account/Contact/Opportunity write endpoints share one ownership path.
+    Payment write endpoints pass `sobject="Opportunity"` + the parent Opp's Id
+    (resolved upstream) + `edit_all_perm="edit_all_opportunities"` — identical
+    behavior to the prior helper.
+
+    Bypass order (first match wins — no SF query):
+      1. Service callers (`is_service=True`). check_permission_or_internal
+         sets this without populating _permissions / _app_user, so the
+         service-account branch MUST come first. Load-bearing for Pebble
+         CRM-write against Account/Contact/Payment endpoints that use
+         check_permission_or_internal; unreachable no-op for any future
+         caller still gated on check_permission.
+      2. Admin (`manage_users_roles`).
+      3. Per-resource "edit-all" permission when the caller opts in
+         (e.g. `edit_all_opportunities` for Opportunity and Payment).
+         Account + Contact have no edit-all key in PERMISSION_KEYS
+         (routes/permissions.py:19-34), so their callers pass `None` and
+         get admin-only bypass.
+
+    Otherwise: SOQL `SELECT OwnerId FROM {sobject} WHERE Id = '{safe_id}'`
+    and compare against the caller's `sf_user_id`. 404 if the record is
+    absent; 403 on OwnerId mismatch or when the user isn't linked to a
+    Salesforce user (can't evaluate ownership — deny, safer than permit).
+    """
+    # 1. Service-account bypass — check_permission_or_internal sets is_service
+    #    without populating _permissions / _app_user, so guard first.
+    if user.get("is_service"):
+        return
+    perms = user.get("_permissions", {})
+    # 2. Admin bypass (manage_users_roles).
+    if perms.get("manage_users_roles", False):
+        return
+    # 3. Per-resource edit-all bypass (caller opt-in).
+    if edit_all_perm and perms.get(edit_all_perm, False):
+        return
+    sf_user_id = (user.get("_app_user") or {}).get("sf_user_id")
+    if not sf_user_id:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Cannot verify {sobject.lower()} ownership — user is not linked to a Salesforce user",
+        )
+    safe_id = escape_soql_string(record_id)
+    result = await salesforce.query(
+        f"SELECT OwnerId FROM {sobject} WHERE Id = '{safe_id}' LIMIT 1"
+    )
+    records = result.get("records", [])
+    if not records:
+        raise HTTPException(status_code=404, detail=f"{sobject} not found")
+    if records[0].get("OwnerId") != sf_user_id:
+        raise HTTPException(
+            status_code=403,
+            detail=f"You can only modify {sobject.lower()}s you own",
+        )
+
+
 @app.put("/api/salesforce/accounts/{account_id}")
+@limiter.limit("30/minute")
 async def update_account(
+    request: Request,
     account_id: str,
     update_request: AccountUpdateRequest,
     client: UnifiedMCPClient = Depends(get_mcp_client),
     user = Depends(check_permission_or_internal("edit_accounts")),
 ):
-    """Update a Salesforce account."""
+    """Update a Salesforce account.
+
+    Auth (PR #169 hardening): `check_permission_or_internal("edit_accounts")`
+    is the outer gate — admits service callers (is_service=True) for Pebble
+    CRM-write. Human path then runs `_enforce_record_ownership` on the
+    Account — non-owner edits rejected unless the caller is admin
+    (manage_users_roles). No edit-all-accounts bypass (no such key in
+    PERMISSION_KEYS). Service callers short-circuit inside the helper.
+
+    Rate-limited at 30/minute per IP to blunt compromised-account abuse.
+    Errors sanitized — raw SF error text stays server-side.
+    """
     validate_salesforce_id(account_id, "account_id")
     try:
         salesforce = client.salesforce
+        await _enforce_record_ownership(salesforce, "Account", account_id, user)
         success = await salesforce.update_record("Account", account_id, update_request.updates)
         if not success:
             raise HTTPException(400, "Salesforce rejected the update")
@@ -756,22 +958,84 @@ async def update_account(
     except HTTPException:
         raise
     except Exception as e:
-        error_msg = str(e)
-        logger.error(f"Error updating account {account_id}: {error_msg}")
-        raise HTTPException(status_code=400, detail=error_msg)
+        logger.error(f"Error updating account {account_id}: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=400,
+            detail="Failed to update account. Check server logs or contact support.",
+        )
+
+
+@app.delete("/api/salesforce/accounts/{account_id}")
+@limiter.limit("30/minute")
+async def delete_account(
+    request: Request,
+    account_id: str,
+    client: UnifiedMCPClient = Depends(get_mcp_client),
+    user = Depends(check_permission_or_internal("edit_accounts")),
+):
+    """Delete a Salesforce Account.
+
+    Destructive and irreversible at the SF level — frontend caller
+    (AccountEditDialog) surfaces a confirm-before-delete popover.
+
+    Auth (PR #169): `check_permission_or_internal("edit_accounts")` outer
+    gate + `_enforce_record_ownership` admin-or-owner check. No edit-all
+    bypass (no such key in PERMISSION_KEYS — admin only). Service callers
+    (is_service=True) short-circuit inside the helper.
+
+    Cascade invalidation: child contacts + opps reference AccountId.
+    """
+    validate_salesforce_id(account_id, "account_id")
+    try:
+        salesforce = client.salesforce
+        await _enforce_record_ownership(salesforce, "Account", account_id, user)
+        success = await salesforce.delete_record("Account", account_id)
+        if not success:
+            raise HTTPException(400, "Salesforce rejected the delete")
+        cache.invalidate_prefix("accounts:")
+        # Child Contacts reference AccountId via the get_contacts SOQL join.
+        cache.invalidate_prefix("contacts:")
+        # Opps reference AccountId; opp list + Account-joined views stale.
+        cache.invalidate_prefix("opps:")
+        cache.invalidate_prefix("opportunities:")
+        logger.info(f"Account {account_id} deleted by {user['user_id']}")
+        return ApiResponse(
+            success=True,
+            data={"id": account_id, "message": "Account deleted"},
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting account {account_id}: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=400,
+            detail="Failed to delete account. Check server logs or contact support.",
+        )
 
 
 @app.put("/api/salesforce/contacts/{contact_id}")
+@limiter.limit("30/minute")
 async def update_contact(
+    request: Request,
     contact_id: str,
     update_request: ContactUpdateRequest,
     client: UnifiedMCPClient = Depends(get_mcp_client),
     user = Depends(check_permission_or_internal("edit_contacts")),
 ):
-    """Update a Salesforce contact."""
+    """Update a Salesforce contact.
+
+    Auth (PR #169 hardening): `check_permission_or_internal("edit_contacts")`
+    is the outer gate — admits service callers (is_service=True) for Pebble
+    CRM-write. Human path then runs `_enforce_record_ownership` on the
+    Contact — non-owner edits rejected unless the caller is admin. No
+    edit-all-contacts bypass (no such key in PERMISSION_KEYS).
+
+    Rate-limited at 30/minute per IP. Errors sanitized.
+    """
     validate_salesforce_id(contact_id, "contact_id")
     try:
         salesforce = client.salesforce
+        await _enforce_record_ownership(salesforce, "Contact", contact_id, user)
         success = await salesforce.update_record("Contact", contact_id, update_request.updates)
         if not success:
             raise HTTPException(400, "Salesforce rejected the update")
@@ -781,35 +1045,253 @@ async def update_contact(
     except HTTPException:
         raise
     except Exception as e:
-        error_msg = str(e)
-        logger.error(f"Error updating contact {contact_id}: {error_msg}")
-        raise HTTPException(status_code=400, detail=error_msg)
+        logger.error(f"Error updating contact {contact_id}: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=400,
+            detail="Failed to update contact. Check server logs or contact support.",
+        )
+
+
+@app.delete("/api/salesforce/contacts/{contact_id}")
+@limiter.limit("30/minute")
+async def delete_contact(
+    request: Request,
+    contact_id: str,
+    client: UnifiedMCPClient = Depends(get_mcp_client),
+    user = Depends(check_permission_or_internal("edit_contacts")),
+):
+    """Delete a Salesforce Contact.
+
+    Destructive and irreversible at the SF level — frontend caller
+    (ContactEditDialog) surfaces a confirm-before-delete popover.
+
+    Auth (PR #169): `check_permission_or_internal("edit_contacts")` outer
+    gate + `_enforce_record_ownership` admin-or-owner check. No edit-all
+    bypass (no such key in PERMISSION_KEYS). Service callers short-circuit.
+    """
+    validate_salesforce_id(contact_id, "contact_id")
+    try:
+        salesforce = client.salesforce
+        await _enforce_record_ownership(salesforce, "Contact", contact_id, user)
+        success = await salesforce.delete_record("Contact", contact_id)
+        if not success:
+            raise HTTPException(400, "Salesforce rejected the delete")
+        # Task SOQL joins Who.Name when rendering Who-linked tasks; stale
+        # cached entries would keep showing the deleted contact's name until
+        # TTL. Cheap to evict these too.
+        cache.invalidate_prefix("contacts:")
+        cache.invalidate_prefix("my-tasks:")
+        cache.invalidate_prefix("opportunity-tasks:")
+        logger.info(f"Contact {contact_id} deleted by {user['user_id']}")
+        return ApiResponse(
+            success=True,
+            data={"id": contact_id, "message": "Contact deleted"},
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting contact {contact_id}: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=400,
+            detail="Failed to delete contact. Check server logs or contact support.",
+        )
 
 
 @app.put("/api/salesforce/payments/{payment_id}")
+@limiter.limit("30/minute")
 async def update_payment(
+    request: Request,
     payment_id: str,
     update_request: PaymentUpdateRequest,
     client: UnifiedMCPClient = Depends(get_mcp_client),
-    user = Depends(check_permission("edit_payments")),
+    user = Depends(check_permission_or_internal("edit_payments")),
 ):
-    """Update a Salesforce payment (npe01__OppPayment__c)."""
+    """Update a Salesforce payment (npe01__OppPayment__c).
+
+    Auth: `check_permission_or_internal("edit_payments")` is the outer gate.
+    Switched from `check_permission` in PR #169 so Pebble's future
+    `pebble_crm_write` flow can reach Payment writes via the internal API key.
+    User-path still runs `_enforce_record_ownership` on the payment's parent
+    Opp — non-owner updates rejected unless admin or `edit_all_opportunities`.
+    Service callers (is_service=True) short-circuit inside the helper.
+
+    Rate-limited at 30/minute per IP so a compromised account with
+    edit_payments can't bulk-update SF records."""
     validate_salesforce_id(payment_id, "payment_id")
     try:
         salesforce = client.salesforce
+        # Ownership gate — same parent-lookup pattern as delete_payment.
+        safe_id = escape_soql_string(payment_id)
+        parent_result = await salesforce.query(
+            f"SELECT npe01__Opportunity__c FROM npe01__OppPayment__c WHERE Id = '{safe_id}' LIMIT 1"
+        )
+        parent_records = parent_result.get("records", [])
+        if not parent_records:
+            raise HTTPException(status_code=404, detail="Payment not found")
+        parent_opp_id = parent_records[0].get("npe01__Opportunity__c")
+        if parent_opp_id:
+            await _enforce_record_ownership(
+                salesforce, "Opportunity", parent_opp_id, user, "edit_all_opportunities",
+            )
+        # Ownership OK — proceed with the update.
         success = await salesforce.update_record("npe01__OppPayment__c", payment_id, update_request.updates)
         if not success:
             raise HTTPException(400, "Salesforce rejected the update")
+        # Rollup fields on the parent Opp may change when payment fields
+        # (Amount, Paid, etc.) change — invalidate that cache too.
         cache.invalidate_prefix("payments:")
         cache.invalidate_prefix("opp-payments:")
+        cache.invalidate_prefix("opportunities:")
         logger.info(f"Payment {payment_id} updated by {user['user_id']}")
         return ApiResponse(success=True, data={"id": payment_id, "message": "Payment updated"})
     except HTTPException:
         raise
     except Exception as e:
-        error_msg = str(e)
-        logger.error(f"Error updating payment {payment_id}: {error_msg}")
-        raise HTTPException(status_code=400, detail=error_msg)
+        # Sanitized client error; full detail server-side (matches POST/DELETE).
+        logger.error(
+            f"Error updating payment {payment_id}: {str(e)}",
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=400,
+            detail="Failed to update payment. Check server logs or contact support.",
+        )
+
+
+@app.delete("/api/salesforce/payments/{payment_id}")
+@limiter.limit("30/minute")
+async def delete_payment(
+    request: Request,
+    payment_id: str,
+    client: UnifiedMCPClient = Depends(get_mcp_client),
+    user = Depends(check_permission_or_internal("edit_payments")),
+):
+    """Delete a Salesforce Payment (npe01__OppPayment__c).
+
+    Destructive and irreversible at the SF level — the frontend caller
+    (PaymentEditDialog) is expected to surface a confirm-before-delete
+    dialog.
+
+    Auth: `check_permission_or_internal("edit_payments")` is the outer gate.
+    Switched from `check_permission` in PR #169 for Pebble CRM-write parity.
+    This endpoint takes only `payment_id`, so we first resolve the parent Opp
+    via a cheap SOQL query (also gives us a 404 if the payment doesn't exist),
+    then defer to `_enforce_record_ownership` — non-owner deletes rejected
+    unless admin or `edit_all_opportunities` (PR #163 hardening). Service
+    callers (is_service=True) short-circuit inside the helper."""
+    validate_salesforce_id(payment_id, "payment_id")
+    try:
+        salesforce = client.salesforce
+        # Resolve parent Opp Id so we can run the ownership check. If the
+        # payment doesn't exist at all, 404 out before attempting delete.
+        safe_id = escape_soql_string(payment_id)
+        parent_result = await salesforce.query(
+            f"SELECT npe01__Opportunity__c FROM npe01__OppPayment__c WHERE Id = '{safe_id}' LIMIT 1"
+        )
+        parent_records = parent_result.get("records", [])
+        if not parent_records:
+            raise HTTPException(status_code=404, detail="Payment not found")
+        parent_opp_id = parent_records[0].get("npe01__Opportunity__c")
+        if parent_opp_id:
+            await _enforce_record_ownership(
+                salesforce, "Opportunity", parent_opp_id, user, "edit_all_opportunities",
+            )
+        # Ownership OK — proceed with the destructive action.
+        success = await salesforce.delete_record("npe01__OppPayment__c", payment_id)
+        if not success:
+            raise HTTPException(400, "Salesforce rejected the delete")
+        # Same cache-invalidation surface as create: rollup fields on the
+        # parent Opportunity update when a payment goes away.
+        cache.invalidate_prefix("payments:")
+        cache.invalidate_prefix("opp-payments:")
+        cache.invalidate_prefix("opportunities:")
+        logger.info(f"Payment {payment_id} deleted by {user['user_id']}")
+        return ApiResponse(
+            success=True,
+            data={"id": payment_id, "message": "Payment deleted"},
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        # Full detail server-side for debugging; generic message to the client
+        # so we don't leak SF internal error text (field names, instance URLs,
+        # rate-limit hints). See adversarial review notes on PR #161.
+        logger.error(
+            f"Error deleting payment {payment_id}: {str(e)}",
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=400,
+            detail="Failed to delete payment. Check server logs or contact support.",
+        )
+
+
+@app.post("/api/salesforce/payments")
+@limiter.limit("30/minute")
+async def create_payment(
+    request: Request,
+    create_request: PaymentCreateRequest,
+    client: UnifiedMCPClient = Depends(get_mcp_client),
+    user = Depends(check_permission_or_internal("edit_payments")),
+):
+    """Create a single Salesforce Payment (npe01__OppPayment__c) on an existing
+    opportunity.
+
+    Use this (not the bulk routes/payment_schedules.py POST) when appending
+    one additional payment to whatever schedule already exists — no delete,
+    no validation that the sum matches the Opportunity Amount. The Opp
+    dialog's inline Payment Schedule accordion calls this on "+ Add Payment".
+
+    Auth: `check_permission_or_internal("edit_payments")` is the outer gate.
+    Switched from `check_permission` in PR #169 so Pebble's future
+    `pebble_crm_write` flow can create payments via the internal API key.
+    User-path then runs `_enforce_record_ownership` — non-owner writes
+    rejected unless admin or `edit_all_opportunities` (PR #163 hardening).
+    Service callers (is_service=True) short-circuit inside the helper.
+    """
+    validate_salesforce_id(create_request.opportunity_id, "opportunity_id")
+    try:
+        salesforce = client.salesforce
+        # Ownership gate before any SF mutation.
+        await _enforce_record_ownership(
+            salesforce, "Opportunity", create_request.opportunity_id, user,
+            "edit_all_opportunities",
+        )
+        fields: Dict[str, Any] = {
+            "npe01__Opportunity__c": create_request.opportunity_id,
+            "npe01__Payment_Amount__c": create_request.amount,
+            "npe01__Scheduled_Date__c": create_request.scheduled_date,
+            "npe01__Paid__c": create_request.paid,
+        }
+        if create_request.payment_method:
+            fields["npe01__Payment_Method__c"] = create_request.payment_method
+        result = await salesforce.create_record("npe01__OppPayment__c", fields)
+        # Rollup fields on the parent Opp change when a new payment lands, so
+        # invalidate both the payment caches and the opportunities cache.
+        cache.invalidate_prefix("payments:")
+        cache.invalidate_prefix("opp-payments:")
+        cache.invalidate_prefix("opportunities:")
+        logger.info(
+            f"Payment created by {user['user_id']} on opp {create_request.opportunity_id}"
+        )
+        return ApiResponse(
+            success=True,
+            data={"id": result.get("id"), "message": "Payment created"},
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        # Full detail server-side for debugging; generic message to the client
+        # so we don't leak SF internal error text (field names, instance URLs,
+        # rate-limit hints). See adversarial review notes on PR #161.
+        logger.error(
+            f"Error creating payment on opp {create_request.opportunity_id}: {str(e)}",
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=400,
+            detail="Failed to create payment. Check server logs or contact support.",
+        )
 
 
 @app.get("/api/salesforce/users")
@@ -852,7 +1334,11 @@ async def get_users(
 async def get_my_tasks(
     start: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
     end: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
-    limit: int = Query(200, le=500),
+    # Stays on salesforce.query() (not query_all): the WHERE clause
+    # (IsClosed = false + optional date range) scope-bounds per-user open
+    # Task counts well under 2000 at Pursuit's team-of-4 scale. Revisit if
+    # any single user's open-Task count ever approaches the cap.
+    limit: int = Query(2000, le=2000),
     client: UnifiedMCPClient = Depends(get_mcp_client),
     user=Depends(require_auth),
 ):
@@ -905,6 +1391,12 @@ class TaskCreateRequest(BaseModel):
     ActivityDate: Optional[str] = None
     Description: Optional[str] = None
     OwnerId: Optional[str] = None
+    # WhoId (Contact link) added PR #169 so RMs can assign tasks to specific
+    # contacts from the TaskPanel Contact autocomplete. SF Task has both
+    # WhoId (Contact/Lead) and WhatId (parent entity — Opp/Account/etc.);
+    # WhatId is set from the URL path in create_opportunity_task, WhoId
+    # from the body.
+    WhoId: Optional[str] = None
 
 
 class TaskUpdateRequest(BaseModel):
@@ -915,6 +1407,7 @@ class TaskUpdateRequest(BaseModel):
     Description: Optional[str] = None
     OwnerId: Optional[str] = None
     WhatId: Optional[str] = None
+    WhoId: Optional[str] = None
 
 
 class TaskDuplicateRequest(BaseModel):
@@ -924,6 +1417,9 @@ class TaskDuplicateRequest(BaseModel):
 @app.get("/api/salesforce/opportunities/{opportunity_id}/tasks")
 async def get_opportunity_tasks(
     opportunity_id: str,
+    # Default `None` returns all Tasks for the opportunity via query_all
+    # pagination. `le=2000` caps callers that request an explicit limit.
+    limit: Optional[int] = Query(None, le=2000),
     client: UnifiedMCPClient = Depends(get_mcp_client),
     user=Depends(require_auth),
 ):
@@ -933,13 +1429,16 @@ async def get_opportunity_tasks(
         salesforce = client.salesforce
         query = f"""
         SELECT Id, Subject, Status, Priority, ActivityDate, Description,
-               OwnerId, Owner.Name, WhoId, Who.Name, Type, TaskSubtype,
+               OwnerId, Owner.Name, WhoId, Who.Name, WhatId, Type, TaskSubtype,
                CreatedById, CreatedBy.Name, CreatedDate, LastModifiedDate
         FROM Task
         WHERE WhatId = '{opportunity_id}'
         ORDER BY ActivityDate DESC NULLS LAST
         """
-        result = await salesforce.query(query)
+        if limit is not None:
+            query += f" LIMIT {limit}"
+
+        result = await salesforce.query_all(query)
         tasks = result.get("records", [])
 
         formatted = []
@@ -991,7 +1490,12 @@ async def create_opportunity_task(
             if lock["locked_by"] != sf_user_id and not perms.get("manage_users_roles", False):
                 raise HTTPException(403, "Cannot create tasks on a locked opportunity")
         salesforce = client.salesforce
-        fields = {"WhatId": opportunity_id, **task_data.model_dump(exclude_none=True)}
+        # B10 defensive fix (PR #169): reverse the dict-spread order so the
+        # URL path param wins over any WhatId a client might send in the body.
+        # TaskCreateRequest doesn't currently declare WhatId, and Pydantic's
+        # default extra="ignore" filters unknowns — but an override here would
+        # bind the task to the wrong opp silently. Belt-and-suspenders.
+        fields = {**task_data.model_dump(exclude_none=True), "WhatId": opportunity_id}
         result = await salesforce.create_record("Task", fields)
         task_id = result.get("id") or result.get("Id")
         cache.invalidate_prefix("my-tasks:")
@@ -1588,7 +2092,7 @@ async def search_opportunities(
 
         fields = (
             "Id, Name, AccountId, Account.Name, Amount, StageName, "
-            "CloseDate, Description, Type"
+            "CloseDate, Description"
         )
 
         if q:
@@ -1616,7 +2120,6 @@ async def search_opportunities(
                 "StageName": record.get("StageName"),
                 "CloseDate": record.get("CloseDate"),
                 "Description": record.get("Description"),
-                "Type": record.get("Type"),
             }
 
             if customer_name or invoice_amount or invoice_date:

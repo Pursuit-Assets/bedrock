@@ -15,6 +15,7 @@ import {
 import type { ViewType, FilterState } from '../components/projects/types';
 import { useProjectData } from '../components/projects/useProjectData';
 import { useProjects } from '../components/projects/useProjects';
+import { useActiveUsers } from '../components/projects/useActiveUsers';
 import { applyFilters } from '../components/projects/helpers';
 import { AIJI_PROJECT_ID } from '../components/projects/constants';
 import ViewSwitcher from '../components/projects/ViewSwitcher';
@@ -92,6 +93,8 @@ const Projects: React.FC = () => {
     workstreams, projectName, ownerEmail, contributors,
     isLoading: dataLoading, error, mutations, invalidate,
   } = useProjectData(prefs.selectedProjectId);
+
+  const { activeUsers } = useActiveUsers();
 
   const filtered = useMemo(
     () => applyFilters(workstreams, filters),
@@ -214,15 +217,15 @@ const Projects: React.FC = () => {
         )}
 
         {viewType === 'list' && filtered.map((ws) => (
-          <ListView key={ws.id} workstream={ws} mutations={mutations} />
+          <ListView key={ws.id} workstream={ws} mutations={mutations} activeUsers={activeUsers} />
         ))}
 
         {viewType === 'board' && (
-          <KanbanBoard workstreams={filtered} mutations={mutations} />
+          <KanbanBoard workstreams={filtered} mutations={mutations} activeUsers={activeUsers} />
         )}
 
         {viewType === 'timeline' && (
-          <GanttChart workstreams={filtered} mutations={mutations} />
+          <GanttChart workstreams={filtered} mutations={mutations} activeUsers={activeUsers} />
         )}
 
         {viewType === 'executive' && (

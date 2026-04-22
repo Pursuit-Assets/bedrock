@@ -153,13 +153,18 @@ class TestGetMyPermissions:
         assert data["permissions"]["manage_users_roles"] is True
 
     def test_auto_provisions_first_user_as_admin(self, admin_client, mock_db):
-        # First call: no user found
+        # get_user_permissions fires four fetchrow calls on the first-user path:
+        #   1. unified SELECT on org_users JOIN user_config JOIN permission_profile
+        #   2. _ensure_org_user SELECT on org_users (added by identity-consolidation commit)
+        #   3. _ensure_org_user INSERT INTO org_users RETURNING ...
+        #   4. permission_profile WHERE name='Admin' (because fetchval config_count=0)
         mock_db.fetchrow = AsyncMock(side_effect=[
-            None,  # get_user_permissions: no existing user
-            MockDBRow(id=ADMIN_PROFILE_ID, permissions=ADMIN_PERMS, name="Admin"),  # admin profile
-            MockDBRow(id=USER_ID, sf_user_id=None, email="new@pursuit.org", name="", is_active=True),  # insert
+            None,  # 1. unified SELECT: no existing user
+            None,  # 2. _ensure_org_user SELECT: no existing user
+            MockDBRow(id=USER_ID, sf_user_id=None, email="new@pursuit.org", name="", is_active=True),  # 3. INSERT RETURNING
+            MockDBRow(id=ADMIN_PROFILE_ID, permissions=ADMIN_PERMS, name="Admin"),  # 4. admin profile
         ])
-        mock_db.fetchval = AsyncMock(return_value=0)  # no users exist
+        mock_db.fetchval = AsyncMock(return_value=0)  # no users exist → admin bootstrap path
         resp = admin_client.get("/api/permissions/me")
         assert resp.status_code == 200
 

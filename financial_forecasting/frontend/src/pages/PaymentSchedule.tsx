@@ -19,13 +19,18 @@ import {
 } from '@mui/material';
 import AddIcon from '@mui/icons-material/Add';
 import DeleteIcon from '@mui/icons-material/Delete';
+import EditIcon from '@mui/icons-material/Edit';
 import SaveIcon from '@mui/icons-material/Save';
 import { toast } from 'react-hot-toast';
 import { apiService } from '../services/api';
+import PaymentEditDialog from '../components/PaymentEditDialog';
 
 interface PaymentRow {
   amount: number;
   scheduled_date: string;
+  /** Salesforce Id — present when the row was loaded from SF, absent for drafts
+   *  the user is still adding (those get persisted via the bulk savePaymentSchedule). */
+  Id?: string;
 }
 
 export default function PaymentSchedule() {
@@ -44,6 +49,16 @@ export default function PaymentSchedule() {
     { amount: 0, scheduled_date: '' }
   ]);
 
+  // ── Payment detail dialog (Edit Details clickthrough) ────────────────────
+  // When the user clicks Edit Details on a saved payment row, we lazy-fetch
+  // the full SF record via getSfOpportunityPayments (the /api/opportunities/
+  // :id/payment-schedule response is a simplified 5-field projection that
+  // PaymentEditDialog can't render from). Then open PaymentEditDialog with
+  // that full record as initialData.
+  const [detailPaymentId, setDetailPaymentId] = useState<string | null>(null);
+  const [detailPaymentData, setDetailPaymentData] = useState<Record<string, any> | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+
   useEffect(() => {
     loadPaymentSchedule();
   }, [opportunityId]);
@@ -57,10 +72,14 @@ export default function PaymentSchedule() {
       setOpportunity(data.opportunity);
       
       if (data.payments && data.payments.length > 0) {
-        // Load existing payments
+        // Load existing payments. Retain Salesforce `Id` so rows persisted in
+        // SF can be opened in the PaymentEditDialog via Edit Details — drafts
+        // (added client-side but not yet bulk-saved) will lack an Id and
+        // therefore won't show the Edit Details button.
         setPayments(data.payments.map((p: any) => ({
           amount: p.Amount,
-          scheduled_date: p.ScheduledDate
+          scheduled_date: p.ScheduledDate,
+          Id: p.Id,
         })));
       } else {
         // Default: single payment for full amount
@@ -85,6 +104,62 @@ export default function PaymentSchedule() {
     if (payments.length > 1) {
       setPayments(payments.filter((_, i) => i !== index));
     }
+  };
+
+  /**
+   * Lazy-fetch the full Salesforce Payment record (29 native SF fields via
+   * PAYMENT_SOQL_FIELDS on the backend) and open PaymentEditDialog with it as
+   * initialData. Runs per-click; the backend endpoint is cached at 5min so
+   * repeated clicks within that window are cheap. Surfaces detailed errors
+   * from the API response so the user sees a meaningful toast on failure.
+   */
+  const handleEditDetails = async (paymentId: string) => {
+    setDetailLoading(true);
+    try {
+      const res = await apiService.getSfOpportunityPayments(opportunityId!);
+      // Backend returns the records array directly (main.py `return records`).
+      const records: any[] = Array.isArray(res.data) ? res.data : [];
+      const full = records.find((p) => p.Id === paymentId);
+      if (!full) {
+        toast.error('Payment not found');
+        return;
+      }
+      setDetailPaymentData(full);
+      setDetailPaymentId(paymentId);
+    } catch (err: any) {
+      const detail =
+        err?.response?.data?.detail ||
+        err?.response?.data?.error ||
+        err?.message ||
+        'Failed to load payment details';
+      toast.error(detail);
+      // eslint-disable-next-line no-console
+      console.error('getSfOpportunityPayments failed:', err);
+    } finally {
+      setDetailLoading(false);
+    }
+  };
+
+  // Wired to both onSaved and onDeleted — PaymentEditDialog's save and delete
+  // flows have identical parent-side semantics (close the detail dialog,
+  // refresh the schedule table). Renamed from `handleDetailSaved` in PR #164
+  // per adversarial-review feedback: `onDeleted={handleDetailSaved}` was
+  // semantically misleading in the caller wiring.
+  const handleDetailClosed = () => {
+    // PaymentEditDialog hits /api/salesforce/payments/{id} directly, which
+    // doesn't share a react-query cache key with getPaymentSchedule — so we
+    // explicitly refresh. If the refresh fails the schedule table retains
+    // stale data; the toast from the child dialog already indicated success.
+    setDetailPaymentId(null);
+    setDetailPaymentData(null);
+    loadPaymentSchedule();
+  };
+
+  // Separate from handleDetailClosed because cancel/close doesn't require a
+  // refresh (nothing changed).
+  const handleDetailClose = () => {
+    setDetailPaymentId(null);
+    setDetailPaymentData(null);
   };
 
   const updatePayment = (index: number, field: keyof PaymentRow, value: any) => {
@@ -259,6 +334,21 @@ export default function PaymentSchedule() {
                     />
                   </TableCell>
                   <TableCell>
+                    {/* Edit Details opens PaymentEditDialog for a saved row
+                        (one with a Salesforce Id). Drafts the user just
+                        added don't have an Id yet — only bulk-save via
+                        savePaymentSchedule persists them, so there's
+                        nothing to drill into. */}
+                    {payment.Id && (
+                      <IconButton
+                        onClick={() => handleEditDetails(payment.Id!)}
+                        disabled={detailLoading}
+                        title="Edit payment details"
+                        size="small"
+                      >
+                        <EditIcon />
+                      </IconButton>
+                    )}
                     <IconButton
                       onClick={() => removePayment(index)}
                       disabled={payments.length === 1}
@@ -337,6 +427,19 @@ export default function PaymentSchedule() {
           {saving ? 'Saving...' : 'Save & Move to Collecting'}
         </Button>
       </Box>
+
+      {/* PaymentEditDialog — opened by the Edit Details button per row.
+          PaymentEditDialog hits /api/salesforce/payments/{id} (not the
+          opp-scoped payment_schedules.py endpoint), so we call
+          loadPaymentSchedule() in onSaved to keep the schedule table in sync. */}
+      <PaymentEditDialog
+        open={detailPaymentId !== null}
+        onClose={handleDetailClose}
+        paymentId={detailPaymentId}
+        initialData={detailPaymentData ?? undefined}
+        onSaved={handleDetailClosed}
+        onDeleted={handleDetailClosed}
+      />
     </Box>
   );
 }

@@ -220,11 +220,6 @@ const Settings: React.FC = () => {
     { onSuccess: () => { queryClient.invalidateQueries('app-users'); toast.success('User updated'); } }
   );
 
-  // Progress-page visibility override was removed 2026-04-21 (BUG-UI-19).
-  // The per-user Visible toggle was redundant with (a) active status in SF
-  // and (b) whether the user had a target configured in Settings → Targets.
-  // Any orphan callers should fall back to `apiService.getUsers()`.
-
   const createProfileMutation = useMutation(
     async (data: any) => apiService.createPermissionProfile(data),
     { onSuccess: () => { queryClient.invalidateQueries('permission-profiles'); toast.success('Profile created'); } }
@@ -676,9 +671,6 @@ const Settings: React.FC = () => {
         </CardContent>
       </Card>
     )}
-
-    {/* Progress Visibility tab removed 2026-04-21 (BUG-UI-19). See note
-        on the removed useQuery above. */}
 
     {/* ── Permission Profiles Tab (Admin only) ── */}
     {settingsTab === 'profiles' && canEditProfiles && (

@@ -3,8 +3,8 @@ import {
   Box, FormControl, InputLabel, Select, MenuItem, Chip, OutlinedInput,
   SelectChangeEvent,
 } from '@mui/material';
-import type { Workstream, FilterState, ViewType } from './types';
-import { getUniqueOwners } from './helpers';
+import type { ActiveUser, Workstream, FilterState, ViewType } from './types';
+import { useActiveUsers } from './useActiveUsers';
 
 interface FilterBarProps {
   workstreams: Workstream[];
@@ -14,9 +14,11 @@ interface FilterBarProps {
 }
 
 const FilterBar: React.FC<FilterBarProps> = ({ workstreams, filters, onFiltersChange, viewType }) => {
+  const { activeUsers } = useActiveUsers();
+
   if (viewType === 'executive') return null;
 
-  const owners = getUniqueOwners(workstreams);
+  const nameById = new Map(activeUsers.map((u: ActiveUser) => [u.id, u.display_name]));
 
   const handleWorkstreamChange = (e: SelectChangeEvent<string[]>) => {
     const val = e.target.value;
@@ -61,7 +63,7 @@ const FilterBar: React.FC<FilterBarProps> = ({ workstreams, filters, onFiltersCh
         </Select>
       </FormControl>
 
-      <FormControl size="small" sx={{ minWidth: 150 }}>
+      <FormControl size="small" sx={{ minWidth: 180 }}>
         <InputLabel sx={{ fontSize: '0.8rem' }}>Owners</InputLabel>
         <Select
           multiple
@@ -70,13 +72,22 @@ const FilterBar: React.FC<FilterBarProps> = ({ workstreams, filters, onFiltersCh
           input={<OutlinedInput label="Owners" />}
           renderValue={(selected) => (
             <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.25 }}>
-              {selected.map(o => <Chip key={o} label={o} size="small" sx={{ fontSize: '0.65rem', height: 18 }} />)}
+              {selected.map(id => (
+                <Chip
+                  key={id}
+                  label={nameById.get(id) || id}
+                  size="small"
+                  sx={{ fontSize: '0.65rem', height: 18 }}
+                />
+              ))}
             </Box>
           )}
           sx={{ '& .MuiSelect-select': { py: 0.75 } }}
         >
-          {owners.map(o => (
-            <MenuItem key={o} value={o} sx={{ fontSize: '0.8rem' }}>{o}</MenuItem>
+          {activeUsers.map((u: ActiveUser) => (
+            <MenuItem key={u.id} value={u.id} sx={{ fontSize: '0.8rem' }}>
+              {u.display_name}
+            </MenuItem>
           ))}
         </Select>
       </FormControl>

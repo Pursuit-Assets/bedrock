@@ -38,6 +38,7 @@ import {
   Science as ResearchIcon,
   AccountTree as ProjectsIcon,
   Search as SearchIcon,
+  FeedbackOutlined as IntakeIcon,
 } from '@mui/icons-material';
 import { useLocation, useNavigate } from 'react-router-dom';
 import BedrockLogo from './BedrockLogo';
@@ -100,9 +101,15 @@ const ALL_MENU_ITEMS = [
     icon: <SettingsIcon />,
     path: '/settings',
   },
+  {
+    text: 'Report an issue',
+    subtitle: 'Submit a bug or feature request. Screenshots welcome.',
+    icon: <IntakeIcon />,
+    path: '/intake',
+  },
 ];
 
-const MVP_PATHS = new Set(['/priorities', '/dashboard', '/details', '/projects', '/settings']);
+const MVP_PATHS = new Set(['/priorities', '/dashboard', '/details', '/projects', '/settings', '/intake']);
 
 // Map nav paths to required permissions (undefined = no permission needed)
 const NAV_PERMISSIONS: Record<string, string | ((can: (k: string) => boolean) => boolean) | undefined> = {

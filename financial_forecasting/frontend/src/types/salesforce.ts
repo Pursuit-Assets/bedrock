@@ -126,17 +126,19 @@ export interface SalesforceOpportunity {
   CloseDate: string | null;
   ExpectedRevenue: number | null;
   ForecastCategory: string | null;
-  Type: string | null;
   LeadSource: string | null;
   NextStep: string | null;
   Description: string | null;
   OwnerId: string;
   CreatedDate: string | null;
   LastModifiedDate: string | null;
-  Payment_Terms__c: string | null;
-  Contract_Start_Date__c: string | null;
-  Contract_End_Date__c: string | null;
-  Billing_Frequency__c: string | null;
+  // Payment_Terms__c / Contract_Start_Date__c / Contract_End_Date__c /
+  // Billing_Frequency__c removed 2026-04-21 — these custom fields don't
+  // exist on the Opportunity object in Pursuit's live SF org. PR #162
+  // added them to the SOQL and broke the endpoint (SF rejects SELECTs
+  // on unknown fields); PR #167 reverted the SOQL; PR #168 strips the
+  // dead TS + dialog bindings. Re-add when/if the fields are actually
+  // created in SF.
   // Pursuit custom fields
   RenewalRepeat__c: string | null;
   Active_Opportunity__c: boolean | null;
@@ -152,6 +154,12 @@ export interface SalesforceOpportunity {
   Earliest_Scheduled_Payment__c: string | null;
   // Campaign (Primary Campaign Source)
   CampaignId: string | null;
+  // Primary Contact — NPSP writable lookup to Contact. Stored as the
+  // contact Id; joined relationship (npsp__Primary_Contact__r) carries
+  // Name + Email for display. Verified via Tooling API FieldDefinition:
+  // DataType Lookup(Contact), label "Primary Contact". Writable — an
+  // update PATCH with { "npsp__Primary_Contact__c": contactId } rebinds.
+  npsp__Primary_Contact__c: string | null;
   // Record Type — users can reclassify via the Edit Opportunity drawer (BUG-UI-9).
   RecordTypeId: string | null;
   // Nested relationship fields (from SOQL joins)
@@ -159,6 +167,7 @@ export interface SalesforceOpportunity {
   Owner?: { Name: string; Id?: string };
   RecordType?: { Name: string };
   Campaign?: { Name: string };
+  npsp__Primary_Contact__r?: { Id?: string; Name: string; Email?: string | null };
 }
 
 export interface SalesforceAccount {

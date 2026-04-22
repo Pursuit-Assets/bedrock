@@ -52,18 +52,31 @@ def make_sf_opportunity(overrides: Dict[str, Any] = None) -> Dict[str, Any]:
         "LeadSource": "Web",
         "NextStep": "Submit proposal",
         "Description": "Test opportunity",
-        # Type = the SF secondary-categorization picklist. Missing from the
-        # factory until 2026-04-19, which let B2 (Type field not surfacing
-        # in the UI) regress undetected. Default to a PBC-flavored value
-        # so tests exercising Type-dependent UI paths pass by default.
-        "Type": "Other fee for service",
+        # RecordType.Name is the canonical label for "how we categorize this
+        # opportunity" (e.g. Philanthropy vs. Other fee for service). The B2
+        # 2026-04-19 fixture added Opportunity.Type with this value; A4
+        # (2026-04-21) corrected the misdiagnosis — "Other fee for service"
+        # is a RecordType.Name value, not a Type value. RecordTypeId is a
+        # mock 18-char ID; RecordType.Name round-trips via the SOQL join in
+        # get_opportunities (main.py SELECT includes RecordType.Name).
+        "RecordTypeId": "012TESTRECORDTYPE01",
+        "RecordType": {"Name": "Other fee for service"},
+        # RenewalRepeat__c — Pursuit custom picklist {New, Renewal, Upsell}.
+        # Load-bearing for Progress.tsx isRenewal() forecast logic and the
+        # OpportunityEditDialog Renewal/Repeat picker. A4 (2026-04-21)
+        # discovered it was missing from the get_opportunities SOQL; fixed
+        # in the same PR. Default to None (matches a never-set SF field).
+        "RenewalRepeat__c": None,
         "OwnerId": "005TESTOWNER00001",
         "CreatedDate": "2026-01-15T10:00:00.000+0000",
         "LastModifiedDate": "2026-03-10T14:30:00.000+0000",
-        "Payment_Terms__c": "Net 30",
-        "Contract_Start_Date__c": None,
-        "Contract_End_Date__c": None,
-        "Billing_Frequency__c": None,
+        # NOTE: Payment_Terms__c / Contract_Start_Date__c /
+        # Contract_End_Date__c / Billing_Frequency__c removed 2026-04-21
+        # — they don't exist on Opportunity in Pursuit's live SF org.
+        # test_forecasting_engine and test_forecasting_integration still
+        # pass Payment_Terms__c via explicit overrides (forecasting code
+        # reads it); not reintroducing as a default here since that's
+        # misleading about Pursuit's real schema.
     }
     if overrides:
         opp.update(overrides)
@@ -275,6 +288,7 @@ def mock_salesforce_service():
     """Create a mock Salesforce MCP service."""
     service = AsyncMock()
     service.query = AsyncMock(return_value={"records": []})
+    service.query_all = AsyncMock(return_value={"records": []})
     service.create_record = AsyncMock(return_value={"id": "006NEW0000000001"})
     service.update_record = AsyncMock(return_value=True)
     service.get_record = AsyncMock(return_value=make_sf_opportunity())

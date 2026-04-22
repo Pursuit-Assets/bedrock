@@ -1,0 +1,35 @@
+-- =============================================================================
+-- 2026-04-21: grant bedrock_user INSERT on public.platform_intake
+-- =============================================================================
+-- Context:
+--     `public.platform_intake` lives in the shared Pursuit platform database
+--     (segundo-db) and is owned by the `postgres` role. Before this migration,
+--     `bedrock_user` only had SELECT privilege, which is enough for reporting
+--     but not enough for the new Bedrock-side intake form
+--     (financial_forecasting/routes/platform_intake.py) to write rows.
+--
+-- What this does:
+--     Grants INSERT (and UPDATE, so status / routing columns can be amended
+--     by any Bedrock admin UI we build on top of this table later) to
+--     `bedrock_user`. Bedrock only writes rows with `source = 'bedrock'` so
+--     it never touches rows created by the Pursuit platform itself.
+--
+-- Who runs this:
+--     The Pursuit platform DBA — Bedrock connects as `bedrock_user` and
+--     cannot grant itself privileges. File kept in-repo as the audit trail
+--     for the privilege change.
+--
+-- Status:
+--     Applied to segundo-db on 2026-04-21 by the Bedrock owner using the
+--     platform `postgres` role. This file is idempotent and safe to re-run.
+--
+-- Rollback:
+--     REVOKE INSERT, UPDATE ON public.platform_intake FROM bedrock_user;
+-- =============================================================================
+
+GRANT INSERT, UPDATE ON public.platform_intake TO bedrock_user;
+
+-- Safety check: the `id` column defaults to `gen_random_uuid()` and the
+-- `status`, `source`, `created_at`, and `updated_at` columns all have
+-- server-side defaults, so the INSERT grant is sufficient on its own —
+-- no sequence or function grants required.

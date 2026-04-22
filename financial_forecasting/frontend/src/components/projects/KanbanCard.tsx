@@ -5,7 +5,8 @@ import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import type { FlatTask } from './types';
 import { PRIORITY_BORDER_COLOR } from './constants';
-import { formatRelativeDeadline } from './helpers';
+import { formatRelativeDeadline, resolveOwners, initials } from './helpers';
+import { useActiveUsers } from './useActiveUsers';
 
 interface KanbanCardProps {
   task: FlatTask;
@@ -14,6 +15,8 @@ interface KanbanCardProps {
 }
 
 const KanbanCard: React.FC<KanbanCardProps> = ({ task, isDragOverlay, onCardClick }) => {
+  const { activeUsers } = useActiveUsers();
+  const owners = resolveOwners(task.owner_ids, activeUsers);
   const {
     attributes, listeners, setNodeRef, transform, transition, isDragging,
   } = useSortable({ id: task.id });
@@ -79,11 +82,21 @@ const KanbanCard: React.FC<KanbanCardProps> = ({ task, isDragOverlay, onCardClic
               <LinkIcon sx={{ fontSize: 14, color: 'text.disabled' }} />
             </Tooltip>
           )}
-          {task.owner && (
-            <Tooltip title={task.owner}>
+          {owners.map((o) => (
+            <Tooltip key={o.id} title={o.name}>
               <Avatar sx={{ width: 22, height: 22, fontSize: '0.6rem', bgcolor: 'primary.light' }}>
-                {task.owner.split(' ').map(w => w[0]).join('').substring(0, 2)}
+                {initials(o.name)}
               </Avatar>
+            </Tooltip>
+          ))}
+          {task.owner && (
+            <Tooltip title={`Other: ${task.owner}`}>
+              <Chip
+                label={task.owner}
+                size="small"
+                variant="outlined"
+                sx={{ height: 20, fontSize: '0.6rem' }}
+              />
             </Tooltip>
           )}
         </Box>

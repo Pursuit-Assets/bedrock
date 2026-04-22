@@ -30,6 +30,7 @@ const DataTools = lazy(() => import('./pages/DataTools'));
 const Projects = lazy(() => import('./pages/Projects'));
 const NewOpportunity = lazy(() => import('./pages/NewOpportunity'));
 const PaymentSchedule = lazy(() => import('./pages/PaymentSchedule'));
+const PlatformIntake = lazy(() => import('./pages/PlatformIntake'));
 
 const LazyFallback = () => (
   <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: 200 }}>
@@ -310,6 +311,18 @@ function App() {
                     <Layout>
                       <Suspense fallback={<LazyFallback />}>
                         <PaymentSchedule />
+                      </Suspense>
+                    </Layout>
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/intake"
+                element={
+                  <ProtectedRoute>
+                    <Layout>
+                      <Suspense fallback={<LazyFallback />}>
+                        <PlatformIntake />
                       </Suspense>
                     </Layout>
                   </ProtectedRoute>

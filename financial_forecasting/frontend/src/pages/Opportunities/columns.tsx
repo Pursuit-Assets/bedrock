@@ -33,7 +33,6 @@ import { AccountCell } from '../../components/inline-edit/cells/AccountCell';
 import { AmountCell } from '../../components/inline-edit/cells/AmountCell';
 import { DateCell } from '../../components/inline-edit/cells/DateCell';
 import { ProbabilityCell } from '../../components/inline-edit/cells/ProbabilityCell';
-// TypeCell import removed with the Opportunity.Type column (BUG-UI-9).
 
 /**
  * Look up the display name of the user who holds the record-level lock on
@@ -80,9 +79,6 @@ export interface ColumnCallbacks {
   canLock?: boolean;
   // Edit dialog
   onEditDialogOpen?: (opp: any) => void;
-  /** SF Opportunity.Type picklist values — feeds TypeCell in the grid.
-   *  Empty array is acceptable: TypeCell falls back to read-only display. */
-  typeOptions?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -152,9 +148,6 @@ export function buildPipelineColumns(cb: ColumnCallbacks): GridColDef[] {
     accountColumn(cb, { editable: true }),
     ownerColumn(cb),
     stageColumn(cb),
-    // Opportunity.Type column removed (BUG-UI-9) — it duplicated the
-    // RenewalRepeat__c field. RMs now classify via Record Type in the edit
-    // drawer. Leaving the TypeCell component in place for possible future use.
     amountColumn(cb),
     {
       field: 'Probability',
@@ -238,7 +231,6 @@ export function buildPaymentColumns(cb: ColumnCallbacks): GridColDef[] {
       filterable: true,
     },
     accountColumn(cb, { editable: false }),
-    // Opportunity.Type column removed (BUG-UI-9) — duplicated RenewalRepeat__c.
     closeDateColumn(),
     {
       field: 'Amount',

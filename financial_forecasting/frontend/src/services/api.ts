@@ -199,16 +199,18 @@ export const apiService = {
     ActivityDate?: string;
     Description?: string;
     OwnerId?: string;
+    WhoId?: string | null;
   }) => api.post(`/api/salesforce/opportunities/${opportunityId}/tasks`, taskData),
-  
+
   updateTask: (taskId: string, updates: {
-    Subject?: string;
-    Status?: string;
-    Priority?: string;
-    ActivityDate?: string;
-    Description?: string;
-    OwnerId?: string;
-    WhatId?: string;
+    Subject?: string | null;
+    Status?: string | null;
+    Priority?: string | null;
+    ActivityDate?: string | null;
+    Description?: string | null;
+    OwnerId?: string | null;
+    WhatId?: string | null;
+    WhoId?: string | null;
   }) => api.put(`/api/salesforce/tasks/${taskId}`, updates),
   
   deleteTask: (taskId: string) =>
@@ -318,6 +320,53 @@ export const apiService = {
       updates,
       reason: 'Updated via Revenue Hub',
     } satisfies PaymentUpdatePayload),
+
+  /** Create a single Salesforce Payment on an existing Opportunity.
+   *  Distinct from the bulk createPaymentSchedule endpoint (which wipes and
+   *  recreates every payment); this appends one new record without touching
+   *  what's already there. Backend: POST /api/salesforce/payments at
+   *  main.py's create_payment handler. */
+  createSfPayment: (data: {
+    opportunity_id: string;
+    amount: number;
+    scheduled_date: string;
+    payment_method?: string | null;
+    paid?: boolean;
+  }) =>
+    api.post('/api/salesforce/payments', data),
+
+  /** Permanently delete a Salesforce Payment record. Irreversible at the SF
+   *  level — UI callers (PaymentEditDialog) must surface a confirm dialog
+   *  before invoking. Backend: DELETE /api/salesforce/payments/{id} at
+   *  main.py's delete_payment handler. Permission-gated on `edit_payments`. */
+  deleteSfPayment: (paymentId: string) =>
+    api.delete(`/api/salesforce/payments/${paymentId}`),
+
+  /** Permanently delete a Salesforce Opportunity record. Irreversible at
+   *  the SF level — child tasks and payments become orphaned. UI callers
+   *  (OpportunityEditDialog) must surface a confirm-before-delete popover.
+   *  Backend: DELETE /api/salesforce/opportunities/{id} at main.py's
+   *  delete_opportunity handler (PR #169). Permission-gated on
+   *  `edit_own_opportunities` + ownership check. */
+  deleteSfOpportunity: (opportunityId: string) =>
+    api.delete(`/api/salesforce/opportunities/${opportunityId}`),
+
+  /** Permanently delete a Salesforce Account record. Irreversible at the
+   *  SF level — child contacts + opportunities lose their link. UI callers
+   *  (AccountEditDialog) must surface a confirm dialog before invoking.
+   *  Backend: DELETE /api/salesforce/accounts/{id} at main.py's
+   *  delete_account handler (PR #169). Permission-gated on `edit_accounts`
+   *  + admin-or-owner check (no edit-all-accounts key exists). */
+  deleteSfAccount: (accountId: string) =>
+    api.delete(`/api/salesforce/accounts/${accountId}`),
+
+  /** Permanently delete a Salesforce Contact record. Irreversible at the
+   *  SF level. UI callers (ContactEditDialog) must surface a confirm
+   *  dialog before invoking. Backend: DELETE /api/salesforce/contacts/{id}
+   *  at main.py's delete_contact handler (PR #169). Permission-gated on
+   *  `edit_contacts` + admin-or-owner check. */
+  deleteSfContact: (contactId: string) =>
+    api.delete(`/api/salesforce/contacts/${contactId}`),
 
   // Salesforce - Users
   getUsers: (params?: { limit?: number }) =>
@@ -592,9 +641,11 @@ export const apiService = {
   importProjectData: (projectId: string, data: { workstreams: any[]; replace?: boolean }) =>
     api.post(`/api/projects/${projectId}/import`, data),
 
-  // Project ownership & contributors (M19)
-  getProjectUsers: () =>
-    api.get('/api/projects/users'),
+  /** Active staff eligible to be picked as project owners, contributors, or
+   *  task/milestone owners. Service accounts (Systems Admin) are excluded
+   *  server-side. Gated by view_projects, so any project viewer can load it. */
+  getActiveUsers: () =>
+    api.get('/api/users/active'),
 
   addProjectContributor: (projectId: string, data: { user_email: string }) =>
     api.post(`/api/projects/${projectId}/contributors`, data),
@@ -614,19 +665,19 @@ export const apiService = {
   deleteWorkstream: (workstreamId: string) =>
     api.delete(`/api/workstreams/${workstreamId}`),
 
-  createMilestone: (workstreamId: string, data: { title: string; status?: string; priority?: string; owner?: string; description?: string }) =>
+  createMilestone: (workstreamId: string, data: { title: string; status?: string; priority?: string; owner?: string; owner_ids?: string[]; description?: string }) =>
     api.post(`/api/workstreams/${workstreamId}/milestones`, data),
 
-  updateMilestone: (milestoneId: string, data: { title?: string; status?: string; priority?: string; owner?: string; description?: string }) =>
+  updateMilestone: (milestoneId: string, data: { title?: string; status?: string; priority?: string; owner?: string; owner_ids?: string[]; description?: string }) =>
     api.put(`/api/milestones/${milestoneId}`, data),
 
   deleteMilestone: (milestoneId: string) =>
     api.delete(`/api/milestones/${milestoneId}`),
 
-  createProjectTask: (milestoneId: string, data: { title: string; status?: string; owner?: string; deadline?: string; start_date?: string; description?: string }) =>
+  createProjectTask: (milestoneId: string, data: { title: string; status?: string; owner?: string; owner_ids?: string[]; deadline?: string; start_date?: string; description?: string }) =>
     api.post(`/api/milestones/${milestoneId}/tasks`, data),
 
-  updateProjectTask: (taskId: string, data: { title?: string; status?: string; owner?: string; deadline?: string; start_date?: string; description?: string; updates?: string }) =>
+  updateProjectTask: (taskId: string, data: { title?: string; status?: string; owner?: string; owner_ids?: string[]; deadline?: string; start_date?: string; description?: string; updates?: string }) =>
     api.put(`/api/project-tasks/${taskId}`, data),
 
   deleteProjectTask: (taskId: string) =>
@@ -738,6 +789,19 @@ export const apiService = {
 
   prospectImportWriteToCrm: (sessionId?: string) =>
     api.post('/api/prospect-import/write-to-crm', { session_id: sessionId }),
+
+  // Bedrock intake (bug/feature submissions → public.pd_tickets with
+  // source='bedrock'). The URL path is still `/api/platform-intake`
+  // for backwards compatibility with the form component — renaming
+  // the route would cascade into the frontend Layout, App routes, and
+  // any bookmarks, and isn't worth the churn for a comment.
+  // Accepts FormData so the optional attachment can ride along. Axios
+  // leaves the Content-Type header off when the body is FormData so the
+  // browser can set the correct multipart boundary.
+  submitPlatformIntake: (payload: FormData) =>
+    api.post('/api/platform-intake', payload, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    }),
 };
 
 // Export axios instance for custom requests

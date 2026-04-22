@@ -5,7 +5,7 @@ import {
   KeyboardSensor, useSensor, useSensors,
   type DragStartEvent, type DragEndEvent,
 } from '@dnd-kit/core';
-import type { Workstream, ProjectMutations, FlatTask, TaskStatus } from './types';
+import type { ActiveUser, Workstream, ProjectMutations, FlatTask, TaskStatus } from './types';
 import { TASK_STATUSES } from './constants';
 import { flattenTasks, groupByStatus } from './helpers';
 import KanbanColumn from './KanbanColumn';
@@ -15,9 +15,10 @@ import TaskDetailDialog from './TaskDetailDialog';
 interface KanbanBoardProps {
   workstreams: Workstream[];
   mutations: ProjectMutations;
+  activeUsers: ActiveUser[];
 }
 
-const KanbanBoard: React.FC<KanbanBoardProps> = ({ workstreams, mutations }) => {
+const KanbanBoard: React.FC<KanbanBoardProps> = ({ workstreams, mutations, activeUsers }) => {
   const flatTasks = useMemo(() => flattenTasks(workstreams), [workstreams]);
   const grouped = useMemo(() => groupByStatus(flatTasks), [flatTasks]);
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -86,6 +87,7 @@ const KanbanBoard: React.FC<KanbanBoardProps> = ({ workstreams, mutations }) => 
         task={selectedTask}
         onClose={() => setSelectedTask(null)}
         mutations={mutations}
+        activeUsers={activeUsers}
       />
     </>
   );

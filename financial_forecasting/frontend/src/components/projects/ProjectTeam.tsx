@@ -8,16 +8,10 @@ import {
   PersonAdd as AddIcon,
   SwapHoriz as TransferIcon,
 } from '@mui/icons-material';
-import { useQuery } from 'react-query';
-import { apiService } from '../../services/api';
 import { useAuth } from '../../contexts/AuthContext';
 import { usePermissions } from '../../contexts/PermissionsContext';
-import type { ProjectContributor } from './types';
-
-interface ProjectUser {
-  email: string;
-  name: string;
-}
+import type { ActiveUser, ProjectContributor } from './types';
+import { useActiveUsers } from './useActiveUsers';
 
 interface ProjectTeamProps {
   projectId: string;
@@ -28,9 +22,9 @@ interface ProjectTeamProps {
   onTransferOwnership: (projectId: string, newOwnerEmail: string) => void;
 }
 
-function displayName(email: string, users: ProjectUser[]): string {
+function displayName(email: string, users: ActiveUser[]): string {
   const u = users.find((p) => p.email === email);
-  if (u?.name) return u.name;
+  if (u?.display_name) return u.display_name;
   // Fallback: show part before @
   return email.split('@')[0];
 }
@@ -48,27 +42,21 @@ const ProjectTeam: React.FC<ProjectTeamProps> = ({
   const currentEmail = user?.email || '';
   const canManage = currentEmail === ownerEmail || isAdmin;
 
-  // Fetch eligible users — display names on chips + add/transfer pickers.
-  // Only fires for owner/admin (requires edit_projects backend permission).
-  const { data: projectUsers = [] } = useQuery(
-    ['project-users'],
-    async () => {
-      const res = await apiService.getProjectUsers();
-      return (res.data?.data || []) as ProjectUser[];
-    },
-    { staleTime: 60_000, enabled: canManage }
-  );
+  // All active staff are pickable. Edit capability on the project is still
+  // gated by each user's permission profile — a contributor without
+  // edit_projects can view but not mutate.
+  const { activeUsers } = useActiveUsers();
 
   // Filter out owner and existing contributors from the add picker
   const contributorEmails = new Set(contributors.map((c) => c.user_email));
-  const addCandidates = projectUsers.filter(
+  const addCandidates = activeUsers.filter(
     (u) => u.email !== ownerEmail && !contributorEmails.has(u.email)
   );
-  const transferCandidates = projectUsers.filter(
+  const transferCandidates = activeUsers.filter(
     (u) => u.email !== ownerEmail
   );
 
-  const handleAddSelect = (_: any, value: ProjectUser | null) => {
+  const handleAddSelect = (_: any, value: ActiveUser | null) => {
     if (value) {
       onAddContributor(projectId, value.email);
       setAddOpen(false);
@@ -97,7 +85,7 @@ const ProjectTeam: React.FC<ProjectTeamProps> = ({
         <>
           <Chip
             icon={<OwnerIcon sx={{ fontSize: 14 }} />}
-            label={displayName(ownerEmail, projectUsers)}
+            label={displayName(ownerEmail, activeUsers)}
             size="small"
             color="primary"
             variant="outlined"
@@ -147,7 +135,7 @@ const ProjectTeam: React.FC<ProjectTeamProps> = ({
       {contributors.map((c) => (
         <Chip
           key={c.user_email}
-          label={displayName(c.user_email, projectUsers)}
+          label={displayName(c.user_email, activeUsers)}
           size="small"
           variant="outlined"
           onDelete={canManage ? () => onRemoveContributor(projectId, c.user_email) : undefined}
@@ -171,7 +159,7 @@ const ProjectTeam: React.FC<ProjectTeamProps> = ({
           openOnFocus
           size="small"
           options={addCandidates}
-          getOptionLabel={(o) => o.name ? `${o.name} (${o.email})` : o.email}
+          getOptionLabel={(o) => o.display_name ? `${o.display_name} (${o.email})` : o.email}
           onChange={handleAddSelect}
           onClose={() => setAddOpen(false)}
           renderInput={(params) => (
@@ -199,7 +187,7 @@ const ProjectTeam: React.FC<ProjectTeamProps> = ({
             openOnFocus
             size="small"
             options={transferCandidates}
-            getOptionLabel={(o) => o.name ? `${o.name} (${o.email})` : o.email}
+            getOptionLabel={(o) => o.display_name ? `${o.display_name} (${o.email})` : o.email}
             onChange={(_, value) => setTransferTarget(value?.email || '')}
             renderInput={(params) => (
               <TextField {...params} placeholder="Select new owner..." />

@@ -2,14 +2,13 @@
 -- Uses deterministic UUIDs for stability. Idempotent via ON CONFLICT DO NOTHING.
 
 -- Project
+-- owner_email intentionally left NULL: fresh DBs render the "No owner — assign"
+-- chip so an admin picks the real owner via the UI's Transfer flow. Avoids
+-- baking a specific person into the seed (jp.dery@ was the old default and
+-- caused picker-eligibility confusion because that email isn't in org_users).
 INSERT INTO bedrock.project (id, name, description) VALUES
   ('a0000000-0000-4000-8000-000000000001', 'AIJI', 'AI for Justice Initiative — strategic launch project')
 ON CONFLICT DO NOTHING;
-
--- M19: Backfill ownership on seed project
-UPDATE bedrock.project
-SET owner_email = 'jp.dery@pursuit.org', created_by = 'jp.dery@pursuit.org'
-WHERE id = 'a0000000-0000-4000-8000-000000000001' AND owner_email IS NULL;
 
 -- Workstreams
 INSERT INTO bedrock.workstream (id, project_id, name, description, sort_order) VALUES

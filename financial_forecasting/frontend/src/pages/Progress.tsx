@@ -57,7 +57,7 @@ interface Opportunity {
   CloseDate: string;
   CreatedDate: string;
   LastModifiedDate: string;
-  Type?: string;
+  RenewalRepeat__c?: string;
   OwnerId: string;
   Owner?: { Name: string; Id?: string };
   First_Payment_Date__c?: string;
@@ -189,7 +189,7 @@ const Progress: React.FC = () => {
     );
 
     const weightedValue = (opp: Opportunity) => ((opp.Amount || 0) * (opp.Probability || 0)) / 100;
-    const isRenewal = (opp: Opportunity) => opp.Type === 'Renewal';
+    const isRenewal = (opp: Opportunity) => opp.RenewalRepeat__c === 'Renewal';
 
     // Won opps (Collecting / Closed Won / Closed Completed) — count at full value (100%)
     const allWonOpps = opportunities.filter((opp: Opportunity) =>
@@ -446,8 +446,7 @@ const Progress: React.FC = () => {
   }, [opportunities]);
 
   // Per-owner progress for targets table. Shows ONLY users who match all
-  // three criteria (set by JP + Jac 2026-04-15; Progress Visibility override
-  // removed 2026-04-21, BUG-UI-19):
+  // three criteria (set by JP + Jac 2026-04-15):
   //   (a) FY revenue target set in Settings → Targets
   //   (b) IsActive=true in Salesforce
   //   (c) Owns at least one opportunity in Salesforce

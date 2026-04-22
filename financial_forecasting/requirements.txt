@@ -32,6 +32,9 @@ google-auth-oauthlib==1.2.0
 google-auth-httplib2==0.2.0
 google-api-python-client==2.111.0
 
+# Google Cloud Storage (for Platform Intake file uploads)
+google-cloud-storage==2.19.0
+
 # Anthropic (AI analysis)
 anthropic>=0.30.0
 
@@ -40,6 +43,9 @@ pydantic>=2.7
 
 # PostgreSQL (async)
 asyncpg==0.30.0
+
+# Excel parsing (scripts/import_aiji_tracker.py)
+openpyxl>=3.1.0
 
 # Background scheduler
 APScheduler==3.10.4

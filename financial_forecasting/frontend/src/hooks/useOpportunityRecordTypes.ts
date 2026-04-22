@@ -1,10 +1,10 @@
 /**
  * React Query hook for the Salesforce Opportunity Record Type list.
  *
- * Backed by the same /api/salesforce/schema/Opportunity endpoint as
- * useOpportunityTypePicklist — SF returns `recordTypeInfos` alongside fields,
- * and we surface those via a separate cache key so the data is easy to reason
- * about in DevTools even though the network call is deduped.
+ * Backed by the /api/salesforce/schema/Opportunity endpoint — SF returns
+ * `recordTypeInfos` alongside fields, and we surface those via a separate
+ * cache key so the data is easy to reason about in DevTools even though
+ * the network call is deduped.
  *
  * Response shape (extended in routes/salesforce_schema.py for BUG-UI-9):
  *   {

@@ -191,8 +191,16 @@ class TestSalesforceMCPService:
         defaults.update(kwargs)
         return SalesforceMCPService(client or _make_mock_mcp_client(), **defaults)
 
-    def test_missing_credentials_raises(self):
+    def test_missing_credentials_raises(self, monkeypatch):
         """Constructor raises ValueError when no valid credential set is provided."""
+        # get_config_value falls back to os.getenv; if the dev shell / .env has
+        # SALESFORCE_* set, `username="u"` alone would silently inherit them
+        # and no ValueError would raise. Clear the fallbacks for this test.
+        for var in (
+            "SALESFORCE_USERNAME", "SALESFORCE_PASSWORD", "SALESFORCE_SECURITY_TOKEN",
+            "SALESFORCE_CLIENT_ID", "SALESFORCE_CLIENT_SECRET",
+        ):
+            monkeypatch.delenv(var, raising=False)
         with pytest.raises(ValueError, match="Salesforce credentials are required"):
             SalesforceMCPService(_make_mock_mcp_client(), username="u")
 

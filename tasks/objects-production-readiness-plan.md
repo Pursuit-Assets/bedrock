@@ -1,5 +1,7 @@
 # Objects production-readiness — MVP launch plan
 
+> **⚠️ Superseded 2026-04-21 by updated sequence in `tasks/parallel-pr-lanes.md`.** This doc is preserved as the 2026-04-20 snapshot before Jac's PR #151 (QA polish pack) landed. The 22-PR sequence below is still the scope source of truth for WHAT to ship, but the PR numbers are pre-shift — add **+4** to every queued number (`#149 → #153`, `#150 → #154`, etc.) because `#149, #150, #151, #152` were taken by Jac's QA pack + release rollups. Also a new `#153 pr-singleton-race-fix` inserts at the front of the sequence (see `tasks/pr153-singleton-race-fix-plan.md`). A new `#158 pr-opp-type-deprecation` replaces part of the original `#153 pr-use-schema-picklist` scope (see `tasks/opp-type-full-delete-decision.md`). **Always cross-reference `tasks/parallel-pr-lanes.md` for current numbering and lane assignment.**
+
 **Created:** 2026-04-20
 **Status:** PR #147 merged 2026-04-20. PR #148 (page-rename cleanup) open for review; PRs #149-#169 queued below. See live per-PR status in the "PR sequence" table.
 **Scope:** The five core Salesforce-backed objects used in daily workflows — **Opportunities, Accounts, Contacts, Tasks, Activities** — brought to production-ready quality for MVP launch.
@@ -117,7 +119,7 @@ This table is the source of truth for per-PR status. Each PR that ships updates 
 |---|---|---|---|---|
 | [#147](https://github.com/Pursuit-Assets/bedrock/pull/147) | `pr-planning` | This plan doc + doc updates across existing task files | docs-only | ✅ merged |
 | #148 | `pr-page-rename-cleanup` | Rename `MyDashboard.tsx` → `Priorities.tsx` and `Overview.tsx` → `Progress.tsx` to align file/component names with sidebar labels | S | 👀 in review |
-| #149 | `pr-contacts-accounts-pagination` | Backend: Contacts + Accounts + opp-tasks + my-tasks → `query_all()` pattern | S-M | ⏳ Queued |
+| #149 (= actual #155) | `pr-contacts-accounts-pagination` | Backend: Contacts + Accounts + opp-tasks → `query_all()`; my-tasks default+cap bumped; defensive test suite; FE comment trim | S-M | 👀 in review |
 | #150 | `pr-rowcount-caption-reports-tabs` | `<RowCountCaption>` component + apply to Opportunities (migrate) / Accounts / Contacts / Tasks | M | ⏳ Queued |
 | #151 | `pr-rowcount-caption-other-surfaces` | Apply caption to Priorities / Progress / WeeklyPriorities / Accounts-detail / Finance pages | S | ⏳ Queued |
 | #152 | `pr-tasks-whoid` | Add `WhoId` (Contact lookup) to TaskPanel + TaskCreateRequest + TaskUpdateRequest | S | ⏳ Queued |
@@ -126,8 +128,9 @@ This table is the source of truth for per-PR status. Each PR that ships updates 
 | #155 | `pr-dialog-audit-account` | Account dialog: convert `npsp__Matching_Gift_Request_Deadline__c` to date, convert all picklists | S-M | ⏳ Queued |
 | #156 | `pr-dialog-audit-contact` | Contact dialog: add `npe01__AlternateEmail__c`, convert picklists | S-M | ⏳ Queued |
 | #157 | `pr-dialog-audit-taskpanel` | TaskPanel: convert Status + Priority picklists | S | ⏳ Queued |
+| #153 carve-out (= actual #160) | `pr-opp-type-deprecation` | Full delete of Opportunity.Type (backend + frontend + types + tests); `isRenewal` rewrite to use canonical `RenewalRepeat__c`; RecordType.Name replaces Type in fixture + test assertion. Carved out of the original #153 `pr-use-schema-picklist` scope per the callout at the bottom of this file. | M | 👀 in review |
 | #158 | `pr-activities-list-page` | New `pages/Activities.tsx` + Reports tab (replaces Leads tab) | M | ⏳ Queued |
-| #159 | `pr-activities-sync` | `data_sync.sync_activities()` round-trip tests + manual verification (Sprint 9A; impl already landed) | S-M | ⏳ Queued |
+| #159 (= actual #157) | `pr-activities-sync-tests` | `data_sync.sync_activities()` round-trip tests — 54 tests across 5 classes (ParseSfDatetime, MapSfTask, MapSfEvent, UpsertActivity, SyncActivitiesRoundTrip). Zero impl changes — the landed code held up. | M | 👀 in review |
 | #160 | `pr-activities-detail-tabs` | `ActivityTimeline` component + Activities tabs on Opportunity / Account / Contact detail dialogs | M | ⏳ Queued |
 | #161 | `pr-b4a-task-title-true` | Fix: task title coerces to "True" on save | S | ⏳ Queued |
 | #162 | `pr-b4b-task-description-400` | Fix: description save returns 400 | S | ⏳ Queued |
@@ -257,22 +260,27 @@ For Progress (file rename only — component is already `Progress`):
 
 ### PR #153 — `pr-use-schema-picklist`
 
+> **Numbering update (2026-04-21):** This plan entry's "#153" now maps to actual PR **#156** per the shift table in `tasks/parallel-pr-lanes.md` (A1 landed at #155 first; B1 opened right after). Scope preserved as written below, with one correction in the second bullet — see callout.
+
 **Foundation for PRs #154-#157. No user-visible change.**
 
 - Generalize `frontend/src/hooks/useOpportunityTypePicklist.ts` → `frontend/src/hooks/useSchemaPicklist.ts`. Signature: `useSchemaPicklist(sobject: string, fieldName: string)`. React-query cache keyed on `['schema-picklist', sobject, fieldName]`, 30-min staleTime.
-- Retire `useOpportunityTypePicklist` as a thin wrapper: `export const useOpportunityTypePicklist = () => useSchemaPicklist('Opportunity', 'Type');`. Callers unchanged.
+- ~~Retire `useOpportunityTypePicklist` as a thin wrapper: `export const useOpportunityTypePicklist = () => useSchemaPicklist('Opportunity', 'Type');`. Callers unchanged.~~ **Superseded (2026-04-21):** `useOpportunityTypePicklist` is deleted outright by Lane A4 (`pr-opp-type-deprecation`) along with its consumers (`TypeCell.tsx`, inline-edit grid column, `PipelineFilterBar` Type filter, `main.py` Type references). See `tasks/opp-type-full-delete-decision.md` for the full inventory. B1's PR does not touch the old hook — A4 handles deletion cleanly; thin-wrapper path would duplicate A4's work.
 - Tests: unit test with mocked `apiService.getSchemaDescribe`.
 
 ---
 
 ### PR #154 — `pr-dialog-audit-opportunity`
 
-Uses `useSchemaPicklist` (PR #153).
+> **Numbering + scope update (2026-04-21):** This plan entry's "#154" maps to actual PR **#159** per the shift table in `tasks/parallel-pr-lanes.md` (A1 #155, B1 #156, A2 #157, A3 #158, B2 #159). **Scope expanded mid-plan** (2026-04-21): bundled with a Payment-navigation feature. **Post-smoke iteration same-day:** an early iteration tried a navigation-link UX (click → `/payment-schedule/:oppId`) but this dead-ended users with no back navigation; replaced with an **inline `<Accordion>` in the Opp dialog's Payment Summary block** — lazy-fetches payments on expand, shows a read-first table, and opens `PaymentEditDialog` as a stacked modal when the user clicks a row's edit icon (so the Opp drawer stays open throughout). Bundling still includes the (separate) `PaymentSchedule.tsx` enhancement since that page is still reachable via stage-transition navigation from Opportunities/Priorities. Surfaced a `FALLBACK_PAYMENT_METHODS`-hardcoded anti-pattern inside `PaymentEditDialog` (violating `feedback_no_demo_versions`) — converted its three picklists (Payment Method, Department, GL Account) to `useSchemaPicklist` as part of the same PR. Bulk-save-overwrite footgun in `routes/payment_schedules.py:132-138` flagged in the PR body + progress log as pre-existing; full fix deferred to a follow-up PR.
 
-- Add editable `Earliest_Scheduled_Payment__c` (date picker).
-- Convert hardcoded `OPPORTUNITY_STAGES` array usage → `useSchemaPicklist('Opportunity', 'StageName')`. If schema fetch fails, render a disabled select with helper text — NOT a hardcoded legacy array.
+Uses `useSchemaPicklist` (PR #153, actual #156).
+
+- Add editable `Earliest_Scheduled_Payment__c` (date picker) inside the Payment Summary block (stage-gated).
+- Convert hardcoded `OPPORTUNITY_STAGES` array usage → `useSchemaPicklist('Opportunity', 'StageName')`. If schema fetch fails, render a disabled select with helper text — NOT a hardcoded legacy array. Preserves not-in-list stored values via a disabled `(inactive)` MenuItem per `feedback_sf_stages_sacred`.
 - Convert `RenewalRepeat__c` similarly.
-- Tests: form-render assertions for each converted field.
+- Tests: form-render assertions for each converted field (12 tests in `OpportunityEditDialog.test.tsx`).
+- **(Scope expansion, see callout above):** Navigation link → PaymentSchedule page → Edit Details clickthrough → PaymentEditDialog; orphan PaymentEditDialog picklists refactored. 6 tests in new `PaymentEditDialog.test.tsx`, 3 tests in new `PaymentSchedule.test.tsx`.
 
 ---
 
@@ -418,6 +426,10 @@ From `mvp-launch-sprint.md` B9. Fully blue-highlight the field when in edit mode
 - **Chrome extension** (Sprint 9B-D per `tasks/sprint9-activities-extension-plan.md`).
 - **Playwright click-through tests** (Jac suggestion, 2026-04-17).
 - **Post-MVP dialog-stack rework** — JP's modal-stack vs drawer vs tab debate is parked per `mvp-launch-sprint.md:123`.
+- **Typed request models for the 3 pass-through create endpoints** — `create_opportunity`, `create_account`, `create_contact` in `main.py` accept `Dict[str, Any]` and forward to SF without field whitelisting (update endpoints wrap payload in `*UpdateRequest` but still pass a raw `updates: Dict[str, Any]` inside). SF's FLS bounds impact in practice, but defense-in-depth would mirror `TaskCreateRequest`'s typed-field pattern across the other 5 handlers. Surfaced during PR #153 verification. **Trigger to promote out of parking lot:** any report of a client posting an unexpected field and SF accepting it, or any multi-tenant expansion beyond Pursuit's team-of-4.
+- **Post-MVP MCP client hardening — `_reauth_lock` scope and `health_check` direct-API handling** — surfaced during PR #153 verification. Two small items on the base `UnifiedMCPClient` / `SalesforceMCPService` layer, both benign today but worth polishing later:
+  1. `SalesforceMCPService._reauth_lock` is per-instance. The base singleton's service-account path (used by `data_sync`, `forecasting_engine`, `background_sync_task`) shares the lock correctly; per-request wrappers from `_PerRequestMCPClient` each get their own lock. For cookie-path requests the per-instance lock is irrelevant because `_reauthenticate()` fast-fails (no creds), but if we ever give per-request services credentials (e.g. refresh_token-aware re-auth directly from the service), we'd want a shared lock to prevent OAuth-endpoint stampedes. **Trigger:** any plan to move cookie-refresh logic out of `/auth/salesforce/status` and into the SF service layer.
+  2. `UnifiedMCPClient.health_check` (`mcp_client/unified_client.py:339-359`) assumes every entry in `_connected_services` has a matching entry in `self.clients`. For direct-API SF (Pursuit's current deployment — no MCP transport), `self.clients["salesforce"]` doesn't exist, so the loop body hits `KeyError` and reports `{"status": "unhealthy", "error": "'salesforce'"}`. The `try/except` catches it so nothing crashes, but the output is cosmetically wrong. No route handler currently calls `health_check` (only `mcp_client/__main__.py` does, outside FastAPI), so no user ever sees this. **Trigger:** any new admin/observability endpoint that exposes health state through FastAPI. Fix is ~10 LOC in the base class — guard `self.clients[service_name]` behind an `in` check, fall back to `service.is_authenticated` when the MCP transport client is absent.
 
 ## File reference
 

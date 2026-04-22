@@ -34,6 +34,7 @@ from conftest import (
     make_sf_opportunity,
     make_sf_account,
     make_sf_contact,
+    make_sf_task,
     make_intacct_invoice,
     make_intacct_payment,
 )
@@ -59,8 +60,10 @@ def mock_salesforce():
     """Create a mock Salesforce service."""
     service = AsyncMock()
     service.query = AsyncMock(return_value={"records": []})
+    service.query_all = AsyncMock(return_value={"records": []})
     service.create_record = AsyncMock(return_value={"id": "006NEW0000000001"})
     service.update_record = AsyncMock(return_value=True)
+    service.delete_record = AsyncMock(return_value=True)
     service.get_service_info = AsyncMock(return_value={
         "service": "salesforce",
         "authenticated": True,
@@ -151,6 +154,9 @@ def mock_db():
         # tests/test_projects_endpoints.py:36 and tests/test_permissions.py:41,57.
         "edit_accounts": True, "create_accounts": True,
         "edit_contacts": True, "create_contacts": True,
+        # edit_payments gates POST /api/salesforce/payments (and PUT). Without
+        # this, TestSalesforcePaymentCreate gets 403 from check_permission.
+        "edit_payments": True,
         "view_tasks": True, "edit_own_tasks": True, "edit_all_tasks": True, "create_tasks": True,
         "view_revenue_dashboard": True, "view_cashflow_forecasts": True,
         "view_sage_invoices_payments": True, "create_sage_invoices": True,
@@ -327,11 +333,28 @@ class TestSalesforceOpportunities:
         data = response.json()
         assert len(data) == 1
         assert data[0]["Id"] == opp["Id"]
-        # Type round-trip: the 2026-04-17 B2 incident was that Opportunity.Type
-        # never surfaced in the UI. The root cause was frontend (no column),
-        # but this assertion guards the API contract so regressions here get
-        # caught even if the frontend regresses separately.
-        assert data[0]["Type"] == "Other fee for service"
+        # RecordType round-trip: the 2026-04-17 B2 incident root cause was
+        # that the "Other fee for service" categorization wasn't surfacing.
+        # The Type field was misdiagnosed (A4 2026-04-21 deletion); the
+        # canonical label field is RecordType.Name. This assertion guards
+        # the API contract so regressions here get caught even if the
+        # frontend regresses separately.
+        assert data[0]["RecordType"]["Name"] == "Other fee for service"
+        # SOQL-inclusion guard for RenewalRepeat__c — A4 adversarial
+        # verification caught it was missing from the SELECT despite being
+        # bound in OpportunityEditDialog + Progress.tsx isRenewal.
+        #
+        # PR #162 added 4 more pins (Contract_Start_Date__c,
+        # Contract_End_Date__c, Payment_Terms__c, Billing_Frequency__c)
+        # but Pursuit's SF org doesn't actually have those custom fields —
+        # SF rejected the whole SELECT with an unknown-field error,
+        # breaking the Opportunities endpoint in prod 2026-04-21. Hotfix
+        # PR #167 reverted the 4 additions from the SOQL and removed the
+        # pins. The frontend still binds them (speculative TS interface +
+        # OpportunityEditDialog inputs) — that ghost-binding is a
+        # separate latent bug tracked for follow-up cleanup.
+        soql = mock_client.salesforce.query_all.call_args[0][0]
+        assert "RenewalRepeat__c" in soql
 
     def test_get_opportunities_with_stage_filter(self, client, mock_client):
         opp = make_sf_opportunity({"StageName": "Qualifying"})
@@ -423,7 +446,7 @@ class TestSalesforceAccounts:
 
     def test_get_accounts_returns_list(self, client, mock_client):
         acct = make_sf_account()
-        mock_client.salesforce.query.return_value = {"records": [acct]}
+        mock_client.salesforce.query_all.return_value = {"records": [acct]}
         response = client.get("/api/salesforce/accounts")
         assert response.status_code == 200
         data = response.json()
@@ -431,10 +454,21 @@ class TestSalesforceAccounts:
         assert data[0]["Name"] == "Test Foundation Inc"
 
     def test_get_accounts_empty(self, client, mock_client):
-        mock_client.salesforce.query.return_value = {"records": []}
+        mock_client.salesforce.query_all.return_value = {"records": []}
         response = client.get("/api/salesforce/accounts")
         assert response.status_code == 200
         assert response.json() == []
+
+    def test_get_accounts_paginates_beyond_2000(self, client, mock_client):
+        """Default limit=None drives query_all pagination with no SOQL LIMIT,
+        so results are NOT silently capped at 2000."""
+        accounts = [make_sf_account({"Id": f"001BIG{i:04d}"}) for i in range(2500)]
+        mock_client.salesforce.query_all.return_value = {"records": accounts}
+        response = client.get("/api/salesforce/accounts")
+        assert response.status_code == 200
+        assert len(response.json()) == 2500
+        soql = mock_client.salesforce.query_all.call_args[0][0]
+        assert "LIMIT" not in soql
 
     def test_create_account_success(self, client, mock_client):
         mock_client.salesforce.create_record.return_value = {"id": "001NEW001"}
@@ -466,7 +500,7 @@ class TestSalesforceContacts:
 
     def test_get_contacts_returns_list(self, client, mock_client):
         contact = make_sf_contact()
-        mock_client.salesforce.query.return_value = {"records": [contact]}
+        mock_client.salesforce.query_all.return_value = {"records": [contact]}
         response = client.get("/api/salesforce/contacts")
         assert response.status_code == 200
         data = response.json()
@@ -474,19 +508,788 @@ class TestSalesforceContacts:
         assert data[0]["LastName"] == "Donor"
 
     def test_get_contacts_with_account_filter(self, client, mock_client):
-        mock_client.salesforce.query.return_value = {"records": []}
+        mock_client.salesforce.query_all.return_value = {"records": []}
         response = client.get(
             "/api/salesforce/contacts",
             params={"account_id": "001TESTACCOUNT001A"},
         )
         assert response.status_code == 200
-        soql = mock_client.salesforce.query.call_args[0][0]
+        soql = mock_client.salesforce.query_all.call_args[0][0]
         assert "AccountId = '001TESTACCOUNT001A'" in soql
 
     def test_get_contacts_service_error(self, client, mock_client):
-        mock_client.salesforce.query.side_effect = RuntimeError("timeout")
+        mock_client.salesforce.query_all.side_effect = RuntimeError("timeout")
         response = client.get("/api/salesforce/contacts")
         assert response.status_code == 500
+
+    def test_get_contacts_paginates_beyond_2000(self, client, mock_client):
+        """Default limit=None drives query_all pagination with no SOQL LIMIT,
+        so results are NOT silently capped at 2000."""
+        contacts = [make_sf_contact({"Id": f"003BIG{i:04d}"}) for i in range(2500)]
+        mock_client.salesforce.query_all.return_value = {"records": contacts}
+        response = client.get("/api/salesforce/contacts")
+        assert response.status_code == 200
+        assert len(response.json()) == 2500
+        soql = mock_client.salesforce.query_all.call_args[0][0]
+        assert "LIMIT" not in soql
+
+
+# ===================================================================
+# 4a. Salesforce Payments — POST create (single-record)
+# ===================================================================
+
+class TestSalesforcePaymentCreate:
+    """Tests for POST /api/salesforce/payments (single-record create, PR #161).
+
+    Distinct from the bulk routes/payment_schedules.py create endpoint which
+    wipes and recreates the entire schedule. This one appends a single new
+    npe01__OppPayment__c to whatever already exists.
+    """
+
+    OPP_ID = "006TESTOPPORT01"
+
+    def test_create_payment_success(self, client, mock_client):
+        mock_client.salesforce.create_record.return_value = {"id": "a0xNEW000000001"}
+        response = client.post(
+            "/api/salesforce/payments",
+            json={
+                "opportunity_id": self.OPP_ID,
+                "amount": 5000.0,
+                "scheduled_date": "2026-07-15",
+                "payment_method": "ACH",
+            },
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["success"] is True
+        assert body["data"]["id"] == "a0xNEW000000001"
+
+        # Verify the create was called on the right SObject with the expected
+        # field mapping (frontend-friendly names → SF native field names).
+        mock_client.salesforce.create_record.assert_called_once()
+        args = mock_client.salesforce.create_record.call_args[0]
+        assert args[0] == "npe01__OppPayment__c"
+        fields = args[1]
+        assert fields["npe01__Opportunity__c"] == self.OPP_ID
+        assert fields["npe01__Payment_Amount__c"] == 5000.0
+        assert fields["npe01__Scheduled_Date__c"] == "2026-07-15"
+        assert fields["npe01__Payment_Method__c"] == "ACH"
+        assert fields["npe01__Paid__c"] is False
+
+    def test_create_payment_omits_method_when_not_provided(self, client, mock_client):
+        """Payment Method is optional — if omitted, the field is not sent to SF
+        (avoids clobbering any default the Salesforce layer might populate)."""
+        mock_client.salesforce.create_record.return_value = {"id": "a0xNEW000000002"}
+        response = client.post(
+            "/api/salesforce/payments",
+            json={
+                "opportunity_id": self.OPP_ID,
+                "amount": 100.0,
+                "scheduled_date": "2026-08-01",
+            },
+        )
+        assert response.status_code == 200
+        fields = mock_client.salesforce.create_record.call_args[0][1]
+        assert "npe01__Payment_Method__c" not in fields
+
+    def test_create_payment_invalid_opportunity_id_rejected(self, client, mock_client):
+        """validate_salesforce_id runs before we touch Salesforce."""
+        response = client.post(
+            "/api/salesforce/payments",
+            json={
+                "opportunity_id": "not-a-real-sf-id",
+                "amount": 100.0,
+                "scheduled_date": "2026-08-01",
+            },
+        )
+        assert response.status_code in (400, 422)
+        mock_client.salesforce.create_record.assert_not_called()
+
+    def test_create_payment_missing_required_fields_rejected(self, client, mock_client):
+        """Pydantic should reject requests missing opportunity_id / amount /
+        scheduled_date before the handler body runs."""
+        response = client.post(
+            "/api/salesforce/payments",
+            json={"opportunity_id": self.OPP_ID},  # missing amount, scheduled_date
+        )
+        assert response.status_code == 422
+        mock_client.salesforce.create_record.assert_not_called()
+
+
+# ===================================================================
+# 4a-bis. Salesforce Payments — PUT update (ownership-gated per PR #164)
+# ===================================================================
+
+class TestSalesforcePaymentUpdate:
+    """Tests for PUT /api/salesforce/payments/{id} (ownership hardening, PR #164).
+
+    Prior to PR #164 the PUT endpoint only checked `edit_payments` — any
+    user with that permission could update payments on any opportunity.
+    PR #164 added parent-Opp resolution + `_enforce_opp_ownership_for_payment`
+    for parity with POST/DELETE.
+    """
+
+    PAYMENT_ID = "a0xTESTPAYMENT1"
+    PARENT_OPP_ID = "006TESTOPPORT01"
+
+    def test_update_payment_success_with_admin_bypass(self, client, mock_client):
+        """Admin (mock_db grants manage_users_roles) bypasses ownership,
+        but the parent-Opp lookup still runs — it's required to even locate
+        the record for the ownership helper call."""
+        mock_client.salesforce.query.return_value = {
+            "records": [{"npe01__Opportunity__c": self.PARENT_OPP_ID}],
+        }
+        mock_client.salesforce.update_record.return_value = True
+        response = client.put(
+            f"/api/salesforce/payments/{self.PAYMENT_ID}",
+            json={"updates": {"npe01__Payment_Amount__c": 7500}},
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["success"] is True
+        # Verify the update targeted the right SObject + Id with the right delta
+        mock_client.salesforce.update_record.assert_called_once_with(
+            "npe01__OppPayment__c", self.PAYMENT_ID, {"npe01__Payment_Amount__c": 7500},
+        )
+
+    def test_update_payment_not_found_returns_404(self, client, mock_client):
+        """Parent-opp lookup returns no records → 404 before any update fires."""
+        mock_client.salesforce.query.return_value = {"records": []}
+        response = client.put(
+            f"/api/salesforce/payments/{self.PAYMENT_ID}",
+            json={"updates": {"npe01__Payment_Amount__c": 7500}},
+        )
+        assert response.status_code == 404
+        mock_client.salesforce.update_record.assert_not_called()
+
+    def test_update_payment_rejected_by_salesforce_returns_400(self, client, mock_client):
+        """Parent lookup succeeds, ownership passes (admin), but SF update
+        itself fails → 400."""
+        mock_client.salesforce.query.return_value = {
+            "records": [{"npe01__Opportunity__c": self.PARENT_OPP_ID}],
+        }
+        mock_client.salesforce.update_record.return_value = False
+        response = client.put(
+            f"/api/salesforce/payments/{self.PAYMENT_ID}",
+            json={"updates": {"npe01__Payment_Amount__c": 7500}},
+        )
+        assert response.status_code == 400
+
+    def test_update_payment_invalid_id_rejected(self, client, mock_client):
+        """validate_salesforce_id fires before anything else."""
+        response = client.put(
+            "/api/salesforce/payments/not-a-real-sf-id",
+            json={"updates": {"npe01__Payment_Amount__c": 100}},
+        )
+        assert response.status_code in (400, 422)
+        mock_client.salesforce.update_record.assert_not_called()
+
+
+# ===================================================================
+# 4a-ter. Salesforce Payments — DELETE single-record
+# ===================================================================
+
+class TestSalesforcePaymentDelete:
+    """Tests for DELETE /api/salesforce/payments/{id} (PR #161 + PR #163 hardening).
+
+    Destructive endpoint used by PaymentEditDialog's footer Delete button
+    (which surfaces a confirm-before-delete popover on the frontend).
+
+    PR #163 hardening: DELETE now runs a parent-opp lookup before the
+    destructive action, and enforces ownership unless the caller is admin
+    or has edit_all_opportunities. Tests mock the parent-lookup query and
+    the delete_record separately.
+    """
+
+    # 15-char SF Id — validate_salesforce_id accepts 15 or 18 chars only.
+    PAYMENT_ID = "a0xTESTPAYMENT1"
+    PARENT_OPP_ID = "006TESTOPPORT01"
+
+    def test_delete_payment_success(self, client, mock_client):
+        # Parent-opp lookup returns the payment's parent opp so the
+        # ownership check can run; admin bypasses the actual SF query on
+        # the Opp.
+        mock_client.salesforce.query.return_value = {
+            "records": [{"npe01__Opportunity__c": self.PARENT_OPP_ID}],
+        }
+        mock_client.salesforce.delete_record.return_value = True
+        response = client.delete(f"/api/salesforce/payments/{self.PAYMENT_ID}")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["success"] is True
+        assert body["data"]["id"] == self.PAYMENT_ID
+
+        # Verify the delete targeted the right SObject + Id
+        mock_client.salesforce.delete_record.assert_called_once_with(
+            "npe01__OppPayment__c", self.PAYMENT_ID,
+        )
+
+    def test_delete_payment_not_found_returns_404(self, client, mock_client):
+        """If the parent-opp lookup finds no payment record, we 404 without
+        attempting delete_record."""
+        mock_client.salesforce.query.return_value = {"records": []}
+        response = client.delete(f"/api/salesforce/payments/{self.PAYMENT_ID}")
+        assert response.status_code == 404
+        mock_client.salesforce.delete_record.assert_not_called()
+
+    def test_delete_payment_rejected_by_salesforce_returns_400(self, client, mock_client):
+        """If SF returns False on the actual delete (e.g., FK violation),
+        we surface a 400 rather than silently claiming success."""
+        mock_client.salesforce.query.return_value = {
+            "records": [{"npe01__Opportunity__c": self.PARENT_OPP_ID}],
+        }
+        mock_client.salesforce.delete_record.return_value = False
+        response = client.delete(f"/api/salesforce/payments/{self.PAYMENT_ID}")
+        assert response.status_code == 400
+
+    def test_delete_payment_invalid_id_rejected(self, client, mock_client):
+        """validate_salesforce_id runs before we touch Salesforce — an
+        obviously-bad id should 400 without ever calling delete_record."""
+        response = client.delete("/api/salesforce/payments/not-a-real-sf-id")
+        assert response.status_code in (400, 422)
+        mock_client.salesforce.delete_record.assert_not_called()
+
+
+# ===================================================================
+# 4a-tris. Payment Create — Pydantic validation hardening (PR #163)
+# ===================================================================
+
+class TestPaymentCreateRequestValidation:
+    """Unit tests for PaymentCreateRequest's Pydantic validators — added in
+    PR #163 after adversarial security review flagged: negative/NaN amount,
+    unvalidated date format, silent acceptance of extra fields.
+    """
+
+    BASE = {
+        "opportunity_id": "006TESTOPPORT01",
+        "amount": 100.0,
+        "scheduled_date": "2026-07-15",
+    }
+
+    def _make(self, **overrides):
+        from main import PaymentCreateRequest
+        return PaymentCreateRequest(**{**self.BASE, **overrides})
+
+    def test_valid_minimal_payload_succeeds(self):
+        req = self._make()
+        assert req.amount == 100.0
+        assert req.scheduled_date == "2026-07-15"
+        assert req.paid is False
+
+    def test_negative_amount_rejected(self):
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError):
+            self._make(amount=-500)
+
+    def test_zero_amount_rejected(self):
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError):
+            self._make(amount=0)
+
+    def test_nan_amount_rejected(self):
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError):
+            self._make(amount=float("nan"))
+
+    def test_infinity_amount_rejected(self):
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError):
+            self._make(amount=float("inf"))
+
+    def test_amount_over_trillion_rejected(self):
+        """Sanity bound — catches 1e308 precision-loss attacks."""
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError):
+            self._make(amount=1e15)
+
+    def test_malformed_date_rejected(self):
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError):
+            self._make(scheduled_date="not-a-date")
+
+    def test_out_of_range_date_rejected(self):
+        """'2026-13-45' parses as a string but fails strptime's strict check."""
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError):
+            self._make(scheduled_date="2026-13-45")
+
+    def test_giant_date_string_rejected(self):
+        """10KB string payload blocked by the exactly-10-chars length check."""
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError):
+            self._make(scheduled_date="2026-01-01" + "X" * 10_000)
+
+    def test_extra_field_rejected(self):
+        """Prevents silent field injection (e.g., attacker adding IsDeleted)."""
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError):
+            self._make(IsDeleted=True)
+
+    def test_overlong_payment_method_rejected(self):
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError):
+            self._make(payment_method="A" * 256)
+
+    def test_payment_method_none_allowed(self):
+        req = self._make(payment_method=None)
+        assert req.payment_method is None
+
+
+# ===================================================================
+# 4a-quater. Payment ownership enforcement helper (PR #163)
+# ===================================================================
+
+class TestEnforceRecordOwnership:
+    """Unit tests for the `_enforce_record_ownership` helper — generalized in
+    PR #169 from the Opp-only helper shipped in PR #163 so Account / Contact /
+    Opportunity write + delete endpoints share one ownership path.
+
+    Contract:
+      1. `is_service=True` bypasses without any SF query (Pebble CRM-write).
+      2. Admin (`manage_users_roles`) bypasses.
+      3. Per-resource `edit_all_perm` bypasses when the caller opts in.
+      4. Otherwise: caller's sf_user_id must match the record's OwnerId via
+         SOQL `SELECT OwnerId FROM {sobject} WHERE Id = '{id}'`. 404 if
+         record absent; 403 on mismatch or unlinked user.
+
+    Payment endpoints pass `sobject="Opportunity"` + parent-Opp Id +
+    `edit_all_perm="edit_all_opportunities"` — prior behavior preserved.
+    Account + Contact pass `edit_all_perm=None` (admin-only bypass — no
+    edit-all key for those objects in PERMISSION_KEYS).
+    """
+
+    @pytest.mark.asyncio
+    async def test_service_caller_bypasses_without_querying_sf(self):
+        """PR #169: is_service=True short-circuits FIRST, before any
+        _permissions / _app_user access. Required because
+        check_permission_or_internal sets is_service without populating
+        those user-dict keys (routes/permissions.py:232)."""
+        from main import _enforce_record_ownership
+        sf = AsyncMock()
+        sf.query = AsyncMock()
+        user = {"is_service": True, "user_id": "service:pebble"}
+        await _enforce_record_ownership(sf, "Opportunity", "006TESTOPPORT01", user, "edit_all_opportunities")
+        sf.query.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_admin_bypasses_without_querying_sf(self):
+        from main import _enforce_record_ownership
+        sf = AsyncMock()
+        sf.query = AsyncMock()
+        user = {"_permissions": {"manage_users_roles": True}, "_app_user": None}
+        await _enforce_record_ownership(sf, "Opportunity", "006TESTOPPORT01", user, "edit_all_opportunities")
+        sf.query.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_edit_all_opportunities_bypasses_without_querying_sf(self):
+        from main import _enforce_record_ownership
+        sf = AsyncMock()
+        sf.query = AsyncMock()
+        user = {
+            "_permissions": {"edit_all_opportunities": True},
+            "_app_user": {"sf_user_id": "005ANY"},
+        }
+        await _enforce_record_ownership(sf, "Opportunity", "006TESTOPPORT01", user, "edit_all_opportunities")
+        sf.query.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_owner_allowed(self):
+        from main import _enforce_record_ownership
+        sf = AsyncMock()
+        sf.query = AsyncMock(return_value={"records": [{"OwnerId": "005SAME"}]})
+        user = {
+            "_permissions": {},
+            "_app_user": {"sf_user_id": "005SAME"},
+        }
+        await _enforce_record_ownership(sf, "Opportunity", "006TESTOPPORT01", user, "edit_all_opportunities")
+
+    @pytest.mark.asyncio
+    async def test_non_owner_raises_403(self):
+        from main import _enforce_record_ownership
+        from fastapi import HTTPException
+        sf = AsyncMock()
+        sf.query = AsyncMock(return_value={"records": [{"OwnerId": "005OTHER"}]})
+        user = {
+            "_permissions": {},
+            "_app_user": {"sf_user_id": "005ME"},
+        }
+        with pytest.raises(HTTPException) as exc_info:
+            await _enforce_record_ownership(sf, "Opportunity", "006TESTOPPORT01", user, "edit_all_opportunities")
+        assert exc_info.value.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_record_not_found_raises_404(self):
+        from main import _enforce_record_ownership
+        from fastapi import HTTPException
+        sf = AsyncMock()
+        sf.query = AsyncMock(return_value={"records": []})
+        user = {
+            "_permissions": {},
+            "_app_user": {"sf_user_id": "005ME"},
+        }
+        with pytest.raises(HTTPException) as exc_info:
+            await _enforce_record_ownership(sf, "Opportunity", "006TESTOPPORT01", user, "edit_all_opportunities")
+        assert exc_info.value.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_unlinked_user_raises_403_without_querying_sf(self):
+        """Bedrock user with no sf_user_id link — can't evaluate ownership,
+        must deny. Safer than permitting."""
+        from main import _enforce_record_ownership
+        from fastapi import HTTPException
+        sf = AsyncMock()
+        sf.query = AsyncMock()
+        user = {"_permissions": {}, "_app_user": None}
+        with pytest.raises(HTTPException) as exc_info:
+            await _enforce_record_ownership(sf, "Opportunity", "006TESTOPPORT01", user, "edit_all_opportunities")
+        assert exc_info.value.status_code == 403
+        sf.query.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_account_ownership_admin_bypasses_without_edit_all(self):
+        """PR #169: Account/Contact callers pass edit_all_perm=None. Admin
+        (manage_users_roles) still bypasses without querying SF."""
+        from main import _enforce_record_ownership
+        sf = AsyncMock()
+        sf.query = AsyncMock()
+        user = {"_permissions": {"manage_users_roles": True}, "_app_user": None}
+        await _enforce_record_ownership(sf, "Account", "001TESTACCOUNT001", user, None)
+        sf.query.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_account_ownership_owner_allowed_no_edit_all(self):
+        """PR #169: non-admin owner passes OwnerId match even when
+        edit_all_perm=None. SOQL targets the correct SObject."""
+        from main import _enforce_record_ownership
+        sf = AsyncMock()
+        sf.query = AsyncMock(return_value={"records": [{"OwnerId": "005OWNER"}]})
+        user = {
+            "_permissions": {},
+            "_app_user": {"sf_user_id": "005OWNER"},
+        }
+        await _enforce_record_ownership(sf, "Account", "001TESTACCOUNT001", user, None)
+        # Verify the SOQL query targeted Account, not Opportunity
+        soql = sf.query.call_args[0][0]
+        assert "FROM Account" in soql
+
+    @pytest.mark.asyncio
+    async def test_contact_ownership_non_owner_raises_403_sobject_in_error(self):
+        """PR #169: generalized helper produces {sobject}-specific error
+        text so users see which record type they're not allowed to modify."""
+        from main import _enforce_record_ownership
+        from fastapi import HTTPException
+        sf = AsyncMock()
+        sf.query = AsyncMock(return_value={"records": [{"OwnerId": "005OTHER"}]})
+        user = {
+            "_permissions": {},
+            "_app_user": {"sf_user_id": "005ME"},
+        }
+        with pytest.raises(HTTPException) as exc_info:
+            await _enforce_record_ownership(sf, "Contact", "003TESTCONTACT001", user, None)
+        assert exc_info.value.status_code == 403
+        assert "contacts" in exc_info.value.detail.lower()
+
+
+# ===================================================================
+# 4c. Salesforce DELETE endpoints — Opportunity / Account / Contact (PR #169)
+# ===================================================================
+
+class TestSalesforceOpportunityDelete:
+    """Tests for DELETE /api/salesforce/opportunities/{id} (PR #169).
+
+    Destructive endpoint — frontend (OpportunityEditDialog) surfaces a
+    confirm-before-delete popover. Backend uses check_permission_or_internal
+    + _enforce_record_ownership("Opportunity", ..., "edit_all_opportunities").
+    mock_db grants manage_users_roles so admin-path bypasses the OwnerId
+    check without the helper querying SF.
+    """
+
+    OPP_ID = "006TESTOPPORT01"
+
+    def test_delete_opportunity_success(self, client, mock_client):
+        mock_client.salesforce.delete_record.return_value = True
+        response = client.delete(f"/api/salesforce/opportunities/{self.OPP_ID}")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["success"] is True
+        assert body["data"]["id"] == self.OPP_ID
+        mock_client.salesforce.delete_record.assert_called_once_with("Opportunity", self.OPP_ID)
+
+    def test_delete_opportunity_rejected_by_salesforce_returns_400(self, client, mock_client):
+        """SF returns False on delete (e.g., locked record, FK violation)."""
+        mock_client.salesforce.delete_record.return_value = False
+        response = client.delete(f"/api/salesforce/opportunities/{self.OPP_ID}")
+        assert response.status_code == 400
+
+    def test_delete_opportunity_invalid_id_rejected(self, client, mock_client):
+        """validate_salesforce_id runs before anything else — 400 without
+        delete_record being called."""
+        response = client.delete("/api/salesforce/opportunities/not-a-real-sf-id")
+        assert response.status_code in (400, 422)
+        mock_client.salesforce.delete_record.assert_not_called()
+
+
+class TestSalesforceAccountDelete:
+    """Tests for DELETE /api/salesforce/accounts/{id} (PR #169).
+
+    Admin path (mock_db grants manage_users_roles) bypasses the OwnerId
+    check. edit_all_perm=None for Account — admin-only bypass, no edit-all
+    key exists in PERMISSION_KEYS.
+    """
+
+    # 15-char valid SF Id — the conftest make_sf_account uses 17 chars which
+    # validate_salesforce_id rejects with 400. Use a fresh valid Id here.
+    ACCOUNT_ID = "001TESTACCT0001"
+
+    def test_delete_account_success(self, client, mock_client):
+        mock_client.salesforce.delete_record.return_value = True
+        response = client.delete(f"/api/salesforce/accounts/{self.ACCOUNT_ID}")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["success"] is True
+        assert body["data"]["id"] == self.ACCOUNT_ID
+        mock_client.salesforce.delete_record.assert_called_once_with("Account", self.ACCOUNT_ID)
+
+    def test_delete_account_rejected_by_salesforce_returns_400(self, client, mock_client):
+        mock_client.salesforce.delete_record.return_value = False
+        response = client.delete(f"/api/salesforce/accounts/{self.ACCOUNT_ID}")
+        assert response.status_code == 400
+
+    def test_delete_account_invalid_id_rejected(self, client, mock_client):
+        response = client.delete("/api/salesforce/accounts/not-a-real-sf-id")
+        assert response.status_code in (400, 422)
+        mock_client.salesforce.delete_record.assert_not_called()
+
+
+class TestSalesforceContactDelete:
+    """Tests for DELETE /api/salesforce/contacts/{id} (PR #169)."""
+
+    # 15-char valid SF Id — make_sf_contact uses 16 chars which fails
+    # validate_salesforce_id. Use a fresh valid Id.
+    CONTACT_ID = "003TESTCONT0001"
+
+    def test_delete_contact_success(self, client, mock_client):
+        mock_client.salesforce.delete_record.return_value = True
+        response = client.delete(f"/api/salesforce/contacts/{self.CONTACT_ID}")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["success"] is True
+        assert body["data"]["id"] == self.CONTACT_ID
+        mock_client.salesforce.delete_record.assert_called_once_with("Contact", self.CONTACT_ID)
+
+    def test_delete_contact_rejected_by_salesforce_returns_400(self, client, mock_client):
+        mock_client.salesforce.delete_record.return_value = False
+        response = client.delete(f"/api/salesforce/contacts/{self.CONTACT_ID}")
+        assert response.status_code == 400
+
+    def test_delete_contact_invalid_id_rejected(self, client, mock_client):
+        response = client.delete("/api/salesforce/contacts/not-a-real-sf-id")
+        assert response.status_code in (400, 422)
+        mock_client.salesforce.delete_record.assert_not_called()
+
+
+# ===================================================================
+# 4b. Salesforce Opportunity-Tasks (nested under opportunity)
+# ===================================================================
+
+class TestSalesforceOpportunityTasks:
+    """Tests for GET /api/salesforce/opportunities/{id}/tasks."""
+
+    # 15-char valid SF ID; longer forms fail validate_salesforce_id at the
+    # path-param layer with HTTP 400 before the handler body runs.
+    OPP_ID = "006TESTOPPORT01"
+
+    def test_get_opportunity_tasks_returns_list(self, client, mock_client):
+        task = make_sf_task()
+        mock_client.salesforce.query_all.return_value = {"records": [task]}
+        response = client.get(f"/api/salesforce/opportunities/{self.OPP_ID}/tasks")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["success"] is True
+        assert body["meta"]["count"] == 1
+        assert body["data"][0]["Subject"] == "Follow up on grant proposal"
+        # WhatId SOQL-inclusion guard + round-trip. The response serializer
+        # at main.py:972 passes WhatId through, but the SOQL SELECT originally
+        # omitted it — meaning every serialized task's WhatId was null. The
+        # TaskPanel's edit form binds editTask.WhatId, so saved reassignments
+        # would silently revert on reopen. Fixed 2026-04-21; pin the invariant.
+        soql = mock_client.salesforce.query_all.call_args[0][0]
+        assert "WhatId" in soql
+        assert body["data"][0]["WhatId"] == task["WhatId"]
+
+    def test_get_opportunity_tasks_paginates_beyond_2000(self, client, mock_client):
+        """Default limit=None drives query_all pagination with no SOQL LIMIT."""
+        tasks = [make_sf_task({"Id": f"00T0000000BIG{i:04d}"}) for i in range(2500)]
+        mock_client.salesforce.query_all.return_value = {"records": tasks}
+        response = client.get(f"/api/salesforce/opportunities/{self.OPP_ID}/tasks")
+        assert response.status_code == 200
+        body = response.json()
+        assert len(body["data"]) == 2500
+        soql = mock_client.salesforce.query_all.call_args[0][0]
+        assert "LIMIT" not in soql
+
+    def test_opportunity_tasks_limit_capped_at_2000(self, client):
+        """Explicit `limit` above 2000 should be rejected by FastAPI validation."""
+        response = client.get(
+            f"/api/salesforce/opportunities/{self.OPP_ID}/tasks",
+            params={"limit": 2001},
+        )
+        assert response.status_code == 422
+
+    def test_create_task_with_whoid_round_trips(self, client, mock_client):
+        """PR #169 (B5): TaskCreateRequest now declares WhoId, so Contact
+        links sent from the TaskPanel's new Contact autocomplete round-trip
+        through to SF. Pin the contract: body WhoId lands in create_record
+        alongside the URL-derived WhatId."""
+        mock_client.salesforce.create_record.return_value = {"id": "00T0000TESTCRE1"}
+        response = client.post(
+            f"/api/salesforce/opportunities/{self.OPP_ID}/tasks",
+            json={
+                "Subject": "Call Jane",
+                "WhoId": "003TESTCONT0001",
+            },
+        )
+        assert response.status_code == 200
+        call = mock_client.salesforce.create_record.call_args
+        assert call[0][0] == "Task"
+        fields = call[0][1]
+        assert fields["Subject"] == "Call Jane"
+        assert fields["WhoId"] == "003TESTCONT0001"
+        assert fields["WhatId"] == self.OPP_ID  # URL-derived
+
+    def test_create_task_url_whatid_wins_over_body_whatid(self, client, mock_client):
+        """PR #169 (B10 defensive fix): even if a client sends WhatId in
+        the body, the URL path param must win. TaskCreateRequest doesn't
+        declare WhatId, so Pydantic default extra-filtering strips it —
+        but the reversed dict-spread order at main.py's create_opportunity_task
+        is the belt-and-suspenders guard. Verify the URL id lands in SF."""
+        mock_client.salesforce.create_record.return_value = {"id": "00T0000TESTCRE2"}
+        response = client.post(
+            f"/api/salesforce/opportunities/{self.OPP_ID}/tasks",
+            json={
+                "Subject": "Should bind to URL opp",
+                "WhatId": "006ATTACKOPP001",  # Attacker-supplied body WhatId
+            },
+        )
+        assert response.status_code == 200
+        call = mock_client.salesforce.create_record.call_args
+        fields = call[0][1]
+        # URL-derived WhatId wins — body WhatId stripped + overridden.
+        assert fields["WhatId"] == self.OPP_ID
+        assert fields["WhatId"] != "006ATTACKOPP001"
+
+    def test_update_task_with_null_activity_date_succeeds(self, client, mock_client):
+        """PR #169 (B8 root cause — regression): TaskPanel's saveEdit sent
+        ActivityDate as '' (empty string) for unchanged optional fields,
+        which SF rejects with 400 on date fields. Fix is frontend-side
+        (diff-based save) but this test pins the backend contract: sending
+        ActivityDate as None works fine (exclude_none=True drops it)."""
+        mock_client.salesforce.update_record.return_value = True
+        # 15-char valid SF Task Id (make_sf_task uses 16 — invalid under validate_salesforce_id).
+        response = client.put(
+            "/api/salesforce/tasks/00T0000TEST0001",
+            json={
+                "Description": "Updated description",
+                "ActivityDate": None,  # Was '' pre-fix — now None or omitted
+            },
+        )
+        assert response.status_code == 200
+        call = mock_client.salesforce.update_record.call_args
+        fields = call[0][2]
+        # ActivityDate absent from the update payload because exclude_none dropped it.
+        assert "ActivityDate" not in fields
+        # Description made it through.
+        assert fields["Description"] == "Updated description"
+
+
+# ===================================================================
+# 4b. Salesforce My-Tasks (current user's open tasks, scope-bounded)
+# ===================================================================
+
+class TestSalesforceMyTasks:
+    """Tests for GET /api/salesforce/my-tasks.
+
+    Unlike the other list endpoints, my-tasks intentionally stays on
+    salesforce.query() (single-page) — the WHERE clause `IsClosed = false`
+    plus optional date range is scope-bounded per user, so at Pursuit's
+    team-of-4 scale per-user counts stay well under the 2000 cap. These
+    tests guard that contract along with the default-limit change."""
+
+    def test_get_my_tasks_returns_list(self, client, mock_client):
+        task = make_sf_task({"IsClosed": False})
+        mock_client.salesforce.query.return_value = {"records": [task]}
+        response = client.get("/api/salesforce/my-tasks")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["success"] is True
+        assert body["meta"]["count"] == 1
+        assert body["data"][0]["Subject"] == "Follow up on grant proposal"
+
+    def test_get_my_tasks_empty(self, client, mock_client):
+        mock_client.salesforce.query.return_value = {"records": []}
+        response = client.get("/api/salesforce/my-tasks")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["data"] == []
+
+    def test_get_my_tasks_with_date_range(self, client, mock_client):
+        mock_client.salesforce.query.return_value = {"records": []}
+        response = client.get(
+            "/api/salesforce/my-tasks",
+            params={"start": "2026-04-01", "end": "2026-04-30"},
+        )
+        assert response.status_code == 200
+        soql = mock_client.salesforce.query.call_args[0][0]
+        assert "ActivityDate >= 2026-04-01" in soql
+        assert "ActivityDate <= 2026-04-30" in soql
+
+    def test_get_my_tasks_no_date_range(self, client, mock_client):
+        """Without start/end, SOQL WHERE clause has only IsClosed = false."""
+        mock_client.salesforce.query.return_value = {"records": []}
+        response = client.get("/api/salesforce/my-tasks")
+        assert response.status_code == 200
+        soql = mock_client.salesforce.query.call_args[0][0]
+        assert "IsClosed = false" in soql
+        assert "ActivityDate >=" not in soql
+        assert "ActivityDate <=" not in soql
+
+    def test_get_my_tasks_default_limit_is_2000(self, client, mock_client):
+        """Default `limit` was bumped from 200 to 2000 — guard the new default."""
+        mock_client.salesforce.query.return_value = {"records": []}
+        response = client.get("/api/salesforce/my-tasks")
+        assert response.status_code == 200
+        soql = mock_client.salesforce.query.call_args[0][0]
+        assert "LIMIT 2000" in soql
+
+    def test_my_tasks_limit_capped_at_2000(self, client):
+        """Explicit `limit` above 2000 should be rejected by FastAPI validation."""
+        response = client.get("/api/salesforce/my-tasks", params={"limit": 2001})
+        assert response.status_code == 422
+
+    def test_get_my_tasks_uses_query_not_query_all(self, client, mock_client):
+        """Intentional decision: my-tasks stays on single-page query() because
+        its WHERE clause scope-bounds per-user Task counts well under the cap."""
+        mock_client.salesforce.query.return_value = {"records": []}
+        response = client.get("/api/salesforce/my-tasks")
+        assert response.status_code == 200
+        assert mock_client.salesforce.query.called
+        assert not mock_client.salesforce.query_all.called
+
+    def test_get_my_tasks_where_has_isclosed_false(self, client, mock_client):
+        """Guard the scope-bounding assumption: IsClosed = false is always
+        in the WHERE clause — removing it would invalidate the decision to
+        stay on query() instead of query_all()."""
+        mock_client.salesforce.query.return_value = {"records": []}
+        response = client.get("/api/salesforce/my-tasks")
+        assert response.status_code == 200
+        soql = mock_client.salesforce.query.call_args[0][0]
+        assert "IsClosed = false" in soql
+
+    def test_get_my_tasks_service_error(self, client, mock_client):
+        mock_client.salesforce.query.side_effect = RuntimeError("sf down")
+        response = client.get("/api/salesforce/my-tasks")
+        assert response.status_code == 500
+        assert "sf down" in response.json()["detail"]
 
 
 # ===================================================================

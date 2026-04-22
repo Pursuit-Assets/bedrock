@@ -5,19 +5,28 @@ import {
   Chip, Typography, IconButton,
 } from '@mui/material';
 import { Close as CloseIcon, Delete as DeleteIcon } from '@mui/icons-material';
-import type { FlatTask, ProjectMutations } from './types';
+import OwnerSelector, { type OwnerOption } from '../OwnerSelector';
+import type { ActiveUser, FlatTask, ProjectMutations } from './types';
 import { TASK_STATUSES } from './constants';
 
 interface TaskDetailDialogProps {
   task: FlatTask | null;
   onClose: () => void;
   mutations: ProjectMutations;
+  activeUsers: ActiveUser[];
 }
 
-const TaskDetailDialog: React.FC<TaskDetailDialogProps> = ({ task, onClose, mutations }) => {
+function arraysEqual(a: string[], b: string[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+const TaskDetailDialog: React.FC<TaskDetailDialogProps> = ({ task, onClose, mutations, activeUsers }) => {
   const [title, setTitle] = useState('');
   const [status, setStatus] = useState('');
-  const [owner, setOwner] = useState('');
+  const [owner, setOwner] = useState('');                 // "Other" free-text
+  const [ownerIds, setOwnerIds] = useState<string[]>([]); // structured multi-owner
   const [startDate, setStartDate] = useState('');
   const [deadline, setDeadline] = useState('');
   const [description, setDescription] = useState('');
@@ -28,12 +37,15 @@ const TaskDetailDialog: React.FC<TaskDetailDialogProps> = ({ task, onClose, muta
       setTitle(task.title);
       setStatus(task.status);
       setOwner(task.owner || '');
+      setOwnerIds(task.owner_ids || []);
       setStartDate(task.startDate || '');
       setDeadline(task.deadline || '');
       setDescription(task.description || '');
       setConfirmDelete(false);
     }
   }, [task]);
+
+  const ownerOptions: OwnerOption[] = activeUsers.map((u) => ({ id: u.id, name: u.display_name }));
 
   if (!task) return null;
 
@@ -42,6 +54,7 @@ const TaskDetailDialog: React.FC<TaskDetailDialogProps> = ({ task, onClose, muta
     if (title !== task.title) changes.title = title;
     if (status !== task.status) changes.status = status;
     if (owner !== (task.owner || '')) changes.owner = owner;
+    if (!arraysEqual(ownerIds, task.owner_ids || [])) changes.owner_ids = ownerIds;
     if (startDate !== (task.startDate || '')) changes.start_date = startDate || null;
     if (deadline !== (task.deadline || '')) changes.deadline = deadline || null;
     if (description !== (task.description || '')) changes.description = description;
@@ -73,23 +86,31 @@ const TaskDetailDialog: React.FC<TaskDetailDialogProps> = ({ task, onClose, muta
           sx={{ mt: 1 }}
         />
 
-        <Box sx={{ display: 'flex', gap: 2 }}>
-          <FormControl size="small" sx={{ flex: 1 }}>
-            <InputLabel>Status</InputLabel>
-            <Select value={status} label="Status" onChange={e => setStatus(e.target.value)}>
-              {TASK_STATUSES.map(s => (
-                <MenuItem key={s} value={s}>{s}</MenuItem>
-              ))}
-            </Select>
-          </FormControl>
-          <TextField
-            label="Owner"
-            value={owner}
-            onChange={e => setOwner(e.target.value)}
-            size="small"
-            sx={{ flex: 1 }}
-          />
-        </Box>
+        <FormControl size="small" fullWidth>
+          <InputLabel>Status</InputLabel>
+          <Select value={status} label="Status" onChange={e => setStatus(e.target.value)}>
+            {TASK_STATUSES.map(s => (
+              <MenuItem key={s} value={s}>{s}</MenuItem>
+            ))}
+          </Select>
+        </FormControl>
+
+        <OwnerSelector
+          availableOwners={ownerOptions}
+          value={ownerIds}
+          onChange={setOwnerIds}
+          label="Owners"
+          placeholder="Pick one or more teammates…"
+        />
+        <TextField
+          label="Other (external support, placeholder)"
+          placeholder="e.g. McKinsey, Hudson Ferris, TBD"
+          value={owner}
+          onChange={e => setOwner(e.target.value)}
+          size="small"
+          fullWidth
+          helperText="Free-text for anyone who isn't an active Pursuit teammate."
+        />
 
         <Box sx={{ display: 'flex', gap: 2 }}>
           <TextField
