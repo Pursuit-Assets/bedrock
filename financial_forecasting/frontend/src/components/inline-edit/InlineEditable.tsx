@@ -367,17 +367,27 @@ export function InlineEditable<TValue = unknown>(
           // `position: absolute` (HOVER_LOCK_SX) so the icon floats in
           // the cell's right padding area without reserving layout width.
           position: 'relative',
-          transition: 'box-shadow 120ms ease, background-color 120ms ease',
-          // Active edit-or-unlock mode — bold blue ring + subtle blue tint
-          // so the targeted cell is unmistakable the instant you click,
-          // even while the unlock dialog is up. Using `mode !== 'display'`
-          // covers both `unlock` and `editing` so the ring doesn't appear
-          // only after dialog confirmation (previously felt like it only
-          // turned on when typing started). Uses box-shadow so nothing
-          // shifts in the grid layout.
+          transition: 'box-shadow 120ms ease, background-color 120ms ease, color 120ms ease',
+          // Active edit-or-unlock mode — dark-mode fill (primary bg + white
+          // text) so the targeted cell is unmistakable the instant you click,
+          // even while the unlock dialog is up. A10 upgrade (mega-B,
+          // 2026-04-22) from the prior 3px blue-ring affordance — the ring
+          // was easy to miss on small cells / dense grids. `mode !== 'display'`
+          // covers both 'unlock' and 'editing' so the fill appears the
+          // instant you click, not after dialog confirmation. Child text +
+          // svg nodes inherit primary.contrastText so placeholders, lock
+          // icons, and input text all flip to white together.
+          //
+          // Using box-shadow (not border) + bgcolor keeps the cell's
+          // intrinsic width unchanged, so grid layout doesn't shift
+          // around the activated cell.
           ...(mode !== 'display' && {
-            boxShadow: '0 0 0 3px #1976d2',
-            bgcolor: 'rgba(25, 118, 210, 0.08)',
+            bgcolor: 'primary.main',
+            color: 'primary.contrastText',
+            boxShadow: 2,
+            '& input, & .MuiInputBase-input, & .MuiTypography-root, & svg, & .MuiChip-label': {
+              color: 'primary.contrastText',
+            },
           }),
           // Display-mode hover when editable — medium inset ring hints
           // that clicking opens an editor. Suppressed once we enter
