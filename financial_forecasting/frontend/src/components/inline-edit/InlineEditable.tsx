@@ -394,7 +394,11 @@ export function InlineEditable<TValue = unknown>(
         {mode === 'display' && renderLockBadge()}
       </Box>
 
-      {/* Select editor — Menu anchored to the display element */}
+      {/* Select editor — Menu anchored to the display element.
+          A8 popper fix: slotProps.paper caps the Paper height so long option
+          lists scroll internally instead of overflowing off-screen when a
+          cell is near the viewport bottom. marginThreshold aligns with
+          MUI's default shift-into-viewport behavior. */}
       {mode === 'editing' && variant === 'select' && (
         <Menu
           open
@@ -402,6 +406,12 @@ export function InlineEditable<TValue = unknown>(
           onClose={handleCancel}
           anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
           transformOrigin={{ vertical: 'top', horizontal: 'left' }}
+          marginThreshold={8}
+          slotProps={{
+            paper: {
+              sx: { maxHeight: '50vh', overflowY: 'auto' },
+            },
+          }}
         >
           {(options || []).map((o) => (
             <MenuItem
@@ -429,13 +439,23 @@ export function InlineEditable<TValue = unknown>(
         </Menu>
       )}
 
-      {/* Autocomplete editor — Popover anchored to display */}
+      {/* Autocomplete editor — Popover anchored to display.
+          A8 popper fix: adds transformOrigin (was missing — the anchor pair
+          was incomplete), slotProps.paper height cap, and marginThreshold
+          to match the Menu's overflow behavior. */}
       {mode === 'editing' && variant === 'autocomplete' && (
         <Popover
           open
           anchorEl={anchorRef.current}
           onClose={handleCancel}
           anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
+          transformOrigin={{ vertical: 'top', horizontal: 'left' }}
+          marginThreshold={8}
+          slotProps={{
+            paper: {
+              sx: { maxHeight: '50vh', overflowY: 'auto' },
+            },
+          }}
         >
           <Box sx={{ p: 1, minWidth: 260 }}>
             <Autocomplete
