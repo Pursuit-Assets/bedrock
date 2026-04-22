@@ -41,7 +41,7 @@ export interface FieldPermissionResult {
 }
 
 export interface UseFieldPermissionArgs {
-  /** Object type: 'Opportunity' | 'Account' | 'Contact' | 'Project' | 'Milestone' | 'Task' | 'Target' */
+  /** Object type: 'Opportunity' | 'Account' | 'Contact' | 'Project' | 'Milestone' | 'Task' | 'Target' | 'Activity' | ... */
   objectType: string;
   /** API field name (matches the sensitivity table key) */
   fieldName: string;
@@ -49,6 +49,16 @@ export interface UseFieldPermissionArgs {
   recordLock?: { locked_by: string; locked_at: string } | null;
   /** Optional display name for the user holding the record lock */
   recordLockedByName?: string | null;
+  /**
+   * Default sensitivity for unclassified (objectType, fieldName) pairs.
+   * Omit (or leave undefined) for hand-coded cells — unclassified fields get
+   * the fail-safe 'sensitive' unlock prompt. Schema-generated cells (via
+   * `buildSchemaColumns`) should pass 'safe' — SF already gates writes via
+   * field-level security server-side, and declaring every updateable field
+   * in the sensitivity table would be noisy. Explicit classifications in
+   * `fieldSensitivity.ts` always override this default.
+   */
+  defaultSensitivity?: FieldSensitivity;
 }
 
 export function useFieldPermission({
@@ -56,11 +66,12 @@ export function useFieldPermission({
   fieldName,
   recordLock,
   recordLockedByName,
+  defaultSensitivity,
 }: UseFieldPermissionArgs): FieldPermissionResult {
   const { can, isAdmin, sfUserId } = usePermissions();
 
   return useMemo(() => {
-    const classification = classifyField(objectType, fieldName);
+    const classification = classifyField(objectType, fieldName, defaultSensitivity);
 
     // Record-lock takes precedence over everything else — if another user holds
     // the lock, no field on this record is editable regardless of sensitivity.
@@ -117,5 +128,5 @@ export function useFieldPermission({
       canUnlock: true,
       lockTooltip: '',
     };
-  }, [objectType, fieldName, recordLock, recordLockedByName, can, isAdmin, sfUserId]);
+  }, [objectType, fieldName, recordLock, recordLockedByName, defaultSensitivity, can, isAdmin, sfUserId]);
 }

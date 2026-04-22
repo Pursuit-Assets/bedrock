@@ -19,6 +19,7 @@
  * primitive will gate edit behavior automatically.
  */
 import React, { useState, useRef, useCallback, useEffect } from 'react';
+import { format as formatDateFn } from 'date-fns';
 import {
   Box,
   Chip,
@@ -30,15 +31,29 @@ import {
   Popover,
   IconButton,
   Tooltip,
+  Checkbox,
 } from '@mui/material';
 import { Lock as LockIcon } from '@mui/icons-material';
 import {
   useFieldPermission,
   UseFieldPermissionArgs,
 } from '../../hooks/useFieldPermission';
+import { formatDollarMillions } from '../../utils/formatters';
 import { UnlockWarningDialog } from './UnlockWarningDialog';
 
-export type InlineEditVariant = 'select' | 'autocomplete' | 'text' | 'number' | 'date';
+export type InlineEditVariant =
+  | 'select'
+  | 'autocomplete'
+  | 'text'
+  | 'number'
+  | 'currency'
+  | 'percent'
+  | 'date'
+  | 'datetime'
+  | 'boolean'
+  | 'email'
+  | 'phone'
+  | 'url';
 export type InlineEditDisplay = 'pill' | 'inline';
 
 export interface InlineEditableOption {
@@ -121,6 +136,7 @@ export function InlineEditable<TValue = unknown>(
     recordLock,
     recordLockedByName,
     readOnly,
+    defaultSensitivity,
   } = props;
 
   const permission = useFieldPermission({
@@ -128,6 +144,7 @@ export function InlineEditable<TValue = unknown>(
     fieldName,
     recordLock,
     recordLockedByName,
+    defaultSensitivity,
   });
 
   // Editor state: which mode we're in right now.
@@ -211,12 +228,37 @@ export function InlineEditable<TValue = unknown>(
   }, [draft, value, validate, onSave, saving]);
 
   // ── Display rendering ───────────────────────────────────────────────────
+  // When no custom formatDisplay is provided, apply a sensible default per
+  // variant so schemaColumns-generated cells don't each have to pass one.
+  // Caller-provided formatDisplay always wins.
+  const defaultFormatForVariant = (v: TValue): React.ReactNode => {
+    if (v == null || v === '') return placeholder;
+    switch (variant) {
+      case 'currency':
+        return typeof v === 'number' ? formatDollarMillions(v) : String(v);
+      case 'percent':
+        return typeof v === 'number' ? `${v}%` : String(v);
+      case 'boolean':
+        return v ? 'Yes' : 'No';
+      case 'datetime': {
+        const d = typeof v === 'string' ? new Date(v) : (v as unknown as Date);
+        return d instanceof Date && !Number.isNaN(d.getTime())
+          ? formatDateFn(d, 'MMM dd, yyyy h:mm a')
+          : String(v);
+      }
+      case 'date': {
+        const d = typeof v === 'string' ? new Date(v) : (v as unknown as Date);
+        return d instanceof Date && !Number.isNaN(d.getTime())
+          ? formatDateFn(d, 'MMM dd, yyyy')
+          : String(v);
+      }
+      default:
+        return String(v);
+    }
+  };
+
   const renderDisplay = () => {
-    const formatted = formatDisplay
-      ? formatDisplay(value)
-      : value == null || value === ''
-        ? placeholder
-        : String(value);
+    const formatted = formatDisplay ? formatDisplay(value) : defaultFormatForVariant(value);
 
     if (display === 'pill') {
       const color =
@@ -281,9 +323,20 @@ export function InlineEditable<TValue = unknown>(
     }
   }, [validate, value, onSave, saving]);
 
-  // ── Inline TextField editor (text / number / date variants) ───────────
+  // ── Inline TextField editor (all text-input-based variants) ─────────
+  // Maps each variant to the matching HTML input type. Number-style
+  // variants (number, currency, percent) coerce strings to numbers on
+  // change; others pass through as strings.
   const renderInlineTextEditor = () => {
-    const inputType = variant === 'date' ? 'date' : variant === 'number' ? 'number' : 'text';
+    const inputType: React.InputHTMLAttributes<unknown>['type'] =
+      variant === 'date' ? 'date'
+      : variant === 'datetime' ? 'datetime-local'
+      : variant === 'number' || variant === 'currency' || variant === 'percent' ? 'number'
+      : variant === 'email' ? 'email'
+      : variant === 'phone' ? 'tel'
+      : variant === 'url' ? 'url'
+      : 'text';
+    const isNumeric = variant === 'number' || variant === 'currency' || variant === 'percent';
     return (
       <TextField
         type={inputType}
@@ -291,7 +344,7 @@ export function InlineEditable<TValue = unknown>(
         autoFocus
         onChange={(e) => {
           const raw = e.target.value;
-          const next = (variant === 'number' ? (raw === '' ? '' : Number(raw)) : raw) as unknown as TValue;
+          const next = (isNumeric ? (raw === '' ? '' : Number(raw)) : raw) as unknown as TValue;
           setDraft(next);
         }}
         onBlur={handleSave}
@@ -305,13 +358,33 @@ export function InlineEditable<TValue = unknown>(
         }}
         size="small"
         sx={{ minWidth: 140 }}
-        InputLabelProps={inputType === 'date' ? { shrink: true } : undefined}
+        InputLabelProps={
+          inputType === 'date' || inputType === 'datetime-local' ? { shrink: true } : undefined
+        }
+        inputProps={variant === 'percent' ? { min: 0, max: 100, step: 1 } : undefined}
         error={!!error}
         helperText={error || undefined}
         disabled={saving}
       />
     );
   };
+
+  // ── Boolean editor (checkbox — click-to-toggle-and-save) ─────────────
+  // Boolean doesn't fit the click-then-type-or-select model; clicking
+  // the checkbox toggles and saves immediately via commitNow.
+  const renderBooleanEditor = () => (
+    <Checkbox
+      checked={!!draft}
+      onChange={(e) => {
+        const next = e.target.checked as unknown as TValue;
+        setDraft(next);
+        commitNow(next);
+      }}
+      autoFocus
+      disabled={saving}
+      sx={{ p: 0.5, color: 'primary.contrastText', '&.Mui-checked': { color: 'primary.contrastText' } }}
+    />
+  );
 
   // ── Lock icon (hover-only when sensitive; always when locked-by-other) ──
   const renderLockBadge = () => {
@@ -349,8 +422,13 @@ export function InlineEditable<TValue = unknown>(
   // ── Render shell ────────────────────────────────────────────────────────
   // The .inline-editable-host class is the hover target for HOVER_LOCK_SX.
   // Display mode is always rendered (it doubles as the anchor for popovers);
-  // text-style editors replace it inline; menu/autocomplete float over it.
-  const editingTextStyle = mode === 'editing' && (variant === 'text' || variant === 'number' || variant === 'date');
+  // text-style editors replace it inline; menu/autocomplete float over it;
+  // boolean toggles a checkbox inline.
+  const TEXT_INPUT_VARIANTS: ReadonlyArray<InlineEditVariant> = [
+    'text', 'number', 'currency', 'percent', 'date', 'datetime', 'email', 'phone', 'url',
+  ];
+  const editingTextStyle = mode === 'editing' && TEXT_INPUT_VARIANTS.includes(variant);
+  const editingBooleanStyle = mode === 'editing' && variant === 'boolean';
 
   return (
     <>
@@ -400,7 +478,11 @@ export function InlineEditable<TValue = unknown>(
         }}
         onClick={mode === 'display' ? handleDisplayClick : undefined}
       >
-        {editingTextStyle ? renderInlineTextEditor() : renderDisplay()}
+        {editingTextStyle
+          ? renderInlineTextEditor()
+          : editingBooleanStyle
+            ? renderBooleanEditor()
+            : renderDisplay()}
         {mode === 'display' && renderLockBadge()}
       </Box>
 

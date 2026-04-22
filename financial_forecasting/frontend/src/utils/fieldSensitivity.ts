@@ -119,17 +119,39 @@ const FIELD_CLASSIFICATIONS: Record<string, Record<string, FieldClassification>>
 
 /**
  * Look up the sensitivity classification for a (objectType, fieldName) pair.
+ *
  * Unknown pairs fail safe to `sensitive` so untriaged fields still require
- * an unlock action.
+ * an unlock action — the primitive assumption is that a cell hand-coded
+ * with an explicit (objectType, fieldName) deserves a deliberate entry.
+ *
+ * Schema-generated cells (via `buildSchemaColumns` in utils/schemaColumns.tsx)
+ * emit renderCells for every SF `updateable` field — tens of fields per entity.
+ * Declaring every one of them would be brittle and noisy, and SF already
+ * enforces edit permission on the server. Those callers pass
+ * `defaultSensitivity: 'safe'` to opt out of the fail-safe for fields they
+ * know came from SF's own updateable list. Hand-coded call sites (no third
+ * arg, or `defaultSensitivity` omitted) keep the fail-safe behavior.
+ *
+ * Explicit entries in FIELD_CLASSIFICATIONS always win — so a schema-
+ * generated cell on `Opportunity.StageName` still reads `'sensitive'`
+ * regardless of the default, because StageName is in the table.
  */
-export function classifyField(objectType: string, fieldName: string): FieldClassification {
+export function classifyField(
+  objectType: string,
+  fieldName: string,
+  defaultSensitivity: FieldSensitivity = 'sensitive',
+): FieldClassification {
   const objectMap = FIELD_CLASSIFICATIONS[objectType];
   const classification = objectMap?.[fieldName];
   if (!classification) {
-    return {
-      sensitivity: 'sensitive',
-      lockReason: `${fieldName} is not classified. Click to confirm the edit.`,
-    };
+    if (defaultSensitivity === 'sensitive') {
+      return {
+        sensitivity: 'sensitive',
+        lockReason: `${fieldName} is not classified. Click to confirm the edit.`,
+      };
+    }
+    // defaultSensitivity === 'safe' — no lockReason; the cell edits freely.
+    return { sensitivity: defaultSensitivity };
   }
   return classification;
 }

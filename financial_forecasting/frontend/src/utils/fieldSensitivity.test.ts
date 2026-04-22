@@ -102,6 +102,41 @@ describe('classifyField', () => {
     });
   });
 
+  // A10 audit / mega-B: Commit 6 adds an optional defaultSensitivity arg so
+  // schema-generated cells (schemaColumns.tsx) can opt unclassified fields
+  // into 'safe' without declaring every SF-updateable field. Hand-coded
+  // call sites still fail safe.
+  describe('defaultSensitivity override for unclassified pairs', () => {
+    it("returns 'safe' when defaultSensitivity='safe' for unknown field", () => {
+      const c = classifyField('Account', 'CustomField_That_Isnt_Listed__c', 'safe');
+      expect(c.sensitivity).toBe('safe');
+      // No lockReason when defaulting safe — the cell edits freely without
+      // a "not classified" tooltip.
+      expect(c.lockReason).toBeUndefined();
+    });
+
+    it("returns 'sensitive' fail-safe when defaultSensitivity is omitted", () => {
+      const c = classifyField('Account', 'CustomField_That_Isnt_Listed__c');
+      expect(c.sensitivity).toBe('sensitive');
+      expect(c.lockReason).toContain('not classified');
+    });
+
+    it('explicit classification always wins over defaultSensitivity', () => {
+      // Opportunity.StageName is 'sensitive' in the table — passing 'safe'
+      // as the default must not downgrade it.
+      const c = classifyField('Opportunity', 'StageName', 'safe');
+      expect(c.sensitivity).toBe('sensitive');
+      expect(c.lockReason).toBeTruthy();
+    });
+
+    it('explicit safe in the table also wins over defaultSensitivity=sensitive', () => {
+      // Opportunity.Name is 'safe' in the table — a caller passing
+      // 'sensitive' as the default shouldn't re-lock it.
+      const c = classifyField('Opportunity', 'Name', 'sensitive');
+      expect(c.sensitivity).toBe('safe');
+    });
+  });
+
   // Guard against the "silent sensitive fallback" regression: every domain
   // cell (StageCell, OwnerCell, …) ships with a default (objectType,
   // fieldName) pair. If that default isn't in FIELD_CLASSIFICATIONS, the
