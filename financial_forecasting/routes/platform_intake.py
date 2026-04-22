@@ -1,25 +1,38 @@
-"""Platform Intake API — Bedrock-side submission endpoint.
+"""Bedrock intake API — bug/feature submission endpoint.
 
-Writes rows into the shared `public.platform_intake` table that the
-Pursuit learning platform already uses for its own bug/feature reports.
-Bedrock submissions are tagged with `source = 'bedrock'` so the routing
-layer (Slack bridge, Linear sync, etc.) can tell the two products apart
-without collisions.
+Writes rows into `public.pd_tickets`, the canonical Pursuit Product
+Development ticket table. The older `public.platform_intake` capture
+table is deprecated; Pursuit now uses `pd_tickets` directly for every
+product surface, Bedrock (Revenue Hub) included.
 
-Why public.platform_intake instead of a new Bedrock table:
-    * Pursuit platform already routes platform_intake rows into the
-      right Slack channel and Linear project.
-    * A single shared inbox means we don't duplicate triage tooling.
-    * The `source` column cleanly partitions Pursuit vs. Bedrock rows
-      for anyone running reports.
+Submissions from this app are tagged with:
+    * `source = 'bedrock'` — partitions Bedrock rows from the existing
+      `source='app'` traffic coming from the Pursuit learning platform.
+    * `surface_id = BEDROCK_SURFACE_ID` — points at the single
+      `pd_surface_registry` row registered for the Bedrock CRM
+      (product_area: 'Revenue Hub'). The fine-grained component the
+      reporter picked in the form (priorities / accounts / tasks / ...)
+      is preserved as a `**Component:** ...` header at the top of the
+      ticket `description`, which keeps the field visible on the ticket
+      without polluting the shared surface registry with 10 bedrock-
+      specific rows.
 
-Auth: any logged-in user (no permission check). Reporter email is taken
-from the session cookie (`user["email"]`) — the form's reporter field
-is a display-only convenience that can be overridden client-side but is
-never trusted server-side.
+Key allocation:
+    `pd_tickets.key_number` has no sequence or trigger — the Pursuit
+    app allocates it client-side. We do the same, but wrap the MAX+1
+    read and the INSERT in a single transaction protected by a
+    Postgres advisory lock (`pg_advisory_xact_lock`) so concurrent
+    submissions can't produce duplicate keys. Under real traffic the
+    lock is effectively uncontended, so the cost is negligible.
+
+Auth: any logged-in user (no permission check). Reporter email comes
+from the session cookie (`user["email"]`) — the form's reporter_name
+field is a display-only convenience that can be overridden
+client-side but is never trusted server-side.
 """
 
 import logging
+import os
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
@@ -55,6 +68,45 @@ ALLOWED_COMPONENTS = {
     "other",
 }
 
+# Form `type` values → the canonical pd_tickets.type vocabulary already
+# in use ("bug" / "feature_request"). Kept as an explicit map so a future
+# form option (e.g. "question", "incident") has an obvious place to land
+# without silently widening what we write to the shared table.
+TYPE_TO_PD_TICKET_TYPE = {
+    "bug": "bug",
+    "feature": "feature_request",
+}
+
+# Pre-registered row in public.pd_surface_registry for Bedrock CRM.
+# Overridable via env for non-prod databases that seeded a different UUID.
+# Keep in sync with db/migrations/2026-04-22-bedrock-surface-registry.sql.
+BEDROCK_SURFACE_ID = os.environ.get(
+    "BEDROCK_SURFACE_ID", "95226ef9-a8cb-46ac-b1bb-8c5a45957092"
+)
+
+# Presentational labels so the ticket `description` preamble reads like
+# something a human wrote, not the internal dropdown value.
+COMPONENT_LABELS = {
+    "priorities": "Priorities",
+    "details": "Details (tables)",
+    "progress": "Progress",
+    "opportunities": "Opportunities",
+    "accounts": "Accounts",
+    "contacts": "Contacts",
+    "leads": "Leads",
+    "tasks": "Tasks",
+    "salesforce_sync": "Salesforce sync",
+    "other": "Other",
+}
+
+# Stable advisory-lock key used to serialize concurrent key_number
+# allocations. The integer is arbitrary but must be constant across
+# callers — we use a hash of a mnemonic string so collisions with
+# unrelated advisory locks in the database are vanishingly unlikely.
+_KEY_ALLOC_ADVISORY_LOCK_SQL = (
+    "SELECT pg_advisory_xact_lock(hashtext('pd_tickets_key_allocator'))"
+)
+
 
 def _clean(value: Optional[str], max_len: int) -> str:
     return (value or "").strip()[:max_len]
@@ -77,9 +129,9 @@ async def submit_platform_intake(
 
     Accepts `multipart/form-data` so the form can carry an optional file
     attachment (screenshot, screen recording, PDF, etc.). On success the
-    response is `{id, upload_url, source}` — `upload_url` echoes back the
-    `gs://...` URI so the frontend can log it or link to it from an
-    admin UI later.
+    response is `{id, key, upload_url, source}` — `key` is the
+    human-readable identifier (e.g. `TKT-49`) the ticket will surface
+    as in any UI that consumes `pd_tickets`.
     """
     # --- Validate the basic form fields -------------------------------
     type_norm = _clean(type, 16).lower()
@@ -88,6 +140,7 @@ async def submit_platform_intake(
             status_code=400,
             detail=f"type must be one of: {sorted(ALLOWED_TYPES)}",
         )
+    pd_type = TYPE_TO_PD_TICKET_TYPE[type_norm]
 
     priority_norm = _clean(recommended_prioritization, 16).lower()
     if priority_norm not in ALLOWED_PRIORITIES:
@@ -149,48 +202,81 @@ async def submit_platform_intake(
             # already logged inside upload_intake_file.
             raise HTTPException(status_code=500, detail=str(exc)) from exc
         logger.info(
-            "Platform intake upload stored: %s (org_user_id=%s)",
+            "Bedrock intake upload stored: %s (org_user_id=%s)",
             upload_url,
             org_user_id,
         )
 
-    # --- Persist the row ---------------------------------------------
+    # --- Build the ticket body --------------------------------------
+    # Preserve the fine-grained component the reporter picked as a
+    # visible header at the top of the ticket description. Downstream
+    # triage is reading pd_tickets.description in Slack/Linear views,
+    # not pd_surface_registry, so this is where it needs to show up.
+    component_label = COMPONENT_LABELS.get(component_norm, component_norm)
+    description_with_preamble = (
+        f"**Component:** {component_label}\n"
+        f"**Priority:** {priority_norm} — {justification_clean or '(no justification provided)'}\n"
+        f"**Reporter:** {reporter_display} <{reporter_email}>\n"
+        f"\n"
+        f"{description_clean}"
+    )
+
+    # --- Persist the ticket -----------------------------------------
+    # pd_tickets has no sequence/trigger for key_number, so we allocate
+    # MAX+1 ourselves. The advisory lock (released at transaction end)
+    # serializes concurrent allocations without holding a row lock on
+    # the table, so triage queries still run freely during an insert.
     try:
-        row = await db.fetchrow(
-            """
-            INSERT INTO public.platform_intake
-                (reporter, reporter_email, type, title, description,
-                 platform_component, upload_url, recommended_prioritization,
-                 prioritization_justification, source)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'bedrock')
-            RETURNING id, created_at
-            """,
-            reporter_display,
-            reporter_email,
-            type_norm,
-            title_clean,
-            description_clean,
-            component_norm,
-            upload_url,
-            priority_norm,
-            justification_clean,
-        )
+        async with db.transaction():
+            await db.execute(_KEY_ALLOC_ADVISORY_LOCK_SQL)
+            next_key_number = await db.fetchval(
+                "SELECT COALESCE(MAX(key_number), 0) + 1 FROM public.pd_tickets"
+            )
+            ticket_key = f"TKT-{next_key_number}"
+
+            row = await db.fetchrow(
+                """
+                INSERT INTO public.pd_tickets
+                    (key, key_number, type, title, description,
+                     reporter_name, reporter_email,
+                     priority, priority_justification,
+                     upload_url, surface_id, source)
+                VALUES ($1, $2, $3, $4, $5,
+                        $6, $7,
+                        $8, $9,
+                        $10, $11::uuid, 'bedrock')
+                RETURNING id, key, key_number, created_at
+                """,
+                ticket_key,
+                next_key_number,
+                pd_type,
+                title_clean,
+                description_with_preamble,
+                reporter_display,
+                reporter_email,
+                priority_norm,
+                justification_clean or None,
+                upload_url,
+                BEDROCK_SURFACE_ID,
+            )
     except Exception as exc:
-        logger.exception("Failed to insert platform_intake row")
+        logger.exception("Failed to insert pd_tickets row from bedrock intake")
         raise HTTPException(
             status_code=500,
             detail="Could not save your submission. Please try again.",
         ) from exc
 
     logger.info(
-        "Platform intake submitted: id=%s type=%s component=%s priority=%s "
-        "reporter=%s has_upload=%s",
-        row["id"], type_norm, component_norm, priority_norm,
+        "Bedrock intake submitted: key=%s id=%s type=%s component=%s "
+        "priority=%s reporter=%s has_upload=%s",
+        row["key"], row["id"], pd_type, component_norm, priority_norm,
         reporter_email, upload_url is not None,
     )
     return {
         "success": True,
         "id": str(row["id"]),
+        "key": row["key"],
+        "key_number": row["key_number"],
         "source": "bedrock",
         "upload_url": upload_url,
         "created_at": row["created_at"].isoformat() if row["created_at"] else None,

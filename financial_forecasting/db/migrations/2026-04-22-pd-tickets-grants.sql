@@ -1,0 +1,24 @@
+-- 2026-04-22: grant bedrock_user INSERT on public.pd_tickets
+--
+-- Context:
+--     Bedrock submissions moved from the deprecated
+--     `public.platform_intake` capture table to `public.pd_tickets`,
+--     the canonical Pursuit Product Development ticket table. bedrock_user
+--     already had SELECT; this adds INSERT so the intake endpoint
+--     (financial_forecasting/routes/platform_intake.py) can write rows.
+--
+-- Related:
+--     * routes/platform_intake.py (new insert target)
+--     * db/migrations/2026-04-22-bedrock-surface-registry.sql (companion)
+--     * db/migrations/2026-04-21-platform-intake-grants.sql (superseded;
+--       the INSERT/UPDATE on public.platform_intake is now dead code on
+--       the Bedrock side. Left in place so the historical audit trail
+--       stays intact — no harm in holding the grant.)
+--
+-- Apply as postgres superuser:
+--     psql "$SUPERUSER_URL" -f 2026-04-22-pd-tickets-grants.sql
+--
+-- Revert (bedrock_user drops back to SELECT-only, intake insert fails):
+--     REVOKE INSERT ON public.pd_tickets FROM bedrock_user;
+
+GRANT INSERT ON public.pd_tickets TO bedrock_user;
