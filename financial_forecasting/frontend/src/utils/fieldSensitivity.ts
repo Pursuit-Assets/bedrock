@@ -74,6 +74,7 @@ const FIELD_CLASSIFICATIONS: Record<string, Record<string, FieldClassification>>
     Type:                 { sensitivity: 'safe' },
     OwnerId:              { sensitivity: 'sensitive',        lockReason: 'Reassigning the account changes ownership. Click to confirm.' },
     AnnualRevenue:        { sensitivity: 'sensitive',        lockReason: 'Revenue figures impact reporting. Click to confirm.' },
+    NumberOfEmployees:    { sensitivity: 'sensitive',        lockReason: 'Employee count feeds segmentation reports. Click to confirm.' },
     BillingStreet:        { sensitivity: 'safe' },
     BillingCity:          { sensitivity: 'safe' },
     BillingState:         { sensitivity: 'safe' },
@@ -88,6 +89,7 @@ const FIELD_CLASSIFICATIONS: Record<string, Record<string, FieldClassification>>
     Department:           { sensitivity: 'safe' },
     AccountId:            { sensitivity: 'sensitive',        lockReason: 'Reassigning the contact changes the linked account. Click to confirm.' },
     OwnerId:              { sensitivity: 'sensitive',        lockReason: 'Reassigning the contact changes ownership. Click to confirm.' },
+    npsp__Primary_Affiliation__c: { sensitivity: 'sensitive', lockReason: "Reassigning affiliation rewrites the contact's household + rollups. Click to confirm." },
   },
   Project: {
     name:                 { sensitivity: 'safe' },
@@ -110,6 +112,16 @@ const FIELD_CLASSIFICATIONS: Record<string, Record<string, FieldClassification>>
     ActivityDate:         { sensitivity: 'safe' },
     Description:          { sensitivity: 'safe' },
     OwnerId:              { sensitivity: 'sensitive',        lockReason: 'Reassigning a task changes accountability. Click to confirm.' },
+  },
+  Activity: {
+    Subject:              { sensitivity: 'safe' },
+    Status:               { sensitivity: 'safe' },
+    Priority:             { sensitivity: 'safe' },
+    ActivityDate:         { sensitivity: 'safe' },
+    Description:          { sensitivity: 'safe' },
+    OwnerId:              { sensitivity: 'sensitive',        lockReason: 'Reassigning an activity changes accountability. Click to confirm.' },
+    WhatId:               { sensitivity: 'sensitive',        lockReason: 'Changing the parent record rewrites activity linkage. Click to confirm.' },
+    WhoId:                { sensitivity: 'sensitive',        lockReason: 'Changing the related contact affects linkage. Click to confirm.' },
   },
   Target: {
     amount:               { sensitivity: 'permission-gated', permission: 'manage_owner_goals', lockReason: 'Revenue targets require Admin or Executive permission.' },

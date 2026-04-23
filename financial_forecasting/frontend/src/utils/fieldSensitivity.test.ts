@@ -68,6 +68,32 @@ describe('classifyField', () => {
     it('Task OwnerId is sensitive', () => {
       expect(classifyField('Task', 'OwnerId').sensitivity).toBe('sensitive');
     });
+    it('Account NumberOfEmployees is sensitive (mega-B #8)', () => {
+      const c = classifyField('Account', 'NumberOfEmployees');
+      expect(c.sensitivity).toBe('sensitive');
+      expect(c.lockReason).toMatch(/segmentation/i);
+    });
+    it('Contact npsp__Primary_Affiliation__c is sensitive (mega-B #8)', () => {
+      const c = classifyField('Contact', 'npsp__Primary_Affiliation__c');
+      expect(c.sensitivity).toBe('sensitive');
+      expect(c.lockReason).toMatch(/household|rollup/i);
+    });
+    it('Activity OwnerId is sensitive (mega-B #8)', () => {
+      expect(classifyField('Activity', 'OwnerId').sensitivity).toBe('sensitive');
+    });
+    it('Activity WhatId + WhoId are sensitive (mega-B #8)', () => {
+      expect(classifyField('Activity', 'WhatId').sensitivity).toBe('sensitive');
+      expect(classifyField('Activity', 'WhoId').sensitivity).toBe('sensitive');
+    });
+  });
+
+  describe('Activity safe fields (mega-B #8)', () => {
+    it.each(['Subject', 'Status', 'Priority', 'ActivityDate', 'Description'])(
+      'Activity.%s is safe',
+      (f) => {
+        expect(classifyField('Activity', f).sensitivity).toBe('safe');
+      },
+    );
   });
 
   describe('permission-gated fields', () => {
