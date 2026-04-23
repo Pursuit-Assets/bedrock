@@ -477,6 +477,22 @@ export function InlineEditable<TValue = unknown>(
           }),
         }}
         onClick={mode === 'display' ? handleDisplayClick : undefined}
+        onMouseDown={(e) => {
+          // Stop the bubble so MUI DataGrid's GridCell.onMouseDown publishEvent('cellMouseDown')
+          // (node_modules/@mui/x-data-grid/.../components/cell/GridCell.js:320) doesn't record
+          // this click. That handler pairs with a document-level mouseup listener in useGridFocus
+          // that runs setCellFocus → forceUpdate, which steals focus from our autoFocus'd
+          // TextField during the edit-mode transition (InlineEditable.tsx:350 onBlur=handleSave
+          // then fires with draft===value → silent revert to display mode). Stopping the
+          // mousedown bubble neutralizes that path; DataGrid's "mouseup target inside focused
+          // cell" branch (useGridFocus.js:291-294) handles the mouseup gracefully.
+          //
+          // Gated on display-mode + editable so we don't block the inner Menu/Popover/TextField
+          // from receiving their own mousedowns (those are rendered outside this Box), and don't
+          // interfere once we've entered edit/unlock mode. Without this gate, select/autocomplete
+          // variants (which already worked because their popover is detached) would break.
+          if (mode === 'display' && canEditAtAll) e.stopPropagation();
+        }}
       >
         {editingTextStyle
           ? renderInlineTextEditor()
