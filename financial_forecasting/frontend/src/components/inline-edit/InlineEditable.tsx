@@ -137,6 +137,7 @@ export function InlineEditable<TValue = unknown>(
     recordLockedByName,
     readOnly,
     defaultSensitivity,
+    ownerGate,
   } = props;
 
   const permission = useFieldPermission({
@@ -145,6 +146,7 @@ export function InlineEditable<TValue = unknown>(
     recordLock,
     recordLockedByName,
     defaultSensitivity,
+    ownerGate,
   });
 
   // Editor state: which mode we're in right now.
