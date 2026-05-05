@@ -87,16 +87,25 @@ export function useLogout() {
  */
 export const apiBaseURL = import.meta.env.VITE_API_URL || "";
 
+/**
+ * Pick the base URL for top-level OAuth navigations. In production
+ * `VITE_API_URL` is empty (we proxy /auth and /api through nginx so
+ * the cookie is first-party), so use same-origin paths. In dev, hit
+ * the FastAPI backend on :8000 directly because Vite doesn't proxy
+ * /auth.
+ */
+function oauthBase(): string {
+  if (apiBaseURL) return apiBaseURL;
+  if (typeof window !== "undefined" && window.location.hostname === "localhost") {
+    return "http://localhost:8000";
+  }
+  return "";
+}
+
 export function startGoogleLogin(): void {
-  // In dev, Vite proxies /api but NOT /auth — so we need the absolute URL.
-  // We hit the backend directly on :8000. After Google OAuth, the backend
-  // redirects to FRONTEND_URL (set to :4200 in .env), bringing the user
-  // back to v2 with the access_token cookie set.
-  const base = apiBaseURL || "http://localhost:8000";
-  window.location.href = `${base}/auth/google`;
+  window.location.href = `${oauthBase()}/auth/google`;
 }
 
 export function startSalesforceConnect(): void {
-  const base = apiBaseURL || "http://localhost:8000";
-  window.location.href = `${base}/auth/salesforce`;
+  window.location.href = `${oauthBase()}/auth/salesforce`;
 }
