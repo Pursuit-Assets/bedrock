@@ -883,8 +883,9 @@ function FunnelStrip({
   onStageClick: (stage: string) => void;
 }) {
   // Group by the literal SF StageName — no mapping. Show every stage that
-  // actually appears in the filtered data, ordered by count desc.
+  // actually appears in the filtered data, ordered by canonical funnel position.
   const groups = useMemo(() => {
+    const stageRank = new Map(SF_STAGE_OPTIONS.map((s, i) => [s.value, i]));
     const m = new Map<string, { stage: string; status: "open" | "won" | "lost"; count: number; amount: number }>();
     for (const o of opps) {
       if (!inScope(o, scope)) continue;
@@ -894,7 +895,10 @@ function FunnelStrip({
       cur.amount += o.Amount ?? 0;
       m.set(stage, cur);
     }
-    return Array.from(m.values()).sort((a, b) => b.count - a.count);
+    return Array.from(m.values()).sort(
+      (a, b) =>
+        (stageRank.get(a.stage) ?? 9999) - (stageRank.get(b.stage) ?? 9999),
+    );
   }, [opps, scope]);
 
   if (groups.length === 0) return null;

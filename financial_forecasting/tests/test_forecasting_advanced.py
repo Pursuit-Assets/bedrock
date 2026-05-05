@@ -83,10 +83,10 @@ class TestStageProbabilities:
             OpportunityStage.LEAD_GEN,
             OpportunityStage.NEW_LEAD,
             OpportunityStage.QUALIFYING,
-            OpportunityStage.DESIGN_PROPOSAL,
-            OpportunityStage.PROPOSAL_NEGOTIATION,
+            OpportunityStage.ASK_IN_PROGRESS,
+            OpportunityStage.PROPOSAL_SUBMITTED,
             OpportunityStage.CONTRACT_CREATION,
-            OpportunityStage.NEGOTIATING_CONTRACT,
+            OpportunityStage.CONTRACTING,
             OpportunityStage.COLLECTING,
         ]
         probs = [e.stage_probabilities[s] for s in pipeline]

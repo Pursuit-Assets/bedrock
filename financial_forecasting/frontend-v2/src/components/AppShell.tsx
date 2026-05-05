@@ -14,6 +14,7 @@ import {
   ChevronRight,
   TrendingUp,
   Link as LinkIcon,
+  MessageSquarePlus,
 } from "lucide-react";
 
 import { GlobalSearch } from "@/components/GlobalSearch";
@@ -247,6 +248,20 @@ function Sidebar({
       </nav>
 
       <div className="mt-auto flex flex-col gap-px pt-4">
+        <NavLink
+          to="/feedback"
+          title={collapsed ? "Bug reports & feature requests" : undefined}
+          className={({ isActive }) =>
+            cn(
+              "flex select-none items-center rounded-md text-[13px] font-medium text-ink-2 hover:bg-black/[0.04] hover:text-ink",
+              collapsed ? "h-9 w-9 justify-center" : "gap-2.5 px-2.5 py-1.5",
+              isActive && "border border-border-strong bg-surface text-ink shadow-sm",
+            )
+          }
+        >
+          <MessageSquarePlus size={16} className="flex-shrink-0 opacity-70" />
+          {!collapsed && <span>Feedback</span>}
+        </NavLink>
         <NavLink
           to="/settings"
           title={

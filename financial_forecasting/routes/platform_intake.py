@@ -56,15 +56,15 @@ ALLOWED_PRIORITIES = {"urgent", "high", "medium", "low"}
 # Pursuit platform's list — we don't ask Bedrock users "is this a Platform
 # Intake bug?" because it always is, from their perspective.
 ALLOWED_COMPONENTS = {
-    "priorities",
-    "details",
-    "progress",
-    "opportunities",
+    "dashboard",
+    "cash_flow",
     "accounts",
     "contacts",
-    "leads",
-    "tasks",
-    "salesforce_sync",
+    "pipeline",
+    "awards",
+    "projects",
+    "cleanup",
+    "settings",
     "other",
 }
 

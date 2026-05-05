@@ -64,19 +64,19 @@ const FUNNEL: ReadonlyArray<StageBucket> = [
     ]),
   },
   {
-    key: "design",
-    label: "Design / Proposal",
-    stages: new Set(["Design / Proposal Creation", "Proposal Sent"]),
+    key: "ask",
+    label: "Ask in Progress",
+    stages: new Set(["Ask in Progress", "Proposal Sent"]),
   },
   {
-    key: "negotiation",
-    label: "Proposal Negotiation",
-    stages: new Set(["Proposal Negotiation", "Verbal Commitment"]),
+    key: "submitted",
+    label: "Proposal Submitted",
+    stages: new Set(["Proposal Submitted", "Verbal Commitment"]),
   },
   {
     key: "contract",
-    label: "Contract Negotiation",
-    stages: new Set(["Contract Creation", "Contract Signing", "Contract Signed"]),
+    label: "Contracting",
+    stages: new Set(["Contract Creation", "Contracting", "Contract Signing", "Contract Signed"]),
   },
   {
     key: "collecting",

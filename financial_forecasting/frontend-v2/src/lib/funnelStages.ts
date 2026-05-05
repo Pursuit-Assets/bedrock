@@ -6,14 +6,14 @@ export type TransitionKind = "forward" | "backward" | "won" | "lost";
  * Active (non-terminal) pipeline stages, in funnel order. "Lead Gen" and
  * "Contract Creation" were removed 2026-05-04 per JR — Lead Gen wasn't
  * carrying useful signal vs. New Lead, and Contract Creation duplicated
- * Negotiating Contract for our flow.
+ * Contracting for our flow.
  */
 export const ACTIVE_FUNNEL_STAGES = [
   "New Lead",
   "Qualifying",
-  "Design / Proposal Creation",
-  "Proposal Negotiation",
-  "Negotiating Contract",
+  "Ask in Progress",
+  "Proposal Submitted",
+  "Contracting",
   "Collecting / In Effect",
 ] as const;
 
@@ -62,10 +62,10 @@ export const STAGE_HEX: Record<string, string> = {
   "Lead Gen": "#9aa0a6",
   "New Lead": "#6c757d",
   Qualifying: "#5e72e4",
-  "Design / Proposal Creation": "#3f51b5",
-  "Proposal Negotiation": "#1976d2",
+  "Ask in Progress": "#3f51b5",
+  "Proposal Submitted": "#1976d2",
   "Contract Creation": "#0288d1",
-  "Negotiating Contract": "#00838f",
+  "Contracting": "#00838f",
   "Collecting / In Effect": "#2e7d32",
 };
 
