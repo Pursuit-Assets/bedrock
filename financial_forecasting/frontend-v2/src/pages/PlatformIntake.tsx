@@ -11,16 +11,16 @@ type IntakeType = "bug" | "feature";
 type Priority = "urgent" | "high" | "medium" | "low";
 
 const COMPONENTS: { value: string; label: string }[] = [
-  { value: "priorities",      label: "Priorities" },
-  { value: "details",         label: "Details (tables)" },
-  { value: "progress",        label: "Progress" },
-  { value: "opportunities",   label: "Opportunities" },
-  { value: "accounts",        label: "Accounts" },
-  { value: "contacts",        label: "Contacts" },
-  { value: "leads",           label: "Leads" },
-  { value: "tasks",           label: "Tasks" },
-  { value: "salesforce_sync", label: "Salesforce sync" },
-  { value: "other",           label: "Other" },
+  { value: "dashboard",  label: "Dashboard" },
+  { value: "cash_flow",  label: "Cash Flow" },
+  { value: "accounts",   label: "Accounts" },
+  { value: "contacts",   label: "Contacts" },
+  { value: "pipeline",   label: "Pipeline" },
+  { value: "awards",     label: "Awards" },
+  { value: "projects",   label: "Projects" },
+  { value: "cleanup",    label: "Cleanup" },
+  { value: "settings",   label: "Settings" },
+  { value: "other",      label: "Other" },
 ];
 
 const PRIORITIES: { value: Priority; label: string }[] = [
