@@ -27,7 +27,7 @@ requests==2.31.0
 aiohttp==3.9.1
 
 # Google API client (for mcp_client)
-google-auth==2.25.2
+google-auth>=2.26.1
 google-auth-oauthlib==1.2.0
 google-auth-httplib2==0.2.0
 google-api-python-client==2.111.0
