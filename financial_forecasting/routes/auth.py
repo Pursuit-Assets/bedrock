@@ -188,8 +188,11 @@ async def auth_google_callback(request: Request):
             "sub": user_info['sub'],
         })
 
-        # Redirect to priorities (the real landing page)
-        response = RedirectResponse(url=f"{FRONTEND_URL}/priorities")
+        # Redirect to the dashboard — the post-login landing page.
+        # (Old code redirected to /priorities, which no longer exists in
+        # frontend-v2; the alias-route worked most of the time but lost
+        # races against AuthGate when the cookie hadn't propagated yet.)
+        response = RedirectResponse(url=f"{FRONTEND_URL}/dashboard")
         cp = cookie_params()
         response.set_cookie(key="access_token", value=access_token, **cp)
 
