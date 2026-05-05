@@ -74,6 +74,27 @@ export function OpportunityDetailPage() {
     [usersQ.data],
   );
 
+  // Stage options come from the live SF data (distinct StageName values
+  // across all loaded opps). Falls back to the canonical SF_STAGE_OPTIONS
+  // list — and always includes the current opp's stage even if it's not
+  // in either set, so a renamed/legacy stage stays selectable.
+  const stageOptions = useMemo(() => {
+    const seen = new Map<string, string>();
+    for (const o of opps ?? []) {
+      if (o.StageName) seen.set(o.StageName, o.StageName);
+    }
+    if (seen.size === 0) {
+      for (const s of SF_STAGE_OPTIONS) seen.set(s.value, s.label);
+    }
+    if (opp?.StageName && !seen.has(opp.StageName)) {
+      seen.set(opp.StageName, opp.StageName);
+    }
+    const rank = new Map(SF_STAGE_OPTIONS.map((s, i) => [s.value, i]));
+    return Array.from(seen.entries())
+      .map(([value, label]) => ({ value, label }))
+      .sort((a, b) => (rank.get(a.value) ?? 9999) - (rank.get(b.value) ?? 9999));
+  }, [opps, opp?.StageName]);
+
   const accountOptions = useMemo(
     () =>
       accountsData
@@ -191,7 +212,7 @@ export function OpportunityDetailPage() {
           <div className="mt-1 flex flex-wrap items-center gap-2 text-[12.5px] text-ink-3">
             <InlineSelect
               value={opp.StageName}
-              options={SF_STAGE_OPTIONS}
+              options={stageOptions}
               onSave={handleStageChange}
               renderValue={(v) => <StageChip stage={v ?? opp.StageName} status={stageStatus({ ...opp, StageName: v ?? opp.StageName })} />}
             />
@@ -339,7 +360,7 @@ export function OpportunityDetailPage() {
           <EditField label="Stage">
             <InlineSelect
               value={opp.StageName}
-              options={SF_STAGE_OPTIONS}
+              options={stageOptions}
               onSave={handleStageChange}
               renderValue={(v) => <StageChip stage={v ?? opp.StageName} status={stageStatus({ ...opp, StageName: v ?? opp.StageName })} />}
             />

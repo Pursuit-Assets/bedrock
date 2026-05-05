@@ -377,9 +377,9 @@ function OpportunitiesCleanupTab() {
     () => [
       { value: "New Lead", label: "New Lead" },
       { value: "Qualifying", label: "Qualifying" },
-      { value: "Design / Proposal Creation", label: "Design / Proposal Creation" },
-      { value: "Proposal Negotiation", label: "Proposal Negotiation" },
-      { value: "Contract Creation", label: "Contract Creation" },
+      { value: "Ask in Progress", label: "Ask in Progress" },
+      { value: "Proposal Submitted", label: "Proposal Submitted" },
+      { value: "Contracting", label: "Contracting" },
       { value: "Closed Won", label: "Closed Won" },
       { value: "Closed Lost", label: "Closed Lost" },
       { value: "Withdrawn", label: "Withdrawn" },

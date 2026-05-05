@@ -50,7 +50,7 @@ async def get_prior_stages(
     Response shape:
         {
           "0061U000004ABCD": {
-              "prior_stage": "Proposal Negotiation",
+              "prior_stage": "Proposal Submitted",
               "transitioned_at": "2026-04-12T14:33:01.000+0000"
           },
           ...

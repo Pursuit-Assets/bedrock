@@ -293,7 +293,7 @@ class TestPaymentForecastDateCalculation:
         close_date = (date.today() + timedelta(days=10)).isoformat()
         opp = make_sf_opportunity({
             "Id": "006DATE003",
-            "StageName": "Negotiating Contract",
+            "StageName": "Contracting",
             "Amount": 20000,
             "Probability": 80,
             "CloseDate": close_date,

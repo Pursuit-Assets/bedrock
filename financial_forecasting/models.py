@@ -13,10 +13,10 @@ class OpportunityStage(str, Enum):
     LEAD_GEN = "Lead Gen"
     NEW_LEAD = "New Lead"
     QUALIFYING = "Qualifying"
-    DESIGN_PROPOSAL = "Design / Proposal Creation"
-    PROPOSAL_NEGOTIATION = "Proposal Negotiation"
+    ASK_IN_PROGRESS = "Ask in Progress"
+    PROPOSAL_SUBMITTED = "Proposal Submitted"
     CONTRACT_CREATION = "Contract Creation"
-    NEGOTIATING_CONTRACT = "Negotiating Contract"
+    CONTRACTING = "Contracting"
     COLLECTING = "Collecting / In Effect"
     CLOSED_DID_NOT_FULFILL = "Closed / Did not Fulfill"
     CLOSED_COMPLETED = "Closed / Completed"
@@ -29,10 +29,10 @@ OPEN_STAGES = frozenset({
     OpportunityStage.LEAD_GEN,
     OpportunityStage.NEW_LEAD,
     OpportunityStage.QUALIFYING,
-    OpportunityStage.DESIGN_PROPOSAL,
-    OpportunityStage.PROPOSAL_NEGOTIATION,
+    OpportunityStage.ASK_IN_PROGRESS,
+    OpportunityStage.PROPOSAL_SUBMITTED,
     OpportunityStage.CONTRACT_CREATION,
-    OpportunityStage.NEGOTIATING_CONTRACT,
+    OpportunityStage.CONTRACTING,
 })
 
 COLLECTING_STAGES = frozenset({OpportunityStage.COLLECTING})

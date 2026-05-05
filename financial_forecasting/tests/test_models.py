@@ -39,8 +39,8 @@ class TestOpportunityStage:
         """Every stage in the Salesforce picklist has an enum member."""
         expected = {
             "--None--", "Lead Gen", "New Lead", "Qualifying",
-            "Design / Proposal Creation", "Proposal Negotiation",
-            "Contract Creation", "Negotiating Contract",
+            "Ask in Progress", "Proposal Submitted",
+            "Contract Creation", "Contracting",
             "Collecting / In Effect", "Closed / Did not Fulfill",
             "Closed / Completed", "Closed Lost", "Withdrawn",
         }
