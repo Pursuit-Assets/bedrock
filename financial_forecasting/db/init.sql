@@ -1034,6 +1034,43 @@ CREATE INDEX IF NOT EXISTS idx_sf_account_map_company_id
 CREATE INDEX IF NOT EXISTS idx_sf_account_map_confidence
     ON bedrock.sf_account_company_map(confidence);
 
+-- Logo enrichment overlay for public.companies. Bedrock can't UPDATE
+-- public.companies directly (DB role lacks write privilege), so logos
+-- fetched from external APIs (Apollo via Zero CLI, etc.) land here and
+-- the read endpoints LEFT JOIN this table preferring its logo_url over
+-- the dead Clearbit URLs in public.companies.logo_url.
+CREATE TABLE IF NOT EXISTS bedrock.company_logo_enrichment (
+    public_company_id   INTEGER PRIMARY KEY,
+    logo_url            TEXT NOT NULL,
+    source              TEXT NOT NULL DEFAULT 'apollo_zero',
+    enriched_at         TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Saved filter views — per-user OR shared org-wide. `scope_key`
+-- namespaces the view to a list page ("pipeline", "accounts",
+-- "cleanup-opportunities", etc.) so a name like "My open Q4" can
+-- exist independently across pages. `is_global=true` makes a view
+-- visible to every user; `owner_email` = NULL identifies a global
+-- view that no one owns (created by an admin and shared org-wide).
+CREATE TABLE IF NOT EXISTS bedrock.saved_view (
+    id            UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    scope_key     TEXT NOT NULL,
+    name          TEXT NOT NULL,
+    /** Owner's email; NULL when the view is global (admin-curated). */
+    owner_email   TEXT,
+    is_global     BOOLEAN NOT NULL DEFAULT false,
+    /** JSON-shaped filter payload — opaque to the backend, the
+     *  frontend deserializes per-page. */
+    filters       JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_saved_view_scope_owner
+    ON bedrock.saved_view(scope_key, owner_email);
+CREATE INDEX IF NOT EXISTS idx_saved_view_scope_global
+    ON bedrock.saved_view(scope_key) WHERE is_global = true;
+
 -- Prospect → SF Opportunity hints (research-derived suggestions)
 CREATE TABLE IF NOT EXISTS bedrock.prospect_sf_opportunity (
     id                      UUID PRIMARY KEY DEFAULT uuid_generate_v4(),

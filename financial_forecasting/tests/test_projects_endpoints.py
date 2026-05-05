@@ -623,11 +623,12 @@ class TestProjectPermissions:
 
     def test_pm_can_create_project(self, mock_db):
         row = _make_perm_user_row(PM_PERMS, "Project Manager", PM_PROFILE_ID)
-        # M19 create_project RETURNING selects id, name, description, owner_email,
-        # created_by, created_at — all six must be present on the mock row.
+        # create_project RETURNING selects id, name, description, owner_email,
+        # created_by, opportunity_id, created_at — all must be present on the mock row.
         new_project = MockDBRow(
             id=PROJECT_ID, name="New Project", description="",
             owner_email="test@pursuit.org", created_by="test@pursuit.org",
+            opportunity_id=None,
             created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
             updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
         )

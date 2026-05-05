@@ -501,7 +501,7 @@ class ApiResponse(BaseModel, Generic[T]):
 
 class OpportunityUpdateRequest(BaseModel):
     """Request model for updating opportunities."""
-    opportunity_id: str
+    opportunity_id: Optional[str] = None  # handler uses path param; body field is legacy
     updates: Dict[str, Any]
     user_id: Optional[str] = None
     reason: Optional[str] = None

@@ -16,7 +16,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 
 from auth import require_auth
 from db import get_db
-from dependencies import _sync_lock, get_data_sync_service, get_mcp_client
+from dependencies import _sync_lock, get_data_sync_service, get_mcp_client, require_sf_mcp_client
 from mcp_client import UnifiedMCPClient
 from data_sync import DataSyncService
 from models import (
@@ -61,7 +61,7 @@ def _row_to_dict(row) -> dict:
 
 @router.post("/sync/count")
 async def activity_sync_count(
-    client: UnifiedMCPClient = Depends(get_mcp_client),
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user=Depends(check_permission("trigger_data_sync")),
 ):
     """Count SF Tasks + Events to estimate sync volume."""
@@ -209,7 +209,7 @@ async def activity_search(
 async def activity_match_context(
     email: Optional[str] = None,
     name: Optional[str] = None,
-    client: UnifiedMCPClient = Depends(get_mcp_client),
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user=Depends(require_auth),
 ):
     """Match email/name to Contacts and their Opportunities (3-tier matching)."""
@@ -457,6 +457,115 @@ Return ONLY the JSON object, no other text."""
 
 
 # ---------------------------------------------------------------------------
+# 7a. GET /account/{account_id}/full — All activities for an account plus
+#     its related opportunities and contacts, enriched with context.
+# ---------------------------------------------------------------------------
+
+@router.get("/account/{account_id}/full")
+async def list_account_activities_full(
+    account_id: str,
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
+    conn=Depends(get_db),
+    user=Depends(require_auth),
+):
+    """Activities where account_id = X OR opportunity belongs to X OR a
+    contact belongs to X. Each row is enriched with _context_type
+    (account | opportunity | contact) and _context_name so the frontend
+    can label and group the feed without extra round-trips.
+    """
+    from security import validate_salesforce_id
+    validate_salesforce_id(account_id, "account_id")
+
+    opp_map: dict = {}
+    contact_map: dict = {}
+
+    try:
+        sf = client.salesforce
+        opp_res = await sf.query(
+            f"SELECT Id, Name FROM Opportunity WHERE AccountId = '{escape_soql_string(account_id)}'"
+        )
+        opp_map = {r["Id"]: r["Name"] for r in opp_res.get("records", [])}
+
+        contact_res = await sf.query(
+            f"SELECT Id, Name FROM Contact WHERE AccountId = '{escape_soql_string(account_id)}'"
+        )
+        contact_map = {r["Id"]: r["Name"] for r in contact_res.get("records", [])}
+    except Exception as e:
+        logger.warning(f"SF lookup for account {account_id} failed, falling back to account-only: {e}")
+
+    opp_ids = list(opp_map.keys())
+    contact_ids_list = list(contact_map.keys())
+
+    try:
+        # Build OR conditions so one DB round-trip covers all three scopes.
+        # Use proven asyncpg patterns: single-value ANY(column) for contacts,
+        # single-value = for opps (with ANY(array_param) for bulk).
+        or_parts = ["account_id = $1"]
+        params: list = [account_id]
+        idx = 2
+
+        if opp_ids:
+            or_parts.append(f"opportunity_id = ANY(${idx})")
+            params.append(opp_ids)
+            idx += 1
+
+        # Use "$N = ANY(contact_ids)" per contact — same pattern as the
+        # existing GET / endpoint, which is known to work with asyncpg.
+        for cid in contact_ids_list:
+            or_parts.append(f"${idx} = ANY(contact_ids)")
+            params.append(cid)
+            idx += 1
+
+        where_clause = f"deleted_at IS NULL AND ({' OR '.join(or_parts)})"
+        count_params = list(params)
+
+        rows = await conn.fetch(
+            f"""
+            SELECT * FROM bedrock.activity
+            WHERE {where_clause}
+            ORDER BY activity_date DESC
+            LIMIT ${idx} OFFSET ${idx + 1}
+            """,
+            *params, limit, offset,
+        )
+
+        total = await conn.fetchval(
+            f"SELECT COUNT(*) FROM bedrock.activity WHERE {where_clause}",
+            *count_params,
+        )
+    except Exception as e:
+        logger.error(f"DB query failed for account full activities {account_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+    enriched = []
+    for row in rows:
+        d = _row_to_dict(row)
+        opp_id = d.get("opportunity_id")
+        row_contacts = d.get("contact_ids") or []
+
+        if opp_id and opp_id in opp_map:
+            d["_context_type"] = "opportunity"
+            d["_context_name"] = opp_map[opp_id]
+        elif any(cid in contact_map for cid in row_contacts):
+            first_match = next(cid for cid in row_contacts if cid in contact_map)
+            d["_context_type"] = "contact"
+            d["_context_name"] = contact_map[first_match]
+        else:
+            d["_context_type"] = "account"
+            d["_context_name"] = None
+
+        enriched.append(d)
+
+    return ApiResponse(
+        success=True,
+        data=enriched,
+        meta={"total": total, "limit": limit, "offset": offset},
+    )
+
+
+# ---------------------------------------------------------------------------
 # 7. GET / — List activities with filters
 # ---------------------------------------------------------------------------
 
@@ -465,6 +574,8 @@ async def list_activities(
     opportunity_id: Optional[str] = None,
     account_id: Optional[str] = None,
     contact_id: Optional[str] = None,
+    owner_email: Optional[str] = None,
+    owner_id: Optional[str] = None,
     type: Optional[str] = None,
     source: Optional[str] = None,
     start_date: Optional[str] = None,
@@ -491,6 +602,10 @@ async def list_activities(
         if contact_id:
             where_parts.append(f"${idx} = ANY(contact_ids)")
             params.append(contact_id)
+            idx += 1
+        if owner_id:
+            where_parts.append(f"owner_id = ${idx}")
+            params.append(owner_id)
             idx += 1
         if type:
             where_parts.append(f"type = ${idx}")

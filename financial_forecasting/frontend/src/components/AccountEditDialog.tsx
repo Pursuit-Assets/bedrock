@@ -29,6 +29,7 @@ import { usePermissions } from '../contexts/PermissionsContext';
 import { useSchemaPicklist } from '../hooks/useSchemaPicklist';
 import { fieldStatusProps, findMissingFields } from '../utils/fieldLoadStatus';
 import SaveBlockedDialog from './SaveBlockedDialog';
+import DialogStackBreadcrumb from './DialogStackBreadcrumb';
 
 // Fields the dialog can save. A field bound here that's absent from the
 // loaded record → silent overwrite risk on save. Per-field "⚠ Couldn't
@@ -481,6 +482,11 @@ const AccountEditDialog: React.FC<AccountEditDialogProps> = ({
           },
         }}
       />
+
+      {/* Breadcrumb when this dialog is part of a stacked drill — shows the
+          chain of records and makes Cancel-is-Back explicit. Renders null
+          outside DialogStackProvider. */}
+      <DialogStackBreadcrumb />
 
       {/* Header — matches TaskPanel / Opp drawer gradient style. */}
       <Box sx={{

@@ -13,6 +13,16 @@ from .base import BaseMCPService
 
 logger = logging.getLogger(__name__)
 
+# Timeout for individual Salesforce API calls via run_in_executor.
+# If simple_salesforce hangs on a network call, we give up after this
+# many seconds rather than blocking the asyncio event loop forever.
+_SF_CALL_TIMEOUT = 30.0  # seconds
+
+# How long to wait for the reauth lock before giving up. The lock holder
+# is itself doing an authenticated SF call (capped at _SF_CALL_TIMEOUT),
+# so 2× gives it room to complete plus retry.
+_REAUTH_LOCK_TIMEOUT = 75.0  # seconds
+
 
 def _is_session_error(exc: Exception) -> bool:
     """Check if an exception indicates the Salesforce session has expired."""
@@ -20,6 +30,19 @@ def _is_session_error(exc: Exception) -> bool:
         return True
     msg = str(exc).lower()
     return "invalid_session_id" in msg or "session expired" in msg
+
+
+async def _run_sf(fn: Callable, *, timeout: float = _SF_CALL_TIMEOUT) -> Any:
+    """Run a synchronous simple_salesforce call in a thread, with a hard timeout.
+
+    Raises asyncio.TimeoutError if the call does not complete within `timeout`
+    seconds — preventing hung threads from blocking the event loop forever.
+    """
+    loop = asyncio.get_running_loop()
+    return await asyncio.wait_for(
+        loop.run_in_executor(None, fn),
+        timeout=timeout,
+    )
 
 
 class SalesforceMCPService(BaseMCPService):
@@ -55,44 +78,35 @@ class SalesforceMCPService(BaseMCPService):
     async def authenticate(self) -> bool:
         """Authenticate with Salesforce API."""
         try:
-            # Run in thread pool since simple_salesforce is synchronous
-            loop = asyncio.get_event_loop()
-
-            # Try OAuth first if client_id and client_secret are provided
             if self.client_id and self.client_secret:
-                # Use OAuth 2.0 Client Credentials flow
                 import requests
 
-                # Determine the correct OAuth endpoint
-                oauth_url = f"https://{self.domain}.salesforce.com/services/oauth2/token" if self.domain != 'login' else "https://login.salesforce.com/services/oauth2/token"
-
-                # Get OAuth token
+                oauth_url = (
+                    f"https://{self.domain}.salesforce.com/services/oauth2/token"
+                    if self.domain != "login"
+                    else "https://login.salesforce.com/services/oauth2/token"
+                )
                 oauth_data = {
-                    'grant_type': 'client_credentials',
-                    'client_id': self.client_id,
-                    'client_secret': self.client_secret
+                    "grant_type": "client_credentials",
+                    "client_id": self.client_id,
+                    "client_secret": self.client_secret,
                 }
 
-                oauth_response = await loop.run_in_executor(
-                    None,
+                oauth_response = await _run_sf(
                     lambda: requests.post(oauth_url, data=oauth_data)
                 )
 
                 if oauth_response.status_code == 200:
                     token_data = oauth_response.json()
-
-                    self.sf_client = await loop.run_in_executor(
-                        None,
+                    self.sf_client = await _run_sf(
                         lambda: Salesforce(
-                            instance_url=token_data['instance_url'],
-                            session_id=token_data['access_token']
+                            instance_url=token_data["instance_url"],
+                            session_id=token_data["access_token"],
                         )
                     )
                 else:
-                    # Fallback to username/password with OAuth if client credentials fail
                     if self.username and self.password:
-                        self.sf_client = await loop.run_in_executor(
-                            None,
+                        self.sf_client = await _run_sf(
                             lambda: Salesforce(
                                 username=self.username,
                                 password=self.password,
@@ -104,9 +118,7 @@ class SalesforceMCPService(BaseMCPService):
                     else:
                         raise Exception(f"OAuth failed: {oauth_response.text}")
             else:
-                # Fall back to security token method
-                self.sf_client = await loop.run_in_executor(
-                    None,
+                self.sf_client = await _run_sf(
                     lambda: Salesforce(
                         username=self.username,
                         password=self.password,
@@ -115,10 +127,11 @@ class SalesforceMCPService(BaseMCPService):
                     )
                 )
 
-            # Test connection by getting user info
             safe_username = self.username.replace("\\", "\\\\").replace("'", "\\'")
-            user_info = await loop.run_in_executor(
-                None, lambda: self.sf_client.query(f"SELECT Id, Name FROM User WHERE Username = '{safe_username}'")
+            user_info = await _run_sf(
+                lambda: self.sf_client.query(
+                    f"SELECT Id, Name FROM User WHERE Username = '{safe_username}'"
+                )
             )
 
             if user_info["totalSize"] > 0:
@@ -135,13 +148,10 @@ class SalesforceMCPService(BaseMCPService):
 
         except SalesforceAuthenticationFailed as e:
             logger.warning(f"Salesforce authentication failed: {e}")
-            # Last resort: SalesforceLogin without security token
             if self.username and self.password:
                 try:
                     from simple_salesforce import SalesforceLogin
-                    loop = asyncio.get_event_loop()
-                    session_id, instance = await loop.run_in_executor(
-                        None,
+                    session_id, instance = await _run_sf(
                         lambda: SalesforceLogin(
                             username=self.username,
                             password=self.password,
@@ -155,6 +165,9 @@ class SalesforceMCPService(BaseMCPService):
                 except Exception as fallback_err:
                     logger.error(f"Salesforce fallback auth also failed: {fallback_err}")
             return False
+        except asyncio.TimeoutError:
+            logger.error("Salesforce authentication timed out after %ss", _SF_CALL_TIMEOUT)
+            return False
         except Exception as e:
             logger.error(f"Salesforce connection error: {e}")
             return False
@@ -162,15 +175,25 @@ class SalesforceMCPService(BaseMCPService):
     async def _reauthenticate(self) -> bool:
         """Re-authenticate after session expiry.
 
-        Uses a lock so concurrent callers don't stampede the OAuth endpoint.
-        If another coroutine already re-authenticated while we waited for the
-        lock, we skip the duplicate work.
+        Uses a timed lock acquisition so a hung authenticate() call in another
+        coroutine cannot deadlock all subsequent SF callers forever.
         """
-        async with self._reauth_lock:
-            # Another caller may have refreshed while we waited for the lock
+        try:
+            await asyncio.wait_for(
+                self._reauth_lock.acquire(),
+                timeout=_REAUTH_LOCK_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            logger.error(
+                "Timed out waiting for Salesforce reauth lock after %ss — "
+                "another reauth is likely stuck. Returning False.",
+                _REAUTH_LOCK_TIMEOUT,
+            )
+            return False
+
+        try:
+            # Another caller may have refreshed while we waited for the lock.
             if self._authenticated:
-                # Optimistic: the other caller already refreshed.  We'll find
-                # out on the very next API call if it actually worked.
                 return True
             logger.info("Salesforce session expired — re-authenticating...")
             success = await self.authenticate()
@@ -179,6 +202,8 @@ class SalesforceMCPService(BaseMCPService):
             else:
                 logger.error("Salesforce re-authentication failed")
             return success
+        finally:
+            self._reauth_lock.release()
 
     async def _call_with_refresh(self, operation: Callable, error_label: str):
         """Execute a Salesforce operation with automatic session refresh on expiry.
@@ -234,18 +259,13 @@ class SalesforceMCPService(BaseMCPService):
     async def query(self, soql: str) -> Dict[str, Any]:
         """Execute SOQL query."""
         async def _do():
-            # Use MCP tool if available
             if self.client and "salesforce_query" in self.client.available_tools:
                 return await self.client.call_tool(
                     "salesforce_query",
                     {"query": soql}
                 )
-            # Fallback to direct API call
             if self.sf_client:
-                loop = asyncio.get_event_loop()
-                return await loop.run_in_executor(
-                    None, lambda: self.sf_client.query(soql)
-                )
+                return await _run_sf(lambda: self.sf_client.query(soql))
             raise Exception("No Salesforce client available")
 
         return await self._call_with_refresh(_do, "Failed to execute query")
@@ -254,10 +274,7 @@ class SalesforceMCPService(BaseMCPService):
         """Execute SOQL query with automatic pagination (returns all records)."""
         async def _do():
             if self.sf_client:
-                loop = asyncio.get_event_loop()
-                return await loop.run_in_executor(
-                    None, lambda: self.sf_client.query_all(soql)
-                )
+                return await _run_sf(lambda: self.sf_client.query_all(soql))
             raise Exception("No Salesforce client available")
 
         return await self._call_with_refresh(_do, "Failed to execute query_all")
@@ -271,11 +288,8 @@ class SalesforceMCPService(BaseMCPService):
                     {"sobject": sobject, "data": data}
                 )
             if self.sf_client:
-                loop = asyncio.get_event_loop()
                 sobject_client = getattr(self.sf_client, sobject)
-                return await loop.run_in_executor(
-                    None, lambda: sobject_client.create(data)
-                )
+                return await _run_sf(lambda: sobject_client.create(data))
             raise Exception("No Salesforce client available")
 
         return await self._call_with_refresh(_do, f"Failed to create {sobject}")
@@ -292,11 +306,8 @@ class SalesforceMCPService(BaseMCPService):
                 )
                 return result.get("success", False)
             if self.sf_client:
-                loop = asyncio.get_event_loop()
                 sobject_client = getattr(self.sf_client, sobject)
-                result = await loop.run_in_executor(
-                    None, lambda: sobject_client.update(record_id, data)
-                )
+                result = await _run_sf(lambda: sobject_client.update(record_id, data))
                 return result == 204
             raise Exception("No Salesforce client available")
 
@@ -312,11 +323,8 @@ class SalesforceMCPService(BaseMCPService):
                 )
                 return result.get("success", False)
             if self.sf_client:
-                loop = asyncio.get_event_loop()
                 sobject_client = getattr(self.sf_client, sobject)
-                result = await loop.run_in_executor(
-                    None, lambda: sobject_client.delete(record_id)
-                )
+                result = await _run_sf(lambda: sobject_client.delete(record_id))
                 return result == 204
             raise Exception("No Salesforce client available")
 
@@ -331,11 +339,8 @@ class SalesforceMCPService(BaseMCPService):
                     {"sobject": sobject, "id": record_id}
                 )
             if self.sf_client:
-                loop = asyncio.get_event_loop()
                 sobject_client = getattr(self.sf_client, sobject)
-                return await loop.run_in_executor(
-                    None, lambda: sobject_client.get(record_id)
-                )
+                return await _run_sf(lambda: sobject_client.get(record_id))
             raise Exception("No Salesforce client available")
 
         return await self._call_with_refresh(_do, f"Failed to get {sobject}")
@@ -349,11 +354,8 @@ class SalesforceMCPService(BaseMCPService):
                     {"sobject": sobject}
                 )
             if self.sf_client:
-                loop = asyncio.get_event_loop()
                 sobject_client = getattr(self.sf_client, sobject)
-                return await loop.run_in_executor(
-                    None, lambda: sobject_client.describe()
-                )
+                return await _run_sf(lambda: sobject_client.describe())
             raise Exception("No Salesforce client available")
 
         return await self._call_with_refresh(_do, f"Failed to describe {sobject}")
@@ -367,10 +369,7 @@ class SalesforceMCPService(BaseMCPService):
                     {"query": sosl}
                 )
             if self.sf_client:
-                loop = asyncio.get_event_loop()
-                return await loop.run_in_executor(
-                    None, lambda: self.sf_client.search(sosl)
-                )
+                return await _run_sf(lambda: self.sf_client.search(sosl))
             raise Exception("No Salesforce client available")
 
         return await self._call_with_refresh(_do, "Failed to execute search")

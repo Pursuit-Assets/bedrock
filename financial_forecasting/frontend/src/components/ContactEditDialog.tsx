@@ -33,6 +33,8 @@ import { usePermissions } from '../contexts/PermissionsContext';
 import { useSchemaPicklist } from '../hooks/useSchemaPicklist';
 import { fieldStatusProps, findMissingFields } from '../utils/fieldLoadStatus';
 import SaveBlockedDialog from './SaveBlockedDialog';
+import DialogStackBreadcrumb from './DialogStackBreadcrumb';
+import type { DialogOrigin } from '../contexts/DialogStackContext';
 
 // Fields the dialog can save. Mirrors OpportunityEditDialog /
 // AccountEditDialog — absent field in loaded record + touched by user →
@@ -96,8 +98,16 @@ interface ContactEditDialogProps {
   /** Fires after a successful destructive delete. Parent invalidates any
    *  extra caches the dialog's own invalidateQueries doesn't cover. */
   onDeleted?: (contactId: string) => void;
-  /** When provided, shows "Open" icons next to lookup fields for stacked dialog navigation. */
-  onOpenRelated?: (type: 'opportunity' | 'account' | 'contact', id: string) => void;
+  /** When provided, shows "Open" icons next to lookup fields for stacked dialog
+   *  navigation. `label` is the target record's display name (for the breadcrumb);
+   *  `parentInfo` is this dialog's own self-identity so the pushed entry can
+   *  remember which origin dialog launched it. */
+  onOpenRelated?: (
+    type: 'opportunity' | 'account' | 'contact',
+    id: string,
+    label: string,
+    parentInfo?: DialogOrigin,
+  ) => void;
 }
 
 interface UserOption {
@@ -449,6 +459,11 @@ const ContactEditDialog: React.FC<ContactEditDialogProps> = ({
           },
         }}
       />
+
+      {/* Breadcrumb when this dialog is part of a stacked drill — shows the
+          chain of records and makes Cancel-is-Back explicit. Renders null
+          outside DialogStackProvider. */}
+      <DialogStackBreadcrumb />
 
       {/* Header — matches TaskPanel / Opp / Account drawer gradient style. */}
       <Box sx={{
@@ -1103,7 +1118,22 @@ const ContactEditDialog: React.FC<ContactEditDialogProps> = ({
                     <Tooltip title="Open account">
                       <IconButton
                         size="small"
-                        onClick={() => onOpenRelated('account', editForm.AccountId)}
+                        onClick={() => onOpenRelated(
+                          'account',
+                          editForm.AccountId,
+                          selectedAccount?.Name || 'Account',
+                          {
+                            type: 'contact',
+                            id: contactId ?? undefined,
+                            // Name is a formula field and may not be loaded;
+                            // fall back to composing First + Last, then a bare
+                            // type label. `||` (not `??`) so an empty string
+                            // from an empty join still falls through.
+                            label: originalRecord?.Name
+                              || [originalRecord?.FirstName, originalRecord?.LastName].filter(Boolean).join(' ')
+                              || 'Contact',
+                          },
+                        )}
                       >
                         <OpenInNewIcon fontSize="small" />
                       </IconButton>

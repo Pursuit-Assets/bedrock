@@ -1,0 +1,28 @@
+node_modules
+dist
+dist-ssr
+*.local
+.vite
+
+# Re-include src/lib/ — the root .gitignore globs `lib/` for Python's
+# virtualenv layout, which incidentally catches our React lib/ folder.
+!src/lib/
+!src/lib/**
+
+# Editor / OS
+.DS_Store
+.idea
+.vscode/*
+!.vscode/extensions.json
+
+# Environment
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*

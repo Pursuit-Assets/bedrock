@@ -16,7 +16,8 @@ from fastapi.testclient import TestClient
 from main import app, get_current_user
 from auth import require_auth
 from db import get_db
-from dependencies import get_mcp_client, get_data_sync_service
+from dependencies import get_mcp_client, get_data_sync_service, require_sf_mcp_client as deps_require_sf_mcp_client
+from main import require_sf_mcp_client as main_require_sf_mcp_client
 from conftest import make_activity
 
 app.router.on_startup.clear()
@@ -95,6 +96,8 @@ def authed_client(mock_db, mock_sync_service, mock_mcp_client):
     app.dependency_overrides[require_auth] = lambda: TEST_USER
     app.dependency_overrides[get_db] = lambda: mock_db
     app.dependency_overrides[get_mcp_client] = lambda: mock_mcp_client
+    app.dependency_overrides[main_require_sf_mcp_client] = lambda: mock_mcp_client
+    app.dependency_overrides[deps_require_sf_mcp_client] = lambda: mock_mcp_client
     app.dependency_overrides[get_data_sync_service] = lambda: mock_sync_service
     with TestClient(app, raise_server_exceptions=False) as c:
         yield c

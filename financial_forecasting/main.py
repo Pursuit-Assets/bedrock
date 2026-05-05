@@ -2,6 +2,7 @@
 
 import os
 import asyncio
+import calendar
 from dotenv import load_dotenv
 load_dotenv(override=False)
 from typing import Any, Dict, List, Optional
@@ -51,9 +52,12 @@ from routes.ai import router as ai_router
 from routes.salesforce_search import router as sf_search_router
 from routes.salesforce_schema import router as sf_schema_router
 from routes.admin_sf_drift import router as admin_sf_drift_router
+from routes.account_enrichment import router as account_enrichment_router
 from routes.admin_company_match import router as admin_company_match_router
 from routes.activities import router as activities_router
 from routes.platform_intake import router as platform_intake_router
+from routes.awards import router as awards_router
+from routes.saved_views import router as saved_views_router
 from auth import get_current_user_dep, require_auth, IS_PRODUCTION, JWT_SECRET_KEY
 from security import validate_salesforce_id, escape_soql_string
 from services.crm_parser import refresh_opp_cache as _refresh_opp_cache
@@ -128,11 +132,14 @@ app.include_router(sf_search_router)
 app.include_router(sf_schema_router)
 app.include_router(admin_sf_drift_router)
 app.include_router(admin_company_match_router)
+app.include_router(account_enrichment_router)
 app.include_router(activities_router)
 app.include_router(platform_intake_router)
+app.include_router(awards_router)
+app.include_router(saved_views_router)
 
 # Service singletons — shared with dependencies.py so route files can use
-# Depends(get_mcp_client) without circular imports.
+# Depends(require_sf_mcp_client) without circular imports.
 import dependencies as _deps
 _services = _deps._services
 from dependencies import _sync_lock, get_data_sync_service
@@ -232,6 +239,14 @@ def get_mcp_client(request: Request = None) -> UnifiedMCPClient:
     return _get(request)
 
 
+def require_sf_mcp_client(request: Request) -> UnifiedMCPClient:
+    """Like get_mcp_client but requires a valid sf_tokens cookie.
+    Use on all user-facing Salesforce data routes.
+    """
+    from dependencies import require_sf_mcp_client as _req
+    return _req(request)
+
+
 def get_forecasting_engine() -> ForecastingEngine:
     """Get forecasting engine dependency."""
     engine = _services.get("forecasting_engine")
@@ -308,7 +323,7 @@ async def get_opportunities(
     limit: Optional[int] = Query(None, le=2000),
     record_type: Optional[str] = Query(None, description="Filter by RecordType.Name (e.g. 'Philanthropy')"),
     active_only: bool = Query(False, description="Only return Active_Opportunity__c = true"),
-    client: UnifiedMCPClient = Depends(get_mcp_client),
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user = Depends(require_auth)
 ):
     """Get Salesforce opportunities with optional server-side filtering."""
@@ -331,7 +346,8 @@ async def get_opportunities(
         # label "Primary Contact"). Relationship fields pull the contact's
         # Name + Email for display without a second query.
         query = """
-        SELECT Id, AccountId, Account.Name, Name, StageName, Amount, Probability,
+        SELECT Id, AccountId, Account.Name, Name, StageName, IsClosed, IsWon,
+               Amount, Probability,
                CloseDate, ForecastCategory, LeadSource, NextStep,
                Description, OwnerId, Owner.Name, CreatedDate, LastModifiedDate,
                npe01__Payments_Made__c, Outstanding_Payments__c,
@@ -341,7 +357,9 @@ async def get_opportunities(
                RenewalRepeat__c,
                npsp__Primary_Contact__c,
                npsp__Primary_Contact__r.Name, npsp__Primary_Contact__r.Email,
-               RecordTypeId, RecordType.Name, Active_Opportunity__c
+               RecordTypeId, RecordType.Name, Active_Opportunity__c,
+               Reporting_Method__c, npsp__Next_Grant_Deadline_Due_Date__c,
+               Ask_Amount_if_different_from_actual__c
         FROM Opportunity
         """
 
@@ -380,10 +398,31 @@ async def get_opportunities(
 
 
 
+@app.get("/api/salesforce/opportunities/record-types")
+async def get_opportunity_record_types(
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
+    user=Depends(require_auth),
+):
+    """Return active Opportunity RecordTypes as [{id, name}]."""
+    cached = cache.get("opp_record_types")
+    if cached is not None:
+        return cached
+    salesforce = client.salesforce
+    result = await salesforce.query(
+        "SELECT Id, Name FROM RecordType "
+        "WHERE SObjectType = 'Opportunity' AND IsActive = true "
+        "ORDER BY Name"
+    )
+    records = result.get("records", [])
+    out = [{"id": r["Id"], "name": r["Name"]} for r in records]
+    cache.set("opp_record_types", out, 3600)
+    return out
+
+
 @app.post("/api/salesforce/opportunities")
 async def create_opportunity(
     opp_data: Dict[str, Any],
-    client: UnifiedMCPClient = Depends(get_mcp_client),
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user = Depends(check_permission("create_opportunities")),
 ):
     """Create a new Salesforce opportunity."""
@@ -407,7 +446,7 @@ async def create_opportunity(
 async def update_opportunity(
     opportunity_id: str,
     update_request: OpportunityUpdateRequest,
-    client: UnifiedMCPClient = Depends(get_mcp_client),
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user = Depends(check_permission("edit_own_opportunities")),
     db = Depends(get_db),
 ):
@@ -476,7 +515,7 @@ async def update_opportunity(
 async def delete_opportunity(
     request: Request,
     opportunity_id: str,
-    client: UnifiedMCPClient = Depends(get_mcp_client),
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user = Depends(check_permission_or_internal("edit_own_opportunities")),
 ):
     """Delete a Salesforce Opportunity.
@@ -511,8 +550,10 @@ async def delete_opportunity(
         # opp-payments: / payments: — child payments now orphaned.
         cache.invalidate_prefix("opp-payments:")
         cache.invalidate_prefix("payments:")
-        # my-tasks: — child Tasks still have WhatId pointing at the deleted opp.
+        # my-tasks: / contact-tasks: — child Tasks still have WhatId pointing
+        # at the deleted opp; cached entries would render with a stale parent.
         cache.invalidate_prefix("my-tasks:")
+        cache.invalidate_prefix("contact-tasks:")
         # opportunities: — Payment endpoints invalidate this prefix defensively.
         cache.invalidate_prefix("opportunities:")
         logger.info(f"Opportunity {opportunity_id} deleted by {user['user_id']}")
@@ -537,47 +578,64 @@ async def get_accounts(
     # "return all" via query_all() pagination; the frontend relies on this
     # to avoid silent truncation when Pursuit's Account count exceeds 2000.
     limit: Optional[int] = Query(None, le=2000),
-    client: UnifiedMCPClient = Depends(get_mcp_client),
+    # `fields=light` returns only the ~17 fields the v2 frontend uses,
+    # cutting SOQL payload ~70% vs the full 50-field default (kept for v1).
+    fields: Optional[str] = Query(None),
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user = Depends(require_auth)
 ):
     """Get Salesforce accounts."""
     try:
         if "salesforce" not in (client.connected_services or []):
             return []
-        cache_key = f"accounts:{limit or 'all'}"
+        use_light = fields == "light"
+        cache_key = f"accounts:{limit or 'all'}:{'light' if use_light else 'full'}"
         cached = cache.get(cache_key)
         if cached is not None:
             return cached
 
         salesforce = client.salesforce
 
-        query = """
-        SELECT Id, Name, Type, Industry, Phone, Fax, Website, Description,
-               BillingStreet, BillingCity, BillingState, BillingPostalCode, BillingCountry,
-               AnnualRevenue, NumberOfEmployees, AccountSource, OwnerId, Owner.Name,
-               ParentId, RecordTypeId, RecordType.Name,
-               CreatedDate, LastModifiedDate, LastActivityDate,
-               Account_Tier__c, Active__c, Company_Size__c,
-               npsp__Grantmaker__c, npsp__Funding_Focus__c,
-               Philanthropy__c, Fee_For_Service__c, Hiring__c, Investment__c,
-               Volunteering__c, Fellow_Recruitment__c, Media_Marketing__c,
-               Influence__c, Startup__c, Organization_Focus_Area_s__c,
-               npo02__TotalOppAmount__c, npo02__NumberOfClosedOpps__c,
-               npo02__AverageAmount__c, npo02__LargestAmount__c, npo02__SmallestAmount__c,
-               npo02__FirstCloseDate__c, npo02__LastCloseDate__c,
-               npo02__OppAmountThisYear__c, npo02__OppAmountLastYear__c,
-               npo02__Best_Gift_Year__c, npo02__Best_Gift_Year_Total__c,
-               npsp__Matching_Gift_Company__c, npsp__Matching_Gift_Percent__c,
-               npsp__Matching_Gift_Amount_Max__c, npsp__Matching_Gift_Amount_Min__c,
-               npsp__Matching_Gift_Annual_Employee_Max__c,
-               npsp__Matching_Gift_Administrator_Name__c, npsp__Matching_Gift_Email__c,
-               npsp__Matching_Gift_Phone__c, npsp__Matching_Gift_Comments__c,
-               npsp__Matching_Gift_Info_Updated__c, npsp__Matching_Gift_Request_Deadline__c,
-               Total_Revenue_Generated__c,
-               Last_Activity_Date__c, Date_of_First_Pursuit_Hire__c
-        FROM Account
-        ORDER BY Name ASC
-        """
+        if use_light:
+            query = """
+            SELECT Id, Name, Type, Industry, Website, Description,
+                   BillingCity, BillingState, OwnerId, Owner.Name,
+                   Account_Tier__c,
+                   npo02__TotalOppAmount__c, npo02__NumberOfClosedOpps__c,
+                   Total_Revenue_Generated__c,
+                   Last_Activity_Date__c, LastActivityDate,
+                   CreatedDate, LastModifiedDate
+            FROM Account
+            ORDER BY Name ASC
+            """
+        else:
+            query = """
+            SELECT Id, Name, Type, Industry, Phone, Fax, Website, Description,
+                   BillingStreet, BillingCity, BillingState, BillingPostalCode, BillingCountry,
+                   AnnualRevenue, NumberOfEmployees, AccountSource, OwnerId, Owner.Name,
+                   ParentId, RecordTypeId, RecordType.Name,
+                   CreatedDate, LastModifiedDate, LastActivityDate,
+                   Account_Tier__c, Active__c, Company_Size__c,
+                   npsp__Grantmaker__c, npsp__Funding_Focus__c,
+                   Philanthropy__c, Fee_For_Service__c, Hiring__c, Investment__c,
+                   Volunteering__c, Fellow_Recruitment__c, Media_Marketing__c,
+                   Influence__c, Startup__c, Organization_Focus_Area_s__c,
+                   npo02__TotalOppAmount__c, npo02__NumberOfClosedOpps__c,
+                   npo02__AverageAmount__c, npo02__LargestAmount__c, npo02__SmallestAmount__c,
+                   npo02__FirstCloseDate__c, npo02__LastCloseDate__c,
+                   npo02__OppAmountThisYear__c, npo02__OppAmountLastYear__c,
+                   npo02__Best_Gift_Year__c, npo02__Best_Gift_Year_Total__c,
+                   npsp__Matching_Gift_Company__c, npsp__Matching_Gift_Percent__c,
+                   npsp__Matching_Gift_Amount_Max__c, npsp__Matching_Gift_Amount_Min__c,
+                   npsp__Matching_Gift_Annual_Employee_Max__c,
+                   npsp__Matching_Gift_Administrator_Name__c, npsp__Matching_Gift_Email__c,
+                   npsp__Matching_Gift_Phone__c, npsp__Matching_Gift_Comments__c,
+                   npsp__Matching_Gift_Info_Updated__c, npsp__Matching_Gift_Request_Deadline__c,
+                   Total_Revenue_Generated__c,
+                   Last_Activity_Date__c, Date_of_First_Pursuit_Hire__c
+            FROM Account
+            ORDER BY Name ASC
+            """
         if limit is not None:
             query += f" LIMIT {limit}"
 
@@ -594,7 +652,7 @@ async def get_accounts(
 @app.post("/api/salesforce/accounts")
 async def create_account(
     account_data: Dict[str, Any],
-    client: UnifiedMCPClient = Depends(get_mcp_client),
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user = Depends(check_permission_or_internal("create_accounts"))
 ):
     """Create a new Salesforce account."""
@@ -623,40 +681,60 @@ async def get_contacts(
     # looser than accounts). Default `None` means "return all" via query_all
     # pagination; the frontend relies on this to avoid silent truncation.
     limit: Optional[int] = Query(None, le=5000),
-    client: UnifiedMCPClient = Depends(get_mcp_client),
+    # `fields=light` mirrors the accounts pattern — returns only the
+    # ~12 fields the v2 list / cleanup / contact-detail header use.
+    # Cuts SOQL payload by ~70% across 5K-10K contact rows, which is
+    # the dominant cause of the contacts list feeling slow on cold
+    # cache. Per-contact detail page still uses fields=full.
+    fields: Optional[str] = Query(None),
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user = Depends(require_auth)
 ):
     """Get Salesforce contacts, optionally filtered by account."""
     try:
         if "salesforce" not in (client.connected_services or []):
             return []
-        cache_key = f"contacts:{account_id}:{limit or 'all'}"
+        use_light = fields == "light"
+        cache_key = f"contacts:{account_id}:{limit or 'all'}:{'light' if use_light else 'full'}"
         cached = cache.get(cache_key)
         if cached is not None:
             return cached
 
         salesforce = client.salesforce
 
-        query = """
-        SELECT Id, AccountId, Account.Name, FirstName, LastName, Name,
-               Salutation, Title, Department, Email, Phone, MobilePhone,
-               MailingStreet, MailingCity, MailingState, MailingPostalCode, MailingCountry,
-               OwnerId, Owner.Name, LeadSource, Birthdate, Description,
-               DoNotCall, HasOptedOutOfEmail, RecordTypeId, RecordType.Name,
-               CreatedDate, LastModifiedDate, LastActivityDate,
-               npsp__Primary_Affiliation__c, npsp__Primary_Affiliation__r.Name,
-               npsp__Deceased__c, npsp__Do_Not_Contact__c,
-               npe01__WorkEmail__c, npe01__HomeEmail__c, npe01__AlternateEmail__c,
-               npe01__WorkPhone__c, npe01__PreferredPhone__c, npe01__Preferred_Email__c,
-               npe01__Primary_Address_Type__c,
-               Preferred_Name__c, Pronouns__c, Gender__c, LinkedIn_URL__c,
-               Philanthropic_Contact__c, Philanthropy__c, Board_Status__c,
-               Volunteer__c, Added_to_Slack__c, Last_Touchpoint__c,
-               Last_Activity_Date__c, Days_Since_Last_Activity__c,
-               Primary_Affiliation_Entity__c, Primary_Affiliation_Name__c,
-               GW_Volunteers__Volunteer_Hours__c, GW_Volunteers__Last_Volunteer_Date__c
-        FROM Contact
-        """
+        if use_light:
+            query = """
+            SELECT Id, AccountId, Account.Name, FirstName, LastName, Name,
+                   Title, Department, Email, Phone, MobilePhone,
+                   OwnerId, Owner.Name, LeadSource, RecordTypeId, RecordType.Name,
+                   CreatedDate, LastModifiedDate, LastActivityDate,
+                   Last_Activity_Date__c, Days_Since_Last_Activity__c,
+                   Philanthropic_Contact__c, Philanthropy__c, Board_Status__c,
+                   LinkedIn_URL__c, Pronouns__c, Preferred_Name__c,
+                   MailingCity, MailingState
+            FROM Contact
+            """
+        else:
+            query = """
+            SELECT Id, AccountId, Account.Name, FirstName, LastName, Name,
+                   Salutation, Title, Department, Email, Phone, MobilePhone,
+                   MailingStreet, MailingCity, MailingState, MailingPostalCode, MailingCountry,
+                   OwnerId, Owner.Name, LeadSource, Birthdate, Description,
+                   DoNotCall, HasOptedOutOfEmail, RecordTypeId, RecordType.Name,
+                   CreatedDate, LastModifiedDate, LastActivityDate,
+                   npsp__Primary_Affiliation__c, npsp__Primary_Affiliation__r.Name,
+                   npsp__Deceased__c, npsp__Do_Not_Contact__c,
+                   npe01__WorkEmail__c, npe01__HomeEmail__c, npe01__AlternateEmail__c,
+                   npe01__WorkPhone__c, npe01__PreferredPhone__c, npe01__Preferred_Email__c,
+                   npe01__Primary_Address_Type__c,
+                   Preferred_Name__c, Pronouns__c, Gender__c, LinkedIn_URL__c,
+                   Philanthropic_Contact__c, Philanthropy__c, Board_Status__c,
+                   Volunteer__c, Added_to_Slack__c, Last_Touchpoint__c,
+                   Last_Activity_Date__c, Days_Since_Last_Activity__c,
+                   Primary_Affiliation_Entity__c, Primary_Affiliation_Name__c,
+                   GW_Volunteers__Volunteer_Hours__c, GW_Volunteers__Last_Volunteer_Date__c
+            FROM Contact
+            """
 
         if account_id:
             validate_salesforce_id(account_id, "account_id")
@@ -679,7 +757,7 @@ async def get_contacts(
 @app.post("/api/salesforce/contacts")
 async def create_contact(
     contact_data: Dict[str, Any],
-    client: UnifiedMCPClient = Depends(get_mcp_client),
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user = Depends(check_permission_or_internal("create_contacts"))
 ):
     """Create a new Salesforce contact."""
@@ -723,7 +801,7 @@ PAYMENT_SOQL_FIELDS = """
 async def get_payments(
     opportunity_id: Optional[str] = None,
     limit: int = Query(500, le=2000),
-    client: UnifiedMCPClient = Depends(get_mcp_client),
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user = Depends(require_auth),
 ):
     """Get Salesforce payments, optionally filtered by opportunity."""
@@ -755,7 +833,7 @@ async def get_payments(
 @app.get("/api/salesforce/opportunities/{opportunity_id}/payments")
 async def get_opportunity_payments(
     opportunity_id: str,
-    client: UnifiedMCPClient = Depends(get_mcp_client),
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user = Depends(require_auth),
 ):
     """Get all payments for a specific opportunity."""
@@ -781,6 +859,263 @@ async def get_opportunity_payments(
 
     except Exception as e:
         logger.error(f"Error fetching payments for opportunity {opportunity_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── ACV Summary: payments scheduled in FY from FY wins ──────────────────
+
+@app.get("/api/salesforce/payments/acv-summary")
+async def get_acv_summary(
+    year: int = Query(..., ge=2000, le=2100),
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
+    user=Depends(require_auth),
+):
+    """Sum of npe01__OppPayment__c amounts where:
+      - Scheduled_Date falls in `year`
+      - Related opp is Won
+      - Related opp's CloseDate also falls in `year`
+
+    Returns quarterly + annual totals for the Wins (ACV) row in the
+    FY Overview matrix on the Dashboard.
+    """
+    cache_key = f"acv-summary:{year}"
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    try:
+        salesforce = client.salesforce
+        soql = f"""
+            SELECT npe01__Payment_Amount__c, npe01__Scheduled_Date__c,
+                   npe01__Opportunity__r.CloseDate
+            FROM npe01__OppPayment__c
+            WHERE npe01__Scheduled_Date__c >= {year}-01-01
+            AND npe01__Scheduled_Date__c <= {year}-12-31
+            AND npe01__Written_Off__c = false
+            AND npe01__Opportunity__r.StageName IN ('Collecting / In Effect', 'Closed Won', 'Closed Completed')
+            AND npe01__Opportunity__r.CloseDate >= {year}-01-01
+            AND npe01__Opportunity__r.CloseDate <= {year}-12-31
+            LIMIT 2000
+        """
+        result = await salesforce.query(soql)
+        records = result.get("records", [])
+
+        q_totals = {1: 0.0, 2: 0.0, 3: 0.0, 4: 0.0}
+        for r in records:
+            amt = r.get("npe01__Payment_Amount__c") or 0
+            opp = r.get("npe01__Opportunity__r") or {}
+            close_date = opp.get("CloseDate")
+            if not close_date or not amt:
+                continue
+            try:
+                month = int(close_date[5:7])
+                q = (month - 1) // 3 + 1
+                q_totals[q] += amt
+            except (ValueError, IndexError):
+                continue
+
+        summary = {
+            "fy": sum(q_totals.values()),
+            "q1": q_totals[1],
+            "q2": q_totals[2],
+            "q3": q_totals[3],
+            "q4": q_totals[4],
+        }
+        cache.set(cache_key, summary, CACHE_TTL_OPPORTUNITIES)
+        return summary
+
+    except Exception as e:
+        logger.error(f"Error fetching ACV summary for year {year}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/salesforce/cashflow")
+async def get_cashflow(
+    year: int = Query(..., ge=2000, le=2100),
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
+    user=Depends(require_auth),
+):
+    """Monthly cash flow for a given year.
+
+    Returns 12 months with:
+      - actuals: paid payments (npe01__Payment_Date__c) from won opps
+      - scheduled: unpaid future payments (npe01__Scheduled_Date__c) from won opps
+      - projected: open-pipeline payments weighted by opp probability
+    """
+    cache_key = f"cashflow:{year}"
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    try:
+        salesforce = client.salesforce
+        won_stages = "('Collecting / In Effect', 'Closed Won', 'Closed Completed')"
+
+        # Won-opp payments: actuals (paid) + scheduled (unpaid)
+        soql_won = f"""
+            SELECT npe01__Payment_Amount__c, npe01__Scheduled_Date__c,
+                   npe01__Paid__c, npe01__Payment_Date__c
+            FROM npe01__OppPayment__c
+            WHERE npe01__Written_Off__c = false
+            AND npe01__Opportunity__r.StageName IN {won_stages}
+            AND (
+                (npe01__Scheduled_Date__c >= {year}-01-01
+                 AND npe01__Scheduled_Date__c <= {year}-12-31)
+                OR
+                (npe01__Paid__c = true
+                 AND npe01__Payment_Date__c >= {year}-01-01
+                 AND npe01__Payment_Date__c <= {year}-12-31)
+            )
+            LIMIT 2000
+        """
+
+        # Open-pipeline payments weighted by probability
+        soql_open = f"""
+            SELECT npe01__Payment_Amount__c, npe01__Scheduled_Date__c,
+                   npe01__Opportunity__r.Probability
+            FROM npe01__OppPayment__c
+            WHERE npe01__Written_Off__c = false
+            AND npe01__Opportunity__r.IsClosed = false
+            AND npe01__Opportunity__r.StageName NOT IN {won_stages}
+            AND npe01__Scheduled_Date__c >= {year}-01-01
+            AND npe01__Scheduled_Date__c <= {year}-12-31
+            LIMIT 2000
+        """
+
+        won_result, open_result = await asyncio.gather(
+            salesforce.query(soql_won),
+            salesforce.query(soql_open),
+        )
+
+        months = {m: {"actuals": 0.0, "scheduled": 0.0, "projected": 0.0}
+                  for m in range(1, 13)}
+
+        for r in won_result.get("records", []):
+            amt = r.get("npe01__Payment_Amount__c") or 0
+            if not amt:
+                continue
+            if r.get("npe01__Paid__c"):
+                date_str = r.get("npe01__Payment_Date__c")
+                key = "actuals"
+            else:
+                date_str = r.get("npe01__Scheduled_Date__c")
+                key = "scheduled"
+            if not date_str:
+                continue
+            try:
+                months[int(date_str[5:7])][key] += amt
+            except (ValueError, KeyError):
+                continue
+
+        for r in open_result.get("records", []):
+            amt = r.get("npe01__Payment_Amount__c") or 0
+            date_str = r.get("npe01__Scheduled_Date__c")
+            prob = (r.get("npe01__Opportunity__r") or {}).get("Probability") or 0
+            if not amt or not date_str:
+                continue
+            try:
+                months[int(date_str[5:7])]["projected"] += amt * (prob / 100)
+            except (ValueError, KeyError):
+                continue
+
+        result = [
+            {"month": m, **months[m]}
+            for m in range(1, 13)
+        ]
+        cache.set(cache_key, result, CACHE_TTL_OPPORTUNITIES)
+        return result
+
+    except Exception as e:
+        logger.error(f"Error fetching cashflow for year {year}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/salesforce/cashflow/detail")
+async def get_cashflow_detail(
+    year: int = Query(..., ge=2000, le=2100),
+    month: int = Query(..., ge=1, le=12),
+    type: str = Query(..., regex="^(actuals|scheduled|outstanding|projected)$"),
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
+    user=Depends(require_auth),
+):
+    """Individual payment records for a specific cash flow cell."""
+    cache_key = f"cashflow-detail:{year}:{month}:{type}"
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    try:
+        salesforce = client.salesforce
+        won_stages = "('Collecting / In Effect', 'Closed Won', 'Closed Completed')"
+        last_day = calendar.monthrange(year, month)[1]
+        m_start = f"{year}-{month:02d}-01"
+        m_end   = f"{year}-{month:02d}-{last_day:02d}"
+
+        if type == "actuals":
+            soql = f"""
+                SELECT npe01__Payment_Amount__c, npe01__Payment_Date__c,
+                       npe01__Scheduled_Date__c,
+                       npe01__Opportunity__r.Name, npe01__Opportunity__r.StageName,
+                       npe01__Opportunity__r.Account.Name
+                FROM npe01__OppPayment__c
+                WHERE npe01__Paid__c = true
+                AND npe01__Written_Off__c = false
+                AND npe01__Payment_Date__c >= {m_start}
+                AND npe01__Payment_Date__c <= {m_end}
+                ORDER BY npe01__Payment_Date__c ASC
+                LIMIT 500
+            """
+        elif type in ("scheduled", "outstanding"):
+            soql = f"""
+                SELECT npe01__Payment_Amount__c, npe01__Scheduled_Date__c,
+                       npe01__Opportunity__r.Name, npe01__Opportunity__r.StageName,
+                       npe01__Opportunity__r.Account.Name
+                FROM npe01__OppPayment__c
+                WHERE npe01__Paid__c = false
+                AND npe01__Written_Off__c = false
+                AND npe01__Opportunity__r.StageName IN {won_stages}
+                AND npe01__Scheduled_Date__c >= {m_start}
+                AND npe01__Scheduled_Date__c <= {m_end}
+                ORDER BY npe01__Scheduled_Date__c ASC
+                LIMIT 500
+            """
+        else:  # projected
+            soql = f"""
+                SELECT npe01__Payment_Amount__c, npe01__Scheduled_Date__c,
+                       npe01__Opportunity__r.Name, npe01__Opportunity__r.StageName,
+                       npe01__Opportunity__r.Probability,
+                       npe01__Opportunity__r.Account.Name
+                FROM npe01__OppPayment__c
+                WHERE npe01__Written_Off__c = false
+                AND npe01__Opportunity__r.IsClosed = false
+                AND npe01__Opportunity__r.StageName NOT IN {won_stages}
+                AND npe01__Scheduled_Date__c >= {m_start}
+                AND npe01__Scheduled_Date__c <= {m_end}
+                ORDER BY npe01__Scheduled_Date__c ASC
+                LIMIT 500
+            """
+
+        result = await salesforce.query(soql)
+        records = []
+        for r in result.get("records", []):
+            opp = r.get("npe01__Opportunity__r") or {}
+            prob = opp.get("Probability") or 0
+            amt = r.get("npe01__Payment_Amount__c") or 0
+            records.append({
+                "amount": amt,
+                "weighted_amount": round(amt * prob / 100, 2) if type == "projected" else None,
+                "probability": prob if type == "projected" else None,
+                "date": r.get("npe01__Payment_Date__c") or r.get("npe01__Scheduled_Date__c"),
+                "opp_name": opp.get("Name"),
+                "account_name": (opp.get("Account") or {}).get("Name"),
+                "stage": opp.get("StageName"),
+            })
+
+        cache.set(cache_key, records, 300)  # 5-min cache
+        return records
+
+    except Exception as e:
+        logger.error(f"Error fetching cashflow detail: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -930,7 +1265,7 @@ async def update_account(
     request: Request,
     account_id: str,
     update_request: AccountUpdateRequest,
-    client: UnifiedMCPClient = Depends(get_mcp_client),
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user = Depends(check_permission_or_internal("edit_accounts")),
 ):
     """Update a Salesforce account.
@@ -970,7 +1305,7 @@ async def update_account(
 async def delete_account(
     request: Request,
     account_id: str,
-    client: UnifiedMCPClient = Depends(get_mcp_client),
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user = Depends(check_permission_or_internal("edit_accounts")),
 ):
     """Delete a Salesforce Account.
@@ -1019,7 +1354,7 @@ async def update_contact(
     request: Request,
     contact_id: str,
     update_request: ContactUpdateRequest,
-    client: UnifiedMCPClient = Depends(get_mcp_client),
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user = Depends(check_permission_or_internal("edit_contacts")),
 ):
     """Update a Salesforce contact.
@@ -1057,7 +1392,7 @@ async def update_contact(
 async def delete_contact(
     request: Request,
     contact_id: str,
-    client: UnifiedMCPClient = Depends(get_mcp_client),
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user = Depends(check_permission_or_internal("edit_contacts")),
 ):
     """Delete a Salesforce Contact.
@@ -1082,6 +1417,7 @@ async def delete_contact(
         cache.invalidate_prefix("contacts:")
         cache.invalidate_prefix("my-tasks:")
         cache.invalidate_prefix("opportunity-tasks:")
+        cache.invalidate_prefix("contact-tasks:")
         logger.info(f"Contact {contact_id} deleted by {user['user_id']}")
         return ApiResponse(
             success=True,
@@ -1103,7 +1439,7 @@ async def update_payment(
     request: Request,
     payment_id: str,
     update_request: PaymentUpdateRequest,
-    client: UnifiedMCPClient = Depends(get_mcp_client),
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user = Depends(check_permission_or_internal("edit_payments")),
 ):
     """Update a Salesforce payment (npe01__OppPayment__c).
@@ -1163,7 +1499,7 @@ async def update_payment(
 async def delete_payment(
     request: Request,
     payment_id: str,
-    client: UnifiedMCPClient = Depends(get_mcp_client),
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user = Depends(check_permission_or_internal("edit_payments")),
 ):
     """Delete a Salesforce Payment (npe01__OppPayment__c).
@@ -1231,7 +1567,7 @@ async def delete_payment(
 async def create_payment(
     request: Request,
     create_request: PaymentCreateRequest,
-    client: UnifiedMCPClient = Depends(get_mcp_client),
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user = Depends(check_permission_or_internal("edit_payments")),
 ):
     """Create a single Salesforce Payment (npe01__OppPayment__c) on an existing
@@ -1297,7 +1633,7 @@ async def create_payment(
 @app.get("/api/salesforce/users")
 async def get_users(
     limit: int = Query(1000, le=5000),
-    client: UnifiedMCPClient = Depends(get_mcp_client),
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user = Depends(require_auth)
 ):
     """Get Salesforce users (active + inactive, grouped by IsActive)."""
@@ -1339,7 +1675,7 @@ async def get_my_tasks(
     # Task counts well under 2000 at Pursuit's team-of-4 scale. Revisit if
     # any single user's open-Task count ever approaches the cap.
     limit: int = Query(2000, le=2000),
-    client: UnifiedMCPClient = Depends(get_mcp_client),
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user=Depends(require_auth),
 ):
     """Get current user's Salesforce Tasks in a date range."""
@@ -1420,7 +1756,7 @@ async def get_opportunity_tasks(
     # Default `None` returns all Tasks for the opportunity via query_all
     # pagination. `le=2000` caps callers that request an explicit limit.
     limit: Optional[int] = Query(None, le=2000),
-    client: UnifiedMCPClient = Depends(get_mcp_client),
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user=Depends(require_auth),
 ):
     """Get all tasks linked to a specific opportunity."""
@@ -1429,7 +1765,8 @@ async def get_opportunity_tasks(
         salesforce = client.salesforce
         query = f"""
         SELECT Id, Subject, Status, Priority, ActivityDate, Description,
-               OwnerId, Owner.Name, WhoId, Who.Name, WhatId, Type, TaskSubtype,
+               IsClosed, OwnerId, Owner.Name, WhoId, Who.Name, WhatId,
+               Type, TaskSubtype,
                CreatedById, CreatedBy.Name, CreatedDate, LastModifiedDate
         FROM Task
         WHERE WhatId = '{opportunity_id}'
@@ -1450,6 +1787,7 @@ async def get_opportunity_tasks(
                 "Priority": t.get("Priority"),
                 "ActivityDate": t.get("ActivityDate"),
                 "Description": t.get("Description"),
+                "IsClosed": t.get("IsClosed"),
                 "OwnerId": t.get("OwnerId"),
                 "OwnerName": (t.get("Owner") or {}).get("Name"),
                 "WhoId": t.get("WhoId"),
@@ -1473,7 +1811,7 @@ async def get_opportunity_tasks(
 async def create_opportunity_task(
     opportunity_id: str,
     task_data: TaskCreateRequest,
-    client: UnifiedMCPClient = Depends(get_mcp_client),
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user=Depends(check_permission("create_tasks")),
     db=Depends(get_db),
 ):
@@ -1499,9 +1837,407 @@ async def create_opportunity_task(
         result = await salesforce.create_record("Task", fields)
         task_id = result.get("id") or result.get("Id")
         cache.invalidate_prefix("my-tasks:")
-        return ApiResponse(success=True, data={"id": task_id, "message": "Task created"})
+        cache.invalidate_prefix("account-tasks:")
+        cache.invalidate_prefix("contact-tasks:")
+        cache.invalidate_prefix("user-tasks:")
+
+        verify = await _verify_and_recover_task_fields(salesforce, task_id, fields)
+        return ApiResponse(
+            success=True,
+            data={
+                "id": task_id,
+                "message": "Task created",
+                "saved_subject": verify["saved"].get("Subject"),
+                "subject_clobbered": "Subject" in verify["clobbered"],
+                "clobbered_fields": list(verify["clobbered"].keys()),
+                "saved_values": verify["saved"],
+            },
+        )
     except Exception as e:
         logger.error(f"Error creating task: {e}")
+        raise HTTPException(status_code=500, detail="Failed to create task")
+
+
+@app.get("/api/salesforce/accounts/{account_id}/tasks")
+async def get_account_tasks(
+    account_id: str,
+    limit: Optional[int] = Query(None, le=2000),
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
+    user=Depends(require_auth),
+):
+    """Tasks where WhatId is the account directly OR any of the account's
+    opportunities. SF Task.WhatId is a polymorphic lookup, so a single
+    SOQL with `WhatId IN (...)` covers both kinds in one round-trip.
+
+    Cached server-side (60s) — the account-detail page hits this on every
+    navigation, and SF tasks change far less than once a minute. Any
+    task mutation invalidates the prefix.
+    """
+    validate_salesforce_id(account_id, "account_id")
+    try:
+        salesforce = client.salesforce
+
+        cache_key = f"account-tasks:{account_id}:{limit or 'all'}"
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        # Resolve the account's opportunity ids first; we need them for the
+        # WhatId IN (...) clause so opp-scoped tasks surface alongside
+        # account-scoped ones.
+        opp_query = f"""
+        SELECT Id FROM Opportunity WHERE AccountId = '{account_id}'
+        """
+        opp_result = await salesforce.query_all(opp_query)
+        opp_ids = [r["Id"] for r in opp_result.get("records", [])]
+
+        # SOQL accepts up to 1000 ids in IN; cap defensively.
+        whatids = [account_id] + opp_ids[:999]
+        whatid_list = ",".join(f"'{wid}'" for wid in whatids)
+        query = f"""
+        SELECT Id, Subject, Status, Priority, ActivityDate, Description,
+               IsClosed, OwnerId, Owner.Name, WhoId, Who.Name, WhatId, What.Name,
+               Type, TaskSubtype,
+               CreatedById, CreatedBy.Name, CreatedDate, LastModifiedDate
+        FROM Task
+        WHERE WhatId IN ({whatid_list})
+        ORDER BY ActivityDate DESC NULLS LAST
+        """
+        if limit is not None:
+            query += f" LIMIT {limit}"
+
+        result = await salesforce.query_all(query)
+        tasks = result.get("records", [])
+
+        formatted = []
+        for t in tasks:
+            formatted.append({
+                "Id": t.get("Id"),
+                "Subject": t.get("Subject"),
+                "Status": t.get("Status"),
+                "Priority": t.get("Priority"),
+                "ActivityDate": t.get("ActivityDate"),
+                "Description": t.get("Description"),
+                "IsClosed": t.get("IsClosed"),
+                "OwnerId": t.get("OwnerId"),
+                "OwnerName": (t.get("Owner") or {}).get("Name"),
+                "WhoId": t.get("WhoId"),
+                "WhoName": (t.get("Who") or {}).get("Name"),
+                "WhatId": t.get("WhatId"),
+                "WhatName": (t.get("What") or {}).get("Name"),
+                "Type": t.get("Type"),
+                "TaskSubtype": t.get("TaskSubtype"),
+                "CreatedById": t.get("CreatedById"),
+                "CreatedByName": (t.get("CreatedBy") or {}).get("Name"),
+                "CreatedDate": t.get("CreatedDate"),
+                "LastModifiedDate": t.get("LastModifiedDate"),
+            })
+
+        response = ApiResponse(success=True, data=formatted, meta={"count": len(formatted)})
+        cache.set(cache_key, response, ttl_seconds=60)
+        return response
+    except Exception as e:
+        logger.error(f"Error fetching account tasks: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/salesforce/users/{owner_id}/tasks")
+async def get_user_tasks(
+    owner_id: str,
+    limit: Optional[int] = Query(None, le=2000),
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
+    user=Depends(require_auth),
+):
+    """Tasks owned by this Salesforce user (Task.OwnerId = owner_id).
+
+    Mirrors the per-account / per-opp / per-contact endpoints' shape so
+    the frontend's TaskListTab consumes it without an adapter. Cached
+    server-side (60s); existing task-mutation invalidations cover the
+    `user-tasks:` prefix.
+    """
+    validate_salesforce_id(owner_id, "owner_id")
+    try:
+        salesforce = client.salesforce
+
+        cache_key = f"user-tasks:{owner_id}:{limit or 'all'}"
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        query = f"""
+        SELECT Id, Subject, Status, Priority, ActivityDate, Description,
+               IsClosed, OwnerId, Owner.Name, WhoId, Who.Name, WhatId, What.Name,
+               Type, TaskSubtype,
+               CreatedById, CreatedBy.Name, CreatedDate, LastModifiedDate
+        FROM Task
+        WHERE OwnerId = '{owner_id}' AND IsClosed = false
+        ORDER BY ActivityDate ASC NULLS LAST
+        """
+        if limit is not None:
+            query += f" LIMIT {limit}"
+
+        result = await salesforce.query_all(query)
+        tasks = result.get("records", [])
+
+        formatted = []
+        for t in tasks:
+            formatted.append({
+                "Id": t.get("Id"),
+                "Subject": t.get("Subject"),
+                "Status": t.get("Status"),
+                "Priority": t.get("Priority"),
+                "ActivityDate": t.get("ActivityDate"),
+                "Description": t.get("Description"),
+                "IsClosed": t.get("IsClosed"),
+                "OwnerId": t.get("OwnerId"),
+                "OwnerName": (t.get("Owner") or {}).get("Name"),
+                "WhoId": t.get("WhoId"),
+                "WhoName": (t.get("Who") or {}).get("Name"),
+                "WhatId": t.get("WhatId"),
+                "WhatName": (t.get("What") or {}).get("Name"),
+                "Type": t.get("Type"),
+                "TaskSubtype": t.get("TaskSubtype"),
+                "CreatedById": t.get("CreatedById"),
+                "CreatedByName": (t.get("CreatedBy") or {}).get("Name"),
+                "CreatedDate": t.get("CreatedDate"),
+                "LastModifiedDate": t.get("LastModifiedDate"),
+            })
+
+        response = ApiResponse(success=True, data=formatted, meta={"count": len(formatted)})
+        cache.set(cache_key, response, ttl_seconds=60)
+        return response
+    except Exception as e:
+        logger.error(f"Error fetching user tasks: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/salesforce/contacts/{contact_id}/tasks")
+async def get_contact_tasks(
+    contact_id: str,
+    limit: Optional[int] = Query(None, le=2000),
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
+    user=Depends(require_auth),
+):
+    """Tasks where the SF Task.WhoId points at this contact.
+
+    Mirrors the get_account_tasks endpoint shape so the frontend's
+    TaskListTab can render the result without any per-call adapter.
+    Cached server-side (60s); any task mutation invalidates the
+    `contact-tasks:` prefix the same way other task caches do.
+    """
+    validate_salesforce_id(contact_id, "contact_id")
+    try:
+        salesforce = client.salesforce
+
+        cache_key = f"contact-tasks:{contact_id}:{limit or 'all'}"
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        query = f"""
+        SELECT Id, Subject, Status, Priority, ActivityDate, Description,
+               IsClosed, OwnerId, Owner.Name, WhoId, Who.Name, WhatId, What.Name,
+               Type, TaskSubtype,
+               CreatedById, CreatedBy.Name, CreatedDate, LastModifiedDate
+        FROM Task
+        WHERE WhoId = '{contact_id}'
+        ORDER BY ActivityDate DESC NULLS LAST
+        """
+        if limit is not None:
+            query += f" LIMIT {limit}"
+
+        result = await salesforce.query_all(query)
+        tasks = result.get("records", [])
+
+        formatted = []
+        for t in tasks:
+            formatted.append({
+                "Id": t.get("Id"),
+                "Subject": t.get("Subject"),
+                "Status": t.get("Status"),
+                "Priority": t.get("Priority"),
+                "ActivityDate": t.get("ActivityDate"),
+                "Description": t.get("Description"),
+                "IsClosed": t.get("IsClosed"),
+                "OwnerId": t.get("OwnerId"),
+                "OwnerName": (t.get("Owner") or {}).get("Name"),
+                "WhoId": t.get("WhoId"),
+                "WhoName": (t.get("Who") or {}).get("Name"),
+                "WhatId": t.get("WhatId"),
+                "WhatName": (t.get("What") or {}).get("Name"),
+                "Type": t.get("Type"),
+                "TaskSubtype": t.get("TaskSubtype"),
+                "CreatedById": t.get("CreatedById"),
+                "CreatedByName": (t.get("CreatedBy") or {}).get("Name"),
+                "CreatedDate": t.get("CreatedDate"),
+                "LastModifiedDate": t.get("LastModifiedDate"),
+            })
+
+        response = ApiResponse(success=True, data=formatted, meta={"count": len(formatted)})
+        cache.set(cache_key, response, ttl_seconds=60)
+        return response
+    except Exception as e:
+        logger.error(f"Error fetching contact tasks: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# Fields we read back when verifying a Task write. Anything we let the
+# user edit needs to be in this list — when SF's saved value differs
+# from the user's intent, we retry once and then surface a clobber flag.
+_TASK_VERIFY_FIELDS: List[str] = [
+    "Subject", "Description", "Status", "Priority",
+    "ActivityDate", "OwnerId", "WhoId", "WhatId",
+]
+
+
+def _date_to_iso(value: Any) -> Any:
+    """SF returns ActivityDate as `2026-05-30`, our request body sends
+    the same string — so == works. Numeric fields would need normalization
+    but for now we only have string and bool fields among _TASK_VERIFY_FIELDS."""
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return value
+
+
+def _values_equivalent(intended: Any, saved: Any) -> bool:
+    """Tolerant equality for SF round-trip comparison.
+
+    Salesforce silently trims trailing whitespace on string field saves
+    (and sometimes leading too). It also normalizes empty values: "" or
+    "   " round-trip back as None on read. Treat those as no-ops, not
+    clobbers — otherwise we'd pester users about cosmetic differences
+    every time they hit return at the end of a description."""
+    saved = _date_to_iso(saved)
+    if isinstance(intended, str) or isinstance(saved, str):
+        a = (intended or "").strip() if intended is not None else ""
+        b = (saved or "").strip() if saved is not None else ""
+        return a == b
+    return intended == saved
+
+
+async def _verify_and_recover_task_fields(
+    salesforce,
+    task_id: str,
+    intended: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Read back the Task and compare each intended field with what SF
+    saved. If anything differs, send one UPDATE to restore the user's
+    intent and re-read. Returns a dict::
+
+        {
+          "saved": {<field>: <saved_value>, ...},   # what SF stores now
+          "clobbered": {<field>: <saved>, ...},     # fields still wrong
+        }
+
+    The frontend uses ``clobbered`` to surface a visible warning so a
+    Salesforce admin can find the offending Apex Trigger / Flow.
+    """
+    if not task_id or not intended:
+        return {"saved": {}, "clobbered": {}}
+
+    fields_to_check = [f for f in _TASK_VERIFY_FIELDS if f in intended]
+    if not fields_to_check:
+        return {"saved": {}, "clobbered": {}}
+
+    safe_id = escape_soql_string(task_id)
+    select_clause = ", ".join(fields_to_check)
+
+    async def _read() -> Dict[str, Any]:
+        try:
+            res = await salesforce.query(
+                f"SELECT Id, {select_clause} FROM Task WHERE Id = '{safe_id}' LIMIT 1"
+            )
+            rows = res.get("records") or []
+            return rows[0] if rows else {}
+        except Exception as e:
+            logger.warning("Task %s read-back failed: %s", task_id, e)
+            return {}
+
+    saved = await _read()
+    diff: Dict[str, Any] = {}
+    for f in fields_to_check:
+        if not _values_equivalent(intended[f], saved.get(f)):
+            diff[f] = saved.get(f)
+
+    if diff:
+        logger.warning(
+            "Task %s — SF clobbered %s; intended=%r saved=%r — retrying once.",
+            task_id, list(diff.keys()),
+            {k: intended[k] for k in diff},
+            diff,
+        )
+        try:
+            await salesforce.update_record(
+                "Task", task_id, {k: intended[k] for k in diff},
+            )
+            saved = await _read()
+            diff = {
+                f: saved.get(f)
+                for f in fields_to_check
+                if not _values_equivalent(intended[f], saved.get(f))
+            }
+        except Exception as retry_err:
+            logger.warning("Task %s clobber-retry failed: %s", task_id, retry_err)
+
+    if diff:
+        logger.error(
+            "Task %s still clobbered after retry: %r — likely an Apex Trigger "
+            "or Flow that needs an admin fix.",
+            task_id, diff,
+        )
+
+    return {
+        "saved": {f: saved.get(f) for f in fields_to_check},
+        "clobbered": diff,
+    }
+
+
+@app.post("/api/salesforce/accounts/{account_id}/tasks")
+async def create_account_task(
+    account_id: str,
+    task_data: TaskCreateRequest,
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
+    user=Depends(check_permission("create_tasks")),
+):
+    """Create a task tied directly to an Account (WhatId = account_id).
+    Account-level tasks aren't lock-gated the way opp-level ones are —
+    locking lives on Opportunity in this org.
+
+    Subject preservation:
+        Some SF orgs run a Process Builder / Flow / Apex Trigger that
+        rewrites Task.Subject on insert (e.g. "[Account Name]"). After
+        creating, we read back the Subject and — if it's different from
+        what the user asked for — send an UPDATE to restore the user's
+        intent. If the rewrite still wins after the retry, log loudly
+        and surface a partial-success response so the frontend can show
+        a "saved but renamed" hint.
+    """
+    validate_salesforce_id(account_id, "account_id")
+    try:
+        salesforce = client.salesforce
+        # Path param wins (same defensive ordering as create_opportunity_task)
+        fields = {**task_data.model_dump(exclude_none=True), "WhatId": account_id}
+        result = await salesforce.create_record("Task", fields)
+        task_id = result.get("id") or result.get("Id")
+        cache.invalidate_prefix("my-tasks:")
+        cache.invalidate_prefix("account-tasks:")
+        cache.invalidate_prefix("contact-tasks:")
+        cache.invalidate_prefix("user-tasks:")
+
+        verify = await _verify_and_recover_task_fields(salesforce, task_id, fields)
+        return ApiResponse(
+            success=True,
+            data={
+                "id": task_id,
+                "message": "Task created",
+                "saved_subject": verify["saved"].get("Subject"),
+                "subject_clobbered": "Subject" in verify["clobbered"],
+                "clobbered_fields": list(verify["clobbered"].keys()),
+                "saved_values": verify["saved"],
+            },
+        )
+    except Exception as e:
+        logger.error(f"Error creating account task: {e}")
         raise HTTPException(status_code=500, detail="Failed to create task")
 
 
@@ -1509,7 +2245,7 @@ async def create_opportunity_task(
 async def update_task(
     task_id: str,
     updates: TaskUpdateRequest,
-    client: UnifiedMCPClient = Depends(get_mcp_client),
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user=Depends(check_permission("edit_own_tasks")),
     db=Depends(get_db),
 ):
@@ -1537,7 +2273,19 @@ async def update_task(
 
         await salesforce.update_record("Task", task_id, fields)
         cache.invalidate_prefix("my-tasks:")
-        return ApiResponse(success=True, data={"message": "Task updated"})
+        cache.invalidate_prefix("account-tasks:")
+        cache.invalidate_prefix("contact-tasks:")
+        cache.invalidate_prefix("user-tasks:")
+
+        verify = await _verify_and_recover_task_fields(salesforce, task_id, fields)
+        return ApiResponse(
+            success=True,
+            data={
+                "message": "Task updated",
+                "clobbered_fields": list(verify["clobbered"].keys()),
+                "saved_values": verify["saved"],
+            },
+        )
     except HTTPException:
         raise
     except Exception as e:
@@ -1548,7 +2296,7 @@ async def update_task(
 @app.delete("/api/salesforce/tasks/{task_id}")
 async def delete_task(
     task_id: str,
-    client: UnifiedMCPClient = Depends(get_mcp_client),
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user=Depends(check_permission("edit_own_tasks")),
     db=Depends(get_db),
 ):
@@ -1562,6 +2310,9 @@ async def delete_task(
             raise HTTPException(403, "Cannot delete tasks from a locked opportunity")
         await salesforce.delete_record("Task", task_id)
         cache.invalidate_prefix("my-tasks:")
+        cache.invalidate_prefix("account-tasks:")
+        cache.invalidate_prefix("contact-tasks:")
+        cache.invalidate_prefix("user-tasks:")
         return ApiResponse(success=True, data={"message": "Task deleted"})
     except HTTPException:
         raise
@@ -1574,7 +2325,7 @@ async def delete_task(
 async def duplicate_task(
     task_id: str,
     body: TaskDuplicateRequest,
-    client: UnifiedMCPClient = Depends(get_mcp_client),
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user=Depends(check_permission("create_tasks")),
     db=Depends(get_db),
 ):
@@ -1629,6 +2380,9 @@ async def duplicate_task(
         new_task = await salesforce.create_record("Task", fields)
         new_id = new_task.get("id") or new_task.get("Id")
         cache.invalidate_prefix("my-tasks:")
+        cache.invalidate_prefix("account-tasks:")
+        cache.invalidate_prefix("contact-tasks:")
+        cache.invalidate_prefix("user-tasks:")
         return ApiResponse(success=True, data={"id": new_id, "message": "Task duplicated"})
     except HTTPException:
         raise
@@ -1737,7 +2491,7 @@ async def get_my_calendar_events(
 async def get_invoices(
     customer_id: Optional[str] = None,
     limit: int = Query(100, le=1000),
-    client: UnifiedMCPClient = Depends(get_mcp_client),
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user = Depends(require_auth)
 ):
     """Get Sage Intacct invoices."""
@@ -1763,7 +2517,7 @@ async def get_invoices(
 async def create_invoice(
     invoice_request: InvoiceCreationRequest,
     background_tasks: BackgroundTasks,
-    client: UnifiedMCPClient = Depends(get_mcp_client),
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user = Depends(check_permission("create_sage_invoices"))
 ):
     """Create a new invoice in Sage Intacct."""
@@ -1807,7 +2561,7 @@ async def create_invoice(
 async def get_payments(
     customer_id: Optional[str] = None,
     limit: int = Query(100, le=1000),
-    client: UnifiedMCPClient = Depends(get_mcp_client),
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user = Depends(require_auth)
 ):
     """Get Sage Intacct payments."""
@@ -1948,7 +2702,8 @@ async def generate_forecasting_report(
 @app.post("/api/sync/trigger")
 async def trigger_data_sync(
     background_tasks: BackgroundTasks,
-    sync_type: str = Query("all", regex="^(all|salesforce|intacct)$"),
+    sync_type: str = Query("all", regex="^(all|salesforce|intacct|activities)$"),
+    force_full: bool = Query(False, description="Ignore the watermark — re-fetch + re-classify all rows. Only meaningful for sync_type=activities."),
     user = Depends(check_permission("trigger_data_sync")),
     sync_service: DataSyncService = Depends(get_data_sync_service),
 ):
@@ -1962,12 +2717,18 @@ async def trigger_data_sync(
             async with _sync_lock:
                 await sync_fn()
 
+        async def _locked_activities():
+            async with _sync_lock:
+                await sync_service.sync_activities(force_full=force_full)
+
         if sync_type == "all":
             background_tasks.add_task(_locked_sync, sync_service.sync_all_data)
         elif sync_type == "salesforce":
             background_tasks.add_task(_locked_sync, sync_service.sync_salesforce_data)
         elif sync_type == "intacct":
             background_tasks.add_task(_locked_sync, sync_service.sync_intacct_data)
+        elif sync_type == "activities":
+            background_tasks.add_task(_locked_activities)
 
         return ApiResponse(
             success=True,
@@ -2083,7 +2844,7 @@ async def search_opportunities(
     customer_name: Optional[str] = Query(None),
     invoice_amount: Optional[float] = Query(None),
     invoice_date: Optional[str] = Query(None),
-    client: UnifiedMCPClient = Depends(get_mcp_client),
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user=Depends(require_auth),
 ):
     """Search Salesforce opportunities by name or account with smart matching."""

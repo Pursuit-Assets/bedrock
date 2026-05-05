@@ -7,10 +7,11 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from auth import require_auth
-from dependencies import get_mcp_client
+from dependencies import get_mcp_client, require_sf_mcp_client
 from mcp_client import UnifiedMCPClient
 from routes.permissions import check_permission
 from security import validate_salesforce_id, escape_soql_string
+from services.cache import cache
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +36,7 @@ class CreatePaymentScheduleRequest(BaseModel):
 @router.get("/api/opportunities/{opportunity_id}/payment-schedule")
 async def get_payment_schedule(
     opportunity_id: str,
-    client: UnifiedMCPClient = Depends(get_mcp_client),
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user=Depends(require_auth),
 ):
     """Get payment schedule for an opportunity."""
@@ -95,7 +96,7 @@ async def get_payment_schedule(
 @router.post("/api/opportunities/create-payment-schedule")
 async def create_payment_schedule(
     request: CreatePaymentScheduleRequest,
-    client: UnifiedMCPClient = Depends(get_mcp_client),
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user=Depends(check_permission("manage_payment_schedules")),
 ):
     """Create payment schedule for an opportunity."""
@@ -156,6 +157,10 @@ async def create_payment_schedule(
                 "Number": i + 1,
             })
 
+        # Bust backend payment caches so the next fetch sees the new schedule.
+        cache.invalidate_prefix(f"opp-payments:{request.opportunity_id}")
+        cache.invalidate_prefix("payments:")
+
         return {
             "success": True,
             "message": f"Created {len(created_payments)} payment(s) totaling ${payment_total:,.2f}",
@@ -187,7 +192,7 @@ async def update_payment(
     opportunity_id: str,
     payment_id: str,
     body: PaymentUpdate,
-    client: UnifiedMCPClient = Depends(get_mcp_client),
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user=Depends(check_permission("manage_payment_schedules")),
 ):
     """Update a single payment — mark as received, change amount, etc."""
@@ -263,7 +268,7 @@ async def update_payment(
 async def delete_payment(
     opportunity_id: str,
     payment_id: str,
-    client: UnifiedMCPClient = Depends(get_mcp_client),
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user=Depends(check_permission("manage_payment_schedules")),
 ):
     """Delete a single payment from a schedule."""

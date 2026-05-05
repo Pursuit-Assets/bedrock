@@ -174,6 +174,18 @@ See Section 1 above.
 | `validated` | Outcome confirmed the decision was correct |
 | `invalidated` | Outcome showed the decision was wrong (learning opportunity) |
 
+### Award Status
+
+| Value | Meaning |
+|-------|---------|
+| `Active` | Award is in flight — money flowing, programmatic work underway |
+| `Closing` | Wind-down phase — final reports / deliverables outstanding |
+| `Closed` | All obligations met; record kept for history |
+
+Defaulted by `services.awards_service.initial_award_status`:
+- `Closed / Fulfilled` → `Closing`
+- everything else in `WON_PHILANTHROPY_STAGES` → `Active`
+
 ### Reporting Requirement Status
 
 | Value | Meaning |

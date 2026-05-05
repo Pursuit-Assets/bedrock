@@ -73,6 +73,45 @@ class _PerRequestMCPClient(UnifiedMCPClient):
             self._connected_services.append("salesforce")
 
 
+def require_sf_mcp_client(request: Request) -> UnifiedMCPClient:
+    """Like get_mcp_client, but raises 401 if the caller has no valid
+    ``sf_tokens`` cookie.  Use on any route that reads or writes Salesforce
+    data on behalf of a user — ensures the service-account fallback is never
+    silently used for user-initiated requests.
+    """
+    sf_cookie = request.cookies.get("sf_tokens") if request else None
+    if not sf_cookie:
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "error": "sf_auth_required",
+                "message": "Connect your Salesforce account in Settings to access this data.",
+            },
+        )
+    try:
+        from auth import decrypt_tokens
+        tokens = decrypt_tokens(sf_cookie)
+        if not (tokens and tokens.get("access_token") and tokens.get("instance_url")):
+            raise HTTPException(
+                status_code=401,
+                detail={
+                    "error": "sf_auth_required",
+                    "message": "Salesforce session expired — reconnect in Settings.",
+                },
+            )
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "error": "sf_auth_required",
+                "message": "Salesforce authentication failed — reconnect in Settings.",
+            },
+        )
+    return get_mcp_client(request)
+
+
 def get_mcp_client(request: Request = None) -> UnifiedMCPClient:
     """Get MCP client dependency.
 

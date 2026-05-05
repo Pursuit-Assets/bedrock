@@ -38,6 +38,16 @@ class ManualMatchRequest(BaseModel):
     notes: str | None = None
 
 
+class LogoUpdate(BaseModel):
+    public_company_id: int
+    logo_url: str
+
+
+class BulkLogoUpdateRequest(BaseModel):
+    updates: list[LogoUpdate]
+    source: str = "apollo_zero"
+
+
 @router.post("/scan")
 async def scan_company_matches(
     dry_run: bool = Query(False, description="If true, no inserts are written"),
@@ -110,6 +120,83 @@ async def create_manual_match(
         body.sf_account_id, body.public_company_id, matched_by, body.notes, conn,
     )
     return {"success": True, "data": dict(row)}
+
+
+@router.get("/enrichment-candidates")
+async def list_enrichment_candidates(
+    only_missing: bool = Query(
+        True,
+        description="If true, only returns rows with no logo_url or a dead Clearbit pointer.",
+    ),
+    limit: int = Query(2000, ge=1, le=10000),
+    user=Depends(require_admin),
+    conn=Depends(get_db),
+):
+    """List `{public_company_id, name, domain}` for matched accounts whose
+    public.companies row has a domain set — i.e., enrichable via a domain-
+    based logo API like Apollo. Used by a local script that pipes domains
+    through `zero fetch` and posts results to /bulk-update-logos.
+    """
+    where = "c.domain IS NOT NULL AND c.domain <> ''"
+    if only_missing:
+        # Skip rows where bedrock overlay already has a logo (e.g. from a
+        # previous Apollo run) AND skip rows whose only existing logo is
+        # a dead Clearbit pointer. Treat anything else as "already good".
+        where += (
+            " AND le.public_company_id IS NULL"
+            " AND (c.logo_url IS NULL"
+            " OR c.logo_url ILIKE 'https://logo.clearbit.com/%')"
+        )
+    rows = await conn.fetch(
+        f"""
+        SELECT DISTINCT c.company_id, c.name, c.domain
+        FROM bedrock.sf_account_company_map m
+        JOIN public.companies c ON c.company_id = m.public_company_id
+        LEFT JOIN bedrock.company_logo_enrichment le
+            ON le.public_company_id = c.company_id
+        WHERE {where}
+        ORDER BY c.company_id
+        LIMIT $1
+        """,
+        int(limit),
+    )
+    return {"success": True, "data": [dict(r) for r in rows]}
+
+
+@router.post("/bulk-update-logos")
+async def bulk_update_logos(
+    body: BulkLogoUpdateRequest,
+    user=Depends(require_admin),
+    conn=Depends(get_db),
+):
+    """Bulk-update `public.companies.logo_url` for a list of company_ids.
+    Used after a local Apollo bulk-enrichment run via Zero CLI.
+    """
+    if not body.updates:
+        return {"success": True, "data": {"updated": 0}}
+
+    ids = [u.public_company_id for u in body.updates]
+    urls = [u.logo_url for u in body.updates]
+    # We can't UPDATE public.companies (role lacks privilege). Write to
+    # the bedrock overlay table instead — read endpoints prefer it.
+    result = await conn.execute(
+        """
+        INSERT INTO bedrock.company_logo_enrichment
+            (public_company_id, logo_url, source, enriched_at)
+        SELECT u.company_id, u.logo_url, $3, NOW()
+        FROM (SELECT UNNEST($1::int[]) AS company_id,
+                     UNNEST($2::text[]) AS logo_url) AS u
+        ON CONFLICT (public_company_id) DO UPDATE
+            SET logo_url = EXCLUDED.logo_url,
+                source = EXCLUDED.source,
+                enriched_at = NOW()
+        """,
+        ids,
+        urls,
+        body.source,
+    )
+    n = int(result.split()[-1]) if result and result.startswith("INSERT") else 0
+    return {"success": True, "data": {"upserted": n}}
 
 
 @router.delete("/{sf_account_id}")

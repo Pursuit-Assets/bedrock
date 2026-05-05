@@ -262,7 +262,56 @@ interface ProgramMetric {
 
 ---
 
-### 11. NetworkMatch (Prospect Intelligence — Post-MVP, minimal MVP schema)
+### 11a. Award (Post-Won Lifecycle — Philanthropy)
+
+**What it is:** A thin lifecycle entity layered over a closed-won
+Philanthropy Opportunity. Captures post-award management state (status,
+period, notes) that doesn't belong on Salesforce Opportunity. **Not** a
+duplicate of the Opp — name, amount, account, payments, and grant
+requirements all stay where they live (SF Opp, SF Payments,
+GrantRequirements).
+
+**Why a separate entity:** Salesforce stays SoT for Opportunity. Adding
+post-award lifecycle fields directly to Opp would (a) pollute the SF SoT,
+(b) require SF schema changes for what is fundamentally Bedrock-side
+operational state, and (c) reintroduce the sparse-field problem
+GrantRequirements explicitly solved. A 1:1 child mirrors that precedent.
+
+**Scope (MVP):** Philanthropy record type only. PBC contracts deferred —
+when added, vocabulary differs ("contract obligations" vs. "grant
+requirements"); see `tasks/bedrock-redesign-data-model.md` §10.
+
+| Key Attribute | Type | Notes |
+|---------------|------|-------|
+| id | UUID | Bedrock-generated |
+| opportunity_id | string | → Salesforce Opportunity (1:1, UNIQUE among non-deleted) |
+| award_status | enum | `Active`, `Closing`, `Closed` |
+| award_date | date | When the Opp transitioned to closed-won (proxied from CloseDate at backfill) |
+| period_end_date | date | Mirrors `GrantRequirements.grant_end_date` for nonprofit; user-editable |
+| notes | text | Free-form |
+| created_at, updated_at | timestamptz | Standard |
+| deleted_at, deleted_by | nullable | Soft-delete pattern |
+
+**Auto-creation:** When an Opp.stage transitions into a closed/active-grant
+Philanthropy stage (`Closed Won`, `closed-won`, `Closed / Fulfilled`,
+`Collecting`, `In Effect`), the backend (`services.awards_service`)
+idempotently creates an Award row.
+
+**Award ↔ Project linkage:** transitive through Opp via the existing
+`project_opportunity` junction. No `project_id` column on Award.
+
+**Award tasks:** **not a column.** Award tasks are a query that unions SF
+Tasks (`WhatId = opportunity_id`, `CreatedDate >= award_date`) with
+`bedrock.project_task` rows under any project linked to the Opp
+(`created_at >= award_date`). Task creation routes to `project_task` if a
+project is linked, otherwise to SF Task.
+
+**Revenue stream:** Always `nonprofit` for MVP (Philanthropy-only).
+Inherited from parent Opp.
+
+---
+
+### 11b. NetworkMatch (Prospect Intelligence — Post-MVP, minimal MVP schema)
 
 **What it is:** A match between a LinkedIn contact and a prospect list record — output of the network search feature.
 
@@ -296,6 +345,8 @@ interface ProgramMetric {
 - **Prospect → Opportunity:** Converts to (sets `Prospect.opportunity_id`)
 - **Opportunity → Payment, Task, Activity:** One-to-many each
 - **Opportunity → GrantRequirements:** One-to-one (nonprofit only)
+- **Opportunity → Award:** One-to-one (Philanthropy, post-won)
+- **Award → Project:** Transitive via `project_opportunity` (no direct FK)
 - **NetworkMatch → Contact:** Many-to-one (links LinkedIn contact to prospect list match)
 - **Decision → Prospect, Opportunity, Contact:** Optional references (at least one required)
 

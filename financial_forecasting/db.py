@@ -1,5 +1,6 @@
 """PostgreSQL connection pool for the Projects backend."""
 
+import asyncio
 import os
 import logging
 from pathlib import Path
@@ -57,7 +58,14 @@ async def init_db() -> None:
 
     # Step 1: Create connection pool
     try:
-        _pool = await asyncpg.create_pool(DATABASE_URL, min_size=2, max_size=10)
+        _pool = await asyncpg.create_pool(
+            DATABASE_URL,
+            min_size=2,
+            max_size=10,
+            # Kill queries that hang >30 s — prevents pool exhaustion when a
+            # single DB call blocks all 10 connections indefinitely.
+            command_timeout=30,
+        )
         logger.info("PostgreSQL pool created")
     except Exception as e:
         logger.error(f"PostgreSQL pool creation failed: {e}")
@@ -152,8 +160,15 @@ async def get_db() -> asyncpg.Connection:
     """FastAPI dependency — yields a connection from the pool."""
     if _pool is None:
         raise HTTPException(status_code=503, detail="Database not available — check server logs")
-    async with _pool.acquire() as conn:
-        yield conn
+    # 10-second acquire timeout: if all 10 pool connections are busy we
+    # return 503 immediately rather than queuing requests forever.
+    try:
+        async with _pool.acquire(timeout=10) as conn:
+            yield conn
+    except asyncpg.exceptions.TooManyConnectionsError:
+        raise HTTPException(status_code=503, detail="Database connection pool exhausted — try again shortly")
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=503, detail="Database connection pool exhausted — try again shortly")
 
 
 def get_db_status() -> str:

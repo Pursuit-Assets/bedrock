@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from auth import require_auth
-from dependencies import get_mcp_client
+from dependencies import get_mcp_client, require_sf_mcp_client
 from mcp_client import UnifiedMCPClient
 from models import OpportunityStage, ApiResponse
 from routes.permissions import check_permission
@@ -47,7 +47,7 @@ async def cashflow_summary(user=Depends(require_auth)):
 
 @router.get("/api/finance/awaiting-invoices")
 async def get_awaiting_invoices(
-    client: UnifiedMCPClient = Depends(get_mcp_client),
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user=Depends(check_permission("view_sage_invoices_payments")),
 ):
     """Get payments ready to be invoiced (Collecting stage, no invoice, unpaid)."""
@@ -107,7 +107,7 @@ async def get_awaiting_invoices(
 @router.post("/api/finance/create-invoice")
 async def create_sage_invoice(
     request: CreateInvoiceRequest,
-    client: UnifiedMCPClient = Depends(get_mcp_client),
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user=Depends(check_permission("create_sage_invoices")),
 ):
     """Create invoice from a Salesforce payment record.

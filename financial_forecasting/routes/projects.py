@@ -38,6 +38,7 @@ class MilestoneCreate(BaseModel):
     priority: str = "Now"
     owner: str = ""
     owner_ids: List[str] = []
+    due_date: Optional[str] = None
     description: str = ""
     source_links: List[str] = []
     sort_order: int = 0
@@ -49,6 +50,7 @@ class MilestoneUpdate(BaseModel):
     priority: Optional[str] = None
     owner: Optional[str] = None
     owner_ids: Optional[List[str]] = None
+    due_date: Optional[str] = None
     description: Optional[str] = None
     source_links: Optional[List[str]] = None
     sort_order: Optional[int] = None
@@ -85,11 +87,13 @@ class ProjectTaskUpdate(BaseModel):
 class ProjectCreate(BaseModel):
     name: str
     description: str = ""
+    opportunity_id: Optional[str] = None
 
 
 class ProjectUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
+    opportunity_id: Optional[str] = None
 
 
 class ContributorAdd(BaseModel):
@@ -187,9 +191,11 @@ async def _check_project_role(
 
 @router.get("/projects")
 async def list_projects(user=Depends(check_permission("view_projects")), conn=Depends(get_db)):
-    """List all projects."""
+    """List all projects (includes the primary opportunity_id so the awards
+    page can group projects without an N+1 fetch)."""
     rows = await conn.fetch(
-        "SELECT id, name, description, owner_email, created_at, updated_at "
+        "SELECT id, name, description, owner_email, opportunity_id, "
+        "created_at, updated_at "
         "FROM bedrock.project WHERE deleted_at IS NULL ORDER BY created_at"
     )
     return {"success": True, "data": [dict(r) for r in rows]}
@@ -256,12 +262,20 @@ async def get_project(project_id: str, user=Depends(check_permission("view_proje
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
+    # Check whether the due_date column has been migrated yet.
+    has_due_date = await conn.fetchval(
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_schema='bedrock' AND table_name='milestone' AND column_name='due_date'"
+    )
+
+    due_date_col = "m.due_date AS m_due_date," if has_due_date else "NULL::date AS m_due_date,"
+
     rows = await conn.fetch(
-        """
+        f"""
         SELECT
             w.id AS w_id, w.name AS w_name, w.description AS w_desc, w.sort_order AS w_sort,
             m.id AS m_id, m.title AS m_title, m.status AS m_status, m.priority AS m_priority,
-            m.owner AS m_owner, m.owner_ids AS m_owner_ids,
+            m.owner AS m_owner, m.owner_ids AS m_owner_ids, {due_date_col}
             m.description AS m_desc, m.source_links AS m_links, m.sort_order AS m_sort,
             t.id AS t_id, t.title AS t_title, t.status AS t_status, t.owner AS t_owner,
             t.owner_ids AS t_owner_ids,
@@ -300,6 +314,7 @@ async def get_project(project_id: str, user=Depends(check_permission("view_proje
                 "priority": r["m_priority"],
                 "owner": r["m_owner"],
                 "owner_ids": [str(u) for u in (r["m_owner_ids"] or [])],
+                "due_date": r["m_due_date"].isoformat() if r["m_due_date"] else None,
                 "description": r["m_desc"],
                 "sourceLinks": r["m_links"] or [],
                 "sort_order": r["m_sort"],
@@ -349,12 +364,19 @@ async def get_project(project_id: str, user=Depends(check_permission("view_proje
 
 @router.post("/projects")
 async def create_project(body: ProjectCreate, user=Depends(check_permission("edit_projects")), conn=Depends(get_db)):
-    """Create a new project. The creating user becomes the owner."""
+    """Create a new project. The creating user becomes the owner.
+
+    Optional `opportunity_id` lets the awards page create-from-award flow
+    seed the primary opportunity link in one round-trip.
+    """
     creator_email = user.get("email", "")
+    if body.opportunity_id is not None:
+        validate_salesforce_id(body.opportunity_id, "opportunity_id")
     row = await conn.fetchrow(
-        "INSERT INTO bedrock.project (name, description, owner_email, created_by) "
-        "VALUES ($1, $2, $3, $3) RETURNING id, name, description, owner_email, created_by, created_at",
-        body.name, body.description, creator_email,
+        "INSERT INTO bedrock.project (name, description, owner_email, created_by, opportunity_id) "
+        "VALUES ($1, $2, $3, $3, $4) "
+        "RETURNING id, name, description, owner_email, created_by, opportunity_id, created_at",
+        body.name, body.description, creator_email, body.opportunity_id,
     )
     return {"success": True, "data": {
         "id": str(row["id"]),
@@ -362,17 +384,20 @@ async def create_project(body: ProjectCreate, user=Depends(check_permission("edi
         "description": row["description"],
         "owner_email": row["owner_email"],
         "created_by": row["created_by"],
+        "opportunity_id": row["opportunity_id"],
         "created_at": row["created_at"].isoformat() if row["created_at"] else None,
     }}
 
 
 @router.put("/projects/{project_id}")
 async def update_project(project_id: str, body: ProjectUpdate, user=Depends(check_permission("edit_projects")), conn=Depends(get_db)):
-    """Update a project (name/description)."""
+    """Update a project (name/description/opportunity_id)."""
     pid = uuid.UUID(project_id)
     fields = body.model_dump(exclude_none=True)
     if not fields:
         raise HTTPException(status_code=400, detail="No fields to update")
+    if "opportunity_id" in fields:
+        validate_salesforce_id(fields["opportunity_id"], "opportunity_id")
     sets = ", ".join(f"{k} = ${i+2}" for i, k in enumerate(fields))
     vals = [pid] + list(fields.values())
     await conn.execute(f"UPDATE bedrock.project SET {sets} WHERE id = $1 AND deleted_at IS NULL", *vals)
@@ -860,19 +885,34 @@ async def delete_workstream(workstream_id: str, user=Depends(check_permission("e
 
 @router.post("/workstreams/{workstream_id}/milestones")
 async def create_milestone(workstream_id: str, body: MilestoneCreate, user=Depends(check_permission("edit_projects")), conn=Depends(get_db)):
+    from datetime import date as d
     wid = uuid.UUID(workstream_id)
     owner_ids = [uuid.UUID(x) for x in body.owner_ids]
-    row = await conn.fetchrow(
-        """INSERT INTO bedrock.milestone (workstream_id, title, status, priority, owner, owner_ids, description, source_links, sort_order)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id""",
-        wid, body.title, body.status, body.priority, body.owner, owner_ids,
-        body.description, body.source_links, body.sort_order,
+    has_due_date_col = await conn.fetchval(
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_schema='bedrock' AND table_name='milestone' AND column_name='due_date'"
     )
+    if has_due_date_col:
+        due_date_val = d.fromisoformat(body.due_date) if body.due_date else None
+        row = await conn.fetchrow(
+            """INSERT INTO bedrock.milestone (workstream_id, title, status, priority, owner, owner_ids, due_date, description, source_links, sort_order)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id""",
+            wid, body.title, body.status, body.priority, body.owner, owner_ids, due_date_val,
+            body.description, body.source_links, body.sort_order,
+        )
+    else:
+        row = await conn.fetchrow(
+            """INSERT INTO bedrock.milestone (workstream_id, title, status, priority, owner, owner_ids, description, source_links, sort_order)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id""",
+            wid, body.title, body.status, body.priority, body.owner, owner_ids,
+            body.description, body.source_links, body.sort_order,
+        )
     return {"success": True, "data": {"id": str(row["id"])}}
 
 
 @router.put("/milestones/{milestone_id}")
 async def update_milestone(milestone_id: str, body: MilestoneUpdate, user=Depends(check_permission("edit_projects")), conn=Depends(get_db)):
+    from datetime import date as d
     mid = uuid.UUID(milestone_id)
     fields = body.model_dump(exclude_none=True)
     if not fields:
@@ -880,6 +920,19 @@ async def update_milestone(milestone_id: str, body: MilestoneUpdate, user=Depend
 
     if "owner_ids" in fields:
         fields["owner_ids"] = [uuid.UUID(x) for x in fields["owner_ids"]]
+    if "due_date" in fields:
+        # Drop silently if migration hasn't run yet
+        has_col = await conn.fetchval(
+            "SELECT 1 FROM information_schema.columns "
+            "WHERE table_schema='bedrock' AND table_name='milestone' AND column_name='due_date'"
+        )
+        if has_col:
+            fields["due_date"] = d.fromisoformat(fields["due_date"]) if fields["due_date"] else None
+        else:
+            del fields["due_date"]
+
+    if not fields:
+        return {"success": True, "data": {"message": "Nothing to update (migration pending)"}}
 
     sets = ", ".join(f"{k} = ${i+2}" for i, k in enumerate(fields))
     vals = [mid] + list(fields.values())

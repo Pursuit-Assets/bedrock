@@ -646,8 +646,9 @@ class TestSlackMCPService:
             bot_token=bot_token,
         )
 
-    def test_missing_token_raises(self):
+    def test_missing_token_raises(self, monkeypatch):
         """Constructor raises ValueError when bot token is absent."""
+        monkeypatch.delenv("SLACK_BOT_TOKEN", raising=False)
         with pytest.raises(ValueError, match="Slack bot token is required"):
             SlackMCPService(_make_mock_mcp_client(), bot_token=None)
 

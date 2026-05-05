@@ -564,3 +564,113 @@ async def reject_review(
     item["rejected_by"] = user.get("user_id", "unknown")
     item["rejection_reason"] = reason
     return ApiResponse(success=True, data=item)
+
+
+# ---------------------------------------------------------------------------
+# POST /api/ai/account-activity-summary
+# ---------------------------------------------------------------------------
+
+class AccountActivitySummaryRequest:
+    """Lightweight body schema — defined inline because pydantic isn't
+    needed for the trivial shape and we want to keep this endpoint
+    self-contained."""
+    pass
+
+
+@router.post("/api/ai/account-activity-summary")
+async def account_activity_summary(
+    body: Dict[str, Any] = Body(...),
+    user=Depends(require_auth),
+):
+    """Generate a 2-3 sentence summary of an account's recent activity
+    history. The frontend ships the activities client-side (already loaded
+    for the page) plus a small account-context blob, so we don't need to
+    re-query Salesforce here. Caching is also frontend-side via React
+    Query staleTime.
+
+    Body shape::
+
+        {
+          "account_name": "Robin Hood Foundation",
+          "owner_name": "Amy Sun",
+          "activities": [
+              {"date": "2026-04-12", "type": "email",
+               "subject": "Renewal — next steps",
+               "snippet": "Caught up with Mary about the FY27 renewal..."},
+              ...
+          ]
+        }
+    """
+    if not ANTHROPIC_API_KEY:
+        raise HTTPException(
+            status_code=503,
+            detail="AI summary not configured (missing ANTHROPIC_API_KEY)",
+        )
+
+    account_name: str = (body.get("account_name") or "").strip() or "this account"
+    owner_name: Optional[str] = body.get("owner_name") or None
+    activities: List[Dict[str, Any]] = body.get("activities") or []
+
+    if not activities:
+        return {
+            "summary": "No recent activity to summarize.",
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+    # Cap at 60 most recent for the prompt — the model doesn't need the
+    # full firehose, and longer prompts cost more without adding much.
+    activities = activities[:60]
+
+    lines: List[str] = []
+    for a in activities:
+        date = a.get("date") or ""
+        atype = a.get("type") or ""
+        subject = (a.get("subject") or "").strip()[:200]
+        snippet = (a.get("snippet") or "").strip()[:400]
+        owner = (a.get("owner") or "").strip()
+        bits = [f"[{date}]"]
+        if atype:
+            bits.append(f"({atype})")
+        if owner:
+            bits.append(f"by {owner}")
+        bits.append("—")
+        bits.append(subject or "(no subject)")
+        if snippet and snippet != subject:
+            bits.append(f"// {snippet}")
+        lines.append(" ".join(bits))
+
+    activity_block = "\n".join(lines)
+    owner_line = f"\nAccount owner: {owner_name}" if owner_name else ""
+    prompt = f"""You're an enterprise CRM assistant. Summarize the recent activity log for {account_name} in 2-3 short sentences. Plain text, no bullets, no markdown.
+
+Focus on:
+- The handful of meaningful threads (renewal discussions, asks in flight, stewardship moments)
+- Notable people who have been active (by name, when present)
+- Anything that looks like an open loop (email awaiting reply, scheduled follow-up, action item)
+
+Skip:
+- Routine internal log entries that don't reflect outreach or decisions
+- Generic statements like "good engagement"
+
+{owner_line}
+
+Activity log (most recent first):
+{activity_block}"""
+
+    try:
+        import anthropic
+        ai_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        response = ai_client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=400,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        summary = response.content[0].text.strip()
+        return {
+            "summary": summary,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "activity_count": len(activities),
+        }
+    except Exception as e:
+        logger.error(f"Account activity summary failed: {e}")
+        raise HTTPException(status_code=500, detail="Failed to generate summary")

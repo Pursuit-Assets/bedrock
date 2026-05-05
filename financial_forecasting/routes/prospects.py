@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from auth import require_auth
-from dependencies import get_mcp_client
+from dependencies import get_mcp_client, require_sf_mcp_client
 from mcp_client import UnifiedMCPClient
 from security import escape_soql_string
 from services.cache import cache
@@ -134,7 +134,7 @@ async def prospect_import_get_persons(
 @router.post("/write-to-crm")
 async def prospect_import_write_to_crm(
     req: ProspectImportWriteToCrmRequest,
-    client: UnifiedMCPClient = Depends(get_mcp_client),
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user=Depends(require_auth),
 ):
     """Write normalized persons and organizations to Salesforce."""

@@ -52,7 +52,7 @@ class DataSyncService:
         """Check if Salesforce service is connected."""
         return "salesforce" in self.mcp_client.connected_services
 
-    async def sync_activities(self):
+    async def sync_activities(self, *, force_full: bool = False):
         """Sync SF Tasks + Events into bedrock.activity table."""
         if self.db_pool is None:
             logger.debug("Skipping activity sync — no database pool")
@@ -68,16 +68,21 @@ class DataSyncService:
         errors = 0
 
         async with self.db_pool.acquire() as conn:
-            # Get watermark for incremental sync
-            watermark = await conn.fetchval(
-                "SELECT MAX(sf_last_modified) FROM bedrock.activity WHERE source = 'salesforce'"
-            )
+            # Get watermark for incremental sync. force_full=True ignores
+            # the watermark and re-fetches everything — used after a
+            # classifier change to re-stamp existing rows.
             watermark_clause = ""
-            if watermark:
-                # Format for SOQL: YYYY-MM-DDTHH:MM:SSZ (Salesforce canonical format)
-                utc_wm = watermark.astimezone(timezone.utc)
-                watermark_str = utc_wm.strftime("%Y-%m-%dT%H:%M:%SZ")
-                watermark_clause = f" WHERE LastModifiedDate > {watermark_str}"
+            if not force_full:
+                watermark = await conn.fetchval(
+                    "SELECT MAX(sf_last_modified) FROM bedrock.activity WHERE source = 'salesforce'"
+                )
+                if watermark:
+                    # Format for SOQL: YYYY-MM-DDTHH:MM:SSZ (Salesforce canonical format)
+                    utc_wm = watermark.astimezone(timezone.utc)
+                    watermark_str = utc_wm.strftime("%Y-%m-%dT%H:%M:%SZ")
+                    watermark_clause = f" WHERE LastModifiedDate > {watermark_str}"
+            else:
+                logger.info("Activity sync: force_full=True — ignoring watermark")
 
             # SOQL: SF Tasks
             task_soql = f"""
@@ -194,8 +199,36 @@ class DataSyncService:
             return None
 
     def _map_sf_task(self, task: Dict[str, Any]) -> Dict[str, Any]:
-        """Map a Salesforce Task record to activity column values."""
-        # Determine activity type from TaskSubtype and Type
+        """Map a Salesforce Task record to activity column values.
+
+        Type detection order (most specific wins):
+          1. TaskSubtype = "Email"            → email
+          2. TaskSubtype = "Call" or Type = "Call"  → call
+          3. TaskSubtype includes "meeting" / Type matches a meeting label
+                                              → meeting
+          4. anything else                    → note
+
+        Pursuit logs many meetings as Tasks (not Events), with
+        Type = "Meeting" and a free-form Subject. Without this
+        classification rule those rows came through as "note", so
+        meetings effectively disappeared from the activity timeline.
+
+        Email-from-sync subject extraction: SF Tasks created by the
+        Salesforce Inbox / Outlook Connector come in with Subject="true"
+        and the actual email subject + body packed into Description as::
+
+            To: a@x.com; b@y.com
+            CC: c@z.com
+            BCC:
+            Attachment: --none--
+
+            Subject: <real subject>
+            Body:
+            <body>
+
+        We parse those out so the timeline shows the real subject + a
+        clean body instead of "true".
+        """
         subtype = (task.get("TaskSubtype") or "").lower()
         sf_type_field = (task.get("Type") or "").lower()
 
@@ -203,8 +236,26 @@ class DataSyncService:
             activity_type = "email"
         elif subtype == "call" or sf_type_field == "call":
             activity_type = "call"
+        elif (
+            "meeting" in subtype
+            or sf_type_field in {
+                "meeting",
+                "in-person meeting",
+                "in person meeting",
+                "virtual meeting",
+                "zoom meeting",
+                "site visit",
+            }
+        ):
+            activity_type = "meeting"
         else:
             activity_type = "note"
+
+        raw_subject = task.get("Subject") or ""
+        raw_desc = task.get("Description") or ""
+        subject, description = self._unpack_synced_email(
+            raw_subject, raw_desc, activity_type,
+        )
 
         # Route WhatId to opportunity or account
         opportunity_id = None
@@ -229,8 +280,8 @@ class DataSyncService:
             "sf_id": task["Id"],
             "sf_type": "Task",
             "type": activity_type,
-            "subject": task.get("Subject") or "(No subject)",
-            "description": task.get("Description"),
+            "subject": subject or "(No subject)",
+            "description": description,
             "activity_date": self._parse_sf_datetime(task.get("ActivityDate") or task.get("CreatedDate")),
             "opportunity_id": opportunity_id,
             "account_id": account_id,
@@ -241,6 +292,38 @@ class DataSyncService:
             "sf_last_modified": self._parse_sf_datetime(task.get("LastModifiedDate")),
             "meeting_duration_minutes": duration_min,
         }
+
+    @staticmethod
+    def _unpack_synced_email(
+        raw_subject: str, raw_desc: str, activity_type: str,
+    ) -> tuple[str, Optional[str]]:
+        """Pull the real Subject + Body out of a Salesforce-Inbox-synced
+        email Task, where Subject="true" and Description packs the whole
+        email payload as plain text. No-op for everything else.
+
+        Returns (subject, description) — falls back to the raw values
+        if the expected pattern isn't found, so non-email Tasks keep
+        their original Subject/Description verbatim.
+        """
+        is_synced_email = (
+            activity_type == "email"
+            and raw_subject.strip().lower() == "true"
+            and raw_desc
+        )
+        if not is_synced_email:
+            return raw_subject, raw_desc or None
+
+        # Find the embedded "Subject:" header — it always sits between the
+        # To/CC/BCC/Attachment block and the "Body:" marker.
+        import re as _re
+        subj_match = _re.search(
+            r"^Subject:\s*(.+?)\s*$", raw_desc, _re.MULTILINE,
+        )
+        body_match = _re.search(r"\nBody:\s*\n(.*)", raw_desc, _re.DOTALL)
+
+        new_subject = subj_match.group(1).strip() if subj_match else "(No subject)"
+        new_body = body_match.group(1).strip() if body_match else raw_desc
+        return new_subject, new_body or None
 
     def _map_sf_event(self, event: Dict[str, Any]) -> Dict[str, Any]:
         """Map a Salesforce Event record to activity column values."""

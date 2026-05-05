@@ -18,7 +18,9 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from main import app, get_current_user, get_forecasting_engine, get_data_sync_service
 from main import get_mcp_client as main_get_mcp_client
+from main import require_sf_mcp_client as main_require_sf_mcp_client
 from dependencies import get_mcp_client as deps_get_mcp_client
+from dependencies import require_sf_mcp_client as deps_require_sf_mcp_client
 from auth import require_auth
 from db import get_db
 
@@ -78,9 +80,11 @@ def authed_client(mock_client):
     app.dependency_overrides[get_current_user] = lambda: TEST_USER
     app.dependency_overrides[require_auth] = lambda: TEST_USER
     app.dependency_overrides[get_db] = lambda: _admin_db()
-    # Routes import get_mcp_client from dependencies (not main), so override both
+    # Routes import get_mcp_client / require_sf_mcp_client from dependencies (not main), so override both
     app.dependency_overrides[main_get_mcp_client] = lambda: mock_client
     app.dependency_overrides[deps_get_mcp_client] = lambda: mock_client
+    app.dependency_overrides[main_require_sf_mcp_client] = lambda: mock_client
+    app.dependency_overrides[deps_require_sf_mcp_client] = lambda: mock_client
     with TestClient(app, raise_server_exceptions=False) as c:
         yield c
     app.dependency_overrides.clear()

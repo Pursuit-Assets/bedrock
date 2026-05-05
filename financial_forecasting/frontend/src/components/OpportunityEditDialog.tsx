@@ -60,6 +60,8 @@ import { useOpportunityRecordTypes } from '../hooks/useOpportunityRecordTypes';
 import { useSchemaPicklist } from '../hooks/useSchemaPicklist';
 import { fieldStatusProps, findMissingFields } from '../utils/fieldLoadStatus';
 import SaveBlockedDialog from './SaveBlockedDialog';
+import DialogStackBreadcrumb from './DialogStackBreadcrumb';
+import type { DialogOrigin } from '../contexts/DialogStackContext';
 
 // Fields bound to `editForm.X` in this dialog that the save handler may patch.
 // A field absent from the loaded record + touched by the user → silent overwrite
@@ -107,8 +109,16 @@ interface OpportunityEditDialogProps {
   /** Fires after a successful destructive delete. Parent invalidates any
    *  extra caches the dialog's own invalidateQueries doesn't cover. */
   onDeleted?: (oppId: string) => void;
-  /** When provided, shows "Open" icons next to lookup fields for stacked dialog navigation. */
-  onOpenRelated?: (type: 'opportunity' | 'account' | 'contact', id: string) => void;
+  /** When provided, shows "Open" icons next to lookup fields for stacked dialog
+   *  navigation. `label` is the human-readable name of the target record (shown
+   *  in the breadcrumb). `parentInfo` is this dialog's own self-identity so the
+   *  pushed stack entry can remember the origin dialog that launched it. */
+  onOpenRelated?: (
+    type: 'opportunity' | 'account' | 'contact',
+    id: string,
+    label: string,
+    parentInfo?: DialogOrigin,
+  ) => void;
 }
 
 interface UserOption {
@@ -288,15 +298,23 @@ const OpportunityEditDialog: React.FC<OpportunityEditDialogProps> = ({
   const [subAccountId, setSubAccountId] = useState<string | null>(null);
   const [subContactId, setSubContactId] = useState<string | null>(null);
   const handleOpenRelatedField = useCallback(
-    (type: 'opportunity' | 'account' | 'contact', id: string) => {
+    (type: 'opportunity' | 'account' | 'contact', id: string, label: string) => {
       if (onOpenRelated) {
-        onOpenRelated(type, id);
+        // Pass self-identity so the pushed entry's breadcrumb can name this
+        // Opp as the origin. opportunityId may be null only before the record
+        // loads; the Open icons aren't clickable until it does.
+        const parentInfo: DialogOrigin = {
+          type: 'opportunity',
+          id: opportunityId ?? undefined,
+          label: originalOpp?.Name ?? 'Opportunity',
+        };
+        onOpenRelated(type, id, label, parentInfo);
         return;
       }
       if (type === 'account') setSubAccountId(id);
       else if (type === 'contact') setSubContactId(id);
     },
-    [onOpenRelated],
+    [onOpenRelated, opportunityId, originalOpp?.Name],
   );
 
   // Tasks tab state (PR #173). TaskPanel is a drawer; from the Tasks tab we
@@ -662,6 +680,11 @@ const OpportunityEditDialog: React.FC<OpportunityEditDialogProps> = ({
           },
         }}
       />
+
+      {/* Breadcrumb when this dialog is part of a stacked drill — shows the
+          chain of records and makes Cancel-is-Back explicit. Renders null
+          outside DialogStackProvider (e.g., Priorities/Progress local mounts). */}
+      <DialogStackBreadcrumb />
 
       {/* Header — matches TaskPanel's gradient + metadata-chip style so the
           four drawers (Opp / Account / Contact / Task) read as one family. */}
@@ -1030,7 +1053,7 @@ const OpportunityEditDialog: React.FC<OpportunityEditDialogProps> = ({
                     <Tooltip title="Open account">
                       <IconButton
                         size="small"
-                        onClick={() => handleOpenRelatedField('account', editForm.AccountId)}
+                        onClick={() => handleOpenRelatedField('account', editForm.AccountId, selectedAccount?.Name ?? 'Account')}
                       >
                         <OpenInNewIcon fontSize="small" />
                       </IconButton>
@@ -1083,7 +1106,7 @@ const OpportunityEditDialog: React.FC<OpportunityEditDialogProps> = ({
                     <Tooltip title="Open contact">
                       <IconButton
                         size="small"
-                        onClick={() => handleOpenRelatedField('contact', editForm.npsp__Primary_Contact__c!)}
+                        onClick={() => handleOpenRelatedField('contact', editForm.npsp__Primary_Contact__c!, selectedPrimaryContact?.Name ?? 'Contact')}
                       >
                         <OpenInNewIcon fontSize="small" />
                       </IconButton>

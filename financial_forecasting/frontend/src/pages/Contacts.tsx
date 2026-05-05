@@ -355,7 +355,9 @@ const Contacts: React.FC = () => {
           setEditDialogOpen(false);
           setEditContactId(null);
         }}
-        onOpenRelated={(type, id) => pushDialog({ type, id })}
+        onOpenRelated={(type, id, label, parentInfo) => pushDialog({
+          type, id, label, parent: parentInfo,
+        })}
       />
 
       {/* Create Contact Dialog */}

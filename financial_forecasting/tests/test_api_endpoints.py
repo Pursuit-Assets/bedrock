@@ -18,6 +18,8 @@ sys.path.insert(0, os.path.dirname(__file__))
 from fastapi.testclient import TestClient
 
 from main import app, get_current_user, get_mcp_client, get_forecasting_engine, get_data_sync_service, _sync_lock, startup_event, shutdown_event
+from main import require_sf_mcp_client as main_require_sf_mcp_client
+from dependencies import require_sf_mcp_client as deps_require_sf_mcp_client
 from auth import require_auth, require_auth_or_internal
 from db import get_db
 
@@ -193,6 +195,8 @@ def client(mock_client, mock_engine, mock_sync_service, mock_db):
     app.dependency_overrides[require_auth_or_internal] = override_get_current_user
     app.dependency_overrides[get_db] = lambda: mock_db
     app.dependency_overrides[get_mcp_client] = lambda: mock_client
+    app.dependency_overrides[main_require_sf_mcp_client] = lambda: mock_client
+    app.dependency_overrides[deps_require_sf_mcp_client] = lambda: mock_client
     app.dependency_overrides[get_forecasting_engine] = lambda: mock_engine
     app.dependency_overrides[get_data_sync_service] = lambda: mock_sync_service
 
@@ -234,6 +238,8 @@ def no_services_client():
         raise HTTPException(status_code=503, detail="Data sync service not available")
 
     app.dependency_overrides[get_mcp_client] = _no_mcp
+    app.dependency_overrides[main_require_sf_mcp_client] = _no_mcp
+    app.dependency_overrides[deps_require_sf_mcp_client] = _no_mcp
     app.dependency_overrides[get_forecasting_engine] = _no_engine
     app.dependency_overrides[get_data_sync_service] = _no_sync
 

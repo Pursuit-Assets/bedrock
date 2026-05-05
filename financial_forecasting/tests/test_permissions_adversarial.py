@@ -13,6 +13,8 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from fastapi.testclient import TestClient
 from main import app, get_current_user, get_mcp_client
+from main import require_sf_mcp_client as main_require_sf_mcp_client
+from dependencies import require_sf_mcp_client as deps_require_sf_mcp_client
 from auth import require_auth
 from db import get_db
 
@@ -89,6 +91,8 @@ def rm_client(mock_db, mock_client):
     app.dependency_overrides[require_auth] = lambda: TEST_USER
     app.dependency_overrides[get_db] = lambda: mock_db
     app.dependency_overrides[get_mcp_client] = lambda: mock_client
+    app.dependency_overrides[main_require_sf_mcp_client] = lambda: mock_client
+    app.dependency_overrides[deps_require_sf_mcp_client] = lambda: mock_client
     with TestClient(app, raise_server_exceptions=False) as c:
         yield c
     app.dependency_overrides.clear()

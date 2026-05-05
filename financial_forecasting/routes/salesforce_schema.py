@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from auth import require_auth_or_internal
-from dependencies import get_mcp_client
+from dependencies import get_mcp_client, require_sf_mcp_client
 from mcp_client import UnifiedMCPClient
 
 logger = logging.getLogger(__name__)
@@ -145,7 +145,7 @@ async def describe_sobject(
     sobject: str,
     compare: bool = Query(False, description="Compare against currently fetched fields"),
     custom_only: bool = Query(False, description="Only return custom fields"),
-    client: UnifiedMCPClient = Depends(get_mcp_client),
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user=Depends(require_auth_or_internal),
 ):
     """Describe a Salesforce SObject — returns field metadata for schema auditing."""

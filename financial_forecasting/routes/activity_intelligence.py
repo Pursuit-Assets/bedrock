@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from auth import require_auth
-from dependencies import get_mcp_client
+from dependencies import get_mcp_client, require_sf_mcp_client
 from mcp_client import UnifiedMCPClient
 from models import ApiResponse
 
@@ -36,7 +36,7 @@ PBD_CALENDAR_ID = os.getenv(
 
 @router.get("/api/fireflies/health")
 async def fireflies_health_check(
-    client: UnifiedMCPClient = Depends(get_mcp_client),
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
 ):
     """Check Fireflies service health."""
     if "fireflies" not in getattr(client, "_connected_services", set()):
@@ -68,7 +68,7 @@ async def get_fireflies_account_meetings(
     account_name: str,
     limit: int = Query(20, le=100),
     user=Depends(require_auth),
-    client: UnifiedMCPClient = Depends(get_mcp_client),
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
 ):
     """Get Fireflies meeting transcripts mentioning an account."""
     ff_service = client.services.get("fireflies")
@@ -90,7 +90,7 @@ async def get_fireflies_account_meetings(
 async def get_recent_fireflies_meetings(
     limit: int = Query(10, le=100),
     user=Depends(require_auth),
-    client: UnifiedMCPClient = Depends(get_mcp_client),
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
 ):
     """Get recent Fireflies meetings to help identify test accounts.
 
@@ -130,7 +130,7 @@ async def get_recent_fireflies_meetings(
 @router.post("/api/fireflies/refresh-cache")
 async def refresh_fireflies_cache(
     user=Depends(require_auth),
-    client: UnifiedMCPClient = Depends(get_mcp_client),
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
 ):
     """Manually refresh the Fireflies cache.
 
@@ -161,7 +161,7 @@ async def refresh_fireflies_cache(
 async def debug_account_matching(
     account_name: str,
     user=Depends(require_auth),
-    client: UnifiedMCPClient = Depends(get_mcp_client),
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
 ):
     """Debug endpoint — show all meetings and their match scores for an account.
 
@@ -328,7 +328,7 @@ async def debug_account_matching(
 
 @router.get("/api/gmail/health")
 async def gmail_health_check(
-    client: UnifiedMCPClient = Depends(get_mcp_client),
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
 ):
     """Check Gmail service health."""
     if "gmail" not in getattr(client, "_connected_services", set()):
@@ -360,7 +360,7 @@ async def get_gmail_account_activity(
     account_name: str,
     limit: int = Query(20, le=100),
     user=Depends(require_auth),
-    client: UnifiedMCPClient = Depends(get_mcp_client),
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
 ):
     """Get Gmail emails related to an account."""
     gmail_service = client.services.get("gmail")
@@ -384,7 +384,7 @@ async def get_gmail_account_activity(
 
 @router.get("/api/calendar/health")
 async def calendar_health_check(
-    client: UnifiedMCPClient = Depends(get_mcp_client),
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
 ):
     """Check Google Calendar service health."""
     if "google_calendar" not in getattr(client, "_connected_services", set()):
@@ -428,7 +428,7 @@ async def get_calendar_account_activity(
     account_name: str,
     limit: int = Query(20, le=100),
     user=Depends(require_auth),
-    client: UnifiedMCPClient = Depends(get_mcp_client),
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
 ):
     """Get Google Calendar events related to an account."""
     cal_service = client.services.get("google_calendar")
@@ -453,7 +453,7 @@ async def get_calendar_account_activity(
 @router.get("/api/drive/health")
 async def drive_health_check(
     user=Depends(require_auth),
-    client: UnifiedMCPClient = Depends(get_mcp_client),
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
 ):
     """Check Drive integration status.
 
@@ -480,7 +480,7 @@ async def get_account_drive_activity(
     limit: int = Query(20, le=100),
     opportunity_name: Optional[str] = None,
     user=Depends(require_auth),
-    client: UnifiedMCPClient = Depends(get_mcp_client),
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
 ):
     """Search Google Drive for files related to an account.
 

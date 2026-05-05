@@ -330,6 +330,39 @@ One-line: Many-to-many junction between projects and CRM opportunities.
 
 ---
 
+#### `bedrock.award` (added 2026-04-30)
+
+One-line: Thin lifecycle entity layered over closed-won Philanthropy
+opportunities — captures post-award status, period, and notes that don't
+belong on the SF Opportunity record.
+
+| Column | Type | Constraints |
+|--------|------|-------------|
+| id | UUID | PK, DEFAULT uuid_generate_v4() |
+| opportunity_id | TEXT | NOT NULL, UNIQUE among non-deleted (partial index) |
+| award_status | TEXT | NOT NULL DEFAULT 'Active', CHECK IN ('Active', 'Closing', 'Closed') |
+| award_date | DATE | When the Opp transitioned to closed-won |
+| period_end_date | DATE | Mirrors `GrantRequirements.grant_end_date` for nonprofit |
+| notes | TEXT | NOT NULL DEFAULT '' |
+| created_at | TIMESTAMPTZ | NOT NULL DEFAULT now() |
+| updated_at | TIMESTAMPTZ | NOT NULL DEFAULT now() |
+| deleted_at | TIMESTAMPTZ | nullable |
+| deleted_by | TEXT | nullable |
+
+- **Primary key:** `id`
+- **Unique:** `uq_award_opp_active` partial on `opportunity_id` WHERE `deleted_at IS NULL`
+- **Indexes:** `idx_award_not_deleted` partial; `idx_award_status` partial
+- **Triggers:** `trg_award_updated_at` BEFORE UPDATE, executes `bedrock.set_updated_at()`
+- **Auto-creation:** `services.awards_service.ensure_for_opp` runs after
+  `POST /api/opportunities/update-stage` when the new stage is in
+  `WON_PHILANTHROPY_STAGES` AND the Opp's RecordType.Name is
+  `Philanthropy`. Idempotent (uses `INSERT ... ON CONFLICT DO NOTHING`).
+- **Backfill:** `scripts/backfill_awards.py` — Philanthropy-only, all-time
+  for currently-eligible stages.
+- **Plan:** `tasks/bedrock-redesign-data-model.md`
+
+---
+
 ### Domain B: Auth & Identity (4 tables)
 
 ---

@@ -10,7 +10,7 @@ from typing import Any, Dict, List
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from auth import require_auth_or_internal
-from dependencies import get_mcp_client
+from dependencies import get_mcp_client, require_sf_mcp_client
 from mcp_client import UnifiedMCPClient
 from security import escape_soql_string, escape_sosl_string
 
@@ -48,7 +48,7 @@ def _group_sosl_results(raw_results: Any) -> Dict[str, List[dict]]:
 async def search_all(
     q: str = Query(..., min_length=2, max_length=100),
     limit: int = Query(10, ge=1, le=25),
-    client: UnifiedMCPClient = Depends(get_mcp_client),
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user=Depends(require_auth_or_internal),
 ):
     """Cross-entity SOSL search across Contacts, Accounts, Opportunities, and Tasks.
@@ -83,7 +83,7 @@ async def search_all(
 async def search_contacts(
     q: str = Query(..., min_length=2, max_length=100),
     limit: int = Query(10, ge=1, le=25),
-    client: UnifiedMCPClient = Depends(get_mcp_client),
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user=Depends(require_auth_or_internal),
 ):
     """Search contacts by name or email (SOQL)."""
@@ -108,7 +108,7 @@ async def search_contacts(
 async def search_accounts(
     q: str = Query(..., min_length=2, max_length=100),
     limit: int = Query(10, ge=1, le=25),
-    client: UnifiedMCPClient = Depends(get_mcp_client),
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user=Depends(require_auth_or_internal),
 ):
     """Search accounts by name (SOQL)."""
@@ -133,7 +133,7 @@ async def search_opportunities(
     q: str = Query(..., min_length=2, max_length=100),
     account_id: str = Query(None, max_length=18),
     limit: int = Query(10, ge=1, le=25),
-    client: UnifiedMCPClient = Depends(get_mcp_client),
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user=Depends(require_auth_or_internal),
 ):
     """Search opportunities by name, optionally filtered by account (SOQL)."""

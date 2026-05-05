@@ -586,7 +586,9 @@ const Opportunities: React.FC = () => {
           setPaymentScheduleOpp(opp as any);
           setPaymentScheduleOpen(true);
         }}
-        onOpenRelated={(type, id) => pushDialog({ type, id })}
+        onOpenRelated={(type, id, label, parentInfo) => pushDialog({
+          type, id, label, parent: parentInfo,
+        })}
       />
 
       {/* Payment Schedule Modal */}
