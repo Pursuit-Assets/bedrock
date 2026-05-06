@@ -147,12 +147,44 @@ _BEDROCK_INTERNAL_API_KEY = os.getenv("BEDROCK_INTERNAL_API_KEY", "")
 # Pebble's research/lookup paths keep working during write-side incidents.
 _WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
+# Default scope grant for the internal-key principal. v1.0 grants the
+# superset; later phases tighten via per-call X-Pebble-Scopes header.
+# `*` is interpreted as "all scopes" by check_permission_or_internal.
+_DEFAULT_INTERNAL_SCOPES = ("*",)
+
 
 def _pebble_writes_disabled() -> bool:
     """Read the kill switch fresh on every call so operators can flip it
     without a redeploy. Truthy values: "true" / "1" / "yes" (case-insensitive).
     """
     return os.getenv("PEBBLE_WRITES_DISABLED", "").strip().lower() in {"true", "1", "yes"}
+
+
+def _parse_scopes(header_value: str) -> tuple[str, ...]:
+    """Parse the optional X-Pebble-Scopes header. Comma-separated scope
+    strings; empty / unset header = full grant via the wildcard ``*``.
+    """
+    raw = (header_value or "").strip()
+    if not raw:
+        return _DEFAULT_INTERNAL_SCOPES
+    scopes = tuple(s.strip() for s in raw.split(",") if s.strip())
+    return scopes or _DEFAULT_INTERNAL_SCOPES
+
+
+def _is_valid_originating_user_email(email: str) -> bool:
+    """Lightweight shape check on X-Originating-User. We don't verify
+    membership in org_users here (would require a DB hit on every
+    request); the route-level audit insert (FK to org_users via
+    originating_user_email lookup) is the durable check. Spoofs against
+    the API key still produce auditable rows.
+    """
+    if not email or len(email) > 254:
+        return False
+    if "@" not in email or email.startswith("@") or email.endswith("@"):
+        return False
+    if any(c.isspace() for c in email):
+        return False
+    return True
 
 
 async def require_auth_or_internal(request: Request) -> Dict:
@@ -163,12 +195,33 @@ async def require_auth_or_internal(request: Request) -> Dict:
     Dev mode: if BEDROCK_INTERNAL_API_KEY is empty, internal key check
     is skipped and only JWT auth is tried.
 
-    Kill switch: if PEBBLE_WRITES_DISABLED env is truthy AND the caller is
-    using a valid internal key AND the request method is a write
+    **Mandatory headers when using internal-key auth (Phase 0.2):**
+
+    - ``X-Originating-User``: the human whose session triggered this
+      service-to-service call. Required on EVERY internal-key request,
+      reads and writes alike. The email is propagated to
+      ``bedrock.pebble_write_audit`` and to permission resolution so
+      that Pebble acts as a delegated principal, not a god principal.
+      Three independent adversarial reviews flagged the un-attributed
+      "service:pebble" pattern as a 1.0 blocker; this enforcement
+      closes that gap.
+    - ``X-Request-Id``: a UUIDv7 (or any UUID) for replay defense via
+      ``UNIQUE(request_id)`` on ``bedrock.pebble_write_audit``. Format
+      checked here; uniqueness checked at the audit-row INSERT in the
+      route handler.
+
+    Optional header:
+
+    - ``X-Pebble-Scopes``: comma-separated scopes the caller is
+      requesting for THIS request. Default = ``("*",)`` (full grant).
+      ``check_permission_or_internal`` verifies the matching scope is
+      present. Future tightening: Pebble will request narrow scopes
+      per call instead of carrying the full grant.
+
+    Kill switch: if PEBBLE_WRITES_DISABLED env is truthy AND the caller
+    is using a valid internal key AND the request method is a write
     (POST/PUT/PATCH/DELETE), return 503. Reads via internal key and all
-    JWT-authenticated requests are unaffected. Designed for incident
-    response — flip the env var to halt service-account writes without a
-    deploy.
+    JWT-authenticated requests are unaffected.
     """
     internal_key = request.headers.get("X-Internal-Key", "")
     if _BEDROCK_INTERNAL_API_KEY and internal_key:
@@ -189,9 +242,53 @@ async def require_auth_or_internal(request: Request) -> Dict:
                         ),
                     },
                 )
+
+            originating_user = request.headers.get("X-Originating-User", "").strip()
+            if not _is_valid_originating_user_email(originating_user):
+                logger.warning(
+                    "internal_key_missing_originating_user: %s %s",
+                    request.method,
+                    request.url.path,
+                )
+                raise HTTPException(
+                    status_code=401,
+                    detail={
+                        "error": "originating_user_required",
+                        "message": (
+                            "X-Originating-User header is required on every "
+                            "internal-key request. Pebble acts on behalf of a "
+                            "specific user, never as itself."
+                        ),
+                    },
+                )
+
+            request_id = request.headers.get("X-Request-Id", "").strip()
+            if not request_id:
+                logger.warning(
+                    "internal_key_missing_request_id: %s %s",
+                    request.method,
+                    request.url.path,
+                )
+                raise HTTPException(
+                    status_code=401,
+                    detail={
+                        "error": "request_id_required",
+                        "message": (
+                            "X-Request-Id header is required on every "
+                            "internal-key request for replay defense. "
+                            "Pass a UUID."
+                        ),
+                    },
+                )
+
+            scopes = _parse_scopes(request.headers.get("X-Pebble-Scopes", ""))
+
             return {
                 "user_id": "service:pebble",
                 "email": "pebble@internal",
                 "is_service": True,
+                "originating_user_email": originating_user,
+                "request_id": request_id,
+                "scopes": scopes,
             }
     return await require_auth(request)

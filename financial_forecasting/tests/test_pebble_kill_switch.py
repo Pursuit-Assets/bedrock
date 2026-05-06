@@ -32,16 +32,29 @@ import auth
 # ---------------------------------------------------------------------------
 
 _TEST_KEY = "test-internal-key-1234567890abcdef"
+_TEST_ORIGINATING_USER = "rm@pursuit.org"
+_TEST_REQUEST_ID = "01993b8d-2c9a-7c4f-8b0e-000000000001"
 
 
-def _make_request(method: str, internal_key: str = "") -> Request:
-    """Build a minimal Starlette Request scope with the given method and
-    optional X-Internal-Key header. Avoids the TestClient round-trip — we're
-    unit-testing a dependency, not an endpoint.
+def _make_request(
+    method: str,
+    internal_key: str = "",
+    originating_user: str = _TEST_ORIGINATING_USER,
+    request_id: str = _TEST_REQUEST_ID,
+) -> Request:
+    """Build a minimal Starlette Request scope. Defaults satisfy the
+    Phase 0.2 contract (X-Originating-User + X-Request-Id) so kill-switch
+    tests can focus on the kill-switch invariants. Tests that need to
+    exercise the missing-header paths pass ``originating_user=""`` /
+    ``request_id=""`` explicitly.
     """
     headers = []
     if internal_key:
         headers.append((b"x-internal-key", internal_key.encode()))
+        if originating_user:
+            headers.append((b"x-originating-user", originating_user.encode()))
+        if request_id:
+            headers.append((b"x-request-id", request_id.encode()))
     scope = {
         "type": "http",
         "method": method,
@@ -106,6 +119,10 @@ async def test_internal_key_write_succeeds_when_switch_off(fixed_internal_key, s
     assert user["is_service"] is True
     assert user["user_id"] == "service:pebble"
     assert user["email"] == "pebble@internal"
+    # Phase 0.2 contract: synthetic user carries originating user + request_id + scopes.
+    assert user["originating_user_email"] == _TEST_ORIGINATING_USER
+    assert user["request_id"] == _TEST_REQUEST_ID
+    assert user["scopes"] == ("*",)
 
 
 @pytest.mark.parametrize("method", ["POST", "PUT", "PATCH", "DELETE"])
