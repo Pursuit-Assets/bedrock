@@ -296,14 +296,19 @@ export function AccountsPage() {
         (acc, a) => {
           const m = metricsByAccount.get(a.Id);
           if (!m) return acc;
+          const summed: Record<string, number> = { ...acc.wonByRecordType };
+          for (const [k, v] of Object.entries(m.wonByRecordType)) {
+            summed[k] = (summed[k] ?? 0) + v;
+          }
           return {
             openPipeline: acc.openPipeline + m.openPipeline,
             amountWon: acc.amountWon + m.amountWon,
             received: acc.received + m.received,
             outstanding: acc.outstanding + m.outstanding,
+            wonByRecordType: summed,
           };
         },
-        { ...ZERO_METRICS },
+        { ...ZERO_METRICS, wonByRecordType: { ...ZERO_METRICS.wonByRecordType } },
       ),
     [filtered, metricsByAccount],
   );
