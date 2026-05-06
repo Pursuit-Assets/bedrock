@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, type ReactNode } from "react";
-import { X } from "lucide-react";
+import { useNavigate } from "react-router-dom";
+import { ExternalLink, X } from "lucide-react";
 import {
   BarChart,
   Bar,
@@ -56,6 +57,7 @@ function HeaderCell({ children, className }: { children: ReactNode; className?: 
 
 
 export function CashFlowPage() {
+  const navigate = useNavigate();
   const currentYear = new Date().getFullYear();
   const [fy, setFy] = useState(currentYear);
   const { data, isLoading } = useCashflow(fy);
@@ -357,8 +359,20 @@ export function CashFlowPage() {
                   </thead>
                   <tbody>
                     {detail.map((r, i) => (
-                      <tr key={i} className="border-t border-border hover:bg-surface-2">
-                        <td className="px-4 py-2 font-medium text-ink">{r.opp_name ?? "—"}</td>
+                      <tr
+                        key={i}
+                        onClick={() => r.opp_id && navigate(`/opportunities/${r.opp_id}`)}
+                        className={cn(
+                          "border-t border-border",
+                          r.opp_id ? "cursor-pointer hover:bg-surface-2" : "",
+                        )}
+                      >
+                        <td className="px-4 py-2 font-medium text-ink">
+                          <span className="inline-flex items-center gap-1.5">
+                            {r.opp_name ?? "—"}
+                            {r.opp_id && <ExternalLink size={11} className="text-ink-4" />}
+                          </span>
+                        </td>
                         <td className="px-4 py-2 text-ink-2">{r.account_name ?? "—"}</td>
                         <td className="px-4 py-2 text-ink-3">{r.stage ?? "—"}</td>
                         <td className="px-4 py-2 text-right tabular-nums text-ink-3">

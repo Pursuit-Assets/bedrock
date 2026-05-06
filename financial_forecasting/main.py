@@ -1067,8 +1067,9 @@ async def get_cashflow_detail(
 
         if type == "actuals":
             soql = f"""
-                SELECT npe01__Payment_Amount__c, npe01__Payment_Date__c,
+                SELECT Id, npe01__Payment_Amount__c, npe01__Payment_Date__c,
                        npe01__Scheduled_Date__c,
+                       npe01__Opportunity__c,
                        npe01__Opportunity__r.Name, npe01__Opportunity__r.StageName,
                        npe01__Opportunity__r.Account.Name
                 FROM npe01__OppPayment__c
@@ -1081,7 +1082,8 @@ async def get_cashflow_detail(
             """
         elif type in ("scheduled", "outstanding"):
             soql = f"""
-                SELECT npe01__Payment_Amount__c, npe01__Scheduled_Date__c,
+                SELECT Id, npe01__Payment_Amount__c, npe01__Scheduled_Date__c,
+                       npe01__Opportunity__c,
                        npe01__Opportunity__r.Name, npe01__Opportunity__r.StageName,
                        npe01__Opportunity__r.Account.Name
                 FROM npe01__OppPayment__c
@@ -1095,7 +1097,8 @@ async def get_cashflow_detail(
             """
         else:  # projected
             soql = f"""
-                SELECT npe01__Payment_Amount__c, npe01__Scheduled_Date__c,
+                SELECT Id, npe01__Payment_Amount__c, npe01__Scheduled_Date__c,
+                       npe01__Opportunity__c,
                        npe01__Opportunity__r.Name, npe01__Opportunity__r.StageName,
                        npe01__Opportunity__r.Probability,
                        npe01__Opportunity__r.Account.Name
@@ -1116,6 +1119,8 @@ async def get_cashflow_detail(
             prob = opp.get("Probability") or 0
             amt = r.get("npe01__Payment_Amount__c") or 0
             records.append({
+                "payment_id": r.get("Id"),
+                "opp_id": r.get("npe01__Opportunity__c"),
                 "amount": amt,
                 "weighted_amount": round(amt * prob / 100, 2) if type == "projected" else None,
                 "probability": prob if type == "projected" else None,
