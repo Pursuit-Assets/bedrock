@@ -439,19 +439,19 @@ VALUES (
 INSERT INTO bedrock.permission_profile (name, description, is_default, permissions)
 VALUES (
     'Relationship Manager',
-    'Edit own opportunities and tasks, create accounts and contacts, manage projects',
+    'Edit any opportunity/task, create accounts and contacts, manage projects',
     true,
     '{
         "view_opportunities": true,
         "edit_own_opportunities": true,
-        "edit_all_opportunities": false,
+        "edit_all_opportunities": true,
         "create_opportunities": true,
         "bulk_update_opportunities": false,
         "lock_own_opportunities": true,
         "reassign_opportunities": false,
         "view_tasks": true,
         "edit_own_tasks": true,
-        "edit_all_tasks": false,
+        "edit_all_tasks": true,
         "create_tasks": true,
         "edit_accounts": true,
         "create_accounts": true,
@@ -585,6 +585,12 @@ UPDATE bedrock.user_config
 UPDATE bedrock.permission_profile
 SET permissions = permissions || '{"view_projects": true, "edit_projects": true}'::jsonb
 WHERE name IN ('Relationship Manager', 'Fundraiser', 'Executive', 'Project Manager');
+
+-- 2026-05-06: grant RM/Fundraiser edit_all_opportunities + edit_all_tasks.
+-- Per JR — RMs need to edit any opp/task, not just their own.
+UPDATE bedrock.permission_profile
+SET permissions = permissions || '{"edit_all_opportunities": true, "edit_all_tasks": true}'::jsonb
+WHERE name IN ('Relationship Manager', 'Fundraiser');
 
 -- ── Permission unlock request table ──
 
