@@ -138,12 +138,53 @@ _cancel_flags: set[str] = set()
 logger = logging.getLogger("pebble.main")
 
 
+def _validate_bedrock_bridge_config() -> None:
+    """Phase 0.6 — Pebble's bridge to Bedrock must be HTTPS in production
+    and must carry a real internal API key. Wrong defaults are silent
+    catastrophic failures: ``BEDROCK_API_URL`` defaults to
+    ``http://localhost:8000`` and ``BEDROCK_INTERNAL_API_KEY`` defaults
+    to empty in ``crm_bridge.py:14-17`` — fine for dev, ruinous in prod.
+    Refuse to start when misconfigured.
+
+    Detection of "production":
+        FRONTEND_URL is set AND starts with ``https://``. Mirrors
+        ``auth.py:25-26`` ``IS_PRODUCTION`` exactly so dev / staging /
+        prod classify identically across the two processes. PEBBLE_ENV
+        override (``PEBBLE_ENV=production``) wins regardless of
+        FRONTEND_URL — useful for headless cron deployments that
+        don't have a frontend URL.
+    """
+    is_prod = (
+        (os.getenv("FRONTEND_URL", "") or "").startswith("https://")
+        or os.getenv("PEBBLE_ENV", "").lower() == "production"
+    )
+    if not is_prod:
+        return
+
+    bedrock_url = os.getenv("BEDROCK_API_URL", "")
+    if not bedrock_url.startswith("https://"):
+        raise RuntimeError(
+            "BEDROCK_API_URL must be set to an https:// URL in production. "
+            f"Got: {bedrock_url!r}. Refusing to start — service-to-service "
+            "writes to a localhost or http:// endpoint in prod silently "
+            "lose data and bypass TLS."
+        )
+    if not os.getenv("BEDROCK_INTERNAL_API_KEY", "").strip():
+        raise RuntimeError(
+            "BEDROCK_INTERNAL_API_KEY must be set in production. Without it, "
+            "crm_bridge.py:27-28 sends requests with no internal-key header "
+            "and Bedrock falls through to JWT auth — every Pebble write "
+            "fails 401. Refusing to start."
+        )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
     )
+    _validate_bedrock_bridge_config()
     await init_db()
     logger.info(
         "Pebble starting — ANTHROPIC_API_KEY=%s, OPENROUTER_API_KEY=%s, FEC_API_KEY=%s",
