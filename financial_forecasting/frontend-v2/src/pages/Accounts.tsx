@@ -93,7 +93,11 @@ type AccountField =
   | "openPipeline"
   | "amountWon"
   | "received"
-  | "outstanding";
+  | "outstanding"
+  | "wonPhilanthropy"
+  | "wonPBC"
+  | "wonDebtEquity"
+  | "wonOtherFFS";
 
 interface AccountsSavedView {
   filter?: TypeFilter;
@@ -102,9 +106,35 @@ interface AccountsSavedView {
   widths?: Partial<Record<ColKey, number>>;
 }
 
-type ColKey = "name" | "owner" | "openPipeline" | "amountWon" | "received" | "outstanding";
+type ColKey =
+  | "name"
+  | "owner"
+  | "openPipeline"
+  | "amountWon"
+  | "received"
+  | "outstanding"
+  | "wonPhilanthropy"
+  | "wonPBC"
+  | "wonDebtEquity"
+  | "wonOtherFFS";
 
+// Won-by-record-type columns are hidden by default — they're long, and
+// most users only want them when slicing by funding source. Toggle on
+// via the column chooser.
 const COLUMN_ORDER: ColKey[] = [
+  "name",
+  "owner",
+  "openPipeline",
+  "amountWon",
+  "received",
+  "outstanding",
+  "wonPhilanthropy",
+  "wonPBC",
+  "wonDebtEquity",
+  "wonOtherFFS",
+];
+
+const DEFAULT_VISIBLE: ColKey[] = [
   "name",
   "owner",
   "openPipeline",
@@ -120,6 +150,10 @@ const DEFAULT_WIDTHS: Record<ColKey, number> = {
   amountWon: 130,
   received: 120,
   outstanding: 130,
+  wonPhilanthropy: 140,
+  wonPBC: 110,
+  wonDebtEquity: 140,
+  wonOtherFFS: 140,
 };
 
 const COL_LABELS: Record<ColKey, string> = {
@@ -129,6 +163,10 @@ const COL_LABELS: Record<ColKey, string> = {
   amountWon: "Amount won",
   received: "Received",
   outstanding: "Outstanding",
+  wonPhilanthropy: "Won: Philanthropy",
+  wonPBC: "Won: PBC",
+  wonDebtEquity: "Won: Debt / Equity",
+  wonOtherFFS: "Won: Other FFS",
 };
 
 const ROW_HEIGHT = 44; // px — must match the row's actual rendered height
@@ -152,6 +190,10 @@ function extractAccount(
     case "amountWon": return metrics.amountWon;
     case "received": return metrics.received;
     case "outstanding": return metrics.outstanding;
+    case "wonPhilanthropy": return metrics.wonByRecordType["Philanthropy"] ?? 0;
+    case "wonPBC": return metrics.wonByRecordType["PBC"] ?? 0;
+    case "wonDebtEquity": return metrics.wonByRecordType["Debt / Equity"] ?? 0;
+    case "wonOtherFFS": return metrics.wonByRecordType["Other Fee For Service"] ?? 0;
   }
 }
 
@@ -170,7 +212,7 @@ export function AccountsPage() {
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
   const { visible: visibleCols, toggle: toggleCol, replaceAll: replaceVisibleCols } =
-    useColumnVisibility("bedrock-v2:vis:accounts", COLUMN_ORDER);
+    useColumnVisibility("bedrock-v2:vis:accounts", COLUMN_ORDER, DEFAULT_VISIBLE);
 
   const { sort, toggle } = useSort<ColKey>({
     key: "openPipeline",
@@ -221,6 +263,30 @@ export function AccountsPage() {
         type: "number",
         getValue: (a: SfAccount) =>
           metricsByAccount.get(a.Id)?.outstanding ?? 0,
+      },
+      wonPhilanthropy: {
+        label: "Won: Philanthropy",
+        type: "number",
+        getValue: (a: SfAccount) =>
+          metricsByAccount.get(a.Id)?.wonByRecordType["Philanthropy"] ?? 0,
+      },
+      wonPBC: {
+        label: "Won: PBC",
+        type: "number",
+        getValue: (a: SfAccount) =>
+          metricsByAccount.get(a.Id)?.wonByRecordType["PBC"] ?? 0,
+      },
+      wonDebtEquity: {
+        label: "Won: Debt / Equity",
+        type: "number",
+        getValue: (a: SfAccount) =>
+          metricsByAccount.get(a.Id)?.wonByRecordType["Debt / Equity"] ?? 0,
+      },
+      wonOtherFFS: {
+        label: "Won: Other FFS",
+        type: "number",
+        getValue: (a: SfAccount) =>
+          metricsByAccount.get(a.Id)?.wonByRecordType["Other Fee For Service"] ?? 0,
       },
     }) as Record<AccountField, FieldMeta<SfAccount>>,
     [metricsByAccount],
@@ -577,6 +643,10 @@ export function AccountsPage() {
                     amountWon: fmtMoney(totals.amountWon),
                     received: fmtMoney(totals.received),
                     outstanding: fmtMoney(totals.outstanding),
+                    wonPhilanthropy: fmtMoney(totals.wonByRecordType["Philanthropy"] ?? 0),
+                    wonPBC: fmtMoney(totals.wonByRecordType["PBC"] ?? 0),
+                    wonDebtEquity: fmtMoney(totals.wonByRecordType["Debt / Equity"] ?? 0),
+                    wonOtherFFS: fmtMoney(totals.wonByRecordType["Other Fee For Service"] ?? 0),
                   };
                   const label = totalsMap[key];
                   if (idx === 0) {
@@ -822,7 +892,20 @@ const AccountRow = memo(function AccountRow({
     amountWon: m.amountWon > 0 ? fmtMoney(m.amountWon) : dash,
     received: m.received > 0 ? fmtMoney(m.received) : dash,
     outstanding: m.outstanding > 0 ? fmtMoney(m.outstanding) : dash,
+    wonPhilanthropy: (m.wonByRecordType["Philanthropy"] ?? 0) > 0
+      ? fmtMoney(m.wonByRecordType["Philanthropy"]!) : dash,
+    wonPBC: (m.wonByRecordType["PBC"] ?? 0) > 0
+      ? fmtMoney(m.wonByRecordType["PBC"]!) : dash,
+    wonDebtEquity: (m.wonByRecordType["Debt / Equity"] ?? 0) > 0
+      ? fmtMoney(m.wonByRecordType["Debt / Equity"]!) : dash,
+    wonOtherFFS: (m.wonByRecordType["Other Fee For Service"] ?? 0) > 0
+      ? fmtMoney(m.wonByRecordType["Other Fee For Service"]!) : dash,
   };
+
+  const wonP = m.wonByRecordType["Philanthropy"] ?? 0;
+  const wonPBCVal = m.wonByRecordType["PBC"] ?? 0;
+  const wonDE = m.wonByRecordType["Debt / Equity"] ?? 0;
+  const wonOFFS = m.wonByRecordType["Other Fee For Service"] ?? 0;
 
   const cellCls: Partial<Record<ColKey, string>> = {
     name: "overflow-hidden px-3 py-1 text-[13px]",
@@ -831,9 +914,16 @@ const AccountRow = memo(function AccountRow({
     amountWon: cn(numCell, m.amountWon > 0 && "font-semibold text-green"),
     received: cn(numCell, m.received > 0 && "font-medium text-green"),
     outstanding: cn(numCell, m.outstanding > 0 && "font-medium text-amber"),
+    wonPhilanthropy: cn(numCell, wonP > 0 && "font-medium text-green"),
+    wonPBC: cn(numCell, wonPBCVal > 0 && "font-medium text-green"),
+    wonDebtEquity: cn(numCell, wonDE > 0 && "font-medium text-green"),
+    wonOtherFFS: cn(numCell, wonOFFS > 0 && "font-medium text-green"),
   };
 
-  const clickable = new Set<ColKey>(["openPipeline", "amountWon", "received", "outstanding"]);
+  const clickable = new Set<ColKey>([
+    "openPipeline", "amountWon", "received", "outstanding",
+    "wonPhilanthropy", "wonPBC", "wonDebtEquity", "wonOtherFFS",
+  ]);
 
   return (
     <tr
