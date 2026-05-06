@@ -77,7 +77,7 @@ async def _ensure_org_user(email: str, name: str, db) -> Optional[Dict[str, Any]
             logger.info(f"Created public.org_users row for {email}")
             return dict(row)
     except Exception as e:
-        logger.debug(f"Could not ensure org_users for {email}: {e}")
+        logger.warning(f"_ensure_org_user failed for {email}: {e}")
     return None
 
 
@@ -103,7 +103,7 @@ async def record_bedrock_login(email: str, name: str, db) -> None:
             org_user_id,
         )
     except Exception as e:
-        logger.debug(f"Could not record login for {email}: {e}")
+        logger.warning(f"record_bedrock_login failed for {email}: {e}")
 
 
 async def get_user_permissions(email: str, db) -> Dict[str, Any]:
