@@ -59,6 +59,7 @@ from routes.platform_intake import router as platform_intake_router
 from routes.awards import router as awards_router
 from routes.saved_views import router as saved_views_router
 from routes.search import router as search_router
+from routes.pebble_proxy import router as pebble_proxy_router, close as close_pebble_proxy
 from services.search_indexer import run_worker as run_search_indexer_worker
 from auth import get_current_user_dep, require_auth, IS_PRODUCTION, JWT_SECRET_KEY
 from security import validate_salesforce_id, escape_soql_string
@@ -140,6 +141,7 @@ app.include_router(platform_intake_router)
 app.include_router(awards_router)
 app.include_router(saved_views_router)
 app.include_router(search_router)
+app.include_router(pebble_proxy_router)
 
 # Service singletons — shared with dependencies.py so route files can use
 # Depends(require_sf_mcp_client) without circular imports.
@@ -240,6 +242,7 @@ async def shutdown_event():
             except (asyncio.CancelledError, Exception):
                 pass
 
+    await close_pebble_proxy()
     await close_db()
     client = _services.get("mcp_client")
     if client:
