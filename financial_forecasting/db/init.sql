@@ -369,8 +369,8 @@ SET name = 'Relationship Manager',
         "create_contacts": true,
         "edit_payments": false,
         "create_payments": false,
-        "view_projects": false,
-        "edit_projects": false,
+        "view_projects": true,
+        "edit_projects": true,
         "view_revenue_dashboard": true,
         "view_cashflow_forecasts": true,
         "view_sage_invoices_payments": false,
@@ -439,7 +439,7 @@ VALUES (
 INSERT INTO bedrock.permission_profile (name, description, is_default, permissions)
 VALUES (
     'Relationship Manager',
-    'Edit own opportunities and tasks, create accounts and contacts — no projects, no Pebble',
+    'Edit own opportunities and tasks, create accounts and contacts, manage projects',
     true,
     '{
         "view_opportunities": true,
@@ -459,8 +459,8 @@ VALUES (
         "create_contacts": true,
         "edit_payments": false,
         "create_payments": false,
-        "view_projects": false,
-        "edit_projects": false,
+        "view_projects": true,
+        "edit_projects": true,
         "view_revenue_dashboard": true,
         "view_cashflow_forecasts": true,
         "view_sage_invoices_payments": false,
@@ -501,7 +501,7 @@ VALUES (
         "edit_payments": false,
         "create_payments": false,
         "view_projects": true,
-        "edit_projects": false,
+        "edit_projects": true,
         "view_revenue_dashboard": true,
         "view_cashflow_forecasts": true,
         "view_sage_invoices_payments": false,
@@ -564,6 +564,27 @@ VALUES (
 UPDATE bedrock.permission_profile
 SET permissions = permissions || '{"view_projects": true, "edit_projects": true, "edit_permission_profiles": true}'::jsonb
 WHERE name = 'Admin' AND NOT (permissions ? 'view_projects');
+
+-- 2026-05-06: track when each user last logged into Bedrock so the
+-- Users tab can filter to "actually logged in" rows (not just users
+-- whose org_users row was created lazily via SF sync or a permission
+-- check). Lives on bedrock.user_config (owned by the bedrock role)
+-- because public.org_users is owned by the platform DB role.
+-- Backfills user_config.last_login_at to created_at as a best-effort
+-- baseline so existing users still show up in the filtered list; the
+-- auth callback refreshes it on every login going forward.
+ALTER TABLE bedrock.user_config
+    ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ;
+UPDATE bedrock.user_config
+   SET last_login_at = COALESCE(last_login_at, created_at)
+ WHERE last_login_at IS NULL;
+
+-- 2026-05-06: grant full Projects access (view + edit) to all standard
+-- CRM profiles. Per JR — every Bedrock user should be able to view AND
+-- edit projects; PM-only edit gating was removed.
+UPDATE bedrock.permission_profile
+SET permissions = permissions || '{"view_projects": true, "edit_projects": true}'::jsonb
+WHERE name IN ('Relationship Manager', 'Fundraiser', 'Executive', 'Project Manager');
 
 -- ── Permission unlock request table ──
 

@@ -180,6 +180,20 @@ async def auth_google_callback(request: Request):
         _google_tokens[email] = google_token_data
         logger.info(f"Stored Google tokens for {email} (has refresh: {bool(token.get('refresh_token'))})")
 
+        # Provision the org_users row + stamp last_login_at. Doing this
+        # here (rather than waiting for the first permission-gated route
+        # to lazy-create it) ensures every successful login leaves a
+        # trace that the Users tab can filter on.
+        try:
+            from db import get_pool
+            from routes.permissions import record_bedrock_login
+            pool = get_pool()
+            if pool is not None:
+                async with pool.acquire() as conn:
+                    await record_bedrock_login(email, user_info.get('name', ''), conn)
+        except Exception as e:
+            logger.warning(f"record_bedrock_login failed for {email}: {e}")
+
         # Create JWT
         access_token = create_access_token({
             "email": email,
