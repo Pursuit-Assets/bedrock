@@ -949,17 +949,24 @@ async def get_cashflow(
 
     try:
         salesforce = client.salesforce
-        won_stages = "('Collecting / In Effect', 'Closed Won', 'Closed Completed')"
+        # Stage filter is used for "scheduled" only (so we don't count
+        # scheduled payments from open-pipeline opps as committed cash).
+        # "Actuals" — Paid=true is sufficient: money in the bank doesn't
+        # care about the opp's current stage.
+        won_stages = (
+            "('Collecting / In Effect', 'Collecting', 'In Effect', "
+            "'Closed Won', 'Closed / Completed', 'Closed / Fulfilled')"
+        )
 
-        # Won-opp payments: actuals (paid) + scheduled (unpaid)
+        # Won-opp scheduled payments + ALL paid payments (any stage).
         soql_won = f"""
             SELECT npe01__Payment_Amount__c, npe01__Scheduled_Date__c,
                    npe01__Paid__c, npe01__Payment_Date__c
             FROM npe01__OppPayment__c
             WHERE npe01__Written_Off__c = false
-            AND npe01__Opportunity__r.StageName IN {won_stages}
             AND (
-                (npe01__Scheduled_Date__c >= {year}-01-01
+                (npe01__Opportunity__r.StageName IN {won_stages}
+                 AND npe01__Scheduled_Date__c >= {year}-01-01
                  AND npe01__Scheduled_Date__c <= {year}-12-31)
                 OR
                 (npe01__Paid__c = true
@@ -1046,15 +1053,23 @@ async def get_cashflow_detail(
 
     try:
         salesforce = client.salesforce
-        won_stages = "('Collecting / In Effect', 'Closed Won', 'Closed Completed')"
+        # Same expanded won-stages list as the aggregate cashflow query.
+        # Includes the correct "Closed / Completed" spelling and the
+        # Collecting / In Effect / Fulfilled stages that produce paid
+        # payments in practice.
+        won_stages = (
+            "('Collecting / In Effect', 'Collecting', 'In Effect', "
+            "'Closed Won', 'Closed / Completed', 'Closed / Fulfilled')"
+        )
         last_day = calendar.monthrange(year, month)[1]
         m_start = f"{year}-{month:02d}-01"
         m_end   = f"{year}-{month:02d}-{last_day:02d}"
 
         if type == "actuals":
             soql = f"""
-                SELECT npe01__Payment_Amount__c, npe01__Payment_Date__c,
+                SELECT Id, npe01__Payment_Amount__c, npe01__Payment_Date__c,
                        npe01__Scheduled_Date__c,
+                       npe01__Opportunity__c,
                        npe01__Opportunity__r.Name, npe01__Opportunity__r.StageName,
                        npe01__Opportunity__r.Account.Name
                 FROM npe01__OppPayment__c
@@ -1067,7 +1082,8 @@ async def get_cashflow_detail(
             """
         elif type in ("scheduled", "outstanding"):
             soql = f"""
-                SELECT npe01__Payment_Amount__c, npe01__Scheduled_Date__c,
+                SELECT Id, npe01__Payment_Amount__c, npe01__Scheduled_Date__c,
+                       npe01__Opportunity__c,
                        npe01__Opportunity__r.Name, npe01__Opportunity__r.StageName,
                        npe01__Opportunity__r.Account.Name
                 FROM npe01__OppPayment__c
@@ -1081,7 +1097,8 @@ async def get_cashflow_detail(
             """
         else:  # projected
             soql = f"""
-                SELECT npe01__Payment_Amount__c, npe01__Scheduled_Date__c,
+                SELECT Id, npe01__Payment_Amount__c, npe01__Scheduled_Date__c,
+                       npe01__Opportunity__c,
                        npe01__Opportunity__r.Name, npe01__Opportunity__r.StageName,
                        npe01__Opportunity__r.Probability,
                        npe01__Opportunity__r.Account.Name
@@ -1102,6 +1119,8 @@ async def get_cashflow_detail(
             prob = opp.get("Probability") or 0
             amt = r.get("npe01__Payment_Amount__c") or 0
             records.append({
+                "payment_id": r.get("Id"),
+                "opp_id": r.get("npe01__Opportunity__c"),
                 "amount": amt,
                 "weighted_amount": round(amt * prob / 100, 2) if type == "projected" else None,
                 "probability": prob if type == "projected" else None,

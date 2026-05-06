@@ -11,6 +11,8 @@ export interface CashflowMonth {
 export type CashflowType = "actuals" | "scheduled" | "outstanding" | "projected";
 
 export interface CashflowDetailRecord {
+  payment_id: string | null;
+  opp_id: string | null;
   amount: number;
   weighted_amount: number | null;
   probability: number | null;
