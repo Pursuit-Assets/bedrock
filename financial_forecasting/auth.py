@@ -142,6 +142,18 @@ async def get_current_user_dep(request: Request) -> Optional[Dict]:
 
 _BEDROCK_INTERNAL_API_KEY = os.getenv("BEDROCK_INTERNAL_API_KEY", "")
 
+# HTTP methods considered "writes" for the kill switch below. Idempotent reads
+# (GET, HEAD, OPTIONS) remain available even when the switch is on so that
+# Pebble's research/lookup paths keep working during write-side incidents.
+_WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+
+def _pebble_writes_disabled() -> bool:
+    """Read the kill switch fresh on every call so operators can flip it
+    without a redeploy. Truthy values: "true" / "1" / "yes" (case-insensitive).
+    """
+    return os.getenv("PEBBLE_WRITES_DISABLED", "").strip().lower() in {"true", "1", "yes"}
+
 
 async def require_auth_or_internal(request: Request) -> Dict:
     """Authorize via internal API key (service-to-service) or user JWT.
@@ -150,10 +162,33 @@ async def require_auth_or_internal(request: Request) -> Dict:
     synthetic service user dict.  Otherwise falls back to require_auth.
     Dev mode: if BEDROCK_INTERNAL_API_KEY is empty, internal key check
     is skipped and only JWT auth is tried.
+
+    Kill switch: if PEBBLE_WRITES_DISABLED env is truthy AND the caller is
+    using a valid internal key AND the request method is a write
+    (POST/PUT/PATCH/DELETE), return 503. Reads via internal key and all
+    JWT-authenticated requests are unaffected. Designed for incident
+    response — flip the env var to halt service-account writes without a
+    deploy.
     """
     internal_key = request.headers.get("X-Internal-Key", "")
     if _BEDROCK_INTERNAL_API_KEY and internal_key:
         if hmac.compare_digest(internal_key, _BEDROCK_INTERNAL_API_KEY):
+            if _pebble_writes_disabled() and request.method in _WRITE_METHODS:
+                logger.warning(
+                    "pebble_writes_disabled: blocking %s %s for service caller",
+                    request.method,
+                    request.url.path,
+                )
+                raise HTTPException(
+                    status_code=503,
+                    detail={
+                        "error": "pebble_writes_disabled",
+                        "message": (
+                            "Pebble service-account writes are temporarily "
+                            "disabled. Reads remain available."
+                        ),
+                    },
+                )
             return {
                 "user_id": "service:pebble",
                 "email": "pebble@internal",
