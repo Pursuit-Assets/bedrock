@@ -121,10 +121,29 @@ async def resolve_principal(
     """Resolve the SearchPrincipal from the user dict produced by
     ``require_auth_or_internal``.
 
-    For service callers (``is_service=True``) we use
-    ``originating_user_email`` — Pebble acts on behalf of, never as
-    itself, on the read side. Auth dependency already rejects service
-    calls without that header (Phase 0.2).
+    Reads through the **canonical** permission resolver
+    (``routes.permissions.get_user_permissions``) — does NOT roll its
+    own SQL. The canonical resolver knows the live schema:
+    ``public.org_users`` (canonical identity) joined to
+    ``bedrock.user_config`` joined to ``bedrock.permission_profile``.
+    Earlier drafts of this function rolled their own JOIN against
+    ``bedrock.org_users`` / ``bedrock.permission_profiles`` (plural)
+    — neither exists; both would 500 on every search request. Lesson:
+    for anything that looks like "user → profile → permissions",
+    delegate to the canonical resolver.
+
+    Service callers (Pebble, ``is_service=True``) resolve against
+    their ``originating_user_email`` — Pebble is delegated, never
+    god-principal. Auth dependency already rejects service calls
+    without that header (Phase 0.2).
+
+    Spoof defense: when the originating user does not exist in
+    ``public.org_users`` and we can't auto-provision (e.g. local dev
+    without the learning-platform schema), the canonical resolver
+    returns ``{permissions: {}, sf_user_id: None}``. We honor that:
+    no org_users row → most-restrictive principal → no rows visible.
+    The audit row (written separately) still captures the spoof
+    attempt with the claimed email.
     """
     if user.get("is_service"):
         email = user.get("originating_user_email")
@@ -138,36 +157,22 @@ async def resolve_principal(
         if not email:
             raise ValueError("User dict missing email")
 
-    row = await db_conn.fetchrow(
-        """
-        SELECT
-            u.email,
-            u.sf_user_id,
-            (pp.permissions ->> 'manage_users_roles')::boolean
-                AS is_admin,
-            COALESCE(
-                (pp.permissions ->> 'edit_all_opportunities')::boolean,
-                FALSE
-            ) AS has_view_all_opportunities,
-            COALESCE(
-                (pp.permissions ->> 'edit_accounts')::boolean,
-                FALSE
-            ) AS has_view_all_accounts,
-            COALESCE(
-                (pp.permissions ->> 'edit_contacts')::boolean,
-                FALSE
-            ) AS has_view_all_contacts,
-            COALESCE(u.org_id, 'pursuit') AS org_id
-        FROM bedrock.org_users u
-        LEFT JOIN bedrock.permission_profiles pp
-            ON u.permission_profile_id = pp.id
-        WHERE u.email = $1
-        """,
-        email,
-    )
-    if not row:
-        # User not in org_users — locked out of search by default.
-        # Service callers spoofing a non-existent user land here.
+    # Delegate to the canonical resolver. Imported locally to avoid
+    # a top-of-module circular (routes.permissions imports from db,
+    # auth, and other layers; services/search_service is meant to be
+    # importable from anywhere).
+    from routes.permissions import get_user_permissions
+
+    try:
+        resolved = await get_user_permissions(email, db_conn)
+    except Exception as e:
+        logger.warning(
+            "search.resolve_principal: get_user_permissions failed for %s: %s",
+            email, e,
+        )
+        # Fail-closed — most restrictive principal. The audit row
+        # still attributes the search to the claimed email so this
+        # shows up in anomaly review.
         return SearchPrincipal(
             email=email,
             sf_user_id=None,
@@ -176,14 +181,23 @@ async def resolve_principal(
             has_view_all_opportunities=False,
             has_view_all_contacts=False,
         )
+
+    perms: dict[str, Any] = resolved.get("permissions") or {}
+    profile_name = resolved.get("profile_name")
+    is_admin = (profile_name == "Admin") or bool(perms.get("manage_users_roles"))
+
     return SearchPrincipal(
-        email=row["email"],
-        sf_user_id=row["sf_user_id"],
-        is_admin=bool(row["is_admin"]),
-        has_view_all_accounts=bool(row["has_view_all_accounts"]),
-        has_view_all_opportunities=bool(row["has_view_all_opportunities"]),
-        has_view_all_contacts=bool(row["has_view_all_contacts"]),
-        org_id=row["org_id"] or "pursuit",
+        email=email,
+        sf_user_id=resolved.get("sf_user_id"),
+        is_admin=is_admin,
+        has_view_all_accounts=is_admin or bool(perms.get("edit_accounts")),
+        has_view_all_opportunities=is_admin or bool(perms.get("edit_all_opportunities")),
+        has_view_all_contacts=is_admin or bool(perms.get("edit_contacts")),
+        # No org_id on public.org_users today — Pursuit is single-tenant.
+        # The column is reserved on bedrock.search_doc and the
+        # SearchPrincipal so multi-tenant retrofit is mechanical, not
+        # a redesign.
+        org_id="pursuit",
     )
 
 

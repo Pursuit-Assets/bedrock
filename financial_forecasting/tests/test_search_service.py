@@ -249,12 +249,22 @@ def test_limit_clamping(raw, expected):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_resolve_principal_for_nonexistent_user_is_restrictive():
-    """Pebble carrying X-Originating-User=ghost@example.com hits this
-    path. We don't 401 (auth already passed) but we do return a
-    locked-down principal so search returns nothing."""
+async def test_resolve_principal_for_nonexistent_user_is_restrictive(monkeypatch):
+    """Pebble carrying X-Originating-User=ghost@example.com hits the
+    canonical permission resolver, which returns
+    ``{permissions: {}, sf_user_id: None, profile_name: None}`` for
+    a non-existent user (local-dev or genuine spoof). Principal
+    locks down — no rows visible."""
+    async def _fake_get_perms(email, db):
+        return {
+            "id": None, "email": email, "name": "",
+            "sf_user_id": None, "is_active": True,
+            "permissions": {}, "profile_name": None, "profile_id": None,
+            "org_user_id": None,
+        }
+    monkeypatch.setattr("routes.permissions.get_user_permissions", _fake_get_perms)
+
     fake_conn = AsyncMock()
-    fake_conn.fetchrow = AsyncMock(return_value=None)
     user = {
         "is_service": True,
         "originating_user_email": "ghost@example.com",
@@ -269,24 +279,76 @@ async def test_resolve_principal_for_nonexistent_user_is_restrictive():
 
 
 @pytest.mark.asyncio
-async def test_resolve_principal_for_real_user():
+async def test_resolve_principal_for_admin_grants_view_all(monkeypatch):
+    """Admin profile name OR manage_users_roles permission ⇒ is_admin
+    ⇒ all view_all_* flags true regardless of individual perm flags.
+    Mirrors the canonical resolver's "Admin defaults all keys true"
+    behavior."""
+    async def _fake(email, db):
+        return {
+            "id": "u-1", "email": email, "name": "Admin User",
+            "sf_user_id": "005ADMIN", "is_active": True,
+            "permissions": {"manage_users_roles": True, "edit_accounts": True,
+                            "edit_all_opportunities": True, "edit_contacts": True},
+            "profile_name": "Admin",
+            "profile_id": "p-admin", "org_user_id": "u-1",
+        }
+    monkeypatch.setattr("routes.permissions.get_user_permissions", _fake)
+
     fake_conn = AsyncMock()
-    fake_conn.fetchrow = AsyncMock(return_value={
-        "email": "rm@pursuit.org",
-        "sf_user_id": "005ABC",
-        "is_admin": False,
-        "has_view_all_opportunities": False,
-        "has_view_all_accounts": True,
-        "has_view_all_contacts": False,
-        "org_id": "pursuit",
-    })
-    principal = await ss.resolve_principal(
-        fake_conn, {"email": "rm@pursuit.org"},
-    )
-    assert principal.email == "rm@pursuit.org"
-    assert principal.sf_user_id == "005ABC"
+    principal = await ss.resolve_principal(fake_conn, {"email": "admin@pursuit.org"})
+    assert principal.is_admin is True
     assert principal.has_view_all_accounts is True
+    assert principal.has_view_all_opportunities is True
+    assert principal.has_view_all_contacts is True
+
+
+@pytest.mark.asyncio
+async def test_resolve_principal_rm_with_partial_perms(monkeypatch):
+    """RM profile — has edit_accounts and edit_contacts but NOT
+    edit_all_opportunities. Should grant view_all on accounts +
+    contacts but NOT on opportunities."""
+    async def _fake(email, db):
+        return {
+            "id": "u-2", "email": email, "name": "RM",
+            "sf_user_id": "005RM", "is_active": True,
+            "permissions": {
+                "edit_accounts": True,
+                "edit_contacts": True,
+                "edit_own_opportunities": True,
+                "edit_all_opportunities": False,
+                "manage_users_roles": False,
+            },
+            "profile_name": "Relationship Manager",
+            "profile_id": "p-rm", "org_user_id": "u-2",
+        }
+    monkeypatch.setattr("routes.permissions.get_user_permissions", _fake)
+
+    fake_conn = AsyncMock()
+    principal = await ss.resolve_principal(fake_conn, {"email": "rm@pursuit.org"})
+    assert principal.is_admin is False
+    assert principal.has_view_all_accounts is True   # RM has edit_accounts
+    assert principal.has_view_all_contacts is True
     assert principal.has_view_all_opportunities is False
+    assert principal.sf_user_id == "005RM"
+
+
+@pytest.mark.asyncio
+async def test_resolve_principal_get_user_permissions_failure_is_fail_closed(monkeypatch):
+    """When the canonical resolver raises (DB down, schema migration
+    in flight), we fail-closed to the most restrictive principal.
+    Search returns nothing rather than failing open."""
+    async def _boom(email, db):
+        raise RuntimeError("DB unreachable")
+    monkeypatch.setattr("routes.permissions.get_user_permissions", _boom)
+
+    fake_conn = AsyncMock()
+    principal = await ss.resolve_principal(fake_conn, {"email": "rm@pursuit.org"})
+    assert principal.email == "rm@pursuit.org"
+    assert principal.is_admin is False
+    assert principal.has_view_all_accounts is False
+    assert principal.has_view_all_opportunities is False
+    assert principal.has_view_all_contacts is False
 
 
 @pytest.mark.asyncio
@@ -295,6 +357,36 @@ async def test_resolve_principal_service_without_originating_user_raises():
     user = {"is_service": True}    # missing originating_user_email
     with pytest.raises(ValueError, match=r"originating_user_email"):
         await ss.resolve_principal(fake_conn, user)
+
+
+@pytest.mark.asyncio
+async def test_resolve_principal_service_uses_originating_user_for_lookup(monkeypatch):
+    """Pebble (service caller) resolves permissions against the
+    originating human, NOT against pebble@internal. Locks in the
+    delegated-principal contract."""
+    captured_emails: list[str] = []
+
+    async def _fake(email, db):
+        captured_emails.append(email)
+        return {
+            "id": "u-3", "email": email, "name": "RM",
+            "sf_user_id": "005RM", "is_active": True,
+            "permissions": {"edit_accounts": True},
+            "profile_name": "Relationship Manager",
+            "profile_id": "p-rm", "org_user_id": "u-3",
+        }
+    monkeypatch.setattr("routes.permissions.get_user_permissions", _fake)
+
+    fake_conn = AsyncMock()
+    user = {
+        "is_service": True,
+        "email": "pebble@internal",
+        "originating_user_email": "rm@pursuit.org",
+    }
+    principal = await ss.resolve_principal(fake_conn, user)
+    assert captured_emails == ["rm@pursuit.org"]
+    assert principal.email == "rm@pursuit.org"
+    assert principal.sf_user_id == "005RM"
 
 
 # ---------------------------------------------------------------------------
