@@ -61,6 +61,7 @@ from routes.saved_views import router as saved_views_router
 from routes.search import router as search_router
 from routes.pebble_proxy import router as pebble_proxy_router, close as close_pebble_proxy
 from services.search_indexer import run_worker as run_search_indexer_worker
+from services.pebble_audit import PebbleWriteAuditMiddleware
 from auth import get_current_user_dep, require_auth, IS_PRODUCTION, JWT_SECRET_KEY
 from security import validate_salesforce_id, escape_soql_string
 from services.crm_parser import refresh_opp_cache as _refresh_opp_cache
@@ -90,6 +91,21 @@ app = FastAPI(
 limiter = Limiter(key_func=get_remote_address, default_limits=["60/minute"])
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# Pebble write-audit middleware — captures every internal-key write
+# to a Pebble-relevant route into bedrock.pebble_write_audit. Phase 0.8.
+# pool_provider returns the asyncpg pool from main.py's _services dict
+# so the middleware doesn't have to import a top-level symbol that
+# would couple the module to main.py.
+def _audit_pool_provider():
+    try:
+        from db import get_pool
+        return get_pool()
+    except Exception:
+        return None
+
+
+app.add_middleware(PebbleWriteAuditMiddleware, pool_provider=_audit_pool_provider)
 
 # Session middleware (required for Authlib OAuth state)
 app.add_middleware(
