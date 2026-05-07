@@ -231,8 +231,9 @@ async def background_sync_task():
 
 
 async def background_award_reconciler_task():
-    """Daily background task: catch awards missed when stage was changed
-    directly in Salesforce (bypassing Bedrock's update-stage endpoint).
+    """Hourly background task: catch awards missed when an opp's stage
+    was changed directly in Salesforce (bypassing Bedrock's update-stage
+    endpoint, where the auto-create side-effect lives).
 
     Idempotent — opps that already have an award row are skipped via the
     bedrock.award partial unique index. First run is delayed 60s after
@@ -253,8 +254,8 @@ async def background_award_reconciler_task():
         except Exception as e:
             logger.error(f"Award reconciler error: {e}")
 
-        # Wait 24h before next pass
-        await asyncio.sleep(86_400)
+        # Wait 1h before next pass
+        await asyncio.sleep(3_600)
 
 
 # Dependency functions — get_current_user is now cookie-based (see auth.py)
@@ -957,9 +958,49 @@ async def get_acv_summary(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+_VALID_CASHFLOW_BUCKETS = {"all", "philanthropy", "pbc", "capital_grants", "other"}
+
+
+def _cashflow_bucket_soql(bucket: str) -> str:
+    """Return a SOQL fragment to AND into a payment query so it only
+    matches the requested record-type bucket.
+
+    Buckets:
+        all             — no filter
+        philanthropy    — RecordType.Name = 'Philanthropy' AND not a Capital Grant
+        capital_grants  — Philanthropy_Type__c = 'Capital Grant' (any RT, but in
+                          practice all sit under Philanthropy)
+        pbc             — RecordType.Name = 'PBC'
+        other           — neither Philanthropy nor PBC (includes NULL RT;
+                          Capital Grants are excluded since they're RT=Philanthropy)
+    """
+    if bucket == "all":
+        return ""
+    opp = "npe01__Opportunity__r"
+    if bucket == "philanthropy":
+        return (
+            f" AND {opp}.RecordType.Name = 'Philanthropy' "
+            f"AND ({opp}.Philanthropy_Type__c != 'Capital Grant' "
+            f"OR {opp}.Philanthropy_Type__c = null)"
+        )
+    if bucket == "capital_grants":
+        return f" AND {opp}.Philanthropy_Type__c = 'Capital Grant'"
+    if bucket == "pbc":
+        return f" AND {opp}.RecordType.Name = 'PBC'"
+    if bucket == "other":
+        return (
+            f" AND ({opp}.RecordType.Name = null OR "
+            f"{opp}.RecordType.Name NOT IN ('Philanthropy', 'PBC')) "
+            f"AND ({opp}.Philanthropy_Type__c != 'Capital Grant' "
+            f"OR {opp}.Philanthropy_Type__c = null)"
+        )
+    return ""
+
+
 @app.get("/api/salesforce/cashflow")
 async def get_cashflow(
     year: int = Query(..., ge=2000, le=2100),
+    bucket: str = Query("all", regex="^(all|philanthropy|pbc|capital_grants|other)$"),
     client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user=Depends(require_auth),
 ):
@@ -969,8 +1010,10 @@ async def get_cashflow(
       - actuals: paid payments (npe01__Payment_Date__c) from won opps
       - scheduled: unpaid future payments (npe01__Scheduled_Date__c) from won opps
       - projected: open-pipeline payments weighted by opp probability
+
+    Optional `bucket` filter restricts to a record-type bucket.
     """
-    cache_key = f"cashflow:{year}"
+    cache_key = f"cashflow:{year}:{bucket}"
     cached = cache.get(cache_key)
     if cached is not None:
         return cached
@@ -985,6 +1028,7 @@ async def get_cashflow(
             "('Collecting / In Effect', 'Collecting', 'In Effect', "
             "'Closed Won', 'Closed / Completed', 'Closed / Fulfilled')"
         )
+        bucket_clause = _cashflow_bucket_soql(bucket)
 
         # Won-opp scheduled payments + ALL paid payments (any stage).
         soql_won = f"""
@@ -1001,6 +1045,7 @@ async def get_cashflow(
                  AND npe01__Payment_Date__c >= {year}-01-01
                  AND npe01__Payment_Date__c <= {year}-12-31)
             )
+            {bucket_clause}
             LIMIT 2000
         """
 
@@ -1014,6 +1059,7 @@ async def get_cashflow(
             AND npe01__Opportunity__r.StageName NOT IN {won_stages}
             AND npe01__Scheduled_Date__c >= {year}-01-01
             AND npe01__Scheduled_Date__c <= {year}-12-31
+            {bucket_clause}
             LIMIT 2000
         """
 
@@ -1070,11 +1116,12 @@ async def get_cashflow_detail(
     year: int = Query(..., ge=2000, le=2100),
     month: int = Query(..., ge=1, le=12),
     type: str = Query(..., regex="^(actuals|scheduled|outstanding|projected)$"),
+    bucket: str = Query("all", regex="^(all|philanthropy|pbc|capital_grants|other)$"),
     client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user=Depends(require_auth),
 ):
     """Individual payment records for a specific cash flow cell."""
-    cache_key = f"cashflow-detail:{year}:{month}:{type}"
+    cache_key = f"cashflow-detail:{year}:{month}:{type}:{bucket}"
     cached = cache.get(cache_key)
     if cached is not None:
         return cached
@@ -1089,6 +1136,7 @@ async def get_cashflow_detail(
             "('Collecting / In Effect', 'Collecting', 'In Effect', "
             "'Closed Won', 'Closed / Completed', 'Closed / Fulfilled')"
         )
+        bucket_clause = _cashflow_bucket_soql(bucket)
         last_day = calendar.monthrange(year, month)[1]
         m_start = f"{year}-{month:02d}-01"
         m_end   = f"{year}-{month:02d}-{last_day:02d}"
@@ -1105,6 +1153,7 @@ async def get_cashflow_detail(
                 AND npe01__Written_Off__c = false
                 AND npe01__Payment_Date__c >= {m_start}
                 AND npe01__Payment_Date__c <= {m_end}
+                {bucket_clause}
                 ORDER BY npe01__Payment_Date__c ASC
                 LIMIT 500
             """
@@ -1120,6 +1169,7 @@ async def get_cashflow_detail(
                 AND npe01__Opportunity__r.StageName IN {won_stages}
                 AND npe01__Scheduled_Date__c >= {m_start}
                 AND npe01__Scheduled_Date__c <= {m_end}
+                {bucket_clause}
                 ORDER BY npe01__Scheduled_Date__c ASC
                 LIMIT 500
             """
@@ -1136,6 +1186,7 @@ async def get_cashflow_detail(
                 AND npe01__Opportunity__r.StageName NOT IN {won_stages}
                 AND npe01__Scheduled_Date__c >= {m_start}
                 AND npe01__Scheduled_Date__c <= {m_end}
+                {bucket_clause}
                 ORDER BY npe01__Scheduled_Date__c ASC
                 LIMIT 500
             """
