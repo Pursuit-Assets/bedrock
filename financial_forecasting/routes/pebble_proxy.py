@@ -60,6 +60,15 @@ _PEBBLE_API_KEY = os.getenv("PEBBLE_API_KEY", "")
 # responses can take up to ~30s; tight on connect.
 _HTTP_TIMEOUT = httpx.Timeout(60.0, connect=3.0, read=60.0)
 
+# Daily cost cap (dollars). Mirrors pebble/main.py:DAILY_COST_LIMIT
+# default of $5.00. Override via PEBBLE_DAILY_COST_LIMIT_USD. When a
+# user exceeds the cap, /api/pebble/ask returns 429 with a
+# Retry-After header set to seconds-until-midnight-UTC. When at 80%+,
+# the proxy adds a degradation hint header so Pebble can route to L0
+# only (cheap deterministic redirects, no LLM tokens).
+_DAILY_COST_LIMIT_USD = float(os.getenv("PEBBLE_DAILY_COST_LIMIT_USD", "5.0"))
+_COST_DEGRADE_FRACTION = 0.80    # 80% — degrade to L0-only beyond this
+
 
 # ---------------------------------------------------------------------------
 # Request / response
@@ -116,6 +125,48 @@ def _new_trace_id(request: Request) -> str:
         except ValueError:
             pass
     return str(uuid.uuid4())
+
+
+async def _read_daily_cost(pool, user_email: str) -> tuple[float, int]:
+    """Return (today_cost_usd, today_query_count) for the given user.
+    Zero / zero if no row exists. Failures return (0.0, 0) — fail-open
+    on read so DB outages don't lock users out, but a follow-up alert
+    catches sustained read failures.
+    """
+    if not user_email:
+        return 0.0, 0
+    try:
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT COALESCE(total_cost_usd, 0)::float AS cost,
+                       COALESCE(query_count, 0)::int AS qcount
+                  FROM bedrock.pebble_daily_usage
+                 WHERE user_email = $1
+                   AND date = CURRENT_DATE
+                """,
+                user_email,
+            )
+            if not row:
+                return 0.0, 0
+            return float(row["cost"]), int(row["qcount"])
+    except Exception:
+        logger.exception(
+            "pebble_proxy: failed to read daily usage for %s — failing open",
+            user_email,
+        )
+        return 0.0, 0
+
+
+def _seconds_until_midnight_utc() -> int:
+    """For Retry-After when cost cap is hit. Resets at midnight UTC."""
+    from datetime import datetime, timedelta, timezone
+
+    now = datetime.now(tz=timezone.utc)
+    tomorrow = (now + timedelta(days=1)).replace(
+        hour=0, minute=0, second=0, microsecond=0,
+    )
+    return max(60, int((tomorrow - now).total_seconds()))
 
 
 async def _emit_ask_audit(
@@ -196,6 +247,50 @@ async def ask_endpoint(
     # shouldn't happen but defend in depth), otherwise the bearer.
     pebble_user_email = originating or user_email
 
+    # Cost cap enforcement. Read today's spend for the user; reject
+    # at 100%, degrade to L0-only at 80%+. Read is fail-open (DB
+    # outage doesn't lock users out) but logs to flag sustained
+    # failures.
+    today_cost, today_count = await _read_daily_cost(pool, pebble_user_email)
+    if today_cost >= _DAILY_COST_LIMIT_USD:
+        retry_seconds = _seconds_until_midnight_utc()
+        latency_ms = int((time.perf_counter() - started) * 1000)
+        # FastAPI's default HTTPException handler doesn't run the
+        # BackgroundTasks attached to the original request, so audit
+        # the blocked attempt via a fire-and-forget task instead.
+        # Anomaly detection needs to see 429s — they're often the
+        # signal that someone's spamming Pebble.
+        import asyncio as _asyncio
+        _asyncio.create_task(_emit_ask_audit(
+            pool,
+            request_id=request_id,
+            trace_id=trace_id,
+            user_email=user_email,
+            originating_user_email=originating,
+            org_id=org_id,
+            query=body.query,
+            response_status=429,
+            latency_ms=latency_ms,
+            error_class="daily_cost_cap_exceeded",
+        ))
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "error": "daily_cost_cap_exceeded",
+                "message": (
+                    f"You have reached today's Pebble usage cap "
+                    f"(${_DAILY_COST_LIMIT_USD:.2f}). "
+                    f"Resets at midnight UTC."
+                ),
+                "spent_usd": round(today_cost, 4),
+                "limit_usd": _DAILY_COST_LIMIT_USD,
+                "query_count_today": today_count,
+            },
+            headers={"Retry-After": str(retry_seconds)},
+        )
+
+    degrade_to_l0 = today_cost >= (_DAILY_COST_LIMIT_USD * _COST_DEGRADE_FRACTION)
+
     pebble_body = {
         "query": body.query,
         "conversation_id": body.conversation_id or str(uuid.uuid4()),
@@ -206,6 +301,17 @@ async def ask_endpoint(
         "X-Trace-Id": trace_id,
         "X-Request-Id": request_id,
     }
+    if degrade_to_l0:
+        # Pebble's router checks this header (or env var) to skip
+        # the L1+ LLM path and only emit deterministic L0 redirects.
+        # Even if Pebble doesn't honor it yet, the audit row records
+        # that we ASKED for degraded mode, which is the data we need
+        # for "did the cost cap kick in correctly" forensics.
+        pebble_headers["X-Pebble-Force-Tier"] = "L0"
+        logger.info(
+            "pebble_proxy: degrading user=%s today=$%.2f / cap=$%.2f to L0-only",
+            pebble_user_email, today_cost, _DAILY_COST_LIMIT_USD,
+        )
 
     response_status = 200
     error_class: Optional[str] = None
@@ -256,12 +362,18 @@ async def ask_endpoint(
                 error_class=error_class,
             )
 
+    response_headers = {
+        "X-Trace-Id": trace_id,
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+    }
+    if degrade_to_l0:
+        response_headers["X-Pebble-Degraded"] = "true"
+        response_headers["X-Pebble-Cost-Today"] = f"{today_cost:.4f}"
+        response_headers["X-Pebble-Cost-Limit"] = f"{_DAILY_COST_LIMIT_USD:.2f}"
+
     return StreamingResponse(
         _stream(),
         media_type="text/event-stream",
-        headers={
-            "X-Trace-Id": trace_id,
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-        },
+        headers=response_headers,
     )

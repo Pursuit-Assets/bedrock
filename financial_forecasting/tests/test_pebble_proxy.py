@@ -11,6 +11,7 @@ Asserts:
   H. close() shuts the singleton client.
 """
 
+import asyncio
 import os
 import sys
 from contextlib import asynccontextmanager
@@ -76,6 +77,8 @@ def app_factory(monkeypatch):
         *,
         pebble_stream: _FakePebbleStream | None = None,
         user: dict | None = None,
+        today_cost: float = 0.0,
+        today_count: int = 0,
     ) -> tuple[FastAPI, AsyncMock, _FakeClient]:
         # Reset module-level client so we don't leak between tests.
         pebble_proxy._client = None
@@ -88,8 +91,17 @@ def app_factory(monkeypatch):
 
         monkeypatch.setattr(pebble_proxy, "_get_pebble_client", _fake_get_client)
 
-        # Mock pool / conn for audit insert.
+        # Mock pool / conn — handles BOTH the cost-read SELECT and the
+        # audit-insert. The fixture's today_cost / today_count drive
+        # the SELECT response.
         mock_conn = AsyncMock()
+
+        async def _fake_fetchrow(sql, *args):
+            if "FROM bedrock.pebble_daily_usage" in sql:
+                return {"cost": today_cost, "qcount": today_count}
+            return None
+
+        mock_conn.fetchrow = _fake_fetchrow
         mock_conn.execute = AsyncMock(return_value="INSERT 0 1")
 
         @asynccontextmanager
@@ -313,3 +325,172 @@ async def test_close_resets_singleton(monkeypatch):
     await pebble_proxy.close()
     assert pebble_proxy._client is None
     assert fake.is_closed is True
+
+
+# ---------------------------------------------------------------------------
+# Cost cap + degraded mode
+# ---------------------------------------------------------------------------
+
+def test_cost_cap_exceeded_returns_429(app_factory):
+    """User over the daily cap → 429 with structured payload + Retry-After."""
+    app, _, _ = app_factory(today_cost=10.0, today_count=42)
+    with TestClient(app) as client:
+        r = client.post("/api/pebble/ask", json={"query": "x"})
+    assert r.status_code == 429
+    body = r.json()["detail"]
+    assert body["error"] == "daily_cost_cap_exceeded"
+    assert body["spent_usd"] == 10.0
+    assert body["query_count_today"] == 42
+    # Retry-After is positive integer seconds.
+    retry = int(r.headers["Retry-After"])
+    assert retry >= 60
+
+
+def test_cost_cap_exceeded_at_exact_limit(app_factory):
+    """today_cost == DAILY_COST_LIMIT (>= comparison) — 429."""
+    app, _, _ = app_factory(today_cost=pebble_proxy._DAILY_COST_LIMIT_USD)
+    with TestClient(app) as client:
+        r = client.post("/api/pebble/ask", json={"query": "x"})
+    assert r.status_code == 429
+
+
+def test_cost_cap_below_threshold_passes(app_factory):
+    """today_cost < cap → request goes through normally."""
+    app, _, _ = app_factory(today_cost=1.50)
+    with TestClient(app) as client:
+        with client.stream("POST", "/api/pebble/ask", json={"query": "x"}) as r:
+            assert r.status_code == 200
+            for _ in r.iter_bytes():
+                pass
+
+
+def test_degrade_mode_at_80_percent_sets_force_tier(app_factory):
+    """At 80%+ of cap, proxy adds X-Pebble-Force-Tier: L0 to upstream
+    headers + degradation hint headers in response."""
+    captured: dict = {}
+
+    class CaptureStream(_FakePebbleStream):
+        def __init__(self):
+            super().__init__(status_code=200, chunks=[b'data: {"type":"done"}\n\n'])
+
+    class CaptureClient:
+        is_closed = False
+        def stream(self, method, url, **kwargs):
+            captured["headers"] = dict(kwargs.get("headers", {}))
+            return CaptureStream()
+
+    app, _, _ = app_factory(
+        today_cost=4.5,    # 4.5/5.0 = 90% — degrade
+        today_count=20,
+    )
+    pebble_proxy._get_pebble_client = lambda: CaptureClient()
+
+    with TestClient(app) as client:
+        with client.stream("POST", "/api/pebble/ask", json={"query": "x"}) as r:
+            assert r.status_code == 200
+            assert r.headers.get("X-Pebble-Degraded") == "true"
+            assert r.headers.get("X-Pebble-Cost-Today") == "4.5000"
+            assert r.headers.get("X-Pebble-Cost-Limit") == "5.00"
+            for _ in r.iter_bytes():
+                pass
+
+    # Pebble received the force-tier hint.
+    assert captured["headers"].get("X-Pebble-Force-Tier") == "L0"
+
+
+def test_below_degrade_threshold_no_force_tier(app_factory):
+    """At < 80% of cap, no degrade headers in response or upstream."""
+    captured: dict = {}
+
+    class CaptureStream(_FakePebbleStream):
+        def __init__(self):
+            super().__init__(status_code=200, chunks=[b'data: {"type":"done"}\n\n'])
+
+    class CaptureClient:
+        is_closed = False
+        def stream(self, method, url, **kwargs):
+            captured["headers"] = dict(kwargs.get("headers", {}))
+            return CaptureStream()
+
+    app, _, _ = app_factory(today_cost=2.0)    # 40%
+    pebble_proxy._get_pebble_client = lambda: CaptureClient()
+
+    with TestClient(app) as client:
+        with client.stream("POST", "/api/pebble/ask", json={"query": "x"}) as r:
+            assert r.status_code == 200
+            assert "X-Pebble-Degraded" not in r.headers
+            for _ in r.iter_bytes():
+                pass
+
+    assert "X-Pebble-Force-Tier" not in captured["headers"]
+
+
+def test_cost_cap_429_emits_audit_row(app_factory):
+    """A blocked request is still audited so we can spot anomalous
+    spike patterns."""
+    app, mock_conn, _ = app_factory(today_cost=99.0)
+    with TestClient(app) as client:
+        client.post("/api/pebble/ask", json={"query": "x"})
+    asyncio.run(asyncio.sleep(0.05))
+    # The execute call should be the audit insert.
+    assert mock_conn.execute.await_count >= 1
+    sent_sql = mock_conn.execute.call_args.args[0]
+    assert "INSERT INTO bedrock.search_audit" in sent_sql
+
+
+# ---------------------------------------------------------------------------
+# DB read failure is fail-open
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_read_daily_cost_returns_zero_on_db_failure():
+    """A DB error reading pebble_daily_usage must NOT lock users out.
+    Fail-open semantics; sustained failures alert separately."""
+    failing_conn = AsyncMock()
+    failing_conn.fetchrow = AsyncMock(side_effect=RuntimeError("DB down"))
+
+    @asynccontextmanager
+    async def _acquire():
+        yield failing_conn
+
+    failing_pool = MagicMock()
+    failing_pool.acquire = lambda: _acquire()
+
+    cost, count = await pebble_proxy._read_daily_cost(failing_pool, "u@x.org")
+    assert cost == 0.0
+    assert count == 0
+
+
+@pytest.mark.asyncio
+async def test_read_daily_cost_returns_zero_for_no_row():
+    conn = AsyncMock()
+    conn.fetchrow = AsyncMock(return_value=None)
+
+    @asynccontextmanager
+    async def _acquire():
+        yield conn
+
+    pool = MagicMock()
+    pool.acquire = lambda: _acquire()
+
+    cost, count = await pebble_proxy._read_daily_cost(pool, "fresh@x.org")
+    assert cost == 0.0
+    assert count == 0
+
+
+@pytest.mark.asyncio
+async def test_read_daily_cost_returns_zero_for_empty_email():
+    """No email = no user-scoped cost lookup; just return zero."""
+    pool = MagicMock()
+    cost, count = await pebble_proxy._read_daily_cost(pool, "")
+    assert cost == 0.0
+    assert count == 0
+
+
+# ---------------------------------------------------------------------------
+# Retry-After helper
+# ---------------------------------------------------------------------------
+
+def test_seconds_until_midnight_utc_positive_and_bounded():
+    seconds = pebble_proxy._seconds_until_midnight_utc()
+    assert 60 <= seconds <= 86400
