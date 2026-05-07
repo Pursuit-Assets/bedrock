@@ -191,6 +191,7 @@ async def startup_event():
         except Exception:
             _services["data_sync_service"] = DataSyncService(client)
         asyncio.create_task(background_sync_task())
+        asyncio.create_task(background_award_reconciler_task())
 
     logger.info(f"API started — connected services: {client.connected_services or ['none']}")
 
@@ -227,6 +228,33 @@ async def background_sync_task():
 
         # Wait 15 minutes before next sync
         await asyncio.sleep(900)
+
+
+async def background_award_reconciler_task():
+    """Daily background task: catch awards missed when stage was changed
+    directly in Salesforce (bypassing Bedrock's update-stage endpoint).
+
+    Idempotent — opps that already have an award row are skipped via the
+    bedrock.award partial unique index. First run is delayed 60s after
+    startup to let the SF connection stabilize.
+    """
+    await asyncio.sleep(60)
+    while True:
+        try:
+            client = _services.get("mcp_client")
+            if client and "salesforce" in (client.connected_services or set()):
+                from db import get_pool
+                from services.awards_reconciler import reconcile_all
+                pool = get_pool()
+                if pool is not None:
+                    async with pool.acquire() as conn:
+                        summary = await reconcile_all(conn, client.salesforce)
+                        logger.info("awards.reconcile summary: %s", summary)
+        except Exception as e:
+            logger.error(f"Award reconciler error: {e}")
+
+        # Wait 24h before next pass
+        await asyncio.sleep(86_400)
 
 
 # Dependency functions — get_current_user is now cookie-based (see auth.py)
@@ -790,7 +818,7 @@ PAYMENT_SOQL_FIELDS = """
     npe01__Written_Off__c, Write_off_reason__c,
     Amount_Received__c, Department__c, GL_Account__c,
     GL_Payment_Received__c, Reconciled_with_Finance__c,
-    Batch_Name__c, Payment_Estimate__c, Invoice__c,
+    Batch_Name__c, Payment_Estimate__c,
     Affiliation__c, CreatedDate, LastModifiedDate,
     Payment_Status__c, Delinquent__c, Paid_Status__c,
     Amount_Formula__c, Amount_Minus_Received__c
