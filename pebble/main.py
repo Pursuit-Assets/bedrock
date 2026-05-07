@@ -124,6 +124,7 @@ def check_daily_cost_limit():
 
 
 from . import crm_bridge
+from .request_context import set_originating_user
 from .schemas import ResearchRequest, ResearchFeedback, CancelRequest
 from .storage.db import (
     init_db, close_db, get_profile, save_feedback,
@@ -214,8 +215,45 @@ app.add_middleware(
     allow_origins=_pebble_cors_origins,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=["Content-Type", "Authorization", "X-Api-Key", "Cookie", "X-User-Email"],
+    allow_headers=[
+        "Content-Type", "Authorization", "X-Api-Key", "Cookie",
+        "X-User-Email", "X-Request-Id", "X-Trace-Id",
+    ],
 )
+
+
+@app.middleware("http")
+async def attribute_request(request: Request, call_next):
+    """Set the request context (originating user / request id / trace id)
+    for the duration of every Pebble request so ``crm_bridge`` calls
+    deeper in the stack auto-attribute via ``X-Originating-User`` to
+    Bedrock.
+
+    Reads ``X-User-Email`` (Pebble's existing header set by Bedrock when
+    forwarding chat queries — see ``routes/pebble_proxy.py``). Falls
+    back to ``X-Originating-User`` if a non-Bedrock caller sends it
+    directly. Health-check and verification paths run without an
+    originating user — auth dependencies will reject them later if
+    they actually need one.
+
+    Important: this is a context-var-based propagation, NOT a security
+    boundary. Routes that need real auth still go through
+    ``verify_api_key`` + ``require_pebble_permission`` (which set
+    ``request.state.user_email`` independently). The context here is
+    purely for plumbing attribution into outbound HTTP calls.
+    """
+    user_email = (
+        request.headers.get("X-User-Email")
+        or request.headers.get("X-Originating-User")
+        or ""
+    ).strip()
+    request_id = (request.headers.get("X-Request-Id") or "").strip() or None
+    trace_id = (request.headers.get("X-Trace-Id") or "").strip() or None
+
+    if user_email:
+        with set_originating_user(user_email, request_id=request_id, trace_id=trace_id):
+            return await call_next(request)
+    return await call_next(request)
 
 # Rate limiting
 from slowapi import Limiter, _rate_limit_exceeded_handler

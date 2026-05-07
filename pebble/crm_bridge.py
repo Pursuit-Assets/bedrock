@@ -57,6 +57,7 @@ async def search_all(q: str, limit: int = 10) -> Optional[Dict[str, List[dict]]]
         resp = await client.get(
             "/api/salesforce/search",
             params={"q": q, "limit": limit},
+            headers=_request_headers(),
         )
         resp.raise_for_status()
         return resp.json()
@@ -82,6 +83,7 @@ async def search_contacts(q: str, limit: int = 10) -> Optional[List[dict]]:
         resp = await client.get(
             "/api/salesforce/contacts/search",
             params={"q": q, "limit": limit},
+            headers=_request_headers(),
         )
         resp.raise_for_status()
         return resp.json()
@@ -103,6 +105,7 @@ async def search_accounts(q: str, limit: int = 10) -> Optional[List[dict]]:
         resp = await client.get(
             "/api/salesforce/accounts/search",
             params={"q": q, "limit": limit},
+            headers=_request_headers(),
         )
         resp.raise_for_status()
         return resp.json()
@@ -129,6 +132,7 @@ async def search_opportunities(
         resp = await client.get(
             "/api/salesforce/opportunities/search",
             params=params,
+            headers=_request_headers(),
         )
         resp.raise_for_status()
         return resp.json()
@@ -159,7 +163,7 @@ async def get_opportunities(
         params["stage"] = stage
     try:
         client = _get_client()
-        resp = await client.get("/api/salesforce/opportunities", params=params)
+        resp = await client.get("/api/salesforce/opportunities", params=params, headers=_request_headers())
         resp.raise_for_status()
         return resp.json()
     except httpx.TimeoutException:
@@ -191,7 +195,7 @@ async def create_account(
         payload["Industry"] = industry
     try:
         client = _get_client()
-        resp = await client.post("/api/salesforce/accounts", json=payload)
+        resp = await client.post("/api/salesforce/accounts", json=payload, headers=_request_headers())
         resp.raise_for_status()
         body = resp.json()
         return body.get("data")
@@ -223,7 +227,7 @@ async def create_contact(
         payload["Email"] = email
     try:
         client = _get_client()
-        resp = await client.post("/api/salesforce/contacts", json=payload)
+        resp = await client.post("/api/salesforce/contacts", json=payload, headers=_request_headers())
         resp.raise_for_status()
         body = resp.json()
         return body.get("data")
@@ -257,7 +261,7 @@ async def create_opportunity(
         payload["CloseDate"] = close_date
     try:
         client = _get_client()
-        resp = await client.post("/api/salesforce/opportunities", json=payload)
+        resp = await client.post("/api/salesforce/opportunities", json=payload, headers=_request_headers())
         resp.raise_for_status()
         body = resp.json()
         return body.get("data")
@@ -289,6 +293,7 @@ async def update_contact(sf_id: str, updates: dict) -> Optional[Dict]:
         resp = await client.put(
             f"/api/salesforce/contacts/{sf_id}",
             json={"updates": updates},
+            headers=_request_headers(),
         )
         resp.raise_for_status()
         return resp.json().get("data")
@@ -313,6 +318,7 @@ async def update_account(sf_id: str, updates: dict) -> Optional[Dict]:
         resp = await client.put(
             f"/api/salesforce/accounts/{sf_id}",
             json={"updates": updates},
+            headers=_request_headers(),
         )
         resp.raise_for_status()
         return resp.json().get("data")
@@ -339,6 +345,7 @@ async def update_opportunity(sf_id: str, updates: dict) -> Optional[Dict]:
         resp = await client.put(
             f"/api/salesforce/opportunities/{sf_id}",
             json={"updates": updates},
+            headers=_request_headers(),
         )
         resp.raise_for_status()
         return resp.json().get("data")
@@ -357,7 +364,7 @@ async def health() -> bool:
     """Check if the Bedrock API is reachable."""
     try:
         client = _get_client()
-        resp = await client.get("/health")
+        resp = await client.get("/health", headers=_request_headers())
         return resp.status_code == 200
     except Exception:
         return False
