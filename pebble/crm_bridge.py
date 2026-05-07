@@ -1,8 +1,20 @@
 """CRM Bridge — Pebble's interface to Bedrock's Salesforce data.
 
-Calls Bedrock's /api/salesforce/* endpoints using an internal API key
-for service-to-service auth.  All methods return data on success or
-None on failure (never raise) so callers degrade gracefully.
+Calls Bedrock's /api/salesforce/* and /api/search endpoints using an
+internal API key for service-to-service auth. All methods return data
+on success or None on failure (never raise) so callers degrade
+gracefully.
+
+Attribution: every request automatically includes ``X-Originating-User``
++ ``X-Request-Id`` (+ optional ``X-Trace-Id``) read from
+``pebble.request_context``. Bedrock's ``require_auth_or_internal``
+rejects internal-key requests without ``X-Originating-User``. Set the
+user at the request boundary via
+``pebble.request_context.set_originating_user(user_email)``.
+
+For autonomous flows (background orchestrator, cron) the entry point
+sets the ``AUTONOMOUS_USER`` sentinel so the audit log can distinguish
+human-driven from autonomous activity.
 """
 
 import logging
@@ -10,6 +22,8 @@ import os
 from typing import Any, Dict, List, Optional
 
 import httpx
+
+from .request_context import attribution_headers, get_originating_user
 
 logger = logging.getLogger("pebble.crm_bridge")
 
@@ -20,7 +34,13 @@ _client: Optional[httpx.AsyncClient] = None
 
 
 def _get_client() -> httpx.AsyncClient:
-    """Lazy-init singleton httpx.AsyncClient with connection pooling."""
+    """Lazy-init singleton httpx.AsyncClient with connection pooling.
+
+    Default headers carry the static internal API key. Per-request
+    attribution headers (X-Originating-User, X-Request-Id, X-Trace-Id)
+    are merged in by ``_request_headers`` since they're context-scoped
+    and can change between calls within a single client lifetime.
+    """
     global _client
     if _client is None or _client.is_closed:
         headers: Dict[str, str] = {}
@@ -32,6 +52,25 @@ def _get_client() -> httpx.AsyncClient:
             timeout=httpx.Timeout(5.0, connect=3.0),
         )
     return _client
+
+
+def _request_headers() -> Dict[str, str]:
+    """Compose per-request attribution headers from the current request
+    context. The static X-Internal-Key is on the client; this function
+    only adds the per-request bits (X-Originating-User, X-Request-Id,
+    optional X-Trace-Id).
+
+    If the originating user is unset, logs a warning and returns the
+    attribution headers without X-Originating-User. Bedrock will 401
+    the request (post-f90099a). Callers see graceful None return on
+    auth failure (existing crm_bridge contract).
+    """
+    if not get_originating_user():
+        logger.warning(
+            "crm_bridge call without originating user — Bedrock will 401. "
+            "Wrap the call site in pebble.request_context.set_originating_user()."
+        )
+    return attribution_headers()
 
 
 async def close() -> None:

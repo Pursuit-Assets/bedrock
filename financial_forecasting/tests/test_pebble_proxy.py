@@ -263,7 +263,7 @@ def test_invalid_trace_id_minted_fresh(app_factory):
 # G. Service caller delegation
 # ---------------------------------------------------------------------------
 
-def test_service_caller_originating_user_propagated(app_factory):
+def test_service_caller_originating_user_propagated(app_factory, monkeypatch):
     """When Pebble (service) calls itself, the originating user's email
     becomes Pebble's X-User-Email — not pebble@internal."""
     captured_headers: dict = {}
@@ -289,7 +289,7 @@ def test_service_caller_originating_user_propagated(app_factory):
         "request_id": "01993b8d-2c9a-7c4f-8b0e-000000000001",
         "scopes": ("*",),
     })
-    pebble_proxy._get_pebble_client = lambda: CaptureClient()
+    monkeypatch.setattr(pebble_proxy, "_get_pebble_client", lambda: CaptureClient())
 
     with TestClient(app) as client:
         with client.stream("POST", "/api/pebble/ask", json={"query": "x"}) as r:
@@ -364,7 +364,7 @@ def test_cost_cap_below_threshold_passes(app_factory):
                 pass
 
 
-def test_degrade_mode_at_80_percent_sets_force_tier(app_factory):
+def test_degrade_mode_at_80_percent_sets_force_tier(app_factory, monkeypatch):
     """At 80%+ of cap, proxy adds X-Pebble-Force-Tier: L0 to upstream
     headers + degradation hint headers in response."""
     captured: dict = {}
@@ -383,7 +383,7 @@ def test_degrade_mode_at_80_percent_sets_force_tier(app_factory):
         today_cost=4.5,    # 4.5/5.0 = 90% — degrade
         today_count=20,
     )
-    pebble_proxy._get_pebble_client = lambda: CaptureClient()
+    monkeypatch.setattr(pebble_proxy, "_get_pebble_client", lambda: CaptureClient())
 
     with TestClient(app) as client:
         with client.stream("POST", "/api/pebble/ask", json={"query": "x"}) as r:
@@ -398,7 +398,7 @@ def test_degrade_mode_at_80_percent_sets_force_tier(app_factory):
     assert captured["headers"].get("X-Pebble-Force-Tier") == "L0"
 
 
-def test_below_degrade_threshold_no_force_tier(app_factory):
+def test_below_degrade_threshold_no_force_tier(app_factory, monkeypatch):
     """At < 80% of cap, no degrade headers in response or upstream."""
     captured: dict = {}
 
@@ -413,7 +413,7 @@ def test_below_degrade_threshold_no_force_tier(app_factory):
             return CaptureStream()
 
     app, _, _ = app_factory(today_cost=2.0)    # 40%
-    pebble_proxy._get_pebble_client = lambda: CaptureClient()
+    monkeypatch.setattr(pebble_proxy, "_get_pebble_client", lambda: CaptureClient())
 
     with TestClient(app) as client:
         with client.stream("POST", "/api/pebble/ask", json={"query": "x"}) as r:

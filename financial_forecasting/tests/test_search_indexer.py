@@ -97,7 +97,8 @@ async def test_compose_bedrock_project_happy_path():
         "id": "abc-123",
         "name": "Q4 Capacity Build",
         "description": "Spin up training cohort.",
-        "created_by": "rm@pursuit.org",
+        "owner_email": "rm@pursuit.org",
+        "created_by": "creator@pursuit.org",
         "created_at": datetime(2026, 5, 1, tzinfo=timezone.utc),
         "updated_at": datetime(2026, 5, 6, tzinfo=timezone.utc),
         "is_deleted": False,
@@ -109,16 +110,37 @@ async def test_compose_bedrock_project_happy_path():
     assert doc.title == "Q4 Capacity Build"
     assert "Spin up training cohort" in doc.subtitle
     assert doc.href == "/projects/abc-123"
+    # Prefers owner_email over created_by — see composer for rationale.
     assert doc.owner_email == "rm@pursuit.org"
     assert doc.visibility == "org"
     assert "Q4 Capacity Build" in doc.search_text
 
 
 @pytest.mark.asyncio
+async def test_compose_bedrock_project_falls_through_to_created_by():
+    """Projects that pre-date the owner_email column have NULL there;
+    composer falls through to created_by so they remain searchable."""
+    conn = AsyncMock()
+    conn.fetchrow = AsyncMock(return_value={
+        "id": "abc-123",
+        "name": "Legacy Project",
+        "description": "",
+        "owner_email": None,
+        "created_by": "legacy-creator@pursuit.org",
+        "created_at": datetime.now(timezone.utc),
+        "updated_at": datetime.now(timezone.utc),
+        "is_deleted": False,
+    })
+    doc = await si.compose_bedrock_project(conn, "abc-123")
+    assert doc.owner_email == "legacy-creator@pursuit.org"
+
+
+@pytest.mark.asyncio
 async def test_compose_bedrock_project_deleted_returns_none():
     conn = AsyncMock()
     conn.fetchrow = AsyncMock(return_value={
-        "id": "abc-123", "name": "X", "description": "", "created_by": None,
+        "id": "abc-123", "name": "X", "description": "",
+        "owner_email": None, "created_by": None,
         "created_at": datetime.now(timezone.utc),
         "updated_at": datetime.now(timezone.utc),
         "is_deleted": True,

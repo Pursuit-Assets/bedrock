@@ -118,7 +118,8 @@ def clear_registry() -> None:
 async def compose_bedrock_project(conn, entity_id: str) -> Optional[SearchDocRow]:
     row = await conn.fetchrow(
         """
-        SELECT p.id::text AS id, p.name, p.description, p.created_by,
+        SELECT p.id::text AS id, p.name, p.description,
+               p.owner_email, p.created_by,
                p.created_at, p.updated_at,
                COALESCE(p.deleted_at IS NOT NULL, FALSE) AS is_deleted
         FROM bedrock.project p
@@ -130,6 +131,12 @@ async def compose_bedrock_project(conn, entity_id: str) -> Optional[SearchDocRow
         return None
 
     description = (row["description"] or "").strip()
+    # owner_email is the current owner (set by transfer flows since
+    # 2026-04-21). created_by is the original author. We prefer
+    # owner_email — search visibility should follow the live owner,
+    # not the creator. Fall through to created_by when projects
+    # haven't been migrated to owner_email yet.
+    owner = row["owner_email"] or row["created_by"]
     return SearchDocRow(
         entity_type="bedrock_project",
         entity_id=row["id"],
@@ -137,7 +144,7 @@ async def compose_bedrock_project(conn, entity_id: str) -> Optional[SearchDocRow
         subtitle="Project" + (f" · {description[:80]}" if description else ""),
         href=f"/projects/{row['id']}",
         search_text=" ".join(filter(None, [row["name"], description])),
-        owner_email=row["created_by"],
+        owner_email=owner,
         visibility="org",
         activity_at=row["updated_at"],
         source_version=row["updated_at"],

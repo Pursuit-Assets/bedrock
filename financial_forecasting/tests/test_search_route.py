@@ -37,9 +37,14 @@ from services import search_service as ss
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
-def app_factory():
+def app_factory(monkeypatch):
     """Build a minimal FastAPI app with /api/search mounted, plus
     overridable dependencies for db/auth.
+
+    Uses ``monkeypatch`` for module-level attribute overrides so the
+    cross-test pollution of raw assignment is impossible —
+    ``services.search_service.resolve_principal`` etc. get restored
+    automatically when the test exits, even on failure paths.
     """
     def _build(
         *,
@@ -77,9 +82,14 @@ def app_factory():
                 took_ms=12,
             )
 
-        # Patch the search_service functions used by the route.
-        search_route.ss.resolve_principal = _fake_resolve
-        search_route.ss.search = _fake_search
+        # Patch via monkeypatch so attributes restore on test teardown.
+        # `search_route.ss` IS `services.search_service` — patching
+        # `search_route.ss.X` and patching `services.search_service.X`
+        # are equivalent module-level mutations. Either way, a raw
+        # assignment leaks across the test session; monkeypatch is the
+        # only safe pattern.
+        monkeypatch.setattr(search_route.ss, "resolve_principal", _fake_resolve)
+        monkeypatch.setattr(search_route.ss, "search", _fake_search)
 
         # Mock pool with async context manager support.
         @asynccontextmanager
