@@ -144,13 +144,17 @@ async def stream_orchestrator_events(
     # load. Lets the predicates run cheaply in environments without
     # the orchestrator wired up.
     from .. import crm_bridge
-    from ..llm.anthropic_client import AnthropicLLMClient, AnthropicLLMError
+    from ..llm.anthropic_client import (
+        AnthropicLLMClient, AnthropicLLMError, get_default_client,
+    )
     from ..orchestrator.sse import encode_event  # noqa: F401 — re-exported via callers
     from ..workflows.weekly_pipeline_review import build_weekly_pipeline_review_plan
 
-    # Construct or reuse the AnthropicLLMClient.
+    # Reuse the process-wide singleton when the caller didn't pass an
+    # explicit client. Fresh AsyncAnthropic per-request would discard
+    # the httpx connection pool and the prompt-cache benefit.
     try:
-        client = anthropic_client or AnthropicLLMClient()
+        client = anthropic_client or get_default_client()
     except AnthropicLLMError as e:
         logger.warning("orchestrator.client_construction_failed err=%s", e)
         yield OrchestratorEvent(
