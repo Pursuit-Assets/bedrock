@@ -4,6 +4,13 @@ dist-ssr
 *.local
 .vite
 
+# TypeScript composite-build artifacts. ``tsc -b`` (used by ``npm run
+# build``) emits these alongside .ts files. Regenerated on every
+# build; checking them in causes spurious diffs.
+*.tsbuildinfo
+vite.config.d.ts
+vite.config.js
+
 # Re-include src/lib/ — the root .gitignore globs `lib/` for Python's
 # virtualenv layout, which incidentally catches our React lib/ folder.
 !src/lib/
