@@ -36,7 +36,7 @@ from typing import Any, Optional
 
 from .executor import ExecutionOutcome, ExecutionResult
 from .schemas import (
-    Citation, FinalResponse, Plan, ToolResult,
+    ChartSpec, Citation, FinalResponse, Plan, ToolResult,
 )
 
 logger = logging.getLogger(__name__)
@@ -93,6 +93,7 @@ def _render_completed(plan: Plan, execution: ExecutionResult) -> FinalResponse:
 
     parts: list[str] = []
     citations = _collect_citations(execution.tool_results)
+    charts = _collect_charts(execution.tool_results)
 
     for step in plan.steps:
         result = execution.tool_results.get(step.step_id)
@@ -114,6 +115,7 @@ def _render_completed(plan: Plan, execution: ExecutionResult) -> FinalResponse:
         plan_id=plan.plan_id,
         text="\n\n".join(parts),
         citations=citations,
+        charts=charts,
     )
 
 
@@ -233,6 +235,31 @@ def _render_one_result(tool: str, data: Optional[dict[str, Any]]) -> str:
         return _render_generic(tool, data)
 
 
+def _render_aggregate_pipeline_views(data: dict[str, Any]) -> str:
+    """Workflow tool — surfaces the summary string verbatim. The
+    charts are collected separately via ``_collect_charts``."""
+    summary = data.get("summary")
+    if isinstance(summary, str) and summary.strip():
+        return summary
+    open_count = data.get("open_count", 0)
+    total = data.get("total_open_amount", 0)
+    return f"Pipeline review: {open_count} open opportunities totaling ${float(total):,.0f}."
+
+
+def _render_generate_chart(data: dict[str, Any]) -> str:
+    """Charts render visually; the prose mention is one short line so
+    the chart isn't completely uncaptioned in screen-reader contexts.
+    """
+    title = data.get("title") or ""
+    kind = data.get("kind") or "chart"
+    rows = data.get("row_count")
+    if rows is None:
+        rows = len(data.get("data") or [])
+    if title:
+        return f"_{title} ({kind} chart, {rows} rows)._"
+    return f"_{kind} chart with {rows} rows._"
+
+
 def _render_search_crm(data: dict[str, Any]) -> str:
     items = data.get("items") or []
     total = data.get("total_count", len(items))
@@ -304,6 +331,8 @@ _RENDERERS = {
     "search_crm": _render_search_crm,
     "get_record": _render_get_record,
     "request_human_review": _render_request_human_review,
+    "generate_chart": _render_generate_chart,
+    "aggregate_pipeline_views": _render_aggregate_pipeline_views,
 }
 
 
@@ -373,3 +402,61 @@ _HREF_FORMATS = {
 def _maybe_build_href(etype: str, eid: str) -> str:
     fmt = _HREF_FORMATS.get(etype)
     return fmt.format(id=eid) if fmt else ""
+
+
+# ---------------------------------------------------------------------------
+# Chart collection — pulls ChartSpec dicts from tool result data.
+# ---------------------------------------------------------------------------
+
+def _collect_charts(
+    tool_results: dict[Any, ToolResult],
+) -> tuple[ChartSpec, ...]:
+    """Walk every successful tool result and harvest charts.
+
+    Two shapes accepted:
+      * ``data.kind`` and ``data.data`` (a list) — ``generate_chart``
+        emits this directly.
+      * ``data.charts`` (a list of dicts) — workflow tools like
+        ``aggregate_pipeline_views`` bundle multiple charts.
+
+    Each dict is validated by ``ChartSpec`` (Pydantic) — invalid
+    shapes get logged + skipped, never crash the renderer.
+    """
+    charts: list[ChartSpec] = []
+    for result in tool_results.values():
+        if not result.ok or not isinstance(result.data, dict):
+            continue
+        # Bundled charts (workflow path)
+        bundled = result.data.get("charts")
+        if isinstance(bundled, list):
+            for c in bundled:
+                spec = _try_chart_spec(c)
+                if spec is not None:
+                    charts.append(spec)
+        # Single chart (generate_chart path)
+        elif "kind" in result.data and "data" in result.data:
+            spec = _try_chart_spec(result.data)
+            if spec is not None:
+                charts.append(spec)
+    return tuple(charts)
+
+
+def _try_chart_spec(payload: Any) -> Optional[ChartSpec]:
+    """Best-effort coercion to ChartSpec. Returns None on any
+    validation failure so a malformed chart doesn't break the answer.
+    """
+    if not isinstance(payload, dict):
+        return None
+    try:
+        # ChartSpec.kind is regex-validated to the supported set; data
+        # is required as list[dict]. Pydantic enforces both.
+        return ChartSpec(
+            kind=payload.get("kind") or "bar",
+            title=payload.get("title") or "",
+            data=list(payload.get("data") or []),
+            x_key=payload.get("x_key"),
+            y_keys=tuple(payload.get("y_keys") or ()),
+        )
+    except Exception:
+        logger.exception("renderer.chart_spec_invalid kind=%r", payload.get("kind"))
+        return None

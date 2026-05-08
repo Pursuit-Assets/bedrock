@@ -402,3 +402,171 @@ async def test_run_returns_aborted_flag_when_eval_aborts():
     assert bundle.aborted is True
     assert bundle.abort_reason is not None
     assert bundle.final.degraded is True
+
+
+# ---------------------------------------------------------------------------
+# M. run_stream_with_plan — direct entry for workflow paths
+# ---------------------------------------------------------------------------
+
+def _make_pre_baked_plan():
+    """Build a Plan directly (no planner LLM) — what a workflow does."""
+    from pebble.orchestrator.schemas import Plan, PlanStep
+    return Plan(
+        user_query="weekly pipeline review",
+        steps=(
+            PlanStep(
+                tool="search_crm",
+                args={"query": "open opportunities"},
+                expected_shape="hits",
+                success_criteria="any",
+            ),
+        ),
+        rationale="Workflow: weekly_pipeline_review",
+        estimated_tool_calls=1,
+        estimated_cost_usd=0.0,
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_stream_with_plan_skips_planner_call():
+    """Workflow path: pre-baked plan goes straight into executor.
+    Planner LLM client must NOT be called (ChatOrchestrator's planner
+    fixture has zero responses available — would throw if called)."""
+    reg = _registry()
+    planner = Planner(client=FakePlannerLLM([]), registry=reg)  # zero responses
+    evaluator = Evaluator(client=FakeJudge([_PASS_EVAL]))
+    ctx = ToolContext(user_email="rm@pursuit.org", conversation_id=str(uuid4()))
+    scratchpad = ScratchpadWriter(
+        pool=None, conversation_id=uuid4(), user_email="rm@pursuit.org",
+    )
+    orch = ChatOrchestrator(
+        planner=planner, evaluator=evaluator, registry=reg,
+        budget=Budget(), ctx=ctx, scratchpad=scratchpad,
+    )
+
+    plan = _make_pre_baked_plan()
+    events = []
+    async for ev in orch.run_stream_with_plan(plan=plan, allow_replan=False):
+        events.append(ev)
+
+    kinds = [e.kind for e in events]
+    assert kinds[0] == "plan_emitted"
+    assert kinds[-1] == "response_final"
+    # Planner was NOT called even once
+    assert len(planner.client.calls) == 0
+
+
+@pytest.mark.asyncio
+async def test_run_stream_with_plan_eval_retry_with_allow_replan_false_ships_draft():
+    """When allow_replan=False (workflow path), eval RETRY ships the
+    original draft instead of triggering a planner call."""
+    reg = _registry()
+    planner = Planner(client=FakePlannerLLM([]), registry=reg)  # zero — proves no replan
+    evaluator = Evaluator(client=FakeJudge([_RETRY_EVAL]))
+    ctx = ToolContext(user_email="rm@pursuit.org", conversation_id=str(uuid4()))
+    scratchpad = ScratchpadWriter(
+        pool=None, conversation_id=uuid4(), user_email="rm@pursuit.org",
+    )
+    orch = ChatOrchestrator(
+        planner=planner, evaluator=evaluator, registry=reg,
+        budget=Budget(), ctx=ctx, scratchpad=scratchpad, max_replans=1,
+    )
+
+    plan = _make_pre_baked_plan()
+    events = []
+    async for ev in orch.run_stream_with_plan(plan=plan, allow_replan=False):
+        events.append(ev)
+
+    kinds = [e.kind for e in events]
+    # No replan_started event despite RETRY verdict
+    assert "replan_started" not in kinds
+    # Planner was NOT called
+    assert len(planner.client.calls) == 0
+    # Final shipped (the original draft)
+    assert kinds[-1] == "response_final"
+
+
+@pytest.mark.asyncio
+async def test_run_stream_with_plan_eval_abort_still_emits_apology_workflow():
+    """Workflow path still surfaces ABORT verdict — safety > convenience."""
+    reg = _registry()
+    planner = Planner(client=FakePlannerLLM([]), registry=reg)
+    evaluator = Evaluator(client=FakeJudge([_ABORT_EVAL]))
+    ctx = ToolContext(user_email="rm@pursuit.org", conversation_id=str(uuid4()))
+    scratchpad = ScratchpadWriter(
+        pool=None, conversation_id=uuid4(), user_email="rm@pursuit.org",
+    )
+    orch = ChatOrchestrator(
+        planner=planner, evaluator=evaluator, registry=reg,
+        budget=Budget(), ctx=ctx, scratchpad=scratchpad,
+    )
+
+    plan = _make_pre_baked_plan()
+    events = []
+    async for ev in orch.run_stream_with_plan(plan=plan, allow_replan=False):
+        events.append(ev)
+
+    final = events[-1]
+    assert final.kind == "response_final"
+    assert final.payload["final"]["degraded"] is True
+
+
+@pytest.mark.asyncio
+async def test_run_stream_with_plan_allow_replan_true_still_works():
+    """Default allow_replan=True path — RETRY triggers planner call
+    just like run_stream does. Sanity check the flag default."""
+    reg = _registry()
+    planner = Planner(client=FakePlannerLLM([_GOOD_PLAN]), registry=reg)
+    evaluator = Evaluator(client=FakeJudge([_RETRY_EVAL, _PASS_EVAL]))
+    ctx = ToolContext(user_email="rm@pursuit.org", conversation_id=str(uuid4()))
+    scratchpad = ScratchpadWriter(
+        pool=None, conversation_id=uuid4(), user_email="rm@pursuit.org",
+    )
+    orch = ChatOrchestrator(
+        planner=planner, evaluator=evaluator, registry=reg,
+        budget=Budget(), ctx=ctx, scratchpad=scratchpad, max_replans=1,
+    )
+
+    plan = _make_pre_baked_plan()
+    events = []
+    async for ev in orch.run_stream_with_plan(
+        plan=plan, user_query="q", allow_replan=True,
+    ):
+        events.append(ev)
+
+    kinds = [e.kind for e in events]
+    # With allow_replan=True, RETRY triggers replan_started + new plan_emitted
+    assert "replan_started" in kinds
+    # Planner was called once for the re-plan
+    assert len(planner.client.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_run_stream_with_plan_pre_flight_rejected_skips_eval():
+    """Pre-flight rejection (plan over budget) skips eval same as in
+    run_stream. Workflow callers see the same outcome."""
+    reg = _registry()
+    planner = Planner(client=FakePlannerLLM([]), registry=reg)
+    evaluator = Evaluator(client=FakeJudge([]))  # zero — proves not called
+    ctx = ToolContext(user_email="rm@pursuit.org", conversation_id=str(uuid4()))
+    scratchpad = ScratchpadWriter(
+        pool=None, conversation_id=uuid4(), user_email="rm@pursuit.org",
+    )
+    # Tiny budget that the plan's estimate will exceed
+    tiny_budget = Budget(max_tool_calls=0, max_cost_usd=0.0)
+    orch = ChatOrchestrator(
+        planner=planner, evaluator=evaluator, registry=reg,
+        budget=tiny_budget, ctx=ctx, scratchpad=scratchpad,
+    )
+
+    plan = _make_pre_baked_plan()  # estimated 1 tool call vs 0 budget
+    events = []
+    async for ev in orch.run_stream_with_plan(plan=plan, allow_replan=False):
+        events.append(ev)
+
+    kinds = [e.kind for e in events]
+    assert kinds[0] == "plan_emitted"
+    assert "eval_emitted" not in kinds  # skipped
+    assert kinds[-1] == "response_final"
+    final = events[-1]
+    assert final.payload["final"]["degraded"] is True

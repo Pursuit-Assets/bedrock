@@ -328,10 +328,14 @@ async def ask_endpoint(
                     response_status = resp.status_code
                     payload = await resp.aread()
                     error_class = f"pebble_status_{resp.status_code}"
+                    # Canonical orchestrator event shape: {kind, payload}.
+                    # Previously we emitted {type:'error',...}; the FE's
+                    # new SSE parser consumes only {kind,payload}. See
+                    # ``pebble.orchestrator.sse`` for the schema.
                     yield (
-                        b'data: {"type":"error","status":'
+                        b'data: {"kind":"error","payload":{"phase":"proxy","reason":"upstream_status","status":'
                         + str(resp.status_code).encode()
-                        + b'}\n\n'
+                        + b'}}\n\n'
                     )
                     return
                 async for chunk in resp.aiter_bytes():
@@ -340,12 +344,16 @@ async def ask_endpoint(
         except httpx.TimeoutException:
             response_status = 504
             error_class = "TimeoutException"
-            yield b'data: {"type":"error","reason":"timeout"}\n\n'
+            yield (
+                b'data: {"kind":"error","payload":{"phase":"proxy","reason":"timeout"}}\n\n'
+            )
         except httpx.HTTPError as e:
             response_status = 502
             error_class = type(e).__name__
             logger.exception("pebble_proxy_http_error trace_id=%s", trace_id)
-            yield b'data: {"type":"error","reason":"upstream"}\n\n'
+            yield (
+                b'data: {"kind":"error","payload":{"phase":"proxy","reason":"upstream"}}\n\n'
+            )
         finally:
             latency_ms = int((time.perf_counter() - started) * 1000)
             background_tasks.add_task(

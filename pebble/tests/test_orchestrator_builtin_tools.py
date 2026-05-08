@@ -14,6 +14,7 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from pebble.orchestrator.builtin_tools import (
+    GENERATE_CHART_SPEC,
     GET_RECORD_SPEC,
     REQUEST_HUMAN_REVIEW_SPEC,
     SEARCH_CRM_SPEC,
@@ -255,9 +256,10 @@ def test_register_on_isolated_registry():
     assert "search_crm" in reg
     assert "get_record" in reg
     assert "request_human_review" in reg
+    assert "generate_chart" in reg
     # Idempotent: second call doesn't double-register or raise.
     register_builtin_tools(reg)
-    assert len(reg) == 3
+    assert len(reg) == 4
 
 
 def test_default_registry_has_builtins_at_import_time():
@@ -280,3 +282,175 @@ def test_get_record_input_schema_uses_strict_enum():
     assert "sf_opportunity" in enum
     assert "pebble_profile" in enum
     assert "evil" not in enum
+
+
+# ---------------------------------------------------------------------------
+# generate_chart — pure shape transformer
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_generate_chart_happy_path_bar():
+    """Happy path: bar chart with x_key + y_keys + title."""
+    ctx = ToolContext(user_email="x", conversation_id="c")
+    result = await GENERATE_CHART_SPEC.handler({
+        "kind": "bar",
+        "title": "Pipeline by owner",
+        "data": [
+            {"owner": "alice", "amount": 150000},
+            {"owner": "bob", "amount": 90000},
+        ],
+        "x_key": "owner",
+        "y_keys": ["amount"],
+    }, ctx)
+
+    assert result.ok is True
+    assert result.tool == "generate_chart"
+    assert result.data["kind"] == "bar"
+    assert result.data["title"] == "Pipeline by owner"
+    assert result.data["x_key"] == "owner"
+    assert result.data["y_keys"] == ["amount"]
+    assert result.data["row_count"] == 2
+    assert result.data["data"][0]["owner"] == "alice"
+    # chart_id is a fresh UUID string
+    import uuid as _uuid
+    _uuid.UUID(result.data["chart_id"])  # raises if not valid
+
+
+@pytest.mark.asyncio
+async def test_generate_chart_pie_no_axis_keys_required():
+    """Pie charts use named slices; x_key/y_keys are optional."""
+    ctx = ToolContext(user_email="x", conversation_id="c")
+    result = await GENERATE_CHART_SPEC.handler({
+        "kind": "pie",
+        "data": [
+            {"name": "Won", "value": 12},
+            {"name": "Lost", "value": 4},
+        ],
+    }, ctx)
+    assert result.ok is True
+    assert result.data["kind"] == "pie"
+    assert result.data["x_key"] is None
+    assert result.data["y_keys"] == []
+
+
+@pytest.mark.asyncio
+async def test_generate_chart_unknown_kind_rejected():
+    ctx = ToolContext(user_email="x", conversation_id="c")
+    result = await GENERATE_CHART_SPEC.handler({
+        "kind": "donut",  # not in enum
+        "data": [],
+    }, ctx)
+    assert result.ok is False
+    assert "donut" in result.error
+    assert "kind" in result.error
+
+
+@pytest.mark.asyncio
+async def test_generate_chart_data_must_be_list():
+    ctx = ToolContext(user_email="x", conversation_id="c")
+    result = await GENERATE_CHART_SPEC.handler({
+        "kind": "bar",
+        "data": "not a list",
+    }, ctx)
+    assert result.ok is False
+    assert "list" in result.error
+
+
+@pytest.mark.asyncio
+async def test_generate_chart_data_rows_must_be_objects():
+    ctx = ToolContext(user_email="x", conversation_id="c")
+    result = await GENERATE_CHART_SPEC.handler({
+        "kind": "bar",
+        "data": [{"x": 1}, "not an object"],
+    }, ctx)
+    assert result.ok is False
+    assert "data[1]" in result.error
+
+
+@pytest.mark.asyncio
+async def test_generate_chart_x_key_must_be_string():
+    ctx = ToolContext(user_email="x", conversation_id="c")
+    result = await GENERATE_CHART_SPEC.handler({
+        "kind": "bar",
+        "data": [],
+        "x_key": 42,
+    }, ctx)
+    assert result.ok is False
+    assert "x_key" in result.error
+
+
+@pytest.mark.asyncio
+async def test_generate_chart_y_keys_must_be_string_list():
+    ctx = ToolContext(user_email="x", conversation_id="c")
+    result = await GENERATE_CHART_SPEC.handler({
+        "kind": "bar",
+        "data": [],
+        "y_keys": [1, 2, 3],
+    }, ctx)
+    assert result.ok is False
+    assert "y_keys" in result.error
+
+
+@pytest.mark.asyncio
+async def test_generate_chart_empty_data_array_ok():
+    """Empty data is valid — caller may have queried 0-row aggregate.
+    FE renders an empty chart with a 'no data' caption."""
+    ctx = ToolContext(user_email="x", conversation_id="c")
+    result = await GENERATE_CHART_SPEC.handler({
+        "kind": "line",
+        "data": [],
+        "x_key": "month",
+        "y_keys": ["revenue"],
+    }, ctx)
+    assert result.ok is True
+    assert result.data["row_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_generate_chart_no_external_io():
+    """No httpx.AsyncClient required in ctx — pure transform."""
+    ctx = ToolContext(user_email="x", conversation_id="c", http_client=None)
+    result = await GENERATE_CHART_SPEC.handler({
+        "kind": "bar",
+        "data": [{"k": "a", "v": 1}],
+        "x_key": "k", "y_keys": ["v"],
+    }, ctx)
+    assert result.ok is True
+
+
+def test_generate_chart_input_schema_enum_matches_kinds():
+    """JSON schema strict mode protects the planner from inventing kinds."""
+    enum = GENERATE_CHART_SPEC.input_schema["properties"]["kind"]["enum"]
+    assert "bar" in enum
+    assert "line" in enum
+    assert "pie" in enum
+    assert "area" in enum
+    assert "scatter" in enum
+    assert "funnel" in enum
+    assert "donut" not in enum
+
+
+def test_generate_chart_required_keys():
+    """kind + data are both required; title / x_key / y_keys optional."""
+    required = GENERATE_CHART_SPEC.input_schema["required"]
+    assert set(required) == {"kind", "data"}
+
+
+def test_generate_chart_registered_in_default():
+    """Auto-registration on import should put generate_chart in
+    DEFAULT_REGISTRY along with the other built-ins."""
+    from pebble.orchestrator.tools import DEFAULT_REGISTRY
+    assert "generate_chart" in DEFAULT_REGISTRY
+    assert "search_crm" in DEFAULT_REGISTRY
+    assert "get_record" in DEFAULT_REGISTRY
+    assert "request_human_review" in DEFAULT_REGISTRY
+
+
+def test_generate_chart_zero_cost_estimate():
+    """Pure transform = $0 budget impact."""
+    assert GENERATE_CHART_SPEC.cost_estimate_usd == 0.0
+
+
+def test_generate_chart_no_human_required():
+    """Doesn't pause execution; not a write."""
+    assert GENERATE_CHART_SPEC.requires_human is False

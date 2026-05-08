@@ -146,8 +146,8 @@ class ChatOrchestrator:
         user_query: str,
         recent_messages: Optional[list[dict[str, str]]] = None,
     ) -> AsyncIterator[OrchestratorEvent]:
-        """Streaming entry point — yields events suitable for an SSE
-        relay. The FE consumes these to render the live agent view.
+        """Top-level entry — calls planner, then defers to
+        ``run_stream_with_plan`` for the post-planner pipeline.
 
         Order is contractually:
           plan_emitted → (tool_call_started + tool_call_finished)*
@@ -180,7 +180,42 @@ class ChatOrchestrator:
             )
             return
 
-        plan = plan_or_err
+        async for ev in self.run_stream_with_plan(
+            plan=plan_or_err,
+            user_query=user_query,
+            recent_messages=recent_messages,
+            allow_replan=True,
+        ):
+            yield ev
+
+    async def run_stream_with_plan(
+        self,
+        *,
+        plan: Plan,
+        user_query: Optional[str] = None,
+        recent_messages: Optional[list[dict[str, str]]] = None,
+        allow_replan: bool = True,
+    ) -> AsyncIterator[OrchestratorEvent]:
+        """Run a pre-baked Plan through the post-planner pipeline:
+        executor → render → eval → (optional re-plan) → response_final.
+
+        Workflow callers (e.g. ``/pipeline`` slash command) pass
+        ``allow_replan=False`` so an evaluator RETRY verdict ships the
+        original draft instead of triggering a planner LLM call —
+        workflows are deterministic by design and a re-plan would
+        defeat the purpose.
+
+        Args:
+          plan: the plan to execute. Pre-baked (workflow) or planner-
+            emitted (``run_stream``).
+          user_query: original user query string. Used in the re-plan
+            prompt — required when ``allow_replan=True``, optional
+            otherwise.
+          recent_messages: prior conversation context for re-plan.
+          allow_replan: when False, eval RETRY verdict ships the
+            current draft. Workflows pass False; agent runs pass True.
+        """
+        # Emit the initial plan event so FE renders the todo-list.
         yield OrchestratorEvent(
             kind="plan_emitted",
             payload={
@@ -195,13 +230,12 @@ class ChatOrchestrator:
             },
         )
 
-        # First execution.
+        # First execution + render.
         execution = await self._execute_with_events(plan)
         async for ev in execution["events"]:
             yield ev
         result: ExecutionResult = execution["result"]
 
-        # Render draft.
         draft = render_response(plan=plan, execution=result)
         yield OrchestratorEvent(
             kind="draft_emitted",
@@ -243,8 +277,6 @@ class ChatOrchestrator:
             },
         )
 
-        replans_used = 0
-
         if evaluation.verdict == EvalVerdict.ABORT:
             aborted_text = (
                 "I had an answer ready but my safety check flagged it. "
@@ -262,12 +294,11 @@ class ChatOrchestrator:
             )
             return
 
-        if evaluation.verdict == EvalVerdict.RETRY and replans_used < self.max_replans:
-            replans_used += 1
+        if evaluation.verdict == EvalVerdict.RETRY and allow_replan and self.max_replans > 0:
             yield OrchestratorEvent(
                 kind="replan_started",
                 payload={"reason": evaluation.rationale,
-                          "replan_index": replans_used},
+                          "replan_index": 1},
             )
             # Augment recent_messages with the eval feedback so the
             # planner sees what went wrong on the first attempt.
@@ -282,7 +313,7 @@ class ChatOrchestrator:
                 ),
             })
             replan_or_err = await self.planner.plan(
-                user_query=user_query, ctx=self.ctx,
+                user_query=user_query or plan.user_query, ctx=self.ctx,
                 recent_messages=replan_msgs,
             )
             if isinstance(replan_or_err, PlannerError):
@@ -322,7 +353,7 @@ class ChatOrchestrator:
             )
             return
 
-        # PASS path — ship the draft.
+        # PASS path — or RETRY with allow_replan=False — ship the draft.
         yield OrchestratorEvent(
             kind="response_final",
             payload={"final": _final_to_dict(draft)},

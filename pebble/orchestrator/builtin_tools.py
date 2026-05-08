@@ -323,6 +323,145 @@ REQUEST_HUMAN_REVIEW_SPEC = ToolSpec(
 
 
 # ---------------------------------------------------------------------------
+# generate_chart — pure shape transformer for FE Recharts rendering.
+#
+# No I/O, no LLM call. Takes a data array + chart kind + axis keys and
+# returns a ChartSpec the renderer/FE can hand to a Recharts component.
+# Intentionally narrow: kind enum prevents the planner from inventing
+# unsupported chart types; FE renders nothing for unknown kinds.
+#
+# Why a tool instead of FE auto-detection: planner-driven means the
+# trace is fully visible and reproducible. The plan rationale shows
+# WHY a chart was chosen; the generate_chart step records the data
+# the chart was built from. Reproducible trace > implicit magic.
+# ---------------------------------------------------------------------------
+
+# Kept in sync with ``schemas.ChartSpec.kind`` regex. If you add a kind
+# here, also add a Recharts renderer on the FE in
+# ``frontend-v2/src/components/pebble/ChartRenderer.tsx``.
+_VALID_CHART_KINDS = {"line", "bar", "pie", "area", "scatter", "funnel"}
+
+
+async def _handle_generate_chart(args: dict[str, Any], ctx: ToolContext) -> ToolResult:
+    """Validate the inputs and emit a ChartSpec-shaped data payload.
+
+    The renderer / FE consume this from ``tool_result.data`` and turn
+    it into a Recharts component. We do the validation here (not in
+    the renderer) so any planner mistake surfaces as a clear ToolResult
+    failure instead of a silent empty chart.
+    """
+    started = time.perf_counter()
+
+    kind = (args.get("kind") or "").strip().lower()
+    if kind not in _VALID_CHART_KINDS:
+        return ToolResult(
+            step_id=uuid4(), tool="generate_chart", ok=False,
+            error=f"generate_chart: kind {kind!r} not in {sorted(_VALID_CHART_KINDS)}",
+            duration_ms=int((time.perf_counter() - started) * 1000),
+        )
+
+    data = args.get("data")
+    if not isinstance(data, list):
+        return ToolResult(
+            step_id=uuid4(), tool="generate_chart", ok=False,
+            error="generate_chart: 'data' must be a list of objects",
+            duration_ms=int((time.perf_counter() - started) * 1000),
+        )
+
+    # Each row in data must be a dict (Recharts data array shape).
+    for idx, row in enumerate(data):
+        if not isinstance(row, dict):
+            return ToolResult(
+                step_id=uuid4(), tool="generate_chart", ok=False,
+                error=f"generate_chart: data[{idx}] is not an object",
+                duration_ms=int((time.perf_counter() - started) * 1000),
+            )
+
+    title = str(args.get("title") or "")
+    x_key = args.get("x_key")
+    if x_key is not None and not isinstance(x_key, str):
+        return ToolResult(
+            step_id=uuid4(), tool="generate_chart", ok=False,
+            error="generate_chart: 'x_key' must be a string when provided",
+        )
+
+    y_keys = args.get("y_keys") or []
+    if not isinstance(y_keys, list) or not all(isinstance(k, str) for k in y_keys):
+        return ToolResult(
+            step_id=uuid4(), tool="generate_chart", ok=False,
+            error="generate_chart: 'y_keys' must be a list of strings",
+        )
+
+    duration_ms = int((time.perf_counter() - started) * 1000)
+    return ToolResult(
+        step_id=uuid4(), tool="generate_chart", ok=True,
+        data={
+            "chart_id": str(uuid4()),
+            "kind": kind,
+            "title": title,
+            "data": data,
+            "x_key": x_key,
+            "y_keys": list(y_keys),
+            "row_count": len(data),
+        },
+        # No citations — this tool composes other tools' data; citations
+        # come from those upstream tools.
+        duration_ms=duration_ms,
+    )
+
+
+GENERATE_CHART_SPEC = ToolSpec(
+    name="generate_chart",
+    description=(
+        "Format an aggregated dataset as a chart spec the frontend "
+        "renders via Recharts. Use AFTER a search_crm / get_record / "
+        "query_metric step has produced the underlying data — pass the "
+        "rows in via 'data' and pick a kind that matches the data shape "
+        "(bar for category counts, line for time series, pie for parts "
+        "of a whole). The planner is responsible for choosing the right "
+        "kind; this tool only validates the shape. Output goes inline in "
+        "the response — the user sees the chart rendered, not raw JSON."
+    ),
+    input_schema=make_input_schema(
+        properties={
+            "kind": {
+                "type": "string",
+                "enum": sorted(_VALID_CHART_KINDS),
+                "description": "Chart type. bar=category counts; "
+                               "line=time series; pie=parts of whole; "
+                               "area=cumulative; scatter=2D distribution; "
+                               "funnel=stage progression.",
+            },
+            "data": {
+                "type": "array",
+                "description": "List of row objects. Each row is "
+                               "{<x_key>: <category>, <y_keys[i]>: <number>}.",
+                "items": {"type": "object"},
+            },
+            "title": {
+                "type": "string",
+                "description": "Short chart title shown above the plot.",
+            },
+            "x_key": {
+                "type": "string",
+                "description": "Field name in data rows used for the "
+                               "X-axis category / ordinal.",
+            },
+            "y_keys": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Field names in data rows used as numeric "
+                               "Y-series. Multiple keys = grouped/stacked.",
+            },
+        },
+        required_keys=["kind", "data"],
+    ),
+    handler=_handle_generate_chart,
+    cost_estimate_usd=0.0,    # pure transform, no I/O
+)
+
+
+# ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
 
@@ -334,7 +473,12 @@ def register_builtin_tools(registry=None) -> None:
     construct their own registry and pass it here for isolation.
     """
     reg = registry if registry is not None else DEFAULT_REGISTRY
-    for spec in (SEARCH_CRM_SPEC, GET_RECORD_SPEC, REQUEST_HUMAN_REVIEW_SPEC):
+    for spec in (
+        SEARCH_CRM_SPEC,
+        GET_RECORD_SPEC,
+        REQUEST_HUMAN_REVIEW_SPEC,
+        GENERATE_CHART_SPEC,
+    ):
         if spec.name not in reg:
             reg.register(spec)
 

@@ -156,6 +156,8 @@ def test_happy_path_streams_response(app_factory):
 # ---------------------------------------------------------------------------
 
 def test_pebble_error_status_surfaces_as_sse_error(app_factory):
+    """Proxy emits {kind:'error', payload:{phase, reason, status}} per
+    the canonical orchestrator event shape (post-2026-05-08 protocol switch)."""
     stream = _FakePebbleStream(
         status_code=500,
         chunks=[b'{"detail":"internal"}'],
@@ -164,7 +166,8 @@ def test_pebble_error_status_surfaces_as_sse_error(app_factory):
     with TestClient(app) as client:
         with client.stream("POST", "/api/pebble/ask", json={"query": "x"}) as r:
             body = b"".join(r.iter_bytes())
-    assert b'"type":"error"' in body
+    assert b'"kind":"error"' in body
+    assert b'"phase":"proxy"' in body
     assert b'"status":500' in body
 
 
@@ -178,7 +181,7 @@ def test_timeout_returns_sse_error_frame(app_factory):
     with TestClient(app) as client:
         with client.stream("POST", "/api/pebble/ask", json={"query": "x"}) as r:
             body = b"".join(r.iter_bytes())
-    assert b'"type":"error"' in body
+    assert b'"kind":"error"' in body
     assert b'"reason":"timeout"' in body
 
 
@@ -188,7 +191,7 @@ def test_other_http_error_returns_upstream_error(app_factory):
     with TestClient(app) as client:
         with client.stream("POST", "/api/pebble/ask", json={"query": "x"}) as r:
             body = b"".join(r.iter_bytes())
-    assert b'"type":"error"' in body
+    assert b'"kind":"error"' in body
     assert b'"reason":"upstream"' in body
 
 
