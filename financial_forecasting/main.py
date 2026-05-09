@@ -388,7 +388,9 @@ async def get_opportunities(
                npsp__Primary_Contact__r.Name, npsp__Primary_Contact__r.Email,
                RecordTypeId, RecordType.Name, Active_Opportunity__c,
                Reporting_Method__c, npsp__Next_Grant_Deadline_Due_Date__c,
-               Ask_Amount_if_different_from_actual__c
+               Ask_Amount_if_different_from_actual__c,
+               Philanthropy_Type__c,
+               Manager_Probability_Override__c
         FROM Opportunity
         """
 
@@ -896,6 +898,7 @@ async def get_opportunity_payments(
 @app.get("/api/salesforce/payments/acv-summary")
 async def get_acv_summary(
     year: int = Query(..., ge=2000, le=2100),
+    bucket: str = Query("all", regex="^(all|philanthropy|pbc|capital_grants|other)$"),
     client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user=Depends(require_auth),
 ):
@@ -907,13 +910,18 @@ async def get_acv_summary(
     Returns quarterly + annual totals for the Wins (ACV) row in the
     FY Overview matrix on the Dashboard.
     """
-    cache_key = f"acv-summary:{year}"
+    cache_key = f"acv-summary:{year}:{bucket}"
     cached = cache.get(cache_key)
     if cached is not None:
         return cached
 
     try:
         salesforce = client.salesforce
+        bucket_clause = _cashflow_bucket_soql(bucket)
+        won_stages = (
+            "('Collecting / In Effect', 'Collecting', 'In Effect', "
+            "'Closed Won', 'Closed / Completed', 'Closed / Fulfilled')"
+        )
         soql = f"""
             SELECT npe01__Payment_Amount__c, npe01__Scheduled_Date__c,
                    npe01__Opportunity__r.CloseDate
@@ -921,9 +929,10 @@ async def get_acv_summary(
             WHERE npe01__Scheduled_Date__c >= {year}-01-01
             AND npe01__Scheduled_Date__c <= {year}-12-31
             AND npe01__Written_Off__c = false
-            AND npe01__Opportunity__r.StageName IN ('Collecting / In Effect', 'Closed Won', 'Closed Completed')
+            AND npe01__Opportunity__r.StageName IN {won_stages}
             AND npe01__Opportunity__r.CloseDate >= {year}-01-01
             AND npe01__Opportunity__r.CloseDate <= {year}-12-31
+            {bucket_clause}
             LIMIT 2000
         """
         result = await salesforce.query(soql)

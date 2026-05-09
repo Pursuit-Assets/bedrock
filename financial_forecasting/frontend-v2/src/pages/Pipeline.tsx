@@ -33,6 +33,7 @@ import {
   stageStatus,
 } from "@/lib/stages";
 import { cn } from "@/lib/utils";
+import { useSessionState } from "@/lib/useSessionState";
 import { useAccounts, useAccountsEnrichment } from "@/services/accounts";
 import {
   useCreateOpportunity,
@@ -189,7 +190,7 @@ export function PipelinePage() {
   const [rules, setRules] = useState<FilterRule<PipelineField>[]>([]);
   const [q, setQ] = useState("");
   const [showCreate, setShowCreate] = useState(false);
-  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [expandedId, setExpandedId] = useSessionState<string | null>("pipeline:expandedId", null);
   const canEdit = usePerm("edit_all_opportunities");
 
   const { visible: visibleCols, toggle: toggleCol, replaceAll: replaceVisibleCols } =
@@ -351,7 +352,7 @@ export function PipelinePage() {
           throw new Error("0–100");
         }
       }
-      await updateOpp.mutateAsync({ id, patch: { Probability: parsed } });
+      await updateOpp.mutateAsync({ id, patch: { Manager_Probability_Override__c: parsed } });
     },
     [updateOpp],
   );
@@ -1052,14 +1053,14 @@ const OpportunityRow = memo(function OpportunityRow({
     ),
     probability: canEdit ? (
       <InlineText
-        value={o.Probability != null ? String(o.Probability) : ""}
+        value={o.Manager_Probability_Override__c != null ? String(o.Manager_Probability_Override__c) : (o.Probability != null ? String(o.Probability) : "")}
         onSave={onSaveProbability}
         formatDisplay={pipelinePercentDisplay}
         placeholder="—"
         className="justify-end text-right"
       />
     ) : (
-      <span className="tabular-nums text-right block">{o.Probability != null ? `${o.Probability}%` : "—"}</span>
+      <span className="tabular-nums text-right block">{(o.Manager_Probability_Override__c ?? o.Probability) != null ? `${o.Manager_Probability_Override__c ?? o.Probability}%` : "—"}</span>
     ),
     close: <>{fmtDate(o.CloseDate)}</>,
     paymentDate: canEdit ? (

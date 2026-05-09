@@ -236,6 +236,40 @@ COMMENT ON TABLE bedrock.project_opportunity IS
   'Migration note: replaces the singular project.opportunity_id column for new usage.';
 
 -- ---------------------------------------------------------------------------
+-- Project ↔ Account / Contact / Award (Many-to-Many)
+-- Same shape as project_opportunity — text IDs for SF compatibility.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS bedrock.project_account (
+    id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    project_id  UUID NOT NULL REFERENCES bedrock.project(id) ON DELETE CASCADE,
+    account_id  TEXT NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (project_id, account_id)
+);
+CREATE INDEX IF NOT EXISTS idx_pa_project ON bedrock.project_account(project_id);
+CREATE INDEX IF NOT EXISTS idx_pa_account ON bedrock.project_account(account_id);
+
+CREATE TABLE IF NOT EXISTS bedrock.project_contact (
+    id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    project_id  UUID NOT NULL REFERENCES bedrock.project(id) ON DELETE CASCADE,
+    contact_id  TEXT NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (project_id, contact_id)
+);
+CREATE INDEX IF NOT EXISTS idx_pc_project ON bedrock.project_contact(project_id);
+CREATE INDEX IF NOT EXISTS idx_pc_contact ON bedrock.project_contact(contact_id);
+
+CREATE TABLE IF NOT EXISTS bedrock.project_award (
+    id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    project_id  UUID NOT NULL REFERENCES bedrock.project(id) ON DELETE CASCADE,
+    award_id    UUID NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (project_id, award_id)
+);
+CREATE INDEX IF NOT EXISTS idx_paw_project ON bedrock.project_award(project_id);
+CREATE INDEX IF NOT EXISTS idx_paw_award ON bedrock.project_award(award_id);
+
+-- ---------------------------------------------------------------------------
 -- Permission Profiles & User Roles
 -- ---------------------------------------------------------------------------
 

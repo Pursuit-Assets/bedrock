@@ -1,4 +1,4 @@
-import { NavLink, Outlet, useLocation } from "react-router-dom";
+import { NavLink, Outlet, useLocation, useNavigationType } from "react-router-dom";
 import { useEffect, useRef, useState } from "react";
 import {
   LayoutDashboard,
@@ -19,6 +19,7 @@ import {
 
 import { GlobalSearch } from "@/components/GlobalSearch";
 import { cn } from "@/lib/utils";
+import { recordNavigation, saveScroll, restoreScroll } from "@/lib/navHistory";
 import { useCurrentUser, useSalesforceStatus, startSalesforceConnect } from "@/services/auth";
 
 const NAV_GROUPS = [
@@ -80,9 +81,32 @@ export function AppShell() {
   const isSettingsPage = pathname.startsWith("/settings");
   const sfNotConnected = !sf.isLoading && sf.data?.connected === false;
 
+  const navType = useNavigationType();
+  const prevPathRef = useRef(pathname);
   useEffect(() => {
-    scrollRef.current?.scrollTo({ top: 0 });
-  }, [pathname]);
+    const prev = prevPathRef.current;
+    prevPathRef.current = pathname;
+
+    // Save scroll position of the page we're leaving
+    if (prev !== pathname && scrollRef.current) {
+      saveScroll(prev, scrollRef.current.scrollTop);
+    }
+
+    if (navType === "POP") {
+      // Back/forward — restore the saved scroll position
+      const saved = restoreScroll(pathname);
+      if (saved !== null && scrollRef.current) {
+        // Defer so the DOM has time to render before scrolling
+        requestAnimationFrame(() => {
+          scrollRef.current?.scrollTo({ top: saved });
+        });
+      }
+    } else {
+      // Forward navigation — scroll to top
+      scrollRef.current?.scrollTo({ top: 0 });
+    }
+    recordNavigation();
+  }, [pathname, navType]);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {

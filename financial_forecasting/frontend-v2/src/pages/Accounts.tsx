@@ -21,6 +21,7 @@ import { totalWidth, useColumnWidths } from "@/lib/columnWidths";
 import { fmtMoney } from "@/lib/format";
 import { sortBy, useSort } from "@/lib/sort";
 import { cn } from "@/lib/utils";
+import { useSessionState } from "@/lib/useSessionState";
 import { AccountAvatar } from "@/components/AccountAvatar";
 import {
   AddFilterButton,
@@ -209,7 +210,7 @@ export function AccountsPage() {
   const [q, setQ] = useState("");
   const [rules, setRules] = useState<FilterRule<AccountField>[]>([]);
   const [showCreate, setShowCreate] = useState(false);
-  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [expandedId, setExpandedId] = useSessionState<string | null>("accounts:expandedId", null);
 
   const { visible: visibleCols, toggle: toggleCol, replaceAll: replaceVisibleCols } =
     useColumnVisibility("bedrock-v2:vis:accounts", COLUMN_ORDER, DEFAULT_VISIBLE);

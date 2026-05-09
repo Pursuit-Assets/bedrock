@@ -261,8 +261,8 @@ export function OpportunityDetailPage() {
           </EditField>
           <EditField label="Probability">
             <InlineText
-              value={opp.Probability != null ? String(opp.Probability) : ""}
-              onSave={(v) => patch("Probability", v ? Number(v) : null)}
+              value={opp.Manager_Probability_Override__c != null ? String(opp.Manager_Probability_Override__c) : (opp.Probability != null ? String(opp.Probability) : "")}
+              onSave={(v) => patch("Manager_Probability_Override__c", v ? Number(v) : null)}
               formatDisplay={formatPercentDisplay}
               placeholder="—"
             />

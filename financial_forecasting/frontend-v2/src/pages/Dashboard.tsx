@@ -14,6 +14,8 @@ import { useACVSummary } from "@/services/payments";
 import { useOwnerGoals } from "@/services/ownerGoals";
 import { useActiveUsers } from "@/services/users";
 import type { SfOpportunity } from "@/types/salesforce";
+import type { CashflowBucket } from "@/services/cashflow";
+import { filterByBucket } from "@/lib/bucketFilter";
 
 // ── Year helper ──────────────────────────────────────────────────────────
 
@@ -31,6 +33,8 @@ export function DashboardPage() {
   const { data: activeUsers = [] } = useActiveUsers();
 
   const fy = new Date().getUTCFullYear();
+  const [bucket, setBucket] = useState<CashflowBucket>("all");
+  const filteredOpps = useMemo(() => filterByBucket(opps, bucket), [opps, bucket]);
 
   return (
     <div className="mx-auto max-w-[1320px] px-7 py-6 pb-20">
@@ -39,14 +43,32 @@ export function DashboardPage() {
       />
 
       <div className="flex flex-col gap-6">
-        <CurrentFYOverview opps={opps} fy={fy} />
+        {/* Record-type filter */}
+        <div className="inline-flex flex-wrap gap-1.5">
+          {(["all", "philanthropy", "pbc", "capital_grants", "other"] as const).map((b) => (
+            <button
+              key={b}
+              type="button"
+              onClick={() => setBucket(b)}
+              className={
+                bucket === b
+                  ? "h-7 rounded-full border border-accent bg-accent/10 px-3 text-[12.5px] font-medium text-accent"
+                  : "h-7 rounded-full border border-border-strong bg-surface px-3 text-[12.5px] font-medium text-ink-2 hover:text-ink"
+              }
+              aria-pressed={bucket === b}
+            >
+              {{all:"All",philanthropy:"Philanthropy",pbc:"PBC",capital_grants:"Capital Grants",other:"Other"}[b]}
+            </button>
+          ))}
+        </div>
+        <CurrentFYOverview opps={filteredOpps} fy={fy} bucket={bucket} />
         <IndividualGoals
-          opps={opps}
+          opps={filteredOpps}
           fy={fy}
           ownerGoals={ownerGoals}
           activeUsers={activeUsers}
         />
-        <PipelineFunnel opps={opps} />
+        <PipelineFunnel opps={filteredOpps} />
       </div>
     </div>
   );
@@ -98,11 +120,13 @@ function endOfQuarterMs(year: number, q: number): number {
 function CurrentFYOverview({
   opps,
   fy,
+  bucket = "all",
 }: {
   opps: SfOpportunity[];
   fy: number;
+  bucket?: string;
 }) {
-  const { data: acv } = useACVSummary(fy);
+  const { data: acv } = useACVSummary(fy, bucket);
   const metrics = useMemo(() => {
     const openOpps = opps.filter(isOpen);
     const wonOpps = opps.filter(isWon);
