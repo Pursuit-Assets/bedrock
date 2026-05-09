@@ -10,11 +10,11 @@ import {
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { BackLink as SharedBackLink } from "@/components/detail";
-import { Tag } from "@/components/ui/Tag";
 import { api } from "@/lib/api";
 import { fmtDate, initials } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { useOpportunities } from "@/services/opportunities";
+import type { SfOpportunity } from "@/types/salesforce";
 import { useAccounts } from "@/services/accounts";
 import { useContacts } from "@/services/contacts";
 import { useAwards } from "@/services/awards";
@@ -37,47 +37,9 @@ import {
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-interface ProjectOpportunityLink {
-  id: string;
-  opportunity_id: string;
-  role: string | null;
-  created_at: string | null;
-}
-
-interface ProjectOpportunityResponse {
-  success: boolean;
-  data: ProjectOpportunityLink[];
-}
-
 // ── Hooks ─────────────────────────────────────────────────────────────────────
 
-function useProjectOpportunities(projectId: string | undefined) {
-  return useQuery({
-    queryKey: ["project-opportunities", projectId],
-    queryFn: async () => {
-      const { data } = await api.get<ProjectOpportunityResponse>(
-        `/api/projects/${projectId}/opportunities`,
-      );
-      return data.data ?? [];
-    },
-    enabled: !!projectId,
-    staleTime: 60_000,
-  });
-}
 
-function useProjectAccounts(projectId: string | undefined) {
-  return useQuery({
-    queryKey: ["project-accounts", projectId],
-    queryFn: async () => {
-      const { data } = await api.get<{ data: { id: string; account_id: string }[] }>(
-        `/api/projects/${projectId}/accounts`,
-      );
-      return data.data ?? [];
-    },
-    enabled: !!projectId,
-    staleTime: 60_000,
-  });
-}
 
 function useProjectContacts(projectId: string | undefined) {
   return useQuery({
@@ -844,49 +806,44 @@ function Empty({ children }: { children: React.ReactNode }) {
 }
 
 function LinkedOpportunitiesSection({ projectId }: { projectId: string }) {
-  const linkedQ = useProjectOpportunities(projectId);
+  // Opportunities are auto-derived from linked awards — read-only.
+  const awardsQ = useProjectAwards(projectId);
   const { data: opps = [] } = useOpportunities();
 
   const linkedOpps = useMemo(() => {
-    const links = linkedQ.data ?? [];
+    const awardData = awardsQ.data ?? [];
     const byId = new Map(opps.map((o) => [o.Id, o]));
-    return links.map((link) => ({ link, opp: byId.get(link.opportunity_id) }));
-  }, [linkedQ.data, opps]);
+    const seen = new Set<string>();
+    const result: { oppId: string; opp: SfOpportunity | undefined }[] = [];
+    for (const award of awardData) {
+      const oppId = award.opportunity_id;
+      if (!oppId || seen.has(oppId)) continue;
+      seen.add(oppId);
+      result.push({ oppId, opp: byId.get(oppId) });
+    }
+    return result;
+  }, [awardsQ.data, opps]);
+
+  if (!awardsQ.isLoading && linkedOpps.length === 0) return null;
 
   return (
-    <SectionCard title={`Linked opportunities (${linkedQ.isLoading ? "…" : linkedOpps.length})`}>
-      {linkedQ.isLoading ? (
+    <SectionCard title={`Opportunities (${awardsQ.isLoading ? "…" : linkedOpps.length})`}>
+      {awardsQ.isLoading ? (
         <Empty>Loading…</Empty>
-      ) : linkedOpps.length === 0 ? (
-        <Empty>No opportunities linked to this project.</Empty>
       ) : (
         <ul className="flex flex-col">
-          {linkedOpps.map(({ link, opp }) => (
-            <li
-              key={link.id}
-              className="flex items-center gap-3 border-b border-border-strong px-5 py-2.5 last:border-b-0"
-            >
-              {link.role ? <Tag>{link.role}</Tag> : null}
+          {linkedOpps.map(({ oppId, opp }) => (
+            <li key={oppId} className="flex items-center gap-3 border-b border-border-strong px-5 py-2.5 last:border-b-0">
               <div className="min-w-0 flex-1">
-                <Link
-                  to={`/opportunities/${link.opportunity_id}`}
-                  className="block truncate text-[13px] font-medium hover:underline"
-                >
-                  {opp?.Name ?? link.opportunity_id}
+                <Link to={`/opportunities/${oppId}`} className="block truncate text-[13px] font-medium hover:underline">
+                  {opp?.Name ?? oppId}
                 </Link>
                 {opp?.Account?.Name ? (
-                  <Link
-                    to={`/accounts/${opp.AccountId ?? ""}`}
-                    className="block truncate text-[11.5px] text-ink-3 hover:underline"
-                  >
-                    {opp.Account.Name}
-                  </Link>
+                  <span className="block truncate text-[11.5px] text-ink-3">{opp.Account.Name}</span>
                 ) : null}
               </div>
               {opp?.StageName ? (
-                <span className="flex-shrink-0 rounded bg-surface-2 px-2 py-0.5 text-[11px] text-ink-3">
-                  {opp.StageName}
-                </span>
+                <span className="flex-shrink-0 rounded bg-surface-2 px-2 py-0.5 text-[11px] text-ink-3">{opp.StageName}</span>
               ) : null}
             </li>
           ))}
@@ -896,63 +853,43 @@ function LinkedOpportunitiesSection({ projectId }: { projectId: string }) {
   );
 }
 
-// ── Linked accounts section (M2M via project_account) ────────────────────────
+// ── Accounts section (auto-derived from linked awards → opp → account) ───────
 
 function LinkedAccountsSection({ projectId }: { projectId: string }) {
-  const linkedQ = useProjectAccounts(projectId);
+  const awardsQ = useProjectAwards(projectId);
+  const { data: opps = [] } = useOpportunities();
   const { data: accounts = [] } = useAccounts();
-  const qc = useQueryClient();
 
   const linkedAccounts = useMemo(() => {
-    const links = linkedQ.data ?? [];
-    const byId = new Map(accounts.map((a) => [a.Id, a]));
-    return links.map((link) => ({ link, account: byId.get(link.account_id) }));
-  }, [linkedQ.data, accounts]);
+    const awardData = awardsQ.data ?? [];
+    const oppById = new Map(opps.map((o) => [o.Id, o]));
+    const acctById = new Map(accounts.map((a) => [a.Id, a]));
+    const seen = new Set<string>();
+    const result: { id: string; name: string }[] = [];
+    for (const award of awardData) {
+      const opp = oppById.get(award.opportunity_id);
+      const acctId = opp?.AccountId;
+      if (!acctId || seen.has(acctId)) continue;
+      seen.add(acctId);
+      const acct = acctById.get(acctId);
+      result.push({ id: acctId, name: acct?.Name ?? opp?.Account?.Name ?? acctId });
+    }
+    return result;
+  }, [awardsQ.data, opps, accounts]);
 
-  const unlink = useMutation({
-    mutationFn: async (accountId: string) => {
-      await api.delete(`/api/projects/${projectId}/accounts/${accountId}`);
-    },
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["project-accounts", projectId] }),
-  });
-
-  const linkAccount = useMutation({
-    mutationFn: async (entityId: string) => {
-      await api.post(`/api/projects/${projectId}/accounts`, { entity_id: entityId });
-    },
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["project-accounts", projectId] }),
-  });
-
-  const linkedIds = new Set(linkedAccounts.map((l) => l.link.account_id));
-  const availableAccounts = accounts.filter((a) => !linkedIds.has(a.Id));
+  if (!awardsQ.isLoading && linkedAccounts.length === 0) return null;
 
   return (
-    <SectionCard
-      title={`Linked accounts (${linkedQ.isLoading ? "…" : linkedAccounts.length})`}
-      action={
-        availableAccounts.length > 0 ? (
-          <LinkPicker
-            label="Link account"
-            options={availableAccounts.map((a) => ({ id: a.Id, name: a.Name ?? a.Id }))}
-            onSelect={(id) => linkAccount.mutate(id)}
-          />
-        ) : null
-      }
-    >
-      {linkedQ.isLoading ? (
+    <SectionCard title={`Accounts (${awardsQ.isLoading ? "…" : linkedAccounts.length})`}>
+      {awardsQ.isLoading ? (
         <Empty>Loading…</Empty>
-      ) : linkedAccounts.length === 0 ? (
-        <Empty>No accounts linked yet.</Empty>
       ) : (
         <ul className="flex flex-col">
-          {linkedAccounts.map(({ link, account }) => (
-            <li key={link.id} className="flex items-center gap-3 border-b border-border-strong px-5 py-2.5 last:border-b-0">
-              <Link to={`/accounts/${link.account_id}`} className="flex-1 truncate text-[13px] font-medium hover:underline">
-                {account?.Name ?? link.account_id}
+          {linkedAccounts.map((acct) => (
+            <li key={acct.id} className="flex items-center gap-3 border-b border-border-strong px-5 py-2.5 last:border-b-0">
+              <Link to={`/accounts/${acct.id}`} className="flex-1 truncate text-[13px] font-medium hover:underline">
+                {acct.name}
               </Link>
-              <button type="button" onClick={() => unlink.mutate(link.account_id)} className="text-[11px] text-ink-4 hover:text-red">
-                Unlink
-              </button>
             </li>
           ))}
         </ul>
@@ -1338,10 +1275,10 @@ export function ProjectDetailPage() {
       </section>
 
       {/* Linked sections */}
+      <LinkedAwardsSection projectId={id} />
+      <LinkedContactsSection projectId={id} />
       <LinkedOpportunitiesSection projectId={id} />
       <LinkedAccountsSection projectId={id} />
-      <LinkedContactsSection projectId={id} />
-      <LinkedAwardsSection projectId={id} />
     </div>
   );
 }
