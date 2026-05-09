@@ -143,7 +143,14 @@ class ToolResult(BaseModel):
 # ---------------------------------------------------------------------------
 
 class Evaluation(BaseModel):
-    """Output of the evaluator (Haiku-as-judge)."""
+    """Output of the evaluator (Haiku-as-judge).
+
+    ``cost_usd`` / ``tokens_in`` / ``tokens_out`` carry the LLM-call
+    accounting for the eval pass itself — same shape as
+    ``ToolResult``'s cost fields. The chat orchestrator surfaces these
+    in the ``eval_emitted`` SSE event so the frontend can render a
+    running cost / token tally per conversation.
+    """
     model_config = ConfigDict(frozen=True)
 
     plan_id: UUID
@@ -153,6 +160,9 @@ class Evaluation(BaseModel):
     verdict: EvalVerdict
     rationale: str = ""
     rejected_claims: tuple[str, ...] = ()
+    cost_usd: float = 0.0
+    tokens_in: int = 0
+    tokens_out: int = 0
 
 
 # ---------------------------------------------------------------------------

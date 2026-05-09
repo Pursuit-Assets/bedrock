@@ -120,6 +120,9 @@ function applyEvent(turn: PebbleTurn, ev: OrchestratorEvent): PebbleTurn {
       };
     }
     case "tool_call_finished": {
+      const stepCost = ev.payload.cost_usd || 0;
+      const stepIn = ev.payload.tokens_in || 0;
+      const stepOut = ev.payload.tokens_out || 0;
       return {
         ...turn,
         steps: turn.steps.map((s) => s.step_id === ev.payload.step_id
@@ -127,18 +130,30 @@ function applyEvent(turn: PebbleTurn, ev: OrchestratorEvent): PebbleTurn {
               ...s,
               status: ev.payload.ok ? "done" as StepStatus : "failed" as StepStatus,
               duration_ms: ev.payload.duration_ms,
-              cost_usd: ev.payload.cost_usd,
+              cost_usd: stepCost,
+              tokens_in: stepIn,
+              tokens_out: stepOut,
               error: ev.payload.error ?? undefined,
             }
           : s,
         ),
+        cost_usd: turn.cost_usd + stepCost,
+        tokens_in: turn.tokens_in + stepIn,
+        tokens_out: turn.tokens_out + stepOut,
       };
     }
     case "draft_emitted": {
       return { ...turn, draft: ev.payload.draft };
     }
     case "eval_emitted": {
-      return { ...turn, evaluation: ev.payload };
+      // Eval LLM call cost/tokens roll into the turn tally too.
+      return {
+        ...turn,
+        evaluation: ev.payload,
+        cost_usd: turn.cost_usd + (ev.payload.cost_usd || 0),
+        tokens_in: turn.tokens_in + (ev.payload.tokens_in || 0),
+        tokens_out: turn.tokens_out + (ev.payload.tokens_out || 0),
+      };
     }
     case "replan_started": {
       return { ...turn, replanned: true };
@@ -165,11 +180,21 @@ function applyEvent(turn: PebbleTurn, ev: OrchestratorEvent): PebbleTurn {
 // Context
 // ---------------------------------------------------------------------------
 
+interface ConversationTotals {
+  cost_usd: number;
+  tokens_in: number;
+  tokens_out: number;
+  turn_count: number;
+}
+
 interface PebbleContextValue {
   conversationId: string;
   turns: PebbleTurn[];
   streamingTurnId: string | null;
   isStreaming: boolean;
+  // Aggregates across every turn in this conversation. Drives the
+  // running cost / token tally chips in the FE.
+  totals: ConversationTotals;
   sendQuery: (query: string) => Promise<void>;
   cancel: () => void;
   reset: (conversationId?: string) => void;
@@ -225,6 +250,9 @@ export function PebbleConversationProvider({
       query: trimmed,
       steps: [],
       replanned: false,
+      cost_usd: 0,
+      tokens_in: 0,
+      tokens_out: 0,
       started_at: performance.now(),
     };
     dispatch({ type: "BEGIN_TURN", turn });
@@ -266,13 +294,26 @@ export function PebbleConversationProvider({
     dispatch({ type: "RESET", conversationId: newId || makeUUID() });
   }, []);
 
+  const totals = useMemo<ConversationTotals>(() => {
+    return state.turns.reduce(
+      (acc, t) => ({
+        cost_usd: acc.cost_usd + t.cost_usd,
+        tokens_in: acc.tokens_in + t.tokens_in,
+        tokens_out: acc.tokens_out + t.tokens_out,
+        turn_count: acc.turn_count + 1,
+      }),
+      { cost_usd: 0, tokens_in: 0, tokens_out: 0, turn_count: 0 },
+    );
+  }, [state.turns]);
+
   const value = useMemo<PebbleContextValue>(() => ({
     conversationId: state.conversationId,
     turns: state.turns,
     streamingTurnId: state.streamingTurnId,
     isStreaming: state.streamingTurnId !== null,
+    totals,
     sendQuery, cancel, reset,
-  }), [state, sendQuery, cancel, reset]);
+  }), [state, totals, sendQuery, cancel, reset]);
 
   return (
     <PebbleContext.Provider value={value}>{children}</PebbleContext.Provider>

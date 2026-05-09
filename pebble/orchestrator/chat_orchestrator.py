@@ -274,6 +274,11 @@ class ChatOrchestrator:
                 "completeness": evaluation.completeness,
                 "harm": evaluation.harm,
                 "rationale": evaluation.rationale,
+                # Eval-call accounting — surfaces in the FE running tally
+                # alongside per-step tool costs.
+                "cost_usd": evaluation.cost_usd,
+                "tokens_in": evaluation.tokens_in,
+                "tokens_out": evaluation.tokens_out,
             },
         )
 
@@ -403,6 +408,11 @@ class ChatOrchestrator:
                     "error": tool_result.error,
                     "duration_ms": tool_result.duration_ms,
                     "cost_usd": tool_result.cost_usd,
+                    # Token counts surface in the FE's running cost
+                    # tally. Pure-Python tools (generate_chart) report
+                    # 0/0; LLM-driven tools report real counts.
+                    "tokens_in": tool_result.tokens_in,
+                    "tokens_out": tool_result.tokens_out,
                     "citation_count": len(tool_result.citations),
                 },
             ))

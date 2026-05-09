@@ -35,7 +35,12 @@ export function PlanTrace({ turn }: { turn: PebbleTurn }) {
   }
 
   const completedCount = turn.steps.filter((s) => s.status === "done").length;
-  const totalCost = turn.steps.reduce((acc, s) => acc + (s.cost_usd ?? 0), 0);
+  // turn.cost_usd accumulates BOTH tool calls and the eval pass (LLM
+  // judge cost is part of the conversation's spend). Rather than
+  // re-summing from steps here, use the reducer's total — it's the
+  // single source of truth that drives the conversation chip too.
+  const totalCost = turn.cost_usd;
+  const totalTokens = turn.tokens_in + turn.tokens_out;
 
   return (
     <div className="rounded-md border border-border-strong bg-surface-2">
@@ -59,7 +64,8 @@ export function PlanTrace({ turn }: { turn: PebbleTurn }) {
           <span>
             {completedCount}/{turn.steps.length}
           </span>
-          {totalCost > 0 ? <span>${totalCost.toFixed(4)}</span> : null}
+          {totalCost > 0 ? <span>{formatCost(totalCost)}</span> : null}
+          {totalTokens > 0 ? <span>{totalTokens.toLocaleString()} tok</span> : null}
         </span>
       </button>
 
@@ -96,6 +102,12 @@ export function PlanTrace({ turn }: { turn: PebbleTurn }) {
 }
 
 function Step({ step }: { step: StepView }) {
+  // Cost / token chip rendered inline to the right of the duration.
+  // Only visible when the step has produced cost (tool_call_finished
+  // arrived). Token counts may both be 0 for pure-Python tools
+  // (generate_chart, aggregate_pipeline_views) — that's truthful info,
+  // we keep showing 0 tokens for transparency.
+  const hasCost = step.cost_usd != null;
   return (
     <li className="flex items-start gap-2 text-[12px]">
       <StepIcon status={step.status} />
@@ -104,17 +116,29 @@ function Step({ step }: { step: StepView }) {
         <span className="truncate text-ink-3">
           {summarizeArgs(step.args)}
         </span>
-        {step.duration_ms != null ? (
-          <span className="ml-auto flex-shrink-0 text-[11px] text-ink-4 tabular-nums">
-            {step.duration_ms}ms
-          </span>
-        ) : null}
+        <span className="ml-auto flex flex-shrink-0 items-baseline gap-2 text-[11px] text-ink-4 tabular-nums">
+          {step.duration_ms != null ? <span>{step.duration_ms}ms</span> : null}
+          {hasCost ? <span>{formatCost(step.cost_usd!)}</span> : null}
+          {hasCost && (step.tokens_in || step.tokens_out) ? (
+            <span title="input → output tokens">
+              {step.tokens_in ?? 0}↓{step.tokens_out ?? 0}↑
+            </span>
+          ) : null}
+        </span>
       </div>
       {step.error ? (
         <span className="text-[11px] text-red-700">{step.error}</span>
       ) : null}
     </li>
   );
+}
+
+/** Format a USD cost. Show 4 decimals (sub-cent precision) by default; if the
+ * cost is at least a cent show 2 decimals. Zero-cost shows "$0". */
+function formatCost(cost: number): string {
+  if (!cost) return "$0";
+  if (cost >= 0.01) return `$${cost.toFixed(2)}`;
+  return `$${cost.toFixed(4)}`;
 }
 
 function StepIcon({ status }: { status: StepStatus }) {

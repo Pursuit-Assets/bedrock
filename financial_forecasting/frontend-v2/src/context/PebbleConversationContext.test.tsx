@@ -138,7 +138,8 @@ describe("sendQuery + event reduction", () => {
       { kind: "tool_call_started", payload: { step_id: "s1", tool: "search_crm", args: {} } },
       { kind: "tool_call_finished", payload: {
         step_id: "s1", tool: "search_crm", ok: true,
-        error: null, duration_ms: 123, cost_usd: 0.001, citation_count: 2,
+        error: null, duration_ms: 123, cost_usd: 0.001,
+        tokens_in: 200, tokens_out: 80, citation_count: 2,
       } },
     ]));
 
@@ -152,6 +153,8 @@ describe("sendQuery + event reduction", () => {
     expect(step.status).toBe("done");
     expect(step.duration_ms).toBe(123);
     expect(step.cost_usd).toBe(0.001);
+    expect(step.tokens_in).toBe(200);
+    expect(step.tokens_out).toBe(80);
   });
 
   it("flips step to failed on tool_call_finished with ok=false", async () => {
@@ -199,6 +202,7 @@ describe("sendQuery + event reduction", () => {
       { kind: "eval_emitted", payload: {
         verdict: "pass", factuality: 0.95, completeness: 0.9,
         harm: "none", rationale: "ok",
+        cost_usd: 0.0008, tokens_in: 425, tokens_out: 78,
       } },
     ]));
 
@@ -210,6 +214,10 @@ describe("sendQuery + event reduction", () => {
     });
     expect(result.current.turns[0].evaluation?.verdict).toBe("pass");
     expect(result.current.turns[0].evaluation?.factuality).toBe(0.95);
+    // Eval cost rolls into the turn tally
+    expect(result.current.turns[0].cost_usd).toBeCloseTo(0.0008, 6);
+    expect(result.current.turns[0].tokens_in).toBe(425);
+    expect(result.current.turns[0].tokens_out).toBe(78);
   });
 
   it("response_final populates final + clears streaming flag", async () => {
@@ -292,5 +300,78 @@ describe("cancel and reset", () => {
     act(() => { result.current.reset(); });
     expect(result.current.conversationId).not.toBe(original);
     expect(result.current.conversationId).toMatch(/.+/);
+  });
+});
+
+describe("conversation-level totals", () => {
+  it("aggregates cost + tokens across multiple turns", async () => {
+    // Turn 1: tool call with cost + tokens
+    mockStream.mockReturnValueOnce(makeEventStream([
+      { kind: "plan_emitted", payload: { plan_id: "p1", rationale: "",
+        steps: [{ step_id: "s1", tool: "search_crm", args: {} }] } },
+      { kind: "tool_call_finished", payload: {
+        step_id: "s1", tool: "search_crm", ok: true, error: null,
+        duration_ms: 100, cost_usd: 0.002, tokens_in: 100, tokens_out: 50,
+        citation_count: 0,
+      } },
+      { kind: "eval_emitted", payload: {
+        verdict: "pass", factuality: 0.9, completeness: 0.9,
+        harm: "none", rationale: "",
+        cost_usd: 0.0005, tokens_in: 200, tokens_out: 30,
+      } },
+      { kind: "response_final", payload: { final: {
+        plan_id: "p1", text: "first answer",
+        citations: [], suggested_actions: [], charts: [],
+        degraded: false, degradation_reason: null,
+      } } },
+    ]));
+    // Turn 2: another tool call
+    mockStream.mockReturnValueOnce(makeEventStream([
+      { kind: "tool_call_finished", payload: {
+        step_id: "s2", tool: "get_record", ok: true, error: null,
+        duration_ms: 50, cost_usd: 0.001, tokens_in: 80, tokens_out: 20,
+        citation_count: 0,
+      } },
+      { kind: "response_final", payload: { final: {
+        plan_id: "p2", text: "second answer",
+        citations: [], suggested_actions: [], charts: [],
+        degraded: false, degradation_reason: null,
+      } } },
+    ]));
+
+    const { result } = renderHook(() => usePebbleConversation(), {
+      wrapper: wrapperFor("c1"),
+    });
+    await act(async () => { await result.current.sendQuery("first"); });
+    await act(async () => { await result.current.sendQuery("second"); });
+
+    expect(result.current.totals.turn_count).toBe(2);
+    // Sum: 0.002 + 0.0005 + 0.001 = 0.0035
+    expect(result.current.totals.cost_usd).toBeCloseTo(0.0035, 6);
+    // Sum tokens_in:  100 + 200 + 80 = 380
+    expect(result.current.totals.tokens_in).toBe(380);
+    // Sum tokens_out: 50 + 30 + 20 = 100
+    expect(result.current.totals.tokens_out).toBe(100);
+  });
+
+  it("totals start at zero before any turn", () => {
+    const { result } = renderHook(() => usePebbleConversation(), {
+      wrapper: wrapperFor("c-empty"),
+    });
+    expect(result.current.totals).toEqual({
+      cost_usd: 0, tokens_in: 0, tokens_out: 0, turn_count: 0,
+    });
+  });
+
+  it("turn cost_usd / tokens initialized at zero on new turn", async () => {
+    mockStream.mockReturnValue(makeEventStream([]));
+    const { result } = renderHook(() => usePebbleConversation(), {
+      wrapper: wrapperFor("c1"),
+    });
+    await act(async () => { await result.current.sendQuery("hello"); });
+    const turn = result.current.turns[0];
+    expect(turn.cost_usd).toBe(0);
+    expect(turn.tokens_in).toBe(0);
+    expect(turn.tokens_out).toBe(0);
   });
 });

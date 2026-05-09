@@ -542,6 +542,93 @@ async def test_run_stream_with_plan_allow_replan_true_still_works():
 
 
 @pytest.mark.asyncio
+async def test_tool_call_finished_payload_includes_tokens():
+    """tool_call_finished must surface tokens_in / tokens_out on the
+    wire so the FE can render the running tally."""
+    # Build a tool that explicitly reports token counts (mimics a real
+    # LLM-driven tool's ToolResult shape).
+    from pebble.orchestrator.schemas import ToolResult
+    reg = _registry()
+    reg.unregister("search_crm")
+    async def token_aware_handler(args, ctx):
+        return ToolResult(
+            step_id=uuid4(), tool="search_crm", ok=True,
+            data={"items": []}, citations=(),
+            tokens_in=300, tokens_out=120, cost_usd=0.0045,
+            duration_ms=420,
+        )
+    from pebble.orchestrator.tools import ToolSpec, make_input_schema
+    reg.register(ToolSpec(
+        name="search_crm",
+        description="search",
+        input_schema=make_input_schema(
+            properties={"query": {"type": "string"}},
+            required_keys=["query"],
+        ),
+        handler=token_aware_handler,
+    ))
+    planner = Planner(client=FakePlannerLLM([_GOOD_PLAN]), registry=reg)
+    evaluator = Evaluator(client=FakeJudge([_PASS_EVAL]))
+    ctx = ToolContext(user_email="rm@pursuit.org", conversation_id=str(uuid4()))
+    scratchpad = ScratchpadWriter(
+        pool=None, conversation_id=uuid4(), user_email="rm@pursuit.org",
+    )
+    orch = ChatOrchestrator(
+        planner=planner, evaluator=evaluator, registry=reg,
+        budget=Budget(), ctx=ctx, scratchpad=scratchpad,
+    )
+
+    events = []
+    async for ev in orch.run_stream(user_query="find Acme"):
+        events.append(ev)
+
+    finished = [e for e in events if e.kind == "tool_call_finished"]
+    assert len(finished) == 1
+    payload = finished[0].payload
+    assert payload["tokens_in"] == 300
+    assert payload["tokens_out"] == 120
+    assert payload["cost_usd"] == pytest.approx(0.0045)
+
+
+@pytest.mark.asyncio
+async def test_eval_emitted_payload_includes_cost_and_tokens():
+    """eval_emitted carries the LLM judge's cost + tokens so the FE
+    can sum them into the conversation tally alongside tool costs."""
+    from pebble.orchestrator.evaluator import EvaluatorLLMResponse
+
+    class _CostingJudge:
+        async def emit_evaluation(self, *, system, user, max_tokens=1024):
+            return EvaluatorLLMResponse(
+                text=_PASS_EVAL,
+                cost_usd=0.0008, tokens_in=425, tokens_out=78,
+            )
+
+    reg = _registry()
+    planner = Planner(client=FakePlannerLLM([_GOOD_PLAN]), registry=reg)
+    evaluator = Evaluator(client=_CostingJudge())
+    ctx = ToolContext(user_email="rm@pursuit.org", conversation_id=str(uuid4()))
+    scratchpad = ScratchpadWriter(
+        pool=None, conversation_id=uuid4(), user_email="rm@pursuit.org",
+    )
+    orch = ChatOrchestrator(
+        planner=planner, evaluator=evaluator, registry=reg,
+        budget=Budget(), ctx=ctx, scratchpad=scratchpad,
+    )
+
+    events = []
+    async for ev in orch.run_stream(user_query="find Acme"):
+        events.append(ev)
+
+    eval_events = [e for e in events if e.kind == "eval_emitted"]
+    assert len(eval_events) == 1
+    payload = eval_events[0].payload
+    assert payload["verdict"] == "pass"
+    assert payload["cost_usd"] == pytest.approx(0.0008)
+    assert payload["tokens_in"] == 425
+    assert payload["tokens_out"] == 78
+
+
+@pytest.mark.asyncio
 async def test_run_stream_with_plan_pre_flight_rejected_skips_eval():
     """Pre-flight rejection (plan over budget) skips eval same as in
     run_stream. Workflow callers see the same outcome."""

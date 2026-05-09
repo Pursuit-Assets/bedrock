@@ -332,3 +332,66 @@ def test_parse_evaluation_unknown_harm_word_normalized():
     plan_id = uuid4()
     e = _parse_evaluation(text, plan_id=plan_id, factuality_floor=0.85, completeness_floor=0.7)
     assert e.harm == "none"   # unknown harm word maps to none
+
+
+# ---------------------------------------------------------------------------
+# Cost / token plumbing — the LLM-call accounting flows from
+# EvaluatorLLMResponse onto the Evaluation model so the orchestrator's
+# eval_emitted SSE event can include it for the FE running tally.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_evaluation_carries_cost_and_tokens_from_llm_response():
+    judge = FakeJudge([EvaluatorLLMResponse(
+        text='{"factuality":0.95,"completeness":0.9,"harm":"none","verdict":"pass","rationale":"ok"}',
+        cost_usd=0.0008, tokens_in=425, tokens_out=78,
+    )])
+    e = Evaluator(client=judge)
+    result = await e.evaluate(plan=_plan(), tool_results={}, draft=_draft())
+    assert result.verdict == EvalVerdict.PASS
+    assert result.cost_usd == pytest.approx(0.0008)
+    assert result.tokens_in == 425
+    assert result.tokens_out == 78
+
+
+@pytest.mark.asyncio
+async def test_evaluation_zero_cost_on_failsafe_path():
+    """When the LLM raises, evaluator returns failsafe PASS with zero
+    cost — the call never completed, no spend to charge."""
+    judge = FakeJudge([RuntimeError("LLM timeout")])
+    e = Evaluator(client=judge)
+    result = await e.evaluate(plan=_plan(), tool_results={}, draft=_draft())
+    assert result.verdict == EvalVerdict.PASS
+    assert result.cost_usd == 0.0
+    assert result.tokens_in == 0
+    assert result.tokens_out == 0
+
+
+@pytest.mark.asyncio
+async def test_evaluation_carries_cost_on_malformed_json_retry():
+    """The judge call DID complete (cost incurred) but JSON was bad.
+    Cost still recorded so we don't underreport eval spend."""
+    judge = FakeJudge([EvaluatorLLMResponse(
+        text="not valid json",
+        cost_usd=0.0005, tokens_in=400, tokens_out=10,
+    )])
+    e = Evaluator(client=judge)
+    result = await e.evaluate(plan=_plan(), tool_results={}, draft=_draft())
+    assert result.verdict == EvalVerdict.RETRY
+    assert result.cost_usd == pytest.approx(0.0005)
+    assert result.tokens_in == 400
+    assert result.tokens_out == 10
+
+
+def test_parse_evaluation_passes_through_cost_and_tokens():
+    """Direct unit test of _parse_evaluation — kwargs propagate."""
+    text = '{"factuality":0.9,"completeness":0.9,"harm":"none","verdict":"pass","rationale":""}'
+    plan_id = uuid4()
+    e = _parse_evaluation(
+        text, plan_id=plan_id,
+        factuality_floor=0.85, completeness_floor=0.7,
+        cost_usd=0.001, tokens_in=300, tokens_out=50,
+    )
+    assert e.cost_usd == pytest.approx(0.001)
+    assert e.tokens_in == 300
+    assert e.tokens_out == 50

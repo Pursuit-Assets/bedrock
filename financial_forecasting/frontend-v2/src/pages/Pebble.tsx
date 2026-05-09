@@ -21,8 +21,9 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { Plus, Sparkles } from "lucide-react";
+import { Layers, Maximize2, Plus, Sparkles } from "lucide-react";
 
+import { cn } from "@/lib/utils";
 import { PebbleConversationProvider, usePebbleConversation } from
   "@/context/PebbleConversationContext";
 import { ConversationView } from "@/components/pebble/ConversationView";
@@ -57,6 +58,7 @@ function PebblePageInner({
 }) {
   const conv = usePebbleConversation();
   const [draft, setDraft] = useState("");
+  const [collapsed, setCollapsed] = useState(false);
   const navigate = useNavigate();
 
   // Sync URL with the provider's conversation_id once at mount.
@@ -85,8 +87,16 @@ function PebblePageInner({
     >
       <Sidebar onStartNew={startNew} />
       <main className="flex h-full flex-col overflow-hidden">
-        <Header />
-        <ConversationView turns={conv.turns} isStreaming={conv.isStreaming} />
+        <Header
+          totals={conv.totals}
+          collapsed={collapsed}
+          onToggleCollapsed={() => setCollapsed((c) => !c)}
+        />
+        <ConversationView
+          turns={conv.turns}
+          isStreaming={conv.isStreaming}
+          collapsed={collapsed}
+        />
         <div className="border-t border-border-strong bg-surface-2 px-6 py-3">
           <div className="mx-auto max-w-[800px]">
             <MessageInput
@@ -104,13 +114,77 @@ function PebblePageInner({
   );
 }
 
-function Header() {
+function Header({
+  totals, collapsed, onToggleCollapsed,
+}: {
+  totals: { cost_usd: number; tokens_in: number; tokens_out: number; turn_count: number };
+  collapsed: boolean;
+  onToggleCollapsed: () => void;
+}) {
+  const tokensTotal = totals.tokens_in + totals.tokens_out;
   return (
     <header className="flex items-center gap-2 border-b border-border-strong bg-surface px-6 py-3">
       <Sparkles size={15} className="text-ink-3" aria-hidden="true" />
       <h1 className="text-[14px] font-semibold text-ink">Ask Pebble</h1>
+
+      {/* Running total chip — only renders once there's spend.
+          Keeps the header chrome quiet until there's something to show. */}
+      {totals.turn_count > 0 && (
+        <span
+          aria-label={`Running tally: ${totals.turn_count} turns, ${formatCost(totals.cost_usd)}, ${tokensTotal} tokens`}
+          className="ml-3 flex items-baseline gap-2 rounded-full border border-border-strong bg-surface-2 px-2.5 py-0.5 text-[11px] text-ink-3 tabular-nums"
+        >
+          <span>
+            {totals.turn_count} {totals.turn_count === 1 ? "turn" : "turns"}
+          </span>
+          <span>·</span>
+          <span>{formatCost(totals.cost_usd)}</span>
+          {tokensTotal > 0 ? (
+            <>
+              <span>·</span>
+              <span>{tokensTotal.toLocaleString()} tok</span>
+            </>
+          ) : null}
+        </span>
+      )}
+
+      {/* Spacer + collapse toggle on the right edge. JP's spec: when
+          collapsed, conversation column doesn't HIDE — it folds to a
+          deck of cards. Toggle remains visible in both states so the
+          user can flip back. */}
+      <button
+        type="button"
+        onClick={onToggleCollapsed}
+        title={collapsed ? "Expand conversation" : "Collapse to deck"}
+        aria-label={collapsed ? "Expand conversation" : "Collapse to deck"}
+        aria-pressed={collapsed}
+        className={cn(
+          "ml-auto inline-flex items-center gap-1.5 rounded-md border border-border-strong px-2 py-1 text-[11.5px] font-medium",
+          collapsed
+            ? "bg-ink-2 text-surface hover:bg-ink"
+            : "bg-surface text-ink-2 hover:border-ink-3 hover:text-ink",
+        )}
+      >
+        {collapsed ? (
+          <>
+            <Maximize2 size={11} aria-hidden="true" />
+            Expand
+          </>
+        ) : (
+          <>
+            <Layers size={11} aria-hidden="true" />
+            Deck
+          </>
+        )}
+      </button>
     </header>
   );
+}
+
+function formatCost(cost: number): string {
+  if (!cost) return "$0";
+  if (cost >= 0.01) return `$${cost.toFixed(2)}`;
+  return `$${cost.toFixed(4)}`;
 }
 
 function Sidebar({ onStartNew }: { onStartNew: () => void }) {

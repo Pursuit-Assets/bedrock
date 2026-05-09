@@ -403,6 +403,8 @@ async def chat_query(request: Request, body: dict):
             final_data: dict | None = None
             tier_label = "T2-workflow" if route.level == 2 else "T1.5-agent"
             cost_total = 0.0
+            tokens_in_total = 0
+            tokens_out_total = 0
 
             try:
                 async for ev in stream_orchestrator_events(
@@ -424,8 +426,13 @@ async def chat_query(request: Request, body: dict):
                             "suggested_actions": final.get("suggested_actions") or [],
                             "degraded": final.get("degraded", False),
                         }
-                    elif ev.kind == "tool_call_finished":
+                    elif ev.kind in ("tool_call_finished", "eval_emitted"):
+                        # Both event kinds carry per-LLM-call accounting.
+                        # Sum into the conversation total persisted with
+                        # the assistant message + driving the FE tally.
                         cost_total += float(ev.payload.get("cost_usd") or 0.0)
+                        tokens_in_total += int(ev.payload.get("tokens_in") or 0)
+                        tokens_out_total += int(ev.payload.get("tokens_out") or 0)
             except Exception:
                 logger.exception("chat_query.streaming_failure conv=%s", conversation_id)
                 yield encode_error("internal_error", phase="streaming")
@@ -445,6 +452,8 @@ async def chat_query(request: Request, body: dict):
                         "sources": [],
                         "entities": route.entities,
                         "level": route.level,
+                        "tokens_in": tokens_in_total,
+                        "tokens_out": tokens_out_total,
                     },
                 )
             except Exception:

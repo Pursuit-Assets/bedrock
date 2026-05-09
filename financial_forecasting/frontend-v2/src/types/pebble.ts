@@ -92,6 +92,8 @@ export interface ToolCallFinishedPayload {
   error: string | null;
   duration_ms: number;
   cost_usd: number;
+  tokens_in: number;
+  tokens_out: number;
   citation_count: number;
 }
 
@@ -102,6 +104,11 @@ export interface EvalEmittedPayload {
   completeness: number;
   harm: "none" | "mild" | "severe";
   rationale: string;
+  // LLM-call accounting for the eval pass itself. Surfaces in the
+  // conversation's running cost / token tally.
+  cost_usd: number;
+  tokens_in: number;
+  tokens_out: number;
 }
 
 // ── Replan event ───────────────────────────────────────────────────────────
@@ -156,6 +163,8 @@ export interface StepView {
   status: StepStatus;
   duration_ms?: number;
   cost_usd?: number;
+  tokens_in?: number;
+  tokens_out?: number;
   error?: string;
 }
 
@@ -177,6 +186,12 @@ export interface PebbleTurn {
   // Final state (set on response_final):
   final?: FinalResponse;
   error?: ErrorPayload;
+  // Cost / token accounting — accumulated per-event by the reducer.
+  // Sum of every tool_call_finished + eval_emitted for this turn.
+  // Surfaced in the running tally chips in the FE.
+  cost_usd: number;
+  tokens_in: number;
+  tokens_out: number;
   // Bookkeeping:
   started_at: number;          // performance.now()
   finished_at?: number;

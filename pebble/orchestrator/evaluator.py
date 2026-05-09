@@ -196,6 +196,7 @@ class Evaluator:
         except Exception as e:
             logger.exception("evaluator.llm_call_failed")
             # Failsafe PASS — don't let an evaluator outage block users.
+            # Zero cost / tokens — the call never happened.
             return Evaluation(
                 plan_id=plan.plan_id,
                 factuality=1.0,
@@ -210,6 +211,12 @@ class Evaluator:
             plan_id=plan.plan_id,
             factuality_floor=self.factuality_floor,
             completeness_floor=self.completeness_floor,
+            # Carry the LLM-call accounting onto the Evaluation so the
+            # orchestrator's eval_emitted event can surface it. Default
+            # to 0 if a stub returns a response without these fields.
+            cost_usd=getattr(resp, "cost_usd", 0.0) or 0.0,
+            tokens_in=getattr(resp, "tokens_in", 0) or 0,
+            tokens_out=getattr(resp, "tokens_out", 0) or 0,
         )
 
 
@@ -223,6 +230,9 @@ def _parse_evaluation(
     plan_id,
     factuality_floor: float,
     completeness_floor: float,
+    cost_usd: float = 0.0,
+    tokens_in: int = 0,
+    tokens_out: int = 0,
 ) -> Evaluation:
     """Parse the LLM's JSON output. On any malformed response,
     return a conservative RETRY verdict — better to spend one re-plan
@@ -242,6 +252,8 @@ def _parse_evaluation(
         parsed = json.loads(raw)
     except json.JSONDecodeError:
         logger.warning("evaluator.malformed_json text=%r", text[:200])
+        # Cost was incurred even when we can't parse — surface it for
+        # honest accounting of the wasted call.
         return Evaluation(
             plan_id=plan_id,
             factuality=0.5,
@@ -249,6 +261,7 @@ def _parse_evaluation(
             harm="none",
             verdict=EvalVerdict.RETRY,
             rationale="Evaluator returned malformed JSON; defaulting to retry.",
+            cost_usd=cost_usd, tokens_in=tokens_in, tokens_out=tokens_out,
         )
 
     if not isinstance(parsed, dict):
@@ -257,6 +270,7 @@ def _parse_evaluation(
             factuality=0.5, completeness=0.5, harm="none",
             verdict=EvalVerdict.RETRY,
             rationale="Evaluator output not a JSON object; defaulting to retry.",
+            cost_usd=cost_usd, tokens_in=tokens_in, tokens_out=tokens_out,
         )
 
     factuality = _clamp_unit(parsed.get("factuality"), default=0.5)
@@ -297,6 +311,9 @@ def _parse_evaluation(
         verdict=verdict,
         rationale=rationale,
         rejected_claims=rejected_tuple,
+        cost_usd=cost_usd,
+        tokens_in=tokens_in,
+        tokens_out=tokens_out,
     )
 
 
