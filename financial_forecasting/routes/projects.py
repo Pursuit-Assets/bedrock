@@ -1246,3 +1246,20 @@ async def get_project_awards(project_id: str, user=Depends(check_permission("vie
         pid,
     )
     return {"success": True, "data": [dict(r) for r in rows]}
+
+
+# ── Reverse lookup: Award → Projects ────────────────────────────────────
+
+@router.get("/awards/{award_id}/projects")
+async def get_award_projects(award_id: str, user=Depends(check_permission("view_projects")), conn=Depends(get_db)):
+    """Get all Projects linked to an Award (reverse lookup via project_award)."""
+    aid = uuid.UUID(award_id)
+    rows = await conn.fetch(
+        "SELECT p.id, p.name, p.description, p.owner_email, p.created_at "
+        "FROM bedrock.project p "
+        "JOIN bedrock.project_award pa ON pa.project_id = p.id "
+        "WHERE pa.award_id = $1 AND p.deleted_at IS NULL "
+        "ORDER BY p.name",
+        aid,
+    )
+    return {"success": True, "data": [dict(r) for r in rows]}

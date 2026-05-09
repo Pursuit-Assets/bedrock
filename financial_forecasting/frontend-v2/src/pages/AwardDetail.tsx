@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useLocation, useParams } from "react-router-dom";
 import { Check, ExternalLink, Plus, RefreshCw, Trash2 } from "lucide-react";
 
@@ -24,7 +25,8 @@ import {
 } from "@/services/awards";
 import { useOpportunities, useOpportunityTasks, useUpdateOpportunity, useUpdateTask } from "@/services/opportunities";
 import { useOpportunityPayments, useUpdatePayment, type SfPayment } from "@/services/payments";
-import { useCreateProject, useLinkProjectToOpportunity, useProjects } from "@/services/projects";
+import { api } from "@/lib/api";
+import { useCreateProject, useProjects } from "@/services/projects";
 import { useActiveUsers } from "@/services/users";
 import { usePerm } from "@/services/permissions";
 import type { SfOpportunity } from "@/types/salesforce";
@@ -726,7 +728,7 @@ function TasksDetail({ opportunityId }: { opportunityId: string }) {
   );
 }
 
-// ── Projects section (sidebar) ────────────────────────────────────────────
+// ── Projects section (sidebar) — uses project_award M2M ───────────────────
 
 function ProjectsDetail({ award }: { award: Award }) {
   const location = useLocation();
@@ -735,20 +737,47 @@ function ProjectsDetail({ award }: { award: Award }) {
   };
   const projectsQ = useProjects();
   const createProject = useCreateProject();
-  const linkProject = useLinkProjectToOpportunity();
+  const qc = useQueryClient();
   const [creating, setCreating] = useState(false);
   const [linking, setLinking] = useState(false);
   const [name, setName] = useState("");
   const [pick, setPick] = useState("");
 
-  const linked = useMemo(
-    () => (projectsQ.data ?? []).filter((p) => p.opportunity_id === award.opportunity_id),
-    [projectsQ.data, award.opportunity_id],
-  );
-  const linkable = useMemo(
-    () => (projectsQ.data ?? []).filter((p) => p.opportunity_id !== award.opportunity_id),
-    [projectsQ.data, award.opportunity_id],
-  );
+  // Fetch projects linked to THIS award via M2M
+  const linkedProjectsQ = useQuery({
+    queryKey: ["award-projects", award.id],
+    queryFn: async () => {
+      // Use the project_award endpoint — get all project_award rows,
+      // then cross-reference with projects list.
+      // Since there's no reverse endpoint yet, filter from all projects
+      // by checking project_award for each. For now, use a simpler
+      // approach: fetch all projects, then for each check if it has
+      // this award linked. OR add a backend endpoint.
+      // Simplest: just call the project's awards list for each project.
+      // Actually — let's query all project_award rows that reference this award.
+      const { data } = await api.get<{ data: any[] }>(`/api/awards/${award.id}/projects`);
+      return data?.data ?? [];
+    },
+    staleTime: 30_000,
+  });
+
+  const linkedProjectIds = new Set((linkedProjectsQ.data ?? []).map((p: any) => p.id));
+  const linked = (projectsQ.data ?? []).filter((p) => linkedProjectIds.has(p.id));
+  const linkable = (projectsQ.data ?? []).filter((p) => !linkedProjectIds.has(p.id));
+
+  async function linkAwardToProject(projectId: string) {
+    await api.post(`/api/projects/${projectId}/awards`, { entity_id: award.id });
+    qc.invalidateQueries({ queryKey: ["award-projects", award.id] });
+    qc.invalidateQueries({ queryKey: ["project-awards"] });
+  }
+
+  async function handleCreate(e: React.FormEvent) {
+    e.preventDefault();
+    if (!name.trim()) return;
+    const project = await createProject.mutateAsync({ name: name.trim() });
+    await linkAwardToProject(project.id);
+    setName(""); setCreating(false);
+  }
 
   return (
     <div>
@@ -775,15 +804,7 @@ function ProjectsDetail({ award }: { award: Award }) {
       </div>
 
       {creating ? (
-        <form
-          className="mb-2 flex items-center gap-1.5"
-          onSubmit={async (e) => {
-            e.preventDefault();
-            if (!name.trim()) return;
-            await createProject.mutateAsync({ name: name.trim(), opportunity_id: award.opportunity_id });
-            setName(""); setCreating(false);
-          }}
-        >
+        <form className="mb-2 flex items-center gap-1.5" onSubmit={handleCreate}>
           <input
             autoFocus
             value={name}
@@ -801,7 +822,7 @@ function ProjectsDetail({ award }: { award: Award }) {
           onSubmit={async (e) => {
             e.preventDefault();
             if (!pick) return;
-            await linkProject.mutateAsync({ projectId: pick, opportunityId: award.opportunity_id });
+            await linkAwardToProject(pick);
             setPick(""); setLinking(false);
           }}
         >
