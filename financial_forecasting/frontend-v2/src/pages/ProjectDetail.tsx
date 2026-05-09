@@ -7,7 +7,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { BackLink as SharedBackLink } from "@/components/detail";
 import { Tag } from "@/components/ui/Tag";
@@ -15,6 +15,9 @@ import { api } from "@/lib/api";
 import { fmtDate, initials } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { useOpportunities } from "@/services/opportunities";
+import { useAccounts } from "@/services/accounts";
+import { useContacts } from "@/services/contacts";
+import { useAwards } from "@/services/awards";
 import { usePerm } from "@/services/permissions";
 import {
   useActiveUsers,
@@ -54,6 +57,48 @@ function useProjectOpportunities(projectId: string | undefined) {
     queryFn: async () => {
       const { data } = await api.get<ProjectOpportunityResponse>(
         `/api/projects/${projectId}/opportunities`,
+      );
+      return data.data ?? [];
+    },
+    enabled: !!projectId,
+    staleTime: 60_000,
+  });
+}
+
+function useProjectAccounts(projectId: string | undefined) {
+  return useQuery({
+    queryKey: ["project-accounts", projectId],
+    queryFn: async () => {
+      const { data } = await api.get<{ data: { id: string; account_id: string }[] }>(
+        `/api/projects/${projectId}/accounts`,
+      );
+      return data.data ?? [];
+    },
+    enabled: !!projectId,
+    staleTime: 60_000,
+  });
+}
+
+function useProjectContacts(projectId: string | undefined) {
+  return useQuery({
+    queryKey: ["project-contacts", projectId],
+    queryFn: async () => {
+      const { data } = await api.get<{ data: { id: string; contact_id: string }[] }>(
+        `/api/projects/${projectId}/contacts`,
+      );
+      return data.data ?? [];
+    },
+    enabled: !!projectId,
+    staleTime: 60_000,
+  });
+}
+
+function useProjectAwards(projectId: string | undefined) {
+  return useQuery({
+    queryKey: ["project-awards", projectId],
+    queryFn: async () => {
+      const { data } = await api.get<{ data: any[] }>(
+        `/api/projects/${projectId}/awards`,
       );
       return data.data ?? [];
     },
@@ -851,58 +896,255 @@ function LinkedOpportunitiesSection({ projectId }: { projectId: string }) {
   );
 }
 
-// ── Linked accounts section ───────────────────────────────────────────────────
+// ── Linked accounts section (M2M via project_account) ────────────────────────
 
 function LinkedAccountsSection({ projectId }: { projectId: string }) {
-  const linkedQ = useProjectOpportunities(projectId);
-  const { data: opps = [] } = useOpportunities();
+  const linkedQ = useProjectAccounts(projectId);
+  const { data: accounts = [] } = useAccounts();
+  const qc = useQueryClient();
 
   const linkedAccounts = useMemo(() => {
     const links = linkedQ.data ?? [];
-    const byId = new Map(opps.map((o) => [o.Id, o]));
-    const seen = new Set<string>();
-    const result: { id: string; name: string; type?: string | null }[] = [];
+    const byId = new Map(accounts.map((a) => [a.Id, a]));
+    return links.map((link) => ({ link, account: byId.get(link.account_id) }));
+  }, [linkedQ.data, accounts]);
 
-    for (const link of links) {
-      const opp = byId.get(link.opportunity_id);
-      if (!opp?.AccountId) continue;
-      if (seen.has(opp.AccountId)) continue;
-      seen.add(opp.AccountId);
-      result.push({
-        id: opp.AccountId,
-        name: opp.Account?.Name ?? opp.AccountId,
-        type: null,
-      });
-    }
+  const unlink = useMutation({
+    mutationFn: async (accountId: string) => {
+      await api.delete(`/api/projects/${projectId}/accounts/${accountId}`);
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["project-accounts", projectId] }),
+  });
 
-    return result;
-  }, [linkedQ.data, opps]);
+  const linkAccount = useMutation({
+    mutationFn: async (entityId: string) => {
+      await api.post(`/api/projects/${projectId}/accounts`, { entity_id: entityId });
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["project-accounts", projectId] }),
+  });
 
-  if (!linkedQ.isLoading && linkedAccounts.length === 0) return null;
+  const linkedIds = new Set(linkedAccounts.map((l) => l.link.account_id));
+  const availableAccounts = accounts.filter((a) => !linkedIds.has(a.Id));
 
   return (
-    <SectionCard title={`Linked accounts (${linkedQ.isLoading ? "…" : linkedAccounts.length})`}>
+    <SectionCard
+      title={`Linked accounts (${linkedQ.isLoading ? "…" : linkedAccounts.length})`}
+      action={
+        availableAccounts.length > 0 ? (
+          <LinkPicker
+            label="Link account"
+            options={availableAccounts.map((a) => ({ id: a.Id, name: a.Name ?? a.Id }))}
+            onSelect={(id) => linkAccount.mutate(id)}
+          />
+        ) : null
+      }
+    >
       {linkedQ.isLoading ? (
         <Empty>Loading…</Empty>
+      ) : linkedAccounts.length === 0 ? (
+        <Empty>No accounts linked yet.</Empty>
       ) : (
         <ul className="flex flex-col">
-          {linkedAccounts.map((acct) => (
-            <li
-              key={acct.id}
-              className="flex items-center gap-3 border-b border-border-strong px-5 py-2.5 last:border-b-0"
-            >
-              <Link
-                to={`/accounts/${acct.id}`}
-                className="text-[13px] font-medium hover:underline"
-              >
-                {acct.name}
+          {linkedAccounts.map(({ link, account }) => (
+            <li key={link.id} className="flex items-center gap-3 border-b border-border-strong px-5 py-2.5 last:border-b-0">
+              <Link to={`/accounts/${link.account_id}`} className="flex-1 truncate text-[13px] font-medium hover:underline">
+                {account?.Name ?? link.account_id}
               </Link>
-              {acct.type ? <Tag>{acct.type}</Tag> : null}
+              <button type="button" onClick={() => unlink.mutate(link.account_id)} className="text-[11px] text-ink-4 hover:text-red">
+                Unlink
+              </button>
             </li>
           ))}
         </ul>
       )}
     </SectionCard>
+  );
+}
+
+// ── Linked contacts section (M2M via project_contact) ────────────────────────
+
+function LinkedContactsSection({ projectId }: { projectId: string }) {
+  const linkedQ = useProjectContacts(projectId);
+  const { data: contacts = [] } = useContacts();
+  const qc = useQueryClient();
+
+  const linkedContacts = useMemo(() => {
+    const links = linkedQ.data ?? [];
+    const byId = new Map(contacts.map((c) => [c.Id, c]));
+    return links.map((link) => ({ link, contact: byId.get(link.contact_id) }));
+  }, [linkedQ.data, contacts]);
+
+  const unlink = useMutation({
+    mutationFn: async (contactId: string) => {
+      await api.delete(`/api/projects/${projectId}/contacts/${contactId}`);
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["project-contacts", projectId] }),
+  });
+
+  const linkContact = useMutation({
+    mutationFn: async (entityId: string) => {
+      await api.post(`/api/projects/${projectId}/contacts`, { entity_id: entityId });
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["project-contacts", projectId] }),
+  });
+
+  const linkedIds = new Set(linkedContacts.map((l) => l.link.contact_id));
+  const availableContacts = contacts.filter((c) => !linkedIds.has(c.Id));
+
+  return (
+    <SectionCard
+      title={`Linked contacts (${linkedQ.isLoading ? "…" : linkedContacts.length})`}
+      action={
+        availableContacts.length > 0 ? (
+          <LinkPicker
+            label="Link contact"
+            options={availableContacts.map((c) => ({ id: c.Id, name: c.Name ?? c.Id }))}
+            onSelect={(id) => linkContact.mutate(id)}
+          />
+        ) : null
+      }
+    >
+      {linkedQ.isLoading ? (
+        <Empty>Loading…</Empty>
+      ) : linkedContacts.length === 0 ? (
+        <Empty>No contacts linked yet.</Empty>
+      ) : (
+        <ul className="flex flex-col">
+          {linkedContacts.map(({ link, contact }) => (
+            <li key={link.id} className="flex items-center gap-3 border-b border-border-strong px-5 py-2.5 last:border-b-0">
+              <Link to={`/contacts/${link.contact_id}`} className="flex-1 truncate text-[13px] font-medium hover:underline">
+                {contact?.Name ?? link.contact_id}
+              </Link>
+              {contact?.Account?.Name ? (
+                <span className="truncate text-[11px] text-ink-3">{contact.Account.Name}</span>
+              ) : null}
+              <button type="button" onClick={() => unlink.mutate(link.contact_id)} className="text-[11px] text-ink-4 hover:text-red">
+                Unlink
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </SectionCard>
+  );
+}
+
+// ── Linked awards section (M2M via project_award) ────────────────────────────
+
+function LinkedAwardsSection({ projectId }: { projectId: string }) {
+  const linkedQ = useProjectAwards(projectId);
+  const { data: awards = [] } = useAwards();
+  const qc = useQueryClient();
+
+  const unlink = useMutation({
+    mutationFn: async (awardId: string) => {
+      await api.delete(`/api/projects/${projectId}/awards/${awardId}`);
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["project-awards", projectId] }),
+  });
+
+  const linkAward = useMutation({
+    mutationFn: async (entityId: string) => {
+      await api.post(`/api/projects/${projectId}/awards`, { entity_id: entityId });
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["project-awards", projectId] }),
+  });
+
+  const data = linkedQ.data ?? [];
+  const linkedAwardIds = new Set(data.map((a: any) => String(a.award_id)));
+  const availableAwards = awards.filter((a) => !linkedAwardIds.has(String(a.id)));
+
+  return (
+    <SectionCard
+      title={`Linked awards (${linkedQ.isLoading ? "…" : data.length})`}
+      action={
+        availableAwards.length > 0 ? (
+          <LinkPicker
+            label="Link award"
+            options={availableAwards.map((a) => ({ id: String(a.id), name: a.opportunity_id ?? String(a.id) }))}
+            onSelect={(id) => linkAward.mutate(id)}
+          />
+        ) : null
+      }
+    >
+      {linkedQ.isLoading ? (
+        <Empty>Loading…</Empty>
+      ) : data.length === 0 ? (
+        <Empty>No awards linked yet.</Empty>
+      ) : (
+        <ul className="flex flex-col">
+          {data.map((award: any) => (
+            <li key={award.id} className="flex items-center gap-3 border-b border-border-strong px-5 py-2.5 last:border-b-0">
+              <Link to={`/awards/${award.award_id}`} className="flex-1 truncate text-[13px] font-medium hover:underline">
+                {award.account_name ?? award.award_id}
+              </Link>
+              {award.status ? (
+                <span className="rounded bg-surface-2 px-2 py-0.5 text-[11px] text-ink-3">{award.status}</span>
+              ) : null}
+              <button type="button" onClick={() => unlink.mutate(String(award.award_id))} className="text-[11px] text-ink-4 hover:text-red">
+                Unlink
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </SectionCard>
+  );
+}
+
+// ── Link picker (shared search dropdown) ─────────────────────────────────────
+
+function LinkPicker({
+  label,
+  options,
+  onSelect,
+}: {
+  label: string;
+  options: { id: string; name: string }[];
+  onSelect: (id: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState("");
+
+  const filtered = useMemo(
+    () => options.filter((o) => o.name.toLowerCase().includes(q.toLowerCase())).slice(0, 20),
+    [options, q],
+  );
+
+  if (!open) {
+    return (
+      <button type="button" onClick={() => setOpen(true)} className="text-[11px] text-accent hover:underline">
+        + {label}
+      </button>
+    );
+  }
+
+  return (
+    <div className="relative">
+      <input
+        autoFocus
+        placeholder={`Search to ${label.toLowerCase()}…`}
+        value={q}
+        onChange={(e) => setQ(e.target.value)}
+        onBlur={() => setTimeout(() => { setOpen(false); setQ(""); }, 200)}
+        className="h-7 w-48 rounded border border-border-strong bg-surface px-2 text-[12px] outline-none focus:border-accent"
+      />
+      {filtered.length > 0 && (
+        <ul className="absolute right-0 top-8 z-20 max-h-48 w-64 overflow-auto rounded-md border border-border-strong bg-surface shadow-lg">
+          {filtered.map((o) => (
+            <li key={o.id}>
+              <button
+                type="button"
+                onMouseDown={(e) => { e.preventDefault(); onSelect(o.id); setOpen(false); setQ(""); }}
+                className="w-full px-3 py-1.5 text-left text-[12.5px] hover:bg-surface-2"
+              >
+                {o.name}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }
 
@@ -1098,6 +1340,8 @@ export function ProjectDetailPage() {
       {/* Linked sections */}
       <LinkedOpportunitiesSection projectId={id} />
       <LinkedAccountsSection projectId={id} />
+      <LinkedContactsSection projectId={id} />
+      <LinkedAwardsSection projectId={id} />
     </div>
   );
 }
