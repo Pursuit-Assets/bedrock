@@ -1239,7 +1239,7 @@ async def unlink_award(project_id: str, award_id: str, user=Depends(check_permis
 async def get_project_awards(project_id: str, user=Depends(check_permission("view_projects")), conn=Depends(get_db)):
     pid = uuid.UUID(project_id)
     rows = await conn.fetch(
-        "SELECT pa.id, pa.award_id, a.opportunity_id, a.account_name, a.status, a.awarded_amount "
+        "SELECT pa.id, pa.award_id, a.opportunity_id, a.award_status, a.award_date, a.period_end_date "
         "FROM bedrock.project_award pa "
         "JOIN bedrock.award a ON a.id = pa.award_id "
         "WHERE pa.project_id = $1 ORDER BY pa.created_at",

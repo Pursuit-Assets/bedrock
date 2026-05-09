@@ -971,6 +971,7 @@ function LinkedContactsSection({ projectId }: { projectId: string }) {
 function LinkedAwardsSection({ projectId }: { projectId: string }) {
   const linkedQ = useProjectAwards(projectId);
   const { data: awards = [] } = useAwards();
+  const { data: opps = [] } = useOpportunities();
   const qc = useQueryClient();
 
   const unlink = useMutation({
@@ -1010,19 +1011,22 @@ function LinkedAwardsSection({ projectId }: { projectId: string }) {
         <Empty>No awards linked yet.</Empty>
       ) : (
         <ul className="flex flex-col">
-          {data.map((award: any) => (
+          {data.map((award: any) => {
+            const opp = opps.find((o) => o.Id === award.opportunity_id);
+            return (
             <li key={award.id} className="flex items-center gap-3 border-b border-border-strong px-5 py-2.5 last:border-b-0">
               <Link to={`/awards/${award.award_id}`} className="flex-1 truncate text-[13px] font-medium hover:underline">
-                {award.account_name ?? award.award_id}
+                {opp?.Account?.Name ?? opp?.Name ?? award.opportunity_id}
               </Link>
-              {award.status ? (
-                <span className="rounded bg-surface-2 px-2 py-0.5 text-[11px] text-ink-3">{award.status}</span>
+              {award.award_status ? (
+                <span className="rounded bg-surface-2 px-2 py-0.5 text-[11px] text-ink-3">{award.award_status}</span>
               ) : null}
               <button type="button" onClick={() => unlink.mutate(String(award.award_id))} className="text-[11px] text-ink-4 hover:text-red">
                 Unlink
               </button>
             </li>
-          ))}
+            );
+          })}
         </ul>
       )}
     </SectionCard>
