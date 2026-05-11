@@ -1,9 +1,10 @@
-# ⚠️ PARKED: feat/pebble-phase-0 — DO NOT MERGE WITHOUT JP'S OK
+# feat/pebble-phase-0 — Pebble Phase 0 + L1 chat orchestrator
 
 **Branch:** `feat/pebble-phase-0`
-**Status:** parked, L1 scope complete — pushed to remote so the work
-            is saved. Awaiting JP's signal to unpark + open PR.
-**Last updated:** 2026-05-08
+**Status:** **OPEN FOR REVIEW** (PR opened 2026-05-11). Was parked 2026-05-08
+            after L1 scope complete; JP unparked 2026-05-11. This doc is
+            preserved as the design/scope reference for reviewers.
+**Last updated:** 2026-05-11
 
 This branch contains substantial in-flight work on Pebble's Ask chat
 path — search rebuild, audit middleware, agentic orchestrator,
@@ -129,9 +130,11 @@ Test totals on the branch: **1052 backend + 672 pebble + 48 frontend
   * `tasks/pebble-overhaul-plan.md` — master plan.
   * Project memory `project_pebble_evolution.md` — 4-stage roadmap.
 
-## Why parked
+## History
 
-JP's directive 2026-05-07: build as much as you can as well as you
-can — enterprise grade. Then on 2026-05-08: confirmed L1 scope
-(wire + one workflow + charts), shipped. Branch holds for review-
-budget reasons (Jac); PR opens when JP says go.
+  * **2026-05-07** — JP's directive: build as much as you can as well
+    as you can, enterprise grade.
+  * **2026-05-08** — L1 scope confirmed (wire + one workflow + charts).
+    Foundation + L1 shipped on this branch. Parked for review-budget
+    reasons (Jac).
+  * **2026-05-11** — JP unparked; PR opened for review.
