@@ -1,0 +1,26 @@
+{
+  "_cassette_metadata": {
+    "captured_at": "2026-05-08",
+    "scenario": "planner: user asks 'Tell me about Acme Corp', Sonnet emits a 1-step plan calling search_crm",
+    "model_requested": "claude-sonnet-4-6",
+    "tools_offered": ["search_crm", "get_record", "request_human_review"]
+  },
+  "id": "msg_cassette_planner_acme",
+  "type": "message",
+  "role": "assistant",
+  "model": "claude-sonnet-4-6",
+  "stop_reason": "end_turn",
+  "stop_sequence": null,
+  "content": [
+    {
+      "type": "text",
+      "text": "{\"rationale\":\"User wants info on Acme Corp; search the CRM first.\",\"estimated_tool_calls\":1,\"estimated_cost_usd\":0.005,\"steps\":[{\"id\":\"s1\",\"tool\":\"search_crm\",\"args\":{\"query\":\"Acme Corp\",\"limit\":8},\"expected_shape\":\"list of CRM hits with entity_type+entity_id\",\"success_criteria\":\"at least one Account match\",\"depends_on\":[]}]}"
+    }
+  ],
+  "usage": {
+    "input_tokens": 612,
+    "output_tokens": 184,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0
+  }
+}

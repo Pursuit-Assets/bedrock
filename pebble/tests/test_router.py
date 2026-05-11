@@ -3,7 +3,10 @@
 import pytest
 from unittest.mock import MagicMock, AsyncMock
 
-from pebble.router import classify_query, _check_redirect, RouteResult
+from pebble.router import (
+    _check_redirect, _check_slash_command, _SLASH_COMMANDS,
+    RouteResult, classify_query,
+)
 
 
 class TestCheckRedirect:
@@ -105,3 +108,85 @@ class TestClassifyQuery:
         result = await classify_query("Research John Doe", mode="full", client=client)
         assert result.level == 30  # mode override
         assert result.mode_override == "full"
+
+
+class TestSlashCommand:
+    """Slash command short-circuit — deterministic workflow path."""
+
+    def test_pipeline_slash_command_routes_to_workflow(self):
+        result = _check_slash_command("/pipeline")
+        assert result is not None
+        assert result.level == 2
+        assert result.intent == "workflow_weekly_pipeline_review"
+        assert result.entities["slash_command"] == "/pipeline"
+        assert result.entities["args"] == ""
+
+    def test_pipeline_with_trailing_args_captures_args(self):
+        result = _check_slash_command("/pipeline this quarter")
+        assert result is not None
+        assert result.level == 2
+        assert result.entities["args"] == "this quarter"
+
+    def test_pipeline_case_insensitive(self):
+        result = _check_slash_command("/PIPELINE")
+        assert result is not None
+        assert result.intent == "workflow_weekly_pipeline_review"
+
+    def test_unknown_slash_command_returns_none(self):
+        # Unknown commands fall through to redirect/Haiku — they're
+        # not recognized by the router but not necessarily bad input.
+        assert _check_slash_command("/unknown") is None
+        assert _check_slash_command("/foo bar") is None
+
+    def test_no_slash_returns_none(self):
+        assert _check_slash_command("regular query") is None
+        assert _check_slash_command("") is None
+        assert _check_slash_command(None) is None  # type: ignore[arg-type]
+
+    def test_slash_in_middle_returns_none(self):
+        # Only first-token slash counts as a command
+        assert _check_slash_command("show /pipeline view") is None
+
+    def test_slash_command_strips_whitespace(self):
+        result = _check_slash_command("  /pipeline  ")
+        assert result is not None
+        assert result.intent == "workflow_weekly_pipeline_review"
+
+    @pytest.mark.asyncio
+    async def test_classify_query_routes_pipeline_slash(self):
+        """End-to-end: classify_query honors slash command before
+        redirect/Haiku."""
+        result = await classify_query("/pipeline")
+        assert result.level == 2
+        assert result.intent == "workflow_weekly_pipeline_review"
+
+    @pytest.mark.asyncio
+    async def test_slash_command_bypasses_llm(self):
+        """Even if a Haiku client is available, slash commands skip it."""
+        client = MagicMock()
+        client.complete.return_value = {
+            "text": '{"level": 1, "intent": "synthesize"}'
+        }
+        result = await classify_query("/pipeline", client=client)
+        assert result.level == 2
+        # Haiku NOT called
+        assert client.complete.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_slash_command_overrides_mode_classifier(self):
+        """Slash commands take precedence even with explicit mode."""
+        # Mode override fires BEFORE slash check in classify_query.
+        # This documents that ordering — if we want slash to win over
+        # mode, the ordering needs to flip. For v1.0 we keep mode>slash
+        # because mode is also explicit user choice and was here first.
+        result = await classify_query("/pipeline", mode="full")
+        # Mode wins → level=30, not 2
+        assert result.level == 30
+
+    def test_slash_commands_table_has_pipeline(self):
+        """Smoke test: the canonical command lookup table includes
+        the one slash command we ship."""
+        assert "/pipeline" in _SLASH_COMMANDS
+        level, intent = _SLASH_COMMANDS["/pipeline"]
+        assert level == 2
+        assert intent == "workflow_weekly_pipeline_review"

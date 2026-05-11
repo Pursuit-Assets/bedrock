@@ -47,6 +47,19 @@ const NAV_GROUPS = [
       // still wired so direct URLs continue to work.
     ],
   },
+  {
+    label: "Pebble",
+    items: [
+      // Pebble's home page (Layer B0 of the overhaul plan — port from
+      // legacy /pebble in v1). Sparkles icon shared with Cleanup; both
+      // use it semantically (cleanup = magic, pebble = AI). Permission-
+      // gated by use_pebble_chat / use_pebble_research at the route
+      // level — sidebar entry is shown for everyone so users discover
+      // it exists; gated routes show a "request access" panel for
+      // un-permissioned users (added in B0.6 follow-up).
+      { to: "/pebble", label: "Ask Pebble", icon: MessageSquarePlus },
+    ],
+  },
 ] as const;
 
 const NAV_COLLAPSED_W = 52;

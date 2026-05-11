@@ -124,6 +124,7 @@ def check_daily_cost_limit():
 
 
 from . import crm_bridge
+from .request_context import set_originating_user
 from .schemas import ResearchRequest, ResearchFeedback, CancelRequest
 from .storage.db import (
     init_db, close_db, get_profile, save_feedback,
@@ -138,12 +139,53 @@ _cancel_flags: set[str] = set()
 logger = logging.getLogger("pebble.main")
 
 
+def _validate_bedrock_bridge_config() -> None:
+    """Phase 0.6 — Pebble's bridge to Bedrock must be HTTPS in production
+    and must carry a real internal API key. Wrong defaults are silent
+    catastrophic failures: ``BEDROCK_API_URL`` defaults to
+    ``http://localhost:8000`` and ``BEDROCK_INTERNAL_API_KEY`` defaults
+    to empty in ``crm_bridge.py:14-17`` — fine for dev, ruinous in prod.
+    Refuse to start when misconfigured.
+
+    Detection of "production":
+        FRONTEND_URL is set AND starts with ``https://``. Mirrors
+        ``auth.py:25-26`` ``IS_PRODUCTION`` exactly so dev / staging /
+        prod classify identically across the two processes. PEBBLE_ENV
+        override (``PEBBLE_ENV=production``) wins regardless of
+        FRONTEND_URL — useful for headless cron deployments that
+        don't have a frontend URL.
+    """
+    is_prod = (
+        (os.getenv("FRONTEND_URL", "") or "").startswith("https://")
+        or os.getenv("PEBBLE_ENV", "").lower() == "production"
+    )
+    if not is_prod:
+        return
+
+    bedrock_url = os.getenv("BEDROCK_API_URL", "")
+    if not bedrock_url.startswith("https://"):
+        raise RuntimeError(
+            "BEDROCK_API_URL must be set to an https:// URL in production. "
+            f"Got: {bedrock_url!r}. Refusing to start — service-to-service "
+            "writes to a localhost or http:// endpoint in prod silently "
+            "lose data and bypass TLS."
+        )
+    if not os.getenv("BEDROCK_INTERNAL_API_KEY", "").strip():
+        raise RuntimeError(
+            "BEDROCK_INTERNAL_API_KEY must be set in production. Without it, "
+            "crm_bridge.py:27-28 sends requests with no internal-key header "
+            "and Bedrock falls through to JWT auth — every Pebble write "
+            "fails 401. Refusing to start."
+        )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
     )
+    _validate_bedrock_bridge_config()
     await init_db()
     logger.info(
         "Pebble starting — ANTHROPIC_API_KEY=%s, OPENROUTER_API_KEY=%s, FEC_API_KEY=%s",
@@ -173,8 +215,45 @@ app.add_middleware(
     allow_origins=_pebble_cors_origins,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=["Content-Type", "Authorization", "X-Api-Key", "Cookie", "X-User-Email"],
+    allow_headers=[
+        "Content-Type", "Authorization", "X-Api-Key", "Cookie",
+        "X-User-Email", "X-Request-Id", "X-Trace-Id",
+    ],
 )
+
+
+@app.middleware("http")
+async def attribute_request(request: Request, call_next):
+    """Set the request context (originating user / request id / trace id)
+    for the duration of every Pebble request so ``crm_bridge`` calls
+    deeper in the stack auto-attribute via ``X-Originating-User`` to
+    Bedrock.
+
+    Reads ``X-User-Email`` (Pebble's existing header set by Bedrock when
+    forwarding chat queries — see ``routes/pebble_proxy.py``). Falls
+    back to ``X-Originating-User`` if a non-Bedrock caller sends it
+    directly. Health-check and verification paths run without an
+    originating user — auth dependencies will reject them later if
+    they actually need one.
+
+    Important: this is a context-var-based propagation, NOT a security
+    boundary. Routes that need real auth still go through
+    ``verify_api_key`` + ``require_pebble_permission`` (which set
+    ``request.state.user_email`` independently). The context here is
+    purely for plumbing attribution into outbound HTTP calls.
+    """
+    user_email = (
+        request.headers.get("X-User-Email")
+        or request.headers.get("X-Originating-User")
+        or ""
+    ).strip()
+    request_id = (request.headers.get("X-Request-Id") or "").strip() or None
+    trace_id = (request.headers.get("X-Trace-Id") or "").strip() or None
+
+    if user_email:
+        with set_originating_user(user_email, request_id=request_id, trace_id=trace_id):
+            return await call_next(request)
+    return await call_next(request)
 
 # Rate limiting
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -212,12 +291,36 @@ def _is_cancelled(job_id: str | None) -> bool:
 @app.post("/api/v1/chat/query", dependencies=[Depends(verify_api_key), Depends(require_pebble_permission("use_pebble_chat"))])
 @limiter.limit("30/minute")
 async def chat_query(request: Request, body: dict):
-    """Ask Pebble chat endpoint — classify → disambiguate → handle → respond."""
+    """Ask Pebble chat endpoint.
+
+    Two response shapes depending on the classified route + env flag:
+
+      * **SSE stream** (``text/event-stream``) when:
+          - ``route.level == 2`` (slash-command workflow), OR
+          - ``route.level == 1`` AND env flag ``PEBBLE_USE_ORCHESTRATOR``
+            is on AND a real Anthropic client is constructible
+        The body emits ``data: {"kind": ..., "payload": ...}\\n\\n``
+        frames per the orchestrator's event vocabulary.
+
+      * **JSON ChatQueryResponse** for every other route — redirect
+        (-1), L0 lookup (0), L1 fallback (1 with flag off / no client),
+        T1/T2/T3 research (10/20/30). Existing behavior, unchanged.
+
+    The proxy honors ``X-Pebble-Force-Tier=L0`` by setting it on the
+    forwarded request; we read it here and force the route through the
+    JSON path even if classify_query said level=1 — provides a hard
+    kill switch when the daily-cost cap is at 80%+.
+    """
     import time as _time
     import uuid as _uuid
+    from fastapi.responses import StreamingResponse
     from .schemas.chat import ChatQueryRequest, ChatQueryResponse
     from .router import classify_query
     from .handlers import dispatch_handler
+    from .handlers.streaming import (
+        is_workflow_route, orchestrator_enabled, stream_orchestrator_events,
+    )
+    from .orchestrator.sse import encode_event, encode_error
     from .storage.db import ensure_conversation, save_chat_message
 
     start = _time.time()
@@ -241,20 +344,35 @@ async def chat_query(request: Request, body: dict):
         content=req.query,
     )
 
+    # Honor the proxy's X-Pebble-Force-Tier=L0 header — when the daily-
+    # cost cap is at 80%+, proxy forces L0-only. Skip classifier entirely
+    # when forced to keep behavior predictable.
+    force_l0 = request.headers.get("X-Pebble-Force-Tier", "").upper() == "L0"
+
     # Classify query
     client = None
-    if os.getenv("ANTHROPIC_API_KEY"):
+    if os.getenv("ANTHROPIC_API_KEY") and not force_l0:
         from .model_client import ModelClient
         client = ModelClient()
 
     from .context_resolver import resolve_pronouns
     resolved_query = await resolve_pronouns(req.query, req.conversation_id)
-    route = await classify_query(resolved_query, req.mode, client=client)
+    if force_l0:
+        # Synthesize a forced L0 route — bypass classify_query entirely
+        # so the orchestrator path can't fire. Cheap deterministic
+        # answers only.
+        from .router import RouteResult
+        route = RouteResult(
+            level=0, intent="forced_l0",
+            entities={"original_query": resolved_query}, confidence=1.0,
+        )
+    else:
+        route = await classify_query(resolved_query, req.mode, client=client)
+        # Stash original query for CRM agent (not on RouteResult by default)
+        route.entities["original_query"] = resolved_query
 
-    # Stash original query for CRM agent (not on RouteResult by default)
-    route.entities["original_query"] = resolved_query
-
-    # Fetch conversation context for CRM agent (prior messages only)
+    # Fetch conversation context (prior messages only). Used by both
+    # the JSON dispatcher and the orchestrator's planner.
     from .storage.db import get_conversation_messages
     conversation_messages = None
     raw_msgs = await get_conversation_messages(conversation_id, limit=10)
@@ -272,7 +390,90 @@ async def chat_query(request: Request, body: dict):
     if perms.get("pebble_crm_write", False):
         user_permissions = {"crm_write": True}
 
-    # Dispatch to handler
+    # ---- Streaming path: workflow (level=2) or L1 orchestrator ----
+    if not force_l0 and (is_workflow_route(route) or orchestrator_enabled(route)):
+        from .storage.db import get_pool
+
+        async def _sse_body():
+            """Yield SSE-encoded bytes from the orchestrator's events.
+            Persist the assistant message at end of stream so history
+            renders the final answer like the JSON path does.
+            """
+            final_text = ""
+            final_data: dict | None = None
+            tier_label = "T2-workflow" if route.level == 2 else "T1.5-agent"
+            cost_total = 0.0
+            tokens_in_total = 0
+            tokens_out_total = 0
+
+            try:
+                async for ev in stream_orchestrator_events(
+                    route=route,
+                    user_query=resolved_query,
+                    conversation_id=conversation_id,
+                    user_email=user_email,
+                    db_pool=get_pool(),
+                    recent_messages=conversation_messages,
+                ):
+                    yield encode_event(ev)
+                    # Capture the final response so we can persist it.
+                    if ev.kind == "response_final":
+                        final = ev.payload.get("final") or {}
+                        final_text = str(final.get("text") or "")
+                        final_data = {
+                            "citations": final.get("citations") or [],
+                            "charts": final.get("charts") or [],
+                            "suggested_actions": final.get("suggested_actions") or [],
+                            "degraded": final.get("degraded", False),
+                        }
+                    elif ev.kind in ("tool_call_finished", "eval_emitted"):
+                        # Both event kinds carry per-LLM-call accounting.
+                        # Sum into the conversation total persisted with
+                        # the assistant message + driving the FE tally.
+                        cost_total += float(ev.payload.get("cost_usd") or 0.0)
+                        tokens_in_total += int(ev.payload.get("tokens_in") or 0)
+                        tokens_out_total += int(ev.payload.get("tokens_out") or 0)
+            except Exception:
+                logger.exception("chat_query.streaming_failure conv=%s", conversation_id)
+                yield encode_error("internal_error", phase="streaming")
+
+            # Persist the assistant message for chat history surfaces.
+            try:
+                await save_chat_message(
+                    message_id=str(_uuid.uuid4()),
+                    conversation_id=conversation_id,
+                    role="assistant",
+                    content=final_text or "(no response generated)",
+                    tier=tier_label,
+                    cost_usd=cost_total,
+                    metadata={
+                        "intent": route.intent,
+                        "data": final_data or {},
+                        "sources": [],
+                        "entities": route.entities,
+                        "level": route.level,
+                        "tokens_in": tokens_in_total,
+                        "tokens_out": tokens_out_total,
+                    },
+                )
+            except Exception:
+                logger.exception(
+                    "chat_query.save_assistant_failure conv=%s — non-fatal",
+                    conversation_id,
+                )
+
+        return StreamingResponse(
+            _sse_body(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Pebble-Mode": "stream",
+                "X-Pebble-Level": str(route.level),
+            },
+        )
+
+    # ---- JSON path (existing behavior) ----
     response = await dispatch_handler(
         route=route,
         crm_bridge=crm_bridge,
