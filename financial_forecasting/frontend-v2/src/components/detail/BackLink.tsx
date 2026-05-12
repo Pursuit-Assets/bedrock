@@ -1,35 +1,38 @@
 /**
- * Smart back arrow for detail pages.
- *
- * Reads the {@link DetailReferrer} from router state — set by source
- * pages via {@link useCurrentReferrer} or {@link withReferrer} — and
- * falls back to a sensible default when state is absent (direct URL
- * visit, shared link, refresh after state loss).
+ * Enterprise back navigation. Uses browser history so the previous
+ * page's state (filters, scroll, expanded rows) is fully preserved.
+ * Label is always "← Back" — accurate regardless of where the user
+ * came from.
  */
-import { Link } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import { ArrowLeft } from "lucide-react";
 
-import { useReferrer } from "./referrer";
+import { hasInAppHistory } from "@/lib/navHistory";
 
 export interface BackLinkProps {
-  /** Pathname to use when no referrer is in router state. */
   defaultTo: string;
-  /** Label shown when no referrer is in router state. */
-  defaultLabel: string;
+  defaultLabel?: string;
 }
 
-export function BackLink({ defaultTo, defaultLabel }: BackLinkProps) {
-  const referrer = useReferrer();
-  const to = referrer
-    ? { pathname: referrer.pathname, search: referrer.search ?? "" }
-    : defaultTo;
-  const label = referrer?.label ?? defaultLabel;
+export function BackLink({ defaultTo }: BackLinkProps) {
+  const navigate = useNavigate();
+
+  const handleClick = (e: React.MouseEvent) => {
+    e.preventDefault();
+    if (hasInAppHistory()) {
+      navigate(-1);
+    } else {
+      navigate(defaultTo);
+    }
+  };
+
   return (
-    <Link
-      to={to}
+    <button
+      type="button"
+      onClick={handleClick}
       className="inline-flex items-center gap-1 text-[12.5px] text-ink-3 hover:text-ink"
     >
-      <ArrowLeft size={14} aria-hidden="true" /> {label}
-    </Link>
+      <ArrowLeft size={14} aria-hidden="true" /> Back
+    </button>
   );
 }

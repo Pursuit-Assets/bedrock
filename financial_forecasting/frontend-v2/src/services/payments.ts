@@ -84,12 +84,12 @@ interface ACVSummary {
   q4: number;
 }
 
-export function useACVSummary(year: number) {
+export function useACVSummary(year: number, bucket: string = "all") {
   return useQuery({
-    queryKey: ["acv-summary", year],
+    queryKey: ["acv-summary", year, bucket],
     queryFn: async () => {
       const { data } = await api.get<ACVSummary>(
-        `/api/salesforce/payments/acv-summary?year=${year}`,
+        `/api/salesforce/payments/acv-summary?year=${year}&bucket=${bucket}`,
       );
       return data;
     },

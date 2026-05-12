@@ -94,6 +94,8 @@ export interface SfOpportunity {
    *  SF API name is intentionally awkward (`..._if_different_...`)
    *  but the picklist label is just "Ask Amount". */
   Ask_Amount_if_different_from_actual__c?: number | null;
+  Philanthropy_Type__c?: string | null;
+  Manager_Probability_Override__c?: number | null;
   CloseDate?: string | null;
   LeadSource?: string | null;
   NextStep?: string | null;

@@ -20,6 +20,7 @@ import { LoginPage } from "./pages/Login";
 import { SettingsPage } from "./pages/Settings";
 import { CashFlowPage } from "./pages/CashFlow";
 import { PlatformIntakePage } from "./pages/PlatformIntake";
+import { PortfolioPage } from "./pages/Portfolio";
 
 export default function App() {
   return (
@@ -52,6 +53,8 @@ export default function App() {
         <Route path="/contacts" element={<ContactsPage />} />
         <Route path="/contacts/:id" element={<ContactDetailPage />} />
         <Route path="/cashflow" element={<CashFlowPage />} />
+        <Route path="/portfolio" element={<PortfolioPage />} />
+        <Route path="/portfolio/:identifier" element={<PortfolioPage />} />
         <Route path="/feedback" element={<PlatformIntakePage />} />
         <Route path="/settings" element={<SettingsPage />} />
 

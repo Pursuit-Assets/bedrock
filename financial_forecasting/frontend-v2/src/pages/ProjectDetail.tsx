@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Link, useParams } from "react-router-dom";
 import {
   ChevronDown,
@@ -7,14 +8,16 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { BackLink as SharedBackLink } from "@/components/detail";
-import { Tag } from "@/components/ui/Tag";
 import { api } from "@/lib/api";
 import { fmtDate, initials } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { useOpportunities } from "@/services/opportunities";
+import type { SfOpportunity } from "@/types/salesforce";
+import { useContacts } from "@/services/contacts";
+import { useAwards } from "@/services/awards";
 import { usePerm } from "@/services/permissions";
 import {
   useActiveUsers,
@@ -34,25 +37,43 @@ import {
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-interface ProjectOpportunityLink {
-  id: string;
-  opportunity_id: string;
-  role: string | null;
-  created_at: string | null;
-}
-
-interface ProjectOpportunityResponse {
-  success: boolean;
-  data: ProjectOpportunityLink[];
-}
-
 // ── Hooks ─────────────────────────────────────────────────────────────────────
+
+
+
+function useProjectContacts(projectId: string | undefined) {
+  return useQuery({
+    queryKey: ["project-contacts", projectId],
+    queryFn: async () => {
+      const { data } = await api.get<{ data: { id: string; contact_id: string }[] }>(
+        `/api/projects/${projectId}/contacts`,
+      );
+      return data.data ?? [];
+    },
+    enabled: !!projectId,
+    staleTime: 60_000,
+  });
+}
+
+function useProjectAwards(projectId: string | undefined) {
+  return useQuery({
+    queryKey: ["project-awards", projectId],
+    queryFn: async () => {
+      const { data } = await api.get<{ data: any[] }>(
+        `/api/projects/${projectId}/awards`,
+      );
+      return data.data ?? [];
+    },
+    enabled: !!projectId,
+    staleTime: 60_000,
+  });
+}
 
 function useProjectOpportunities(projectId: string | undefined) {
   return useQuery({
     queryKey: ["project-opportunities", projectId],
     queryFn: async () => {
-      const { data } = await api.get<ProjectOpportunityResponse>(
+      const { data } = await api.get<{ data: { id: string; opportunity_id: string; role?: string }[] }>(
         `/api/projects/${projectId}/opportunities`,
       );
       return data.data ?? [];
@@ -798,51 +819,311 @@ function Empty({ children }: { children: React.ReactNode }) {
   );
 }
 
-function LinkedOpportunitiesSection({ projectId }: { projectId: string }) {
-  const linkedQ = useProjectOpportunities(projectId);
+/**
+ * Unified Awards + Opportunities table for a project.
+ *
+ * Each row represents one *deal* — keyed on the SF opportunity id when
+ * available — and shows the most-specific record we know about it:
+ *
+ *   - If an award row is linked to this project, that's what surfaces:
+ *     award name + account, status badge, "Open award" + "Open opp"
+ *     navigations, "Unlink" against the project_award row.
+ *   - If only an opportunity is linked (project_opportunity, no award
+ *     attached yet), the row shows the opp name + account + a
+ *     "(not yet awarded)" subtitle, with a single "Open opp" navigation
+ *     and "Unlink" against the project_opportunity row.
+ *
+ * When the opp eventually produces an award, the cascade in the awards
+ * service adds the project_award row automatically; the row swaps from
+ * the "not yet awarded" state to the full award treatment without the
+ * RM having to touch anything.
+ */
+function LinkedRevenueSection({ projectId }: { projectId: string }) {
+  const explicitOppsQ = useProjectOpportunities(projectId);
+  const awardsQ = useProjectAwards(projectId);
   const { data: opps = [] } = useOpportunities();
+  const { data: allAwards = [] } = useAwards();
+  const qc = useQueryClient();
 
-  const linkedOpps = useMemo(() => {
-    const links = linkedQ.data ?? [];
-    const byId = new Map(opps.map((o) => [o.Id, o]));
-    return links.map((link) => ({ link, opp: byId.get(link.opportunity_id) }));
-  }, [linkedQ.data, opps]);
+  const oppById = useMemo(() => new Map(opps.map((o) => [o.Id, o])), [opps]);
+
+  type Row =
+    | {
+        kind: "award";
+        opportunityId: string;
+        opp: SfOpportunity | undefined;
+        // award is the row from /api/projects/{id}/awards — its `award_id`
+        // field is the bedrock.award uuid we link/unlink against.
+        award: any;
+      }
+    | {
+        kind: "opp";
+        opportunityId: string;
+        opp: SfOpportunity | undefined;
+      };
+
+  // Merge sources: every linked award is one row; explicit opp links that
+  // *don't* have a corresponding award (yet) get a "not yet awarded" row.
+  // Keyed by opportunity_id so the same deal can't appear twice.
+  const rows: Row[] = useMemo(() => {
+    const out = new Map<string, Row>();
+    for (const a of awardsQ.data ?? []) {
+      out.set(a.opportunity_id, {
+        kind: "award",
+        opportunityId: a.opportunity_id,
+        opp: oppById.get(a.opportunity_id),
+        award: a,
+      });
+    }
+    for (const link of explicitOppsQ.data ?? []) {
+      if (out.has(link.opportunity_id)) continue;
+      out.set(link.opportunity_id, {
+        kind: "opp",
+        opportunityId: link.opportunity_id,
+        opp: oppById.get(link.opportunity_id),
+      });
+    }
+    return [...out.values()].sort((a, b) => {
+      // Awards above pending opps; within each group, alphabetize on
+      // opp name so the list is stable.
+      if (a.kind !== b.kind) return a.kind === "award" ? -1 : 1;
+      const an = a.opp?.Name ?? a.opportunityId;
+      const bn = b.opp?.Name ?? b.opportunityId;
+      return an.localeCompare(bn);
+    });
+  }, [awardsQ.data, explicitOppsQ.data, oppById]);
+
+  // Linking mutations:
+  //   - "Link award" picks from awards globally and creates project_award
+  //   - "Link opportunity" picks from opps that aren't already covered
+  //     (either as an award or as a pending opp here)
+  const linkAward = useMutation({
+    mutationFn: async (awardId: string) => {
+      await api.post(`/api/projects/${projectId}/awards`, { entity_id: awardId });
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["project-awards", projectId] }),
+  });
+  const unlinkAward = useMutation({
+    mutationFn: async (awardId: string) => {
+      await api.delete(`/api/projects/${projectId}/awards/${awardId}`);
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["project-awards", projectId] }),
+  });
+  const linkOpp = useMutation({
+    mutationFn: async (oppId: string) => {
+      await api.post(`/api/projects/${projectId}/opportunities`, { opportunity_id: oppId });
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["project-opportunities", projectId] }),
+  });
+  const unlinkOpp = useMutation({
+    mutationFn: async (oppId: string) => {
+      await api.delete(`/api/projects/${projectId}/opportunities/${oppId}`);
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["project-opportunities", projectId] }),
+  });
+
+  const linkedAwardIds = new Set((awardsQ.data ?? []).map((a: any) => String(a.award_id)));
+  const availableAwards = allAwards.filter((a) => !linkedAwardIds.has(String(a.id)));
+  const coveredOppIds = new Set(rows.map((r) => r.opportunityId));
+  const availableOpps = opps.filter((o) => !coveredOppIds.has(o.Id));
+
+  const loading = explicitOppsQ.isLoading || awardsQ.isLoading;
+
+  const headerAction = (
+    <div className="flex items-center gap-2">
+      {availableOpps.length > 0 ? (
+        <LinkPicker
+          label="Link opportunity"
+          options={availableOpps.map((o) => ({
+            id: o.Id,
+            name: o.Account?.Name ? `${o.Name} — ${o.Account.Name}` : o.Name ?? o.Id,
+          }))}
+          onSelect={(id) => linkOpp.mutate(id)}
+        />
+      ) : null}
+      {availableAwards.length > 0 ? (
+        <LinkPicker
+          label="Link award"
+          options={availableAwards.map((a) => {
+            const opp = oppById.get(a.opportunity_id);
+            const oppName = opp?.Name ?? "(unknown opportunity)";
+            const acct = opp?.Account?.Name;
+            return {
+              id: String(a.id),
+              name: acct ? `${oppName} — ${acct}` : oppName,
+            };
+          })}
+          onSelect={(id) => linkAward.mutate(id)}
+        />
+      ) : null}
+    </div>
+  );
 
   return (
-    <SectionCard title={`Linked opportunities (${linkedQ.isLoading ? "…" : linkedOpps.length})`}>
-      {linkedQ.isLoading ? (
+    <SectionCard
+      title={`Awards & opportunities (${loading ? "…" : rows.length})`}
+      action={headerAction}
+    >
+      {loading ? (
         <Empty>Loading…</Empty>
-      ) : linkedOpps.length === 0 ? (
-        <Empty>No opportunities linked to this project.</Empty>
+      ) : rows.length === 0 ? (
+        <Empty>
+          Nothing linked yet. Link an opportunity to plan ahead — when it produces an award, the award will inherit this project automatically.
+        </Empty>
       ) : (
         <ul className="flex flex-col">
-          {linkedOpps.map(({ link, opp }) => (
-            <li
-              key={link.id}
-              className="flex items-center gap-3 border-b border-border-strong px-5 py-2.5 last:border-b-0"
-            >
-              {link.role ? <Tag>{link.role}</Tag> : null}
-              <div className="min-w-0 flex-1">
-                <Link
-                  to={`/opportunities/${link.opportunity_id}`}
-                  className="block truncate text-[13px] font-medium hover:underline"
-                >
-                  {opp?.Name ?? link.opportunity_id}
-                </Link>
-                {opp?.Account?.Name ? (
-                  <Link
-                    to={`/accounts/${opp.AccountId ?? ""}`}
-                    className="block truncate text-[11.5px] text-ink-3 hover:underline"
-                  >
-                    {opp.Account.Name}
-                  </Link>
-                ) : null}
-              </div>
-              {opp?.StageName ? (
-                <span className="flex-shrink-0 rounded bg-surface-2 px-2 py-0.5 text-[11px] text-ink-3">
-                  {opp.StageName}
-                </span>
+          {rows.map((row) => (
+            <RevenueRow
+              key={row.opportunityId}
+              row={row}
+              onUnlinkAward={(awardId) => unlinkAward.mutate(awardId)}
+              onUnlinkOpp={(oppId) => unlinkOpp.mutate(oppId)}
+            />
+          ))}
+        </ul>
+      )}
+    </SectionCard>
+  );
+}
+
+function RevenueRow({
+  row,
+  onUnlinkAward,
+  onUnlinkOpp,
+}: {
+  row:
+    | { kind: "award"; opportunityId: string; opp: SfOpportunity | undefined; award: any }
+    | { kind: "opp"; opportunityId: string; opp: SfOpportunity | undefined };
+  onUnlinkAward: (awardId: string) => void;
+  onUnlinkOpp: (oppId: string) => void;
+}) {
+  const oppName = row.opp?.Name ?? row.opportunityId;
+  const acctName = row.opp?.Account?.Name;
+
+  if (row.kind === "award") {
+    const award = row.award;
+    return (
+      <li className="flex items-center gap-3 border-b border-border-strong px-5 py-2.5 last:border-b-0">
+        <Link
+          to={`/awards/${award.award_id}`}
+          className="flex min-w-0 flex-1 flex-col leading-tight hover:underline"
+        >
+          <span className="truncate text-[13px] font-medium text-ink">{oppName}</span>
+          {acctName ? (
+            <span className="truncate text-[11.5px] text-ink-3">{acctName}</span>
+          ) : null}
+        </Link>
+        {award.award_status ? (
+          <span className="rounded bg-surface-2 px-2 py-0.5 text-[11px] text-ink-3">
+            {award.award_status}
+          </span>
+        ) : null}
+        <Link
+          to={`/opportunities/${row.opportunityId}`}
+          className="text-[11px] text-ink-3 hover:text-accent hover:underline"
+          title="View opportunity"
+        >
+          View opp
+        </Link>
+        <button
+          type="button"
+          onClick={() => onUnlinkAward(String(award.award_id))}
+          className="text-[11px] text-ink-4 hover:text-red"
+        >
+          Unlink
+        </button>
+      </li>
+    );
+  }
+
+  // Opportunity-only row — no award yet.
+  return (
+    <li className="flex items-center gap-3 border-b border-border-strong px-5 py-2.5 last:border-b-0">
+      <Link
+        to={`/opportunities/${row.opportunityId}`}
+        className="flex min-w-0 flex-1 flex-col leading-tight hover:underline"
+      >
+        <span className="truncate text-[13px] font-medium text-ink">{oppName}</span>
+        <span className="truncate text-[11.5px] text-ink-3">
+          {acctName ? `${acctName} · ` : ""}(not yet awarded)
+        </span>
+      </Link>
+      {row.opp?.StageName ? (
+        <span className="rounded bg-surface-2 px-2 py-0.5 text-[11px] text-ink-3">
+          {row.opp.StageName}
+        </span>
+      ) : null}
+      <button
+        type="button"
+        onClick={() => onUnlinkOpp(row.opportunityId)}
+        className="text-[11px] text-ink-4 hover:text-red"
+      >
+        Unlink
+      </button>
+    </li>
+  );
+}
+
+// ── Linked contacts section (M2M via project_contact) ────────────────────────
+
+function LinkedContactsSection({ projectId }: { projectId: string }) {
+  const linkedQ = useProjectContacts(projectId);
+  const { data: contacts = [] } = useContacts();
+  const qc = useQueryClient();
+
+  const linkedContacts = useMemo(() => {
+    const links = linkedQ.data ?? [];
+    const byId = new Map(contacts.map((c) => [c.Id, c]));
+    return links.map((link) => ({ link, contact: byId.get(link.contact_id) }));
+  }, [linkedQ.data, contacts]);
+
+  const unlink = useMutation({
+    mutationFn: async (contactId: string) => {
+      await api.delete(`/api/projects/${projectId}/contacts/${contactId}`);
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["project-contacts", projectId] }),
+  });
+
+  const linkContact = useMutation({
+    mutationFn: async (entityId: string) => {
+      await api.post(`/api/projects/${projectId}/contacts`, { entity_id: entityId });
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["project-contacts", projectId] }),
+  });
+
+  const linkedIds = new Set(linkedContacts.map((l) => l.link.contact_id));
+  const availableContacts = contacts.filter((c) => !linkedIds.has(c.Id));
+
+  return (
+    <SectionCard
+      title={`Linked contacts (${linkedQ.isLoading ? "…" : linkedContacts.length})`}
+      action={
+        availableContacts.length > 0 ? (
+          <LinkPicker
+            label="Link contact"
+            options={availableContacts.map((c) => ({ id: c.Id, name: c.Name ?? c.Id }))}
+            onSelect={(id) => linkContact.mutate(id)}
+          />
+        ) : null
+      }
+    >
+      {linkedQ.isLoading ? (
+        <Empty>Loading…</Empty>
+      ) : linkedContacts.length === 0 ? (
+        <Empty>No contacts linked yet.</Empty>
+      ) : (
+        <ul className="flex flex-col">
+          {linkedContacts.map(({ link, contact }) => (
+            <li key={link.id} className="flex items-center gap-3 border-b border-border-strong px-5 py-2.5 last:border-b-0">
+              <Link to={`/contacts/${link.contact_id}`} className="flex-1 truncate text-[13px] font-medium hover:underline">
+                {contact?.Name ?? link.contact_id}
+              </Link>
+              {contact?.Account?.Name ? (
+                <span className="truncate text-[11px] text-ink-3">{contact.Account.Name}</span>
               ) : null}
+              <button type="button" onClick={() => unlink.mutate(link.contact_id)} className="text-[11px] text-ink-4 hover:text-red">
+                Unlink
+              </button>
             </li>
           ))}
         </ul>
@@ -851,58 +1132,154 @@ function LinkedOpportunitiesSection({ projectId }: { projectId: string }) {
   );
 }
 
-// ── Linked accounts section ───────────────────────────────────────────────────
+// ── Link picker (shared search dropdown) ─────────────────────────────────────
 
-function LinkedAccountsSection({ projectId }: { projectId: string }) {
-  const linkedQ = useProjectOpportunities(projectId);
-  const { data: opps = [] } = useOpportunities();
+/**
+ * Search dropdown rendered into a portal so it can escape SectionCard's
+ * `overflow-hidden` (which would otherwise clip the popup against the
+ * card's right edge — the bug previously visible on ProjectDetail).
+ *
+ * The trigger stays inline in the header; the popup is anchored to the
+ * trigger's bounding rect and recomputes on scroll/resize so it tracks
+ * the header during page scroll.
+ */
+function LinkPicker({
+  label,
+  options,
+  onSelect,
+}: {
+  label: string;
+  options: { id: string; name: string }[];
+  onSelect: (id: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState("");
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const popoverRef = useRef<HTMLDivElement>(null);
 
-  const linkedAccounts = useMemo(() => {
-    const links = linkedQ.data ?? [];
-    const byId = new Map(opps.map((o) => [o.Id, o]));
-    const seen = new Set<string>();
-    const result: { id: string; name: string; type?: string | null }[] = [];
+  // Popup placement — anchored to the trigger's right edge, opens downward.
+  // Width is fixed at 320px so the column "Account Name — Opp Name" labels
+  // don't truncate aggressively.
+  const POPUP_WIDTH = 320;
+  const [coords, setCoords] = useState<{ top: number; left: number } | null>(null);
 
-    for (const link of links) {
-      const opp = byId.get(link.opportunity_id);
-      if (!opp?.AccountId) continue;
-      if (seen.has(opp.AccountId)) continue;
-      seen.add(opp.AccountId);
-      result.push({
-        id: opp.AccountId,
-        name: opp.Account?.Name ?? opp.AccountId,
-        type: null,
-      });
+  useLayoutEffect(() => {
+    if (!open) return;
+    function place() {
+      const trigger = triggerRef.current;
+      if (!trigger) return;
+      const rect = trigger.getBoundingClientRect();
+      // Anchor under the trigger, right-aligned. Clamp to viewport so the
+      // popup never spills off the left edge for narrow windows.
+      const left = Math.max(8, rect.right - POPUP_WIDTH);
+      setCoords({ top: rect.bottom + 4, left });
     }
+    place();
+    window.addEventListener("scroll", place, true);
+    window.addEventListener("resize", place);
+    return () => {
+      window.removeEventListener("scroll", place, true);
+      window.removeEventListener("resize", place);
+    };
+  }, [open]);
 
-    return result;
-  }, [linkedQ.data, opps]);
+  // Focus the search field when the popup opens.
+  useEffect(() => {
+    if (open) inputRef.current?.focus();
+  }, [open]);
 
-  if (!linkedQ.isLoading && linkedAccounts.length === 0) return null;
+  // Close on outside click / escape.
+  useEffect(() => {
+    if (!open) return;
+    function onDoc(e: MouseEvent) {
+      const t = e.target as Node;
+      if (popoverRef.current?.contains(t)) return;
+      if (triggerRef.current?.contains(t)) return;
+      setOpen(false);
+      setQ("");
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") {
+        setOpen(false);
+        setQ("");
+      }
+    }
+    document.addEventListener("mousedown", onDoc);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDoc);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  const filtered = useMemo(
+    () => options.filter((o) => o.name.toLowerCase().includes(q.toLowerCase())).slice(0, 50),
+    [options, q],
+  );
 
   return (
-    <SectionCard title={`Linked accounts (${linkedQ.isLoading ? "…" : linkedAccounts.length})`}>
-      {linkedQ.isLoading ? (
-        <Empty>Loading…</Empty>
-      ) : (
-        <ul className="flex flex-col">
-          {linkedAccounts.map((acct) => (
-            <li
-              key={acct.id}
-              className="flex items-center gap-3 border-b border-border-strong px-5 py-2.5 last:border-b-0"
+    <>
+      <button
+        ref={triggerRef}
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="text-[11px] text-accent hover:underline"
+      >
+        + {label}
+      </button>
+
+      {open && coords
+        ? createPortal(
+            <div
+              ref={popoverRef}
+              style={{
+                position: "fixed",
+                top: coords.top,
+                left: coords.left,
+                width: POPUP_WIDTH,
+                zIndex: 50,
+              }}
+              className="rounded-md border border-border-strong bg-surface shadow-lg"
             >
-              <Link
-                to={`/accounts/${acct.id}`}
-                className="text-[13px] font-medium hover:underline"
-              >
-                {acct.name}
-              </Link>
-              {acct.type ? <Tag>{acct.type}</Tag> : null}
-            </li>
-          ))}
-        </ul>
-      )}
-    </SectionCard>
+              <div className="border-b border-border-strong px-3 py-2">
+                <input
+                  ref={inputRef}
+                  placeholder={`Search to ${label.toLowerCase()}…`}
+                  value={q}
+                  onChange={(e) => setQ(e.target.value)}
+                  className="h-7 w-full rounded border border-border-strong bg-surface px-2 text-[12px] outline-none focus:border-accent"
+                />
+              </div>
+              <ul className="max-h-72 overflow-auto py-1">
+                {filtered.length === 0 ? (
+                  <li className="px-3 py-2 text-[12px] text-ink-3">
+                    {options.length === 0 ? "Nothing left to link." : "No matches."}
+                  </li>
+                ) : (
+                  filtered.map((o) => (
+                    <li key={o.id}>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onSelect(o.id);
+                          setOpen(false);
+                          setQ("");
+                        }}
+                        className="w-full truncate px-3 py-1.5 text-left text-[12.5px] hover:bg-surface-2"
+                        title={o.name}
+                      >
+                        {o.name}
+                      </button>
+                    </li>
+                  ))
+                )}
+              </ul>
+            </div>,
+            document.body,
+          )
+        : null}
+    </>
   );
 }
 
@@ -1096,8 +1473,8 @@ export function ProjectDetailPage() {
       </section>
 
       {/* Linked sections */}
-      <LinkedOpportunitiesSection projectId={id} />
-      <LinkedAccountsSection projectId={id} />
+      <LinkedRevenueSection projectId={id} />
+      <LinkedContactsSection projectId={id} />
     </div>
   );
 }

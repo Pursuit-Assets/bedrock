@@ -24,3 +24,6 @@ export type { EmptyProps } from "./Empty";
 
 export { useReferrer, useCurrentReferrer, withReferrer } from "./referrer";
 export type { DetailReferrer, DetailReferrerState } from "./referrer";
+
+export { LinkedProjectsCard } from "./LinkedProjectsCard";
+export type { LinkedEntity } from "./LinkedProjectsCard";

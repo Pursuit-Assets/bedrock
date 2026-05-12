@@ -1114,3 +1114,192 @@ async def get_sf_task_project_link(sf_task_id: str, user=Depends(check_permissio
     if not row:
         return {"success": True, "data": None}
     return {"success": True, "data": dict(row)}
+
+
+# ── Project ↔ Account M2M ───────────────────────────────────────────────
+
+
+class EntityLink(BaseModel):
+    entity_id: str
+
+
+@router.post("/projects/{project_id}/accounts")
+async def link_account(project_id: str, body: EntityLink, user=Depends(check_permission("edit_projects")), conn=Depends(get_db)):
+    """Link a CRM Account to a Project."""
+    pid = uuid.UUID(project_id)
+    validate_salesforce_id(body.entity_id, "account_id")
+    row = await conn.fetchrow(
+        "INSERT INTO bedrock.project_account (project_id, account_id) "
+        "VALUES ($1, $2) ON CONFLICT DO NOTHING RETURNING id",
+        pid, body.entity_id,
+    )
+    return {"success": True, "data": {"linked": row is not None}}
+
+
+@router.delete("/projects/{project_id}/accounts/{account_id}")
+async def unlink_account(project_id: str, account_id: str, user=Depends(check_permission("edit_projects")), conn=Depends(get_db)):
+    pid = uuid.UUID(project_id)
+    validate_salesforce_id(account_id, "account_id")
+    result = await conn.execute(
+        "DELETE FROM bedrock.project_account WHERE project_id = $1 AND account_id = $2", pid, account_id,
+    )
+    if result == "DELETE 0":
+        raise HTTPException(404, "Link not found")
+    return {"success": True}
+
+
+@router.get("/projects/{project_id}/accounts")
+async def get_project_accounts(project_id: str, user=Depends(check_permission("view_projects")), conn=Depends(get_db)):
+    pid = uuid.UUID(project_id)
+    rows = await conn.fetch(
+        "SELECT id, account_id, created_at FROM bedrock.project_account WHERE project_id = $1 ORDER BY created_at", pid,
+    )
+    return {"success": True, "data": [{"id": str(r["id"]), "account_id": r["account_id"]} for r in rows]}
+
+
+@router.get("/accounts/{account_id}/projects")
+async def get_account_projects(account_id: str, user=Depends(check_permission("view_projects")), conn=Depends(get_db)):
+    """Get all Projects linked to an Account (reverse lookup)."""
+    validate_salesforce_id(account_id, "account_id")
+    rows = await conn.fetch(
+        "SELECT p.id, p.name, p.description, p.owner_email, p.created_at "
+        "FROM bedrock.project p "
+        "JOIN bedrock.project_account pa ON pa.project_id = p.id "
+        "WHERE pa.account_id = $1 AND p.deleted_at IS NULL "
+        "ORDER BY p.name",
+        account_id,
+    )
+    return {"success": True, "data": [dict(r) for r in rows]}
+
+
+# ── Project ↔ Contact M2M ───────────────────────────────────────────────
+
+
+@router.post("/projects/{project_id}/contacts")
+async def link_contact(project_id: str, body: EntityLink, user=Depends(check_permission("edit_projects")), conn=Depends(get_db)):
+    pid = uuid.UUID(project_id)
+    validate_salesforce_id(body.entity_id, "contact_id")
+    row = await conn.fetchrow(
+        "INSERT INTO bedrock.project_contact (project_id, contact_id) "
+        "VALUES ($1, $2) ON CONFLICT DO NOTHING RETURNING id",
+        pid, body.entity_id,
+    )
+    return {"success": True, "data": {"linked": row is not None}}
+
+
+@router.delete("/projects/{project_id}/contacts/{contact_id}")
+async def unlink_contact(project_id: str, contact_id: str, user=Depends(check_permission("edit_projects")), conn=Depends(get_db)):
+    pid = uuid.UUID(project_id)
+    validate_salesforce_id(contact_id, "contact_id")
+    result = await conn.execute(
+        "DELETE FROM bedrock.project_contact WHERE project_id = $1 AND contact_id = $2", pid, contact_id,
+    )
+    if result == "DELETE 0":
+        raise HTTPException(404, "Link not found")
+    return {"success": True}
+
+
+@router.get("/projects/{project_id}/contacts")
+async def get_project_contacts(project_id: str, user=Depends(check_permission("view_projects")), conn=Depends(get_db)):
+    pid = uuid.UUID(project_id)
+    rows = await conn.fetch(
+        "SELECT id, contact_id, created_at FROM bedrock.project_contact WHERE project_id = $1 ORDER BY created_at", pid,
+    )
+    return {"success": True, "data": [{"id": str(r["id"]), "contact_id": r["contact_id"]} for r in rows]}
+
+
+# ── Project ↔ Award M2M ────────────────────────────────────────────────
+
+
+@router.post("/projects/{project_id}/awards")
+async def link_award(project_id: str, body: EntityLink, user=Depends(check_permission("edit_projects")), conn=Depends(get_db)):
+    pid = uuid.UUID(project_id)
+    aid = uuid.UUID(body.entity_id)
+    row = await conn.fetchrow(
+        "INSERT INTO bedrock.project_award (project_id, award_id) "
+        "VALUES ($1, $2) ON CONFLICT DO NOTHING RETURNING id",
+        pid, aid,
+    )
+    return {"success": True, "data": {"linked": row is not None}}
+
+
+@router.delete("/projects/{project_id}/awards/{award_id}")
+async def unlink_award(project_id: str, award_id: str, user=Depends(check_permission("edit_projects")), conn=Depends(get_db)):
+    pid = uuid.UUID(project_id)
+    aid = uuid.UUID(award_id)
+    result = await conn.execute(
+        "DELETE FROM bedrock.project_award WHERE project_id = $1 AND award_id = $2", pid, aid,
+    )
+    if result == "DELETE 0":
+        raise HTTPException(404, "Link not found")
+    return {"success": True}
+
+
+@router.get("/projects/{project_id}/awards")
+async def get_project_awards(project_id: str, user=Depends(check_permission("view_projects")), conn=Depends(get_db)):
+    pid = uuid.UUID(project_id)
+    rows = await conn.fetch(
+        "SELECT pa.id, pa.award_id, a.opportunity_id, a.award_status, a.award_date, a.period_end_date "
+        "FROM bedrock.project_award pa "
+        "JOIN bedrock.award a ON a.id = pa.award_id "
+        "WHERE pa.project_id = $1 ORDER BY pa.created_at",
+        pid,
+    )
+    return {"success": True, "data": [dict(r) for r in rows]}
+
+
+# ── Reverse lookup: Award → Projects ────────────────────────────────────
+
+@router.get("/awards/{award_id}/projects")
+async def get_award_projects(award_id: str, user=Depends(check_permission("view_projects")), conn=Depends(get_db)):
+    """Get all Projects linked to an Award (reverse lookup via project_award)."""
+    aid = uuid.UUID(award_id)
+    rows = await conn.fetch(
+        "SELECT p.id, p.name, p.description, p.owner_email, p.created_at "
+        "FROM bedrock.project p "
+        "JOIN bedrock.project_award pa ON pa.project_id = p.id "
+        "WHERE pa.award_id = $1 AND p.deleted_at IS NULL "
+        "ORDER BY p.name",
+        aid,
+    )
+    return {"success": True, "data": [dict(r) for r in rows]}
+
+
+# ── Reverse lookup: Contact → Projects ──────────────────────────────────
+
+@router.get("/contacts/{contact_id}/projects")
+async def get_contact_projects(contact_id: str, user=Depends(check_permission("view_projects")), conn=Depends(get_db)):
+    """Get all Projects linked to a Contact (reverse lookup via project_contact)."""
+    validate_salesforce_id(contact_id, "contact_id")
+    rows = await conn.fetch(
+        "SELECT p.id, p.name, p.description, p.owner_email, p.created_at "
+        "FROM bedrock.project p "
+        "JOIN bedrock.project_contact pc ON pc.project_id = p.id "
+        "WHERE pc.contact_id = $1 AND p.deleted_at IS NULL "
+        "ORDER BY p.name",
+        contact_id,
+    )
+    return {"success": True, "data": [dict(r) for r in rows]}
+
+
+# ── Reverse lookup: Opportunity → Projects (M2M + legacy column union) ──
+
+@router.get("/opportunities/{opportunity_id}/projects")
+async def get_opportunity_projects(opportunity_id: str, user=Depends(check_permission("view_projects")), conn=Depends(get_db)):
+    """Get all Projects linked to an Opportunity.
+
+    Unions two sources so callers don't have to know about the migration:
+      1. project.opportunity_id  (legacy single-link column, still populated)
+      2. project_opportunity     (M2M junction; canonical going forward)
+    """
+    validate_salesforce_id(opportunity_id, "opportunity_id")
+    rows = await conn.fetch(
+        "SELECT DISTINCT p.id, p.name, p.description, p.owner_email, p.created_at "
+        "FROM bedrock.project p "
+        "LEFT JOIN bedrock.project_opportunity po ON po.project_id = p.id "
+        "WHERE p.deleted_at IS NULL "
+        "  AND (p.opportunity_id = $1 OR po.opportunity_id = $1) "
+        "ORDER BY p.name",
+        opportunity_id,
+    )
+    return {"success": True, "data": [dict(r) for r in rows]}

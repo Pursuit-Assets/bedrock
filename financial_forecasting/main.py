@@ -191,6 +191,7 @@ async def startup_event():
         except Exception:
             _services["data_sync_service"] = DataSyncService(client)
         asyncio.create_task(background_sync_task())
+        asyncio.create_task(background_award_reconciler_task())
 
     logger.info(f"API started — connected services: {client.connected_services or ['none']}")
 
@@ -227,6 +228,34 @@ async def background_sync_task():
 
         # Wait 15 minutes before next sync
         await asyncio.sleep(900)
+
+
+async def background_award_reconciler_task():
+    """Hourly background task: catch awards missed when an opp's stage
+    was changed directly in Salesforce (bypassing Bedrock's update-stage
+    endpoint, where the auto-create side-effect lives).
+
+    Idempotent — opps that already have an award row are skipped via the
+    bedrock.award partial unique index. First run is delayed 60s after
+    startup to let the SF connection stabilize.
+    """
+    await asyncio.sleep(60)
+    while True:
+        try:
+            client = _services.get("mcp_client")
+            if client and "salesforce" in (client.connected_services or set()):
+                from db import get_pool
+                from services.awards_reconciler import reconcile_all
+                pool = get_pool()
+                if pool is not None:
+                    async with pool.acquire() as conn:
+                        summary = await reconcile_all(conn, client.salesforce)
+                        logger.info("awards.reconcile summary: %s", summary)
+        except Exception as e:
+            logger.error(f"Award reconciler error: {e}")
+
+        # Wait 1h before next pass
+        await asyncio.sleep(3_600)
 
 
 # Dependency functions — get_current_user is now cookie-based (see auth.py)
@@ -359,7 +388,9 @@ async def get_opportunities(
                npsp__Primary_Contact__r.Name, npsp__Primary_Contact__r.Email,
                RecordTypeId, RecordType.Name, Active_Opportunity__c,
                Reporting_Method__c, npsp__Next_Grant_Deadline_Due_Date__c,
-               Ask_Amount_if_different_from_actual__c
+               Ask_Amount_if_different_from_actual__c,
+               Philanthropy_Type__c,
+               Manager_Probability_Override__c
         FROM Opportunity
         """
 
@@ -790,7 +821,7 @@ PAYMENT_SOQL_FIELDS = """
     npe01__Written_Off__c, Write_off_reason__c,
     Amount_Received__c, Department__c, GL_Account__c,
     GL_Payment_Received__c, Reconciled_with_Finance__c,
-    Batch_Name__c, Payment_Estimate__c, Invoice__c,
+    Batch_Name__c, Payment_Estimate__c,
     Affiliation__c, CreatedDate, LastModifiedDate,
     Payment_Status__c, Delinquent__c, Paid_Status__c,
     Amount_Formula__c, Amount_Minus_Received__c
@@ -867,6 +898,7 @@ async def get_opportunity_payments(
 @app.get("/api/salesforce/payments/acv-summary")
 async def get_acv_summary(
     year: int = Query(..., ge=2000, le=2100),
+    bucket: str = Query("all", regex="^(all|philanthropy|pbc|capital_grants|other)$"),
     client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user=Depends(require_auth),
 ):
@@ -878,13 +910,18 @@ async def get_acv_summary(
     Returns quarterly + annual totals for the Wins (ACV) row in the
     FY Overview matrix on the Dashboard.
     """
-    cache_key = f"acv-summary:{year}"
+    cache_key = f"acv-summary:{year}:{bucket}"
     cached = cache.get(cache_key)
     if cached is not None:
         return cached
 
     try:
         salesforce = client.salesforce
+        bucket_clause = _cashflow_bucket_soql(bucket)
+        won_stages = (
+            "('Collecting / In Effect', 'Collecting', 'In Effect', "
+            "'Closed Won', 'Closed / Completed', 'Closed / Fulfilled')"
+        )
         soql = f"""
             SELECT npe01__Payment_Amount__c, npe01__Scheduled_Date__c,
                    npe01__Opportunity__r.CloseDate
@@ -892,9 +929,10 @@ async def get_acv_summary(
             WHERE npe01__Scheduled_Date__c >= {year}-01-01
             AND npe01__Scheduled_Date__c <= {year}-12-31
             AND npe01__Written_Off__c = false
-            AND npe01__Opportunity__r.StageName IN ('Collecting / In Effect', 'Closed Won', 'Closed Completed')
+            AND npe01__Opportunity__r.StageName IN {won_stages}
             AND npe01__Opportunity__r.CloseDate >= {year}-01-01
             AND npe01__Opportunity__r.CloseDate <= {year}-12-31
+            {bucket_clause}
             LIMIT 2000
         """
         result = await salesforce.query(soql)
@@ -929,9 +967,49 @@ async def get_acv_summary(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+_VALID_CASHFLOW_BUCKETS = {"all", "philanthropy", "pbc", "capital_grants", "other"}
+
+
+def _cashflow_bucket_soql(bucket: str) -> str:
+    """Return a SOQL fragment to AND into a payment query so it only
+    matches the requested record-type bucket.
+
+    Buckets:
+        all             — no filter
+        philanthropy    — RecordType.Name = 'Philanthropy' AND not a Capital Grant
+        capital_grants  — Philanthropy_Type__c = 'Capital Grant' (any RT, but in
+                          practice all sit under Philanthropy)
+        pbc             — RecordType.Name = 'PBC'
+        other           — neither Philanthropy nor PBC (includes NULL RT;
+                          Capital Grants are excluded since they're RT=Philanthropy)
+    """
+    if bucket == "all":
+        return ""
+    opp = "npe01__Opportunity__r"
+    if bucket == "philanthropy":
+        return (
+            f" AND {opp}.RecordType.Name = 'Philanthropy' "
+            f"AND ({opp}.Philanthropy_Type__c != 'Capital Grant' "
+            f"OR {opp}.Philanthropy_Type__c = null)"
+        )
+    if bucket == "capital_grants":
+        return f" AND {opp}.Philanthropy_Type__c = 'Capital Grant'"
+    if bucket == "pbc":
+        return f" AND {opp}.RecordType.Name = 'PBC'"
+    if bucket == "other":
+        return (
+            f" AND ({opp}.RecordType.Name = null OR "
+            f"{opp}.RecordType.Name NOT IN ('Philanthropy', 'PBC')) "
+            f"AND ({opp}.Philanthropy_Type__c != 'Capital Grant' "
+            f"OR {opp}.Philanthropy_Type__c = null)"
+        )
+    return ""
+
+
 @app.get("/api/salesforce/cashflow")
 async def get_cashflow(
     year: int = Query(..., ge=2000, le=2100),
+    bucket: str = Query("all", regex="^(all|philanthropy|pbc|capital_grants|other)$"),
     client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user=Depends(require_auth),
 ):
@@ -941,8 +1019,10 @@ async def get_cashflow(
       - actuals: paid payments (npe01__Payment_Date__c) from won opps
       - scheduled: unpaid future payments (npe01__Scheduled_Date__c) from won opps
       - projected: open-pipeline payments weighted by opp probability
+
+    Optional `bucket` filter restricts to a record-type bucket.
     """
-    cache_key = f"cashflow:{year}"
+    cache_key = f"cashflow:{year}:{bucket}"
     cached = cache.get(cache_key)
     if cached is not None:
         return cached
@@ -957,6 +1037,7 @@ async def get_cashflow(
             "('Collecting / In Effect', 'Collecting', 'In Effect', "
             "'Closed Won', 'Closed / Completed', 'Closed / Fulfilled')"
         )
+        bucket_clause = _cashflow_bucket_soql(bucket)
 
         # Won-opp scheduled payments + ALL paid payments (any stage).
         soql_won = f"""
@@ -973,6 +1054,7 @@ async def get_cashflow(
                  AND npe01__Payment_Date__c >= {year}-01-01
                  AND npe01__Payment_Date__c <= {year}-12-31)
             )
+            {bucket_clause}
             LIMIT 2000
         """
 
@@ -986,6 +1068,7 @@ async def get_cashflow(
             AND npe01__Opportunity__r.StageName NOT IN {won_stages}
             AND npe01__Scheduled_Date__c >= {year}-01-01
             AND npe01__Scheduled_Date__c <= {year}-12-31
+            {bucket_clause}
             LIMIT 2000
         """
 
@@ -1042,11 +1125,12 @@ async def get_cashflow_detail(
     year: int = Query(..., ge=2000, le=2100),
     month: int = Query(..., ge=1, le=12),
     type: str = Query(..., regex="^(actuals|scheduled|outstanding|projected)$"),
+    bucket: str = Query("all", regex="^(all|philanthropy|pbc|capital_grants|other)$"),
     client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user=Depends(require_auth),
 ):
     """Individual payment records for a specific cash flow cell."""
-    cache_key = f"cashflow-detail:{year}:{month}:{type}"
+    cache_key = f"cashflow-detail:{year}:{month}:{type}:{bucket}"
     cached = cache.get(cache_key)
     if cached is not None:
         return cached
@@ -1061,6 +1145,7 @@ async def get_cashflow_detail(
             "('Collecting / In Effect', 'Collecting', 'In Effect', "
             "'Closed Won', 'Closed / Completed', 'Closed / Fulfilled')"
         )
+        bucket_clause = _cashflow_bucket_soql(bucket)
         last_day = calendar.monthrange(year, month)[1]
         m_start = f"{year}-{month:02d}-01"
         m_end   = f"{year}-{month:02d}-{last_day:02d}"
@@ -1077,6 +1162,7 @@ async def get_cashflow_detail(
                 AND npe01__Written_Off__c = false
                 AND npe01__Payment_Date__c >= {m_start}
                 AND npe01__Payment_Date__c <= {m_end}
+                {bucket_clause}
                 ORDER BY npe01__Payment_Date__c ASC
                 LIMIT 500
             """
@@ -1092,6 +1178,7 @@ async def get_cashflow_detail(
                 AND npe01__Opportunity__r.StageName IN {won_stages}
                 AND npe01__Scheduled_Date__c >= {m_start}
                 AND npe01__Scheduled_Date__c <= {m_end}
+                {bucket_clause}
                 ORDER BY npe01__Scheduled_Date__c ASC
                 LIMIT 500
             """
@@ -1108,6 +1195,7 @@ async def get_cashflow_detail(
                 AND npe01__Opportunity__r.StageName NOT IN {won_stages}
                 AND npe01__Scheduled_Date__c >= {m_start}
                 AND npe01__Scheduled_Date__c <= {m_end}
+                {bucket_clause}
                 ORDER BY npe01__Scheduled_Date__c ASC
                 LIMIT 500
             """

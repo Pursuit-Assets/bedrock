@@ -1,5 +1,5 @@
 import { memo, useMemo, useRef, useState } from "react";
-import { Search } from "lucide-react";
+import { Plus, Search, X } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { useVirtualizer } from "@tanstack/react-virtual";
 
@@ -10,7 +10,8 @@ import { Toolbar } from "@/components/ui/Toolbar";
 import { totalWidth, useColumnWidths } from "@/lib/columnWidths";
 import { fmtDate } from "@/lib/format";
 import { sortBy, useSort } from "@/lib/sort";
-import { useProjects, type BedrockProject } from "@/services/projects";
+import { useProjects, useCreateProject, type BedrockProject } from "@/services/projects";
+import { toast } from "sonner";
 
 type ColKey = "name" | "owner" | "created" | "updated";
 
@@ -65,6 +66,23 @@ export function ProjectsPage() {
     DEFAULT_WIDTHS,
   );
 
+  const createProject = useCreateProject();
+  const [showCreate, setShowCreate] = useState(false);
+  const [newName, setNewName] = useState("");
+
+  const handleCreate = async () => {
+    if (!newName.trim()) return;
+    try {
+      const p = await createProject.mutateAsync({ name: newName.trim() });
+      setShowCreate(false);
+      setNewName("");
+      navigate(`/projects/${p.id}`, { state: PROJECTS_REFERRER });
+      toast.success("Project created");
+    } catch {
+      toast.error("Failed to create project");
+    }
+  };
+
   const projects = data ?? [];
 
   const filtered = useMemo(() => {
@@ -103,7 +121,44 @@ export function ProjectsPage() {
             ? "Loading…"
             : `${projects.length.toLocaleString()} projects`
         }
+        actions={
+          <button
+            type="button"
+            onClick={() => setShowCreate(true)}
+            className="inline-flex items-center gap-1.5 rounded-md bg-ink px-3 py-1.5 text-[12.5px] font-medium text-surface hover:opacity-90"
+          >
+            <Plus size={14} /> New project
+          </button>
+        }
       />
+
+      {showCreate && (
+        <div className="mb-4 flex items-center gap-2 rounded-md border border-border-strong bg-surface-2 px-4 py-3">
+          <input
+            autoFocus
+            placeholder="Project name"
+            value={newName}
+            onChange={(e) => setNewName(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && handleCreate()}
+            className="h-8 flex-1 rounded border border-border-strong bg-surface px-3 text-[13px] text-ink outline-none focus:border-accent"
+          />
+          <button
+            type="button"
+            onClick={handleCreate}
+            disabled={!newName.trim() || createProject.isPending}
+            className="h-8 rounded-md bg-ink px-4 text-[12.5px] font-medium text-surface hover:opacity-90 disabled:opacity-40"
+          >
+            {createProject.isPending ? "Creating…" : "Create"}
+          </button>
+          <button
+            type="button"
+            onClick={() => { setShowCreate(false); setNewName(""); }}
+            className="text-ink-3 hover:text-ink"
+          >
+            <X size={16} />
+          </button>
+        </div>
+      )}
 
       <Toolbar>
         <div className="relative">

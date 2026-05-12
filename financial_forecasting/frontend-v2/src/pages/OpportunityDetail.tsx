@@ -11,6 +11,7 @@ import {
   BackLink as SharedBackLink,
   EditField,
   Empty,
+  LinkedProjectsCard,
   SectionCard,
 } from "@/components/detail";
 import { AccountPicker } from "@/components/ui/AccountPicker";
@@ -261,8 +262,8 @@ export function OpportunityDetailPage() {
           </EditField>
           <EditField label="Probability">
             <InlineText
-              value={opp.Probability != null ? String(opp.Probability) : ""}
-              onSave={(v) => patch("Probability", v ? Number(v) : null)}
+              value={opp.Manager_Probability_Override__c != null ? String(opp.Manager_Probability_Override__c) : (opp.Probability != null ? String(opp.Probability) : "")}
+              onSave={(v) => patch("Manager_Probability_Override__c", v ? Number(v) : null)}
               formatDisplay={formatPercentDisplay}
               placeholder="—"
             />
@@ -460,6 +461,16 @@ export function OpportunityDetailPage() {
           </div>
         </SectionCard>
       ) : null}
+
+      <SectionCard title="Linked projects" storageScope="opportunity">
+        <div className="px-5 py-4">
+          <LinkedProjectsCard
+            entityType="opportunity"
+            entityId={opp.Id}
+            referrerLabel="Opportunity"
+          />
+        </div>
+      </SectionCard>
 
       {/* Activity timeline — scoped so search/filter state is per-entity. */}
       <ActivityTimeline activities={activities} scopeKey={`opportunity:${opp.Id}`} />

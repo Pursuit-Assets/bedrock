@@ -145,6 +145,35 @@ _FREQUENCY_TO_MONTHS: Dict[str, int] = {
 # ── Endpoints ─────────────────────────────────────────────────────────────
 
 
+@router.post("/reconcile")
+async def reconcile_awards(
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Idempotently create award rows for any award-eligible opp that's
+    missing one. Catches the case where someone changes the stage in
+    Salesforce directly (workflow rule, data loader, SF UI), bypassing
+    Bedrock's update-stage endpoint.
+
+    Admin-only. Also runs as a daily background task; this endpoint
+    just lets an admin force a run.
+    """
+    # Lazy imports to keep awards.py import light.
+    from main import _services
+    from routes.permissions import require_admin
+    # Manually invoke the admin gate so we can keep this file's auth
+    # imports minimal; if non-admin reaches here require_admin raises 403.
+    await require_admin(user=user, db=conn)
+
+    client = _services.get("mcp_client")
+    if not client or "salesforce" not in (client.connected_services or set()):
+        raise HTTPException(status_code=503, detail="Salesforce not connected")
+
+    from services.awards_reconciler import reconcile_all
+    summary = await reconcile_all(conn, client.salesforce)
+    return {"success": True, "data": summary}
+
+
 @router.get("")
 async def list_awards(
     status: Optional[str] = Query(None, description="Filter by award_status"),

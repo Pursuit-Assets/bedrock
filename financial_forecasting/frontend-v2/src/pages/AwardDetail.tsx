@@ -1,9 +1,9 @@
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import { Link, useLocation, useParams } from "react-router-dom";
-import { Check, ExternalLink, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { Check, Plus, RefreshCw, Trash2 } from "lucide-react";
 
 import { AccountAvatar } from "@/components/AccountAvatar";
-import { BackLink as SharedBackLink } from "@/components/detail";
+import { BackLink as SharedBackLink, LinkedProjectsCard } from "@/components/detail";
 import { InlineDate, InlineSelect, InlineText } from "@/components/ui/InlineEdit";
 import { Tag } from "@/components/ui/Tag";
 import { fmtDate, fmtMoneyFull } from "@/lib/format";
@@ -24,7 +24,6 @@ import {
 } from "@/services/awards";
 import { useOpportunities, useOpportunityTasks, useUpdateOpportunity, useUpdateTask } from "@/services/opportunities";
 import { useOpportunityPayments, useUpdatePayment, type SfPayment } from "@/services/payments";
-import { useCreateProject, useLinkProjectToOpportunity, useProjects } from "@/services/projects";
 import { useActiveUsers } from "@/services/users";
 import { usePerm } from "@/services/permissions";
 import type { SfOpportunity } from "@/types/salesforce";
@@ -160,6 +159,16 @@ function Loaded({ award, opp }: { award: Award; opp: SfOpportunity | undefined }
                 · {account}
               </Link>
             ) : null}
+            {award.opportunity_id ? (
+              <Link
+                to={`/opportunities/${award.opportunity_id}`}
+                state={referrer}
+                className="inline-flex items-center gap-1 rounded border border-border-strong bg-surface px-2 py-0.5 text-[11.5px] text-ink-2 hover:bg-surface-2"
+                title="Open the underlying Salesforce opportunity"
+              >
+                View opportunity →
+              </Link>
+            ) : null}
             <span>·</span>
             {canEdit && opp ? (
               <InlineSelect
@@ -216,7 +225,11 @@ function Loaded({ award, opp }: { award: Award; opp: SfOpportunity | undefined }
           </Section>
 
           <Section title="Linked projects">
-            <ProjectsDetail award={award} />
+            <LinkedProjectsCard
+              entityType="award"
+              entityId={award.id}
+              referrerLabel="Award"
+            />
           </Section>
 
           <Section title="Notes">
@@ -726,120 +739,3 @@ function TasksDetail({ opportunityId }: { opportunityId: string }) {
   );
 }
 
-// ── Projects section (sidebar) ────────────────────────────────────────────
-
-function ProjectsDetail({ award }: { award: Award }) {
-  const location = useLocation();
-  const referrer = {
-    from: { pathname: location.pathname, label: "Award" },
-  };
-  const projectsQ = useProjects();
-  const createProject = useCreateProject();
-  const linkProject = useLinkProjectToOpportunity();
-  const [creating, setCreating] = useState(false);
-  const [linking, setLinking] = useState(false);
-  const [name, setName] = useState("");
-  const [pick, setPick] = useState("");
-
-  const linked = useMemo(
-    () => (projectsQ.data ?? []).filter((p) => p.opportunity_id === award.opportunity_id),
-    [projectsQ.data, award.opportunity_id],
-  );
-  const linkable = useMemo(
-    () => (projectsQ.data ?? []).filter((p) => p.opportunity_id !== award.opportunity_id),
-    [projectsQ.data, award.opportunity_id],
-  );
-
-  return (
-    <div>
-      <div className="mb-2 flex items-center justify-between">
-        <span className="text-[12px] text-ink-3">
-          {linked.length} project{linked.length === 1 ? "" : "s"}
-        </span>
-        <div className="flex items-center gap-1.5">
-          <button
-            type="button"
-            onClick={() => { setLinking(true); setCreating(false); }}
-            className="text-[11.5px] text-ink-3 hover:text-ink-2"
-          >
-            Link
-          </button>
-          <button
-            type="button"
-            onClick={() => { setCreating(true); setLinking(false); }}
-            className="flex items-center gap-1 rounded bg-accent px-2 py-0.5 text-[11.5px] text-surface hover:opacity-90"
-          >
-            <Plus size={10} /> New
-          </button>
-        </div>
-      </div>
-
-      {creating ? (
-        <form
-          className="mb-2 flex items-center gap-1.5"
-          onSubmit={async (e) => {
-            e.preventDefault();
-            if (!name.trim()) return;
-            await createProject.mutateAsync({ name: name.trim(), opportunity_id: award.opportunity_id });
-            setName(""); setCreating(false);
-          }}
-        >
-          <input
-            autoFocus
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="Project name"
-            className="h-7 flex-1 rounded border border-border-strong bg-surface px-2 text-[12px] text-ink outline-none focus:border-accent"
-          />
-          <button type="submit" className="rounded bg-accent px-2 py-0.5 text-[11.5px] text-surface">Create</button>
-        </form>
-      ) : null}
-
-      {linking ? (
-        <form
-          className="mb-2 flex items-center gap-1.5"
-          onSubmit={async (e) => {
-            e.preventDefault();
-            if (!pick) return;
-            await linkProject.mutateAsync({ projectId: pick, opportunityId: award.opportunity_id });
-            setPick(""); setLinking(false);
-          }}
-        >
-          <select
-            autoFocus
-            value={pick}
-            onChange={(e) => setPick(e.target.value)}
-            className="h-7 flex-1 rounded border border-border-strong bg-surface px-2 text-[12px] text-ink outline-none focus:border-accent"
-          >
-            <option value="">Select project…</option>
-            {linkable.map((p) => (
-              <option key={p.id} value={p.id}>{p.name}</option>
-            ))}
-          </select>
-          <button type="submit" className="rounded bg-accent px-2 py-0.5 text-[11.5px] text-surface">Link</button>
-        </form>
-      ) : null}
-
-      {linked.length === 0 ? (
-        <div className="text-[12px] text-ink-4">No projects linked.</div>
-      ) : (
-        <ul className="space-y-1">
-          {linked.map((p) => (
-            <li key={p.id}>
-              <Link
-                to={`/projects/${p.id}`}
-                state={referrer}
-                className="group flex items-center gap-2 rounded border border-border-strong bg-surface px-3 py-1.5 hover:border-accent"
-              >
-                <span className="flex-1 truncate text-[12.5px] font-medium text-ink">
-                  {p.name}
-                </span>
-                <ExternalLink size={11} className="flex-shrink-0 text-ink-4 group-hover:text-accent" />
-              </Link>
-            </li>
-          ))}
-        </ul>
-      )}
-    </div>
-  );
-}

@@ -236,6 +236,40 @@ COMMENT ON TABLE bedrock.project_opportunity IS
   'Migration note: replaces the singular project.opportunity_id column for new usage.';
 
 -- ---------------------------------------------------------------------------
+-- Project ↔ Account / Contact / Award (Many-to-Many)
+-- Same shape as project_opportunity — text IDs for SF compatibility.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS bedrock.project_account (
+    id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    project_id  UUID NOT NULL REFERENCES bedrock.project(id) ON DELETE CASCADE,
+    account_id  TEXT NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (project_id, account_id)
+);
+CREATE INDEX IF NOT EXISTS idx_pa_project ON bedrock.project_account(project_id);
+CREATE INDEX IF NOT EXISTS idx_pa_account ON bedrock.project_account(account_id);
+
+CREATE TABLE IF NOT EXISTS bedrock.project_contact (
+    id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    project_id  UUID NOT NULL REFERENCES bedrock.project(id) ON DELETE CASCADE,
+    contact_id  TEXT NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (project_id, contact_id)
+);
+CREATE INDEX IF NOT EXISTS idx_pc_project ON bedrock.project_contact(project_id);
+CREATE INDEX IF NOT EXISTS idx_pc_contact ON bedrock.project_contact(contact_id);
+
+CREATE TABLE IF NOT EXISTS bedrock.project_award (
+    id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    project_id  UUID NOT NULL REFERENCES bedrock.project(id) ON DELETE CASCADE,
+    award_id    UUID NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (project_id, award_id)
+);
+CREATE INDEX IF NOT EXISTS idx_paw_project ON bedrock.project_award(project_id);
+CREATE INDEX IF NOT EXISTS idx_paw_award ON bedrock.project_award(award_id);
+
+-- ---------------------------------------------------------------------------
 -- Permission Profiles & User Roles
 -- ---------------------------------------------------------------------------
 
@@ -439,19 +473,19 @@ VALUES (
 INSERT INTO bedrock.permission_profile (name, description, is_default, permissions)
 VALUES (
     'Relationship Manager',
-    'Edit own opportunities and tasks, create accounts and contacts, manage projects',
+    'Edit any opportunity/task, create accounts and contacts, manage projects',
     true,
     '{
         "view_opportunities": true,
         "edit_own_opportunities": true,
-        "edit_all_opportunities": false,
+        "edit_all_opportunities": true,
         "create_opportunities": true,
         "bulk_update_opportunities": false,
         "lock_own_opportunities": true,
         "reassign_opportunities": false,
         "view_tasks": true,
         "edit_own_tasks": true,
-        "edit_all_tasks": false,
+        "edit_all_tasks": true,
         "create_tasks": true,
         "edit_accounts": true,
         "create_accounts": true,
@@ -585,6 +619,12 @@ UPDATE bedrock.user_config
 UPDATE bedrock.permission_profile
 SET permissions = permissions || '{"view_projects": true, "edit_projects": true}'::jsonb
 WHERE name IN ('Relationship Manager', 'Fundraiser', 'Executive', 'Project Manager');
+
+-- 2026-05-06: grant RM/Fundraiser edit_all_opportunities + edit_all_tasks.
+-- Per JR — RMs need to edit any opp/task, not just their own.
+UPDATE bedrock.permission_profile
+SET permissions = permissions || '{"edit_all_opportunities": true, "edit_all_tasks": true}'::jsonb
+WHERE name IN ('Relationship Manager', 'Fundraiser');
 
 -- ── Permission unlock request table ──
 
