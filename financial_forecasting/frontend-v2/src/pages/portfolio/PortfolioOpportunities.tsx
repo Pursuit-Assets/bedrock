@@ -18,14 +18,21 @@ import { SectionCard, withReferrer } from "@/components/detail";
 import { StageChip } from "@/components/ui/StageChip";
 import { Tag } from "@/components/ui/Tag";
 import { InlineDate, InlineSelect, InlineText } from "@/components/ui/InlineEdit";
+import { SortableHeader } from "@/components/ui/SortableHeader";
 import { fmtDate, fmtMoney } from "@/lib/format";
 import { riskForOpenOpp, riskTextClass } from "@/lib/risk";
-import { isOpen, isWon, SF_STAGE_OPTIONS, stageStatus } from "@/lib/stages";
+import { sortBy, useSort } from "@/lib/sort";
+import { isLost, isOpen, isWon, SF_STAGE_OPTIONS, stageStatus } from "@/lib/stages";
 import {
   useUpdateOpportunity,
   useUpdateOpportunityStage,
 } from "@/services/opportunities";
 import type { SfOpportunity } from "@/types/salesforce";
+
+import { TableToolbar } from "./TableToolbar";
+
+type OppSortKey = "name" | "stage" | "amount" | "probability" | "close";
+type OppFilter = "all" | "open" | "won" | "lost";
 
 interface PortfolioOpportunitiesProps {
   opps: SfOpportunity[];
@@ -43,27 +50,79 @@ export function PortfolioOpportunities({
   const updateOpp = useUpdateOpportunity();
   const updateStage = useUpdateOpportunityStage();
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState<OppFilter>("open");
+  const { sort, toggle } = useSort<OppSortKey>();
 
-  // Sort: open first (by close-date ascending so overdue float to top),
-  // then won, then lost. Within each bucket, missing close-date sinks.
-  const sorted = useMemo(() => sortOpps(opps), [opps]);
-  const openCount = useMemo(() => opps.filter((o) => isOpen(o)).length, [opps]);
+  const counts = useMemo(() => {
+    let open = 0, won = 0, lost = 0;
+    for (const o of opps) {
+      if (isOpen(o)) open++;
+      else if (isWon(o)) won++;
+      else lost++;
+    }
+    return { open, won, lost, all: opps.length };
+  }, [opps]);
+
   const atRiskCount = useMemo(
     () =>
       opps.filter((o) => isOpen(o) && riskForOpenOpp(o.CloseDate) === "overdue").length,
     [opps],
   );
 
+  const visible = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const filtered = opps.filter((o) => {
+      if (statusFilter === "open" && !isOpen(o)) return false;
+      if (statusFilter === "won" && !isWon(o)) return false;
+      if (statusFilter === "lost" && !isLost(o)) return false;
+      if (!q) return true;
+      if (o.Name?.toLowerCase().includes(q)) return true;
+      if (o.Account?.Name?.toLowerCase().includes(q)) return true;
+      if (o.StageName?.toLowerCase().includes(q)) return true;
+      return false;
+    });
+    if (sort.key == null) return sortOpps(filtered);
+    return sortBy(filtered, sort, (o, key) => {
+      switch (key) {
+        case "name": return o.Name ?? "";
+        case "stage": return o.StageName ?? "";
+        case "amount": return o.Amount ?? 0;
+        case "probability": return o.Manager_Probability_Override__c ?? o.Probability ?? 0;
+        case "close": return o.CloseDate ?? "";
+      }
+    });
+  }, [opps, query, statusFilter, sort]);
+
   return (
     <SectionCard
-      title={`Opportunities (${opps.length})`}
+      title={`Opportunities (${visible.length}${visible.length !== opps.length ? ` of ${opps.length}` : ""})`}
       storageScope="portfolio"
       action={
-        atRiskCount > 0 ? (
-          <span className="text-[11.5px] font-semibold text-red">
-            {atRiskCount} past close date
-          </span>
-        ) : null
+        <div className="flex items-center gap-3">
+          {atRiskCount > 0 ? (
+            <span className="text-[11.5px] font-semibold text-red">
+              {atRiskCount} past close
+            </span>
+          ) : null}
+          {opps.length > 0 ? (
+            <TableToolbar<OppFilter>
+              query={query}
+              onQueryChange={setQuery}
+              filter={{
+                value: statusFilter,
+                options: [
+                  { value: "all", label: "All", count: counts.all },
+                  { value: "open", label: "Open", count: counts.open },
+                  { value: "won", label: "Won", count: counts.won },
+                  { value: "lost", label: "Lost", count: counts.lost },
+                ],
+                onChange: setStatusFilter,
+              }}
+              placeholder="Search opportunities…"
+            />
+          ) : null}
+        </div>
       }
     >
       {!sfReady ? (
@@ -72,21 +131,33 @@ export function PortfolioOpportunities({
         <EmptyState>Loading…</EmptyState>
       ) : opps.length === 0 ? (
         <EmptyState>No opportunities owned by this user.</EmptyState>
+      ) : visible.length === 0 ? (
+        <EmptyState>No opportunities match your filters.</EmptyState>
       ) : (
         <table className="w-full text-[12.5px]">
           <thead className="bg-surface-2 text-[10.5px] uppercase tracking-wider text-ink-3">
             <tr>
               <th className="w-[28px] px-3 py-1.5"></th>
-              <th className="px-3 py-1.5 text-left font-semibold">Opportunity</th>
-              <th className="w-[160px] px-3 py-1.5 text-left font-semibold">Stage</th>
-              <th className="w-[110px] px-3 py-1.5 text-right font-semibold">Amount</th>
-              <th className="w-[80px] px-3 py-1.5 text-right font-semibold">Prob.</th>
-              <th className="w-[120px] px-3 py-1.5 text-right font-semibold">Close</th>
+              <th className="px-3 py-1.5 text-left font-semibold">
+                <SortableHeader label="Opportunity" sortKey="name" sort={sort} onToggle={toggle} />
+              </th>
+              <th className="w-[160px] px-3 py-1.5 text-left font-semibold">
+                <SortableHeader label="Stage" sortKey="stage" sort={sort} onToggle={toggle} />
+              </th>
+              <th className="w-[110px] px-3 py-1.5 text-right font-semibold">
+                <SortableHeader label="Amount" sortKey="amount" sort={sort} onToggle={toggle} align="right" />
+              </th>
+              <th className="w-[80px] px-3 py-1.5 text-right font-semibold">
+                <SortableHeader label="Prob." sortKey="probability" sort={sort} onToggle={toggle} align="right" />
+              </th>
+              <th className="w-[120px] px-3 py-1.5 text-right font-semibold">
+                <SortableHeader label="Close" sortKey="close" sort={sort} onToggle={toggle} align="right" />
+              </th>
               <th className="w-[40px] px-3 py-1.5"></th>
             </tr>
           </thead>
           <tbody>
-            {sorted.map((o) => {
+            {visible.map((o) => {
               const isExpanded = o.Id === expandedId;
               const open = isOpen(o);
               const risk = open ? riskForOpenOpp(o.CloseDate) : "none";
@@ -271,7 +342,7 @@ export function PortfolioOpportunities({
           <tfoot>
             <tr className="border-t border-border-strong bg-surface-2/60">
               <td colSpan={2} className="px-3 py-1.5 text-[10.5px] uppercase tracking-wider text-ink-3">
-                {openCount} open
+                {counts.open} open
               </td>
               <td colSpan={5} className="px-3 py-1.5 text-right text-[11.5px] text-ink-3">
                 Click a row to expand

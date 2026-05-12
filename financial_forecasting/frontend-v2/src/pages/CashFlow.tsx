@@ -68,7 +68,7 @@ export function CashFlowPage() {
   const navigate = useNavigate();
   const currentYear = new Date().getFullYear();
   const [fy, setFy] = useState(currentYear);
-  const [bucket, setBucket] = useState<CashflowBucket>("all");
+  const [bucket, setBucket] = useState<CashflowBucket>("philanthropy");
   const { data, isLoading } = useCashflow(fy, bucket);
 
   const currentMonth = new Date().getMonth() + 1;

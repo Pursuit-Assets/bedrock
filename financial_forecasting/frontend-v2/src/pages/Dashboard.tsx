@@ -33,7 +33,7 @@ export function DashboardPage() {
   const { data: activeUsers = [] } = useActiveUsers();
 
   const fy = new Date().getUTCFullYear();
-  const [bucket, setBucket] = useState<CashflowBucket>("all");
+  const [bucket, setBucket] = useState<CashflowBucket>("philanthropy");
   const filteredOpps = useMemo(() => filterByBucket(opps, bucket), [opps, bucket]);
 
   return (

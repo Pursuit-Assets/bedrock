@@ -205,13 +205,6 @@ function PortfolioBody({ user, isSelf }: { user: ResolvedUser; isSelf: boolean }
         projectsLoading={projectsQ.isLoading}
       />
 
-      <PortfolioAccounts
-        accounts={myAccounts}
-        loading={accountsQ.isLoading}
-        sfReady={Boolean(user.sfUserId)}
-        canEdit={canEditAccounts}
-      />
-
       <PortfolioOpportunities
         opps={myOpps}
         loading={oppsQ.isLoading}
@@ -224,6 +217,13 @@ function PortfolioBody({ user, isSelf }: { user: ResolvedUser; isSelf: boolean }
         oppsById={oppsById}
         loading={awardsQ.isLoading}
         canEdit={canEditAwards}
+      />
+
+      <PortfolioAccounts
+        accounts={myAccounts}
+        loading={accountsQ.isLoading}
+        sfReady={Boolean(user.sfUserId)}
+        canEdit={canEditAccounts}
       />
     </div>
   );

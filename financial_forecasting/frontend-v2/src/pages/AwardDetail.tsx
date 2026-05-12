@@ -159,6 +159,16 @@ function Loaded({ award, opp }: { award: Award; opp: SfOpportunity | undefined }
                 · {account}
               </Link>
             ) : null}
+            {award.opportunity_id ? (
+              <Link
+                to={`/opportunities/${award.opportunity_id}`}
+                state={referrer}
+                className="inline-flex items-center gap-1 rounded border border-border-strong bg-surface px-2 py-0.5 text-[11.5px] text-ink-2 hover:bg-surface-2"
+                title="Open the underlying Salesforce opportunity"
+              >
+                View opportunity →
+              </Link>
+            ) : null}
             <span>·</span>
             {canEdit && opp ? (
               <InlineSelect

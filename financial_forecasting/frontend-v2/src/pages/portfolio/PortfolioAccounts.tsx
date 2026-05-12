@@ -15,11 +15,17 @@ import { AccountAvatar } from "@/components/AccountAvatar";
 import { AccountExpandPanel } from "@/components/AccountExpandPanel";
 import { SectionCard, withReferrer } from "@/components/detail";
 import { InlineText } from "@/components/ui/InlineEdit";
+import { SortableHeader } from "@/components/ui/SortableHeader";
 import { fmtMoney } from "@/lib/format";
+import { sortBy, useSort } from "@/lib/sort";
 import { isOpen, isWon } from "@/lib/stages";
 import { useAccountsEnrichment, useUpdateAccount } from "@/services/accounts";
 import { useOpportunities } from "@/services/opportunities";
 import type { SfAccount, SfOpportunity } from "@/types/salesforce";
+
+import { TableToolbar } from "./TableToolbar";
+
+type AccountSortKey = "name" | "type" | "openPipeline" | "amountWon";
 
 interface PortfolioAccountsProps {
   accounts: SfAccount[];
@@ -37,6 +43,8 @@ export function PortfolioAccounts({ accounts, loading, sfReady, canEdit }: Portf
   const oppsQ = useOpportunities();
   const updateAccount = useUpdateAccount();
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+  const { sort, toggle } = useSort<AccountSortKey>();
 
   // Enrichment fetches account logos in bulk. Keyed on the displayed
   // accounts so we don't request logos for the whole org.
@@ -47,28 +55,68 @@ export function PortfolioAccounts({ accounts, loading, sfReady, canEdit }: Portf
     [accounts, oppsQ.data],
   );
 
+  const visible = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const filtered = accounts.filter((a) => {
+      if (!q) return true;
+      if (a.Name.toLowerCase().includes(q)) return true;
+      if ((a.Type ?? "").toLowerCase().includes(q)) return true;
+      return false;
+    });
+    return sortBy(filtered, sort, (a, key) => {
+      switch (key) {
+        case "name": return a.Name;
+        case "type": return a.Type ?? "";
+        case "openPipeline": return metrics.get(a.Id)?.openPipeline ?? 0;
+        case "amountWon": return metrics.get(a.Id)?.amountWon ?? 0;
+      }
+    });
+  }, [accounts, query, sort, metrics]);
+
   return (
-    <SectionCard title={`Accounts (${accounts.length})`} storageScope="portfolio">
+    <SectionCard
+      title={`Accounts (${visible.length}${visible.length !== accounts.length ? ` of ${accounts.length}` : ""})`}
+      storageScope="portfolio"
+      action={
+        accounts.length > 0 ? (
+          <TableToolbar
+            query={query}
+            onQueryChange={setQuery}
+            placeholder="Search accounts…"
+          />
+        ) : null
+      }
+    >
       {!sfReady ? (
         <EmptyState>Connect Salesforce to see account ownership.</EmptyState>
       ) : loading ? (
         <EmptyState>Loading…</EmptyState>
       ) : accounts.length === 0 ? (
         <EmptyState>No accounts owned by this user.</EmptyState>
+      ) : visible.length === 0 ? (
+        <EmptyState>No accounts match your filters.</EmptyState>
       ) : (
         <table className="w-full text-[12.5px]">
           <thead className="bg-surface-2 text-[10.5px] uppercase tracking-wider text-ink-3">
             <tr>
               <th className="w-[28px] px-3 py-1.5"></th>
-              <th className="px-3 py-1.5 text-left font-semibold">Account</th>
-              <th className="w-[120px] px-3 py-1.5 text-left font-semibold">Type</th>
-              <th className="w-[120px] px-3 py-1.5 text-right font-semibold">Open pipeline</th>
-              <th className="w-[120px] px-3 py-1.5 text-right font-semibold">Won (FY)</th>
+              <th className="px-3 py-1.5 text-left font-semibold">
+                <SortableHeader label="Account" sortKey="name" sort={sort} onToggle={toggle} />
+              </th>
+              <th className="w-[120px] px-3 py-1.5 text-left font-semibold">
+                <SortableHeader label="Type" sortKey="type" sort={sort} onToggle={toggle} />
+              </th>
+              <th className="w-[120px] px-3 py-1.5 text-right font-semibold">
+                <SortableHeader label="Open pipeline" sortKey="openPipeline" sort={sort} onToggle={toggle} align="right" />
+              </th>
+              <th className="w-[120px] px-3 py-1.5 text-right font-semibold">
+                <SortableHeader label="Won (FY)" sortKey="amountWon" sort={sort} onToggle={toggle} align="right" />
+              </th>
               <th className="w-[40px] px-3 py-1.5"></th>
             </tr>
           </thead>
           <tbody>
-            {accounts.map((a) => {
+            {visible.map((a) => {
               const m = metrics.get(a.Id) ?? { openPipeline: 0, amountWon: 0 };
               const isExpanded = a.Id === expandedId;
               const logoUrl = enrichmentQ.data?.[a.Id]?.logo_url ?? null;

@@ -15,9 +15,16 @@ import { AwardExpandPanel } from "@/components/AwardExpandPanel";
 import { SectionCard, withReferrer } from "@/components/detail";
 import { Tag } from "@/components/ui/Tag";
 import { InlineDate, InlineSelect } from "@/components/ui/InlineEdit";
+import { SortableHeader } from "@/components/ui/SortableHeader";
 import { fmtDate, fmtMoney } from "@/lib/format";
+import { sortBy, useSort } from "@/lib/sort";
 import { useUpdateAward, type Award, type AwardStatus } from "@/services/awards";
 import type { SfOpportunity } from "@/types/salesforce";
+
+import { TableToolbar } from "./TableToolbar";
+
+type AwardSortKey = "name" | "status" | "amount" | "awarded" | "periodEnd" | "reports";
+type AwardFilter = "all" | "Active" | "Closing" | "Closed" | "Did Not Fulfill";
 
 const AWARD_STATUS_OPTIONS: { value: AwardStatus; label: string }[] = [
   { value: "Active", label: "Active" },
@@ -43,47 +50,116 @@ interface PortfolioAwardsProps {
 export function PortfolioAwards({ awards, oppsById, loading, canEdit }: PortfolioAwardsProps) {
   const updateAward = useUpdateAward();
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState<AwardFilter>("Active");
+  const { sort, toggle } = useSort<AwardSortKey>();
 
-  // Active first, sorted by overdue reports desc then award_date desc;
-  // then Closing, then Closed, then Did Not Fulfill.
-  const sorted = useMemo(() => sortAwards(awards), [awards]);
+  const counts = useMemo(() => {
+    let active = 0, closing = 0, closed = 0, dnf = 0;
+    for (const a of awards) {
+      if (a.award_status === "Active") active++;
+      else if (a.award_status === "Closing") closing++;
+      else if (a.award_status === "Closed") closed++;
+      else dnf++;
+    }
+    return { all: awards.length, active, closing, closed, dnf };
+  }, [awards]);
+
   const overdueReports = useMemo(
     () => awards.reduce((sum, a) => sum + (a.report_overdue ?? 0), 0),
     [awards],
   );
 
+  const visible = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const filtered = awards.filter((a) => {
+      if (statusFilter !== "all" && a.award_status !== statusFilter) return false;
+      if (!q) return true;
+      const opp = oppsById.get(a.opportunity_id);
+      if (opp?.Name?.toLowerCase().includes(q)) return true;
+      if (opp?.Account?.Name?.toLowerCase().includes(q)) return true;
+      if (a.award_status.toLowerCase().includes(q)) return true;
+      return false;
+    });
+    if (sort.key == null) return sortAwards(filtered);
+    return sortBy(filtered, sort, (a, key) => {
+      const opp = oppsById.get(a.opportunity_id);
+      switch (key) {
+        case "name": return opp?.Name ?? a.opportunity_id;
+        case "status": return a.award_status;
+        case "amount": return opp?.Amount ?? 0;
+        case "awarded": return a.award_date ?? "";
+        case "periodEnd": return a.period_end_date ?? "";
+        case "reports": return a.report_overdue ?? 0;
+      }
+    });
+  }, [awards, query, statusFilter, sort, oppsById]);
+
   return (
     <SectionCard
-      title={`Awards (${awards.length})`}
+      title={`Awards (${visible.length}${visible.length !== awards.length ? ` of ${awards.length}` : ""})`}
       storageScope="portfolio"
       action={
-        overdueReports > 0 ? (
-          <span className="text-[11.5px] font-semibold text-red">
-            {overdueReports} report{overdueReports === 1 ? "" : "s"} overdue
-          </span>
-        ) : null
+        <div className="flex items-center gap-3">
+          {overdueReports > 0 ? (
+            <span className="text-[11.5px] font-semibold text-red">
+              {overdueReports} report{overdueReports === 1 ? "" : "s"} overdue
+            </span>
+          ) : null}
+          {awards.length > 0 ? (
+            <TableToolbar<AwardFilter>
+              query={query}
+              onQueryChange={setQuery}
+              filter={{
+                value: statusFilter,
+                options: [
+                  { value: "all", label: "All", count: counts.all },
+                  { value: "Active", label: "Active", count: counts.active },
+                  { value: "Closing", label: "Closing", count: counts.closing },
+                  { value: "Closed", label: "Closed", count: counts.closed },
+                ],
+                onChange: setStatusFilter,
+              }}
+              placeholder="Search awards…"
+            />
+          ) : null}
+        </div>
       }
     >
       {loading ? (
         <EmptyState>Loading…</EmptyState>
       ) : awards.length === 0 ? (
         <EmptyState>No awards under this user's opportunities.</EmptyState>
+      ) : visible.length === 0 ? (
+        <EmptyState>No awards match your filters.</EmptyState>
       ) : (
         <table className="w-full text-[12.5px]">
           <thead className="bg-surface-2 text-[10.5px] uppercase tracking-wider text-ink-3">
             <tr>
               <th className="w-[28px] px-3 py-1.5"></th>
-              <th className="px-3 py-1.5 text-left font-semibold">Award</th>
-              <th className="w-[140px] px-3 py-1.5 text-left font-semibold">Status</th>
-              <th className="w-[110px] px-3 py-1.5 text-right font-semibold">Amount</th>
-              <th className="w-[120px] px-3 py-1.5 text-right font-semibold">Awarded</th>
-              <th className="w-[120px] px-3 py-1.5 text-right font-semibold">Period end</th>
-              <th className="w-[100px] px-3 py-1.5 text-right font-semibold">Reports</th>
+              <th className="px-3 py-1.5 text-left font-semibold">
+                <SortableHeader label="Award" sortKey="name" sort={sort} onToggle={toggle} />
+              </th>
+              <th className="w-[140px] px-3 py-1.5 text-left font-semibold">
+                <SortableHeader label="Status" sortKey="status" sort={sort} onToggle={toggle} />
+              </th>
+              <th className="w-[110px] px-3 py-1.5 text-right font-semibold">
+                <SortableHeader label="Amount" sortKey="amount" sort={sort} onToggle={toggle} align="right" />
+              </th>
+              <th className="w-[120px] px-3 py-1.5 text-right font-semibold">
+                <SortableHeader label="Awarded" sortKey="awarded" sort={sort} onToggle={toggle} align="right" />
+              </th>
+              <th className="w-[120px] px-3 py-1.5 text-right font-semibold">
+                <SortableHeader label="Period end" sortKey="periodEnd" sort={sort} onToggle={toggle} align="right" />
+              </th>
+              <th className="w-[100px] px-3 py-1.5 text-right font-semibold">
+                <SortableHeader label="Reports" sortKey="reports" sort={sort} onToggle={toggle} align="right" />
+              </th>
               <th className="w-[40px] px-3 py-1.5"></th>
             </tr>
           </thead>
           <tbody>
-            {sorted.map((a) => {
+            {visible.map((a) => {
               const opp = oppsById.get(a.opportunity_id);
               const isExpanded = a.id === expandedId;
               const reportsBehind = a.report_overdue ?? 0;
