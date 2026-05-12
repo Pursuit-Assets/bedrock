@@ -64,12 +64,16 @@ gcloud run deploy $BACKEND_SERVICE \
 BACKEND_URL=$(gcloud run services describe $BACKEND_SERVICE --region $GCP_REGION --format 'value(status.url)')
 echo -e "${GREEN}✅ Backend deployed at: ${BACKEND_URL}${NC}"
 
-# Deploy Frontend
-echo -e "${GREEN}⚛️  Deploying Frontend (React)...${NC}"
-cd frontend
-
-# Update frontend API URL for production
-echo "REACT_APP_API_URL=$BACKEND_URL" > .env.production
+# Deploy Frontend.
+#
+# The shipped frontend is `frontend-v2/` (Vite + React 19 — Bedrock
+# Redesign). The legacy `frontend/` CRA build is kept on disk for
+# historical reasons but is NOT what production serves; deploying from
+# it ships an old UI and silently rolls back days/weeks of work
+# (incident: 2026-05-11). nginx inside the v2 image proxies /api and
+# /auth to the backend Cloud Run URL, so no env vars are needed.
+echo -e "${GREEN}⚛️  Deploying Frontend (frontend-v2 · Vite + React 19)...${NC}"
+cd frontend-v2
 
 gcloud run deploy $FRONTEND_SERVICE \
     --source . \
