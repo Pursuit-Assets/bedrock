@@ -305,10 +305,20 @@ export function AccountDetailPage() {
 
       <SectionCard title="Linked projects">
         <div className="px-5 py-4">
+          {/* Account-detail card surfaces projects linked three ways:
+                1. Directly to the account (project_account)
+                2. Via any opp on the account (project_opportunity + legacy column)
+                3. Via any award on the account (project_award)
+              The card merges all three behind the scenes and tags the
+              indirect ones with a small "via opportunity/award" pill. */}
           <LinkedProjectsCard
             entityType="account"
             entityId={account.Id}
             referrerLabel="Account"
+            alsoFrom={[
+              ...opps.map((o) => ({ type: "opportunity" as const, id: o.Id })),
+              ...accountAwards.map((a) => ({ type: "award" as const, id: a.id })),
+            ]}
           />
         </div>
       </SectionCard>

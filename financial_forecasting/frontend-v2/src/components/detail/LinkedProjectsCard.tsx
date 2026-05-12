@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ExternalLink, Plus } from "lucide-react";
 
 import { api } from "@/lib/api";
@@ -30,6 +30,23 @@ interface LinkedProjectsCardProps {
   entityId: string;
   /** Visible referrer label used on outbound links ("Account", "Opportunity"…). */
   referrerLabel: string;
+  /**
+   * Optional additional reverse-lookup sources whose projects should be
+   * merged into the display. Used by the Account detail page so a project
+   * linked to *any* opp or award on the account also appears, even if it
+   * isn't linked to the account directly. The "Link" action still writes
+   * to the primary `entityType` — these are read-only secondary sources.
+   */
+  alsoFrom?: { type: LinkedEntity; id: string }[];
+}
+
+interface LinkedProjectRow {
+  id: string;
+  name: string;
+  /** How this project showed up in the merged list, for tooltip / tag.
+   *  `direct` means it came from the entity's own reverse lookup; anything
+   *  else means it was pulled in via the `alsoFrom` secondary sources. */
+  via: "direct" | LinkedEntity;
 }
 
 const ENTITY_PLURAL: Record<LinkedEntity, string> = {
@@ -43,6 +60,7 @@ export function LinkedProjectsCard({
   entityType,
   entityId,
   referrerLabel,
+  alsoFrom,
 }: LinkedProjectsCardProps) {
   const location = useLocation();
   const referrer = { from: { pathname: location.pathname, label: referrerLabel } };
@@ -53,6 +71,7 @@ export function LinkedProjectsCard({
 
   const reverseQueryKey = ["linked-projects", entityType, entityId];
 
+  // Primary source — the entity's own reverse-lookup endpoint.
   const linkedQ = useQuery({
     queryKey: reverseQueryKey,
     queryFn: async () => {
@@ -65,9 +84,44 @@ export function LinkedProjectsCard({
     enabled: Boolean(entityId),
   });
 
-  const linkedIds = new Set((linkedQ.data ?? []).map((p) => p.id));
-  const linked = linkedQ.data ?? [];
+  // Secondary sources (e.g. all of an account's opps/awards). Each is its
+  // own React-Query so the user-facing detail page reuses any cached
+  // result that was already fetched elsewhere (e.g. the same opp's
+  // /projects call from another card).
+  const extras = alsoFrom ?? [];
+  const extraQs = useQueries({
+    queries: extras.map((src) => ({
+      queryKey: ["linked-projects", src.type, src.id],
+      queryFn: async () => {
+        const { data } = await api.get<{ data: { id: string; name: string }[] }>(
+          `/api/${ENTITY_PLURAL[src.type]}/${src.id}/projects`,
+        );
+        return data?.data ?? [];
+      },
+      staleTime: 30_000,
+      enabled: Boolean(src.id),
+    })),
+  });
+
+  // Merge: primary source wins on collision (so direct links keep their
+  // "direct" badge even if the project also shows up via an opp/award).
+  const linked: LinkedProjectRow[] = useMemo(() => {
+    const seen = new Map<string, LinkedProjectRow>();
+    for (const p of linkedQ.data ?? []) {
+      seen.set(p.id, { id: p.id, name: p.name, via: "direct" });
+    }
+    extras.forEach((src, i) => {
+      for (const p of (extraQs[i]?.data ?? [])) {
+        if (seen.has(p.id)) continue;
+        seen.set(p.id, { id: p.id, name: p.name, via: src.type });
+      }
+    });
+    return [...seen.values()].sort((a, b) => a.name.localeCompare(b.name));
+  }, [linkedQ.data, extraQs, extras]);
+
+  const linkedIds = new Set(linked.map((p) => p.id));
   const linkable = (projectsQ.data ?? []).filter((p) => !linkedIds.has(p.id));
+  const isLoading = linkedQ.isLoading || extraQs.some((q) => q.isLoading);
 
   const [linking, setLinking] = useState(false);
   const [creating, setCreating] = useState(false);
@@ -178,7 +232,7 @@ export function LinkedProjectsCard({
         </form>
       ) : null}
 
-      {linkedQ.isLoading ? (
+      {isLoading ? (
         <div className="text-[12px] text-ink-4">Loading…</div>
       ) : linked.length === 0 ? (
         <div className="text-[12px] text-ink-4">No projects linked.</div>
@@ -194,6 +248,14 @@ export function LinkedProjectsCard({
                 <span className="flex-1 truncate text-[12.5px] font-medium text-ink">
                   {p.name}
                 </span>
+                {p.via !== "direct" ? (
+                  <span
+                    className="flex-shrink-0 rounded bg-surface-2 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-ink-3"
+                    title={`Linked via ${p.via}, not to this ${entityType} directly`}
+                  >
+                    via {p.via}
+                  </span>
+                ) : null}
                 <ExternalLink
                   size={11}
                   className="flex-shrink-0 text-ink-4 group-hover:text-accent"

@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Link, useParams } from "react-router-dom";
 import {
   ChevronDown,
@@ -1076,7 +1077,15 @@ function LinkedAwardsSection({ projectId }: { projectId: string }) {
         availableAwards.length > 0 ? (
           <LinkPicker
             label="Link award"
-            options={availableAwards.map((a) => ({ id: String(a.id), name: a.opportunity_id ?? String(a.id) }))}
+            options={availableAwards.map((a) => {
+              const opp = opps.find((o) => o.Id === a.opportunity_id);
+              const oppName = opp?.Name ?? "(unknown opportunity)";
+              const acct = opp?.Account?.Name;
+              return {
+                id: String(a.id),
+                name: acct ? `${oppName} — ${acct}` : oppName,
+              };
+            })}
             onSelect={(id) => linkAward.mutate(id)}
           />
         ) : null
@@ -1112,6 +1121,15 @@ function LinkedAwardsSection({ projectId }: { projectId: string }) {
 
 // ── Link picker (shared search dropdown) ─────────────────────────────────────
 
+/**
+ * Search dropdown rendered into a portal so it can escape SectionCard's
+ * `overflow-hidden` (which would otherwise clip the popup against the
+ * card's right edge — the bug previously visible on ProjectDetail).
+ *
+ * The trigger stays inline in the header; the popup is anchored to the
+ * trigger's bounding rect and recomputes on scroll/resize so it tracks
+ * the header during page scroll.
+ */
 function LinkPicker({
   label,
   options,
@@ -1123,46 +1141,132 @@ function LinkPicker({
 }) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const popoverRef = useRef<HTMLDivElement>(null);
+
+  // Popup placement — anchored to the trigger's right edge, opens downward.
+  // Width is fixed at 320px so the column "Account Name — Opp Name" labels
+  // don't truncate aggressively.
+  const POPUP_WIDTH = 320;
+  const [coords, setCoords] = useState<{ top: number; left: number } | null>(null);
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    function place() {
+      const trigger = triggerRef.current;
+      if (!trigger) return;
+      const rect = trigger.getBoundingClientRect();
+      // Anchor under the trigger, right-aligned. Clamp to viewport so the
+      // popup never spills off the left edge for narrow windows.
+      const left = Math.max(8, rect.right - POPUP_WIDTH);
+      setCoords({ top: rect.bottom + 4, left });
+    }
+    place();
+    window.addEventListener("scroll", place, true);
+    window.addEventListener("resize", place);
+    return () => {
+      window.removeEventListener("scroll", place, true);
+      window.removeEventListener("resize", place);
+    };
+  }, [open]);
+
+  // Focus the search field when the popup opens.
+  useEffect(() => {
+    if (open) inputRef.current?.focus();
+  }, [open]);
+
+  // Close on outside click / escape.
+  useEffect(() => {
+    if (!open) return;
+    function onDoc(e: MouseEvent) {
+      const t = e.target as Node;
+      if (popoverRef.current?.contains(t)) return;
+      if (triggerRef.current?.contains(t)) return;
+      setOpen(false);
+      setQ("");
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") {
+        setOpen(false);
+        setQ("");
+      }
+    }
+    document.addEventListener("mousedown", onDoc);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDoc);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
 
   const filtered = useMemo(
-    () => options.filter((o) => o.name.toLowerCase().includes(q.toLowerCase())).slice(0, 20),
+    () => options.filter((o) => o.name.toLowerCase().includes(q.toLowerCase())).slice(0, 50),
     [options, q],
   );
 
-  if (!open) {
-    return (
-      <button type="button" onClick={() => setOpen(true)} className="text-[11px] text-accent hover:underline">
+  return (
+    <>
+      <button
+        ref={triggerRef}
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="text-[11px] text-accent hover:underline"
+      >
         + {label}
       </button>
-    );
-  }
 
-  return (
-    <div className="relative">
-      <input
-        autoFocus
-        placeholder={`Search to ${label.toLowerCase()}…`}
-        value={q}
-        onChange={(e) => setQ(e.target.value)}
-        onBlur={() => setTimeout(() => { setOpen(false); setQ(""); }, 200)}
-        className="h-7 w-48 rounded border border-border-strong bg-surface px-2 text-[12px] outline-none focus:border-accent"
-      />
-      {filtered.length > 0 && (
-        <ul className="absolute right-0 top-8 z-20 max-h-48 w-64 overflow-auto rounded-md border border-border-strong bg-surface shadow-lg">
-          {filtered.map((o) => (
-            <li key={o.id}>
-              <button
-                type="button"
-                onMouseDown={(e) => { e.preventDefault(); onSelect(o.id); setOpen(false); setQ(""); }}
-                className="w-full px-3 py-1.5 text-left text-[12.5px] hover:bg-surface-2"
-              >
-                {o.name}
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
-    </div>
+      {open && coords
+        ? createPortal(
+            <div
+              ref={popoverRef}
+              style={{
+                position: "fixed",
+                top: coords.top,
+                left: coords.left,
+                width: POPUP_WIDTH,
+                zIndex: 50,
+              }}
+              className="rounded-md border border-border-strong bg-surface shadow-lg"
+            >
+              <div className="border-b border-border-strong px-3 py-2">
+                <input
+                  ref={inputRef}
+                  placeholder={`Search to ${label.toLowerCase()}…`}
+                  value={q}
+                  onChange={(e) => setQ(e.target.value)}
+                  className="h-7 w-full rounded border border-border-strong bg-surface px-2 text-[12px] outline-none focus:border-accent"
+                />
+              </div>
+              <ul className="max-h-72 overflow-auto py-1">
+                {filtered.length === 0 ? (
+                  <li className="px-3 py-2 text-[12px] text-ink-3">
+                    {options.length === 0 ? "Nothing left to link." : "No matches."}
+                  </li>
+                ) : (
+                  filtered.map((o) => (
+                    <li key={o.id}>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onSelect(o.id);
+                          setOpen(false);
+                          setQ("");
+                        }}
+                        className="w-full truncate px-3 py-1.5 text-left text-[12.5px] hover:bg-surface-2"
+                        title={o.name}
+                      >
+                        {o.name}
+                      </button>
+                    </li>
+                  ))
+                )}
+              </ul>
+            </div>,
+            document.body,
+          )
+        : null}
+    </>
   );
 }
 
