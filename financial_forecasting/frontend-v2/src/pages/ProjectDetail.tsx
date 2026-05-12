@@ -69,6 +69,20 @@ function useProjectAwards(projectId: string | undefined) {
   });
 }
 
+function useProjectOpportunities(projectId: string | undefined) {
+  return useQuery({
+    queryKey: ["project-opportunities", projectId],
+    queryFn: async () => {
+      const { data } = await api.get<{ data: { id: string; opportunity_id: string; role?: string }[] }>(
+        `/api/projects/${projectId}/opportunities`,
+      );
+      return data.data ?? [];
+    },
+    enabled: !!projectId,
+    staleTime: 60_000,
+  });
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 const DONE_STATUSES = new Set([
@@ -806,33 +820,80 @@ function Empty({ children }: { children: React.ReactNode }) {
 }
 
 function LinkedOpportunitiesSection({ projectId }: { projectId: string }) {
-  // Opportunities are auto-derived from linked awards — read-only.
+  // Opportunities can be linked two ways:
+  //   1. Explicit M2M (project_opportunity) — RM linked an opp directly,
+  //      typically *before* the opp produced an award.
+  //   2. Auto-derived from linked awards — the linked award's
+  //      award.opportunity_id surfaces here read-only.
+  // We merge both, marking auto-derived ones so the user knows they can't
+  // be unlinked from here (they'd need to unlink the award instead).
+  const explicitQ = useProjectOpportunities(projectId);
   const awardsQ = useProjectAwards(projectId);
   const { data: opps = [] } = useOpportunities();
+  const qc = useQueryClient();
+
+  const explicit = explicitQ.data ?? [];
 
   const linkedOpps = useMemo(() => {
-    const awardData = awardsQ.data ?? [];
     const byId = new Map(opps.map((o) => [o.Id, o]));
+    const result: { oppId: string; opp: SfOpportunity | undefined; via: "direct" | "award" }[] = [];
     const seen = new Set<string>();
-    const result: { oppId: string; opp: SfOpportunity | undefined }[] = [];
-    for (const award of awardData) {
+    for (const link of explicit) {
+      if (seen.has(link.opportunity_id)) continue;
+      seen.add(link.opportunity_id);
+      result.push({ oppId: link.opportunity_id, opp: byId.get(link.opportunity_id), via: "direct" });
+    }
+    for (const award of awardsQ.data ?? []) {
       const oppId = award.opportunity_id;
       if (!oppId || seen.has(oppId)) continue;
       seen.add(oppId);
-      result.push({ oppId, opp: byId.get(oppId) });
+      result.push({ oppId, opp: byId.get(oppId), via: "award" });
     }
     return result;
-  }, [awardsQ.data, opps]);
+  }, [explicit, awardsQ.data, opps]);
 
-  if (!awardsQ.isLoading && linkedOpps.length === 0) return null;
+  const linkOpp = useMutation({
+    mutationFn: async (oppId: string) => {
+      await api.post(`/api/projects/${projectId}/opportunities`, { opportunity_id: oppId });
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["project-opportunities", projectId] }),
+  });
+
+  const unlinkOpp = useMutation({
+    mutationFn: async (oppId: string) => {
+      await api.delete(`/api/projects/${projectId}/opportunities/${oppId}`);
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["project-opportunities", projectId] }),
+  });
+
+  const linkedIds = new Set(linkedOpps.map((l) => l.oppId));
+  const availableOpps = opps.filter((o) => !linkedIds.has(o.Id));
+
+  const loading = explicitQ.isLoading || awardsQ.isLoading;
 
   return (
-    <SectionCard title={`Opportunities (${awardsQ.isLoading ? "…" : linkedOpps.length})`}>
-      {awardsQ.isLoading ? (
+    <SectionCard
+      title={`Opportunities (${loading ? "…" : linkedOpps.length})`}
+      action={
+        availableOpps.length > 0 ? (
+          <LinkPicker
+            label="Link opportunity"
+            options={availableOpps.map((o) => ({
+              id: o.Id,
+              name: o.Account?.Name ? `${o.Name} — ${o.Account.Name}` : o.Name ?? o.Id,
+            }))}
+            onSelect={(id) => linkOpp.mutate(id)}
+          />
+        ) : null
+      }
+    >
+      {loading ? (
         <Empty>Loading…</Empty>
+      ) : linkedOpps.length === 0 ? (
+        <Empty>No opportunities linked yet. Link one to plan ahead — when it produces an award, the award will inherit this project automatically.</Empty>
       ) : (
         <ul className="flex flex-col">
-          {linkedOpps.map(({ oppId, opp }) => (
+          {linkedOpps.map(({ oppId, opp, via }) => (
             <li key={oppId} className="flex items-center gap-3 border-b border-border-strong px-5 py-2.5 last:border-b-0">
               <div className="min-w-0 flex-1">
                 <Link to={`/opportunities/${oppId}`} className="block truncate text-[13px] font-medium hover:underline">
@@ -845,6 +906,22 @@ function LinkedOpportunitiesSection({ projectId }: { projectId: string }) {
               {opp?.StageName ? (
                 <span className="flex-shrink-0 rounded bg-surface-2 px-2 py-0.5 text-[11px] text-ink-3">{opp.StageName}</span>
               ) : null}
+              {via === "award" ? (
+                <span
+                  title="Inherited from a linked award — unlink the award to remove."
+                  className="flex-shrink-0 rounded bg-surface-2 px-2 py-0.5 text-[10.5px] uppercase tracking-wide text-ink-4"
+                >
+                  via award
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => unlinkOpp.mutate(oppId)}
+                  className="text-[11px] text-ink-4 hover:text-red"
+                >
+                  Unlink
+                </button>
+              )}
             </li>
           ))}
         </ul>

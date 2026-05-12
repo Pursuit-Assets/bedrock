@@ -11,6 +11,7 @@ import {
   BackLink as SharedBackLink,
   EditField,
   Empty,
+  LinkedProjectsCard,
   SectionCard,
 } from "@/components/detail";
 import { AccountPicker } from "@/components/ui/AccountPicker";
@@ -460,6 +461,16 @@ export function OpportunityDetailPage() {
           </div>
         </SectionCard>
       ) : null}
+
+      <SectionCard title="Linked projects" storageScope="opportunity">
+        <div className="px-5 py-4">
+          <LinkedProjectsCard
+            entityType="opportunity"
+            entityId={opp.Id}
+            referrerLabel="Opportunity"
+          />
+        </div>
+      </SectionCard>
 
       {/* Activity timeline — scoped so search/filter state is per-entity. */}
       <ActivityTimeline activities={activities} scopeKey={`opportunity:${opp.Id}`} />

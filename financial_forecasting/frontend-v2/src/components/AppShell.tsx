@@ -14,6 +14,7 @@ import {
   ChevronRight,
   TrendingUp,
   Link as LinkIcon,
+  Home,
   MessageSquarePlus,
 } from "lucide-react";
 
@@ -33,6 +34,7 @@ const NAV_GROUPS = [
   {
     label: "Portfolio",
     items: [
+      { to: "/portfolio", label: "Home",     icon: Home },
       { to: "/accounts", label: "Accounts", icon: Building2 },
       { to: "/contacts", label: "Contacts", icon: Users },
       { to: "/pipeline", label: "Pipeline", icon: GitBranch },

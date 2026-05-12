@@ -1263,3 +1263,43 @@ async def get_award_projects(award_id: str, user=Depends(check_permission("view_
         aid,
     )
     return {"success": True, "data": [dict(r) for r in rows]}
+
+
+# ── Reverse lookup: Contact → Projects ──────────────────────────────────
+
+@router.get("/contacts/{contact_id}/projects")
+async def get_contact_projects(contact_id: str, user=Depends(check_permission("view_projects")), conn=Depends(get_db)):
+    """Get all Projects linked to a Contact (reverse lookup via project_contact)."""
+    validate_salesforce_id(contact_id, "contact_id")
+    rows = await conn.fetch(
+        "SELECT p.id, p.name, p.description, p.owner_email, p.created_at "
+        "FROM bedrock.project p "
+        "JOIN bedrock.project_contact pc ON pc.project_id = p.id "
+        "WHERE pc.contact_id = $1 AND p.deleted_at IS NULL "
+        "ORDER BY p.name",
+        contact_id,
+    )
+    return {"success": True, "data": [dict(r) for r in rows]}
+
+
+# ── Reverse lookup: Opportunity → Projects (M2M + legacy column union) ──
+
+@router.get("/opportunities/{opportunity_id}/projects")
+async def get_opportunity_projects(opportunity_id: str, user=Depends(check_permission("view_projects")), conn=Depends(get_db)):
+    """Get all Projects linked to an Opportunity.
+
+    Unions two sources so callers don't have to know about the migration:
+      1. project.opportunity_id  (legacy single-link column, still populated)
+      2. project_opportunity     (M2M junction; canonical going forward)
+    """
+    validate_salesforce_id(opportunity_id, "opportunity_id")
+    rows = await conn.fetch(
+        "SELECT DISTINCT p.id, p.name, p.description, p.owner_email, p.created_at "
+        "FROM bedrock.project p "
+        "LEFT JOIN bedrock.project_opportunity po ON po.project_id = p.id "
+        "WHERE p.deleted_at IS NULL "
+        "  AND (p.opportunity_id = $1 OR po.opportunity_id = $1) "
+        "ORDER BY p.name",
+        opportunity_id,
+    )
+    return {"success": True, "data": [dict(r) for r in rows]}

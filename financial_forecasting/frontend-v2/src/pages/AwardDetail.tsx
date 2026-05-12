@@ -1,10 +1,9 @@
-import { useMemo, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMemo } from "react";
 import { Link, useLocation, useParams } from "react-router-dom";
-import { Check, ExternalLink, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { Check, Plus, RefreshCw, Trash2 } from "lucide-react";
 
 import { AccountAvatar } from "@/components/AccountAvatar";
-import { BackLink as SharedBackLink } from "@/components/detail";
+import { BackLink as SharedBackLink, LinkedProjectsCard } from "@/components/detail";
 import { InlineDate, InlineSelect, InlineText } from "@/components/ui/InlineEdit";
 import { Tag } from "@/components/ui/Tag";
 import { fmtDate, fmtMoneyFull } from "@/lib/format";
@@ -25,8 +24,6 @@ import {
 } from "@/services/awards";
 import { useOpportunities, useOpportunityTasks, useUpdateOpportunity, useUpdateTask } from "@/services/opportunities";
 import { useOpportunityPayments, useUpdatePayment, type SfPayment } from "@/services/payments";
-import { api } from "@/lib/api";
-import { useCreateProject, useProjects } from "@/services/projects";
 import { useActiveUsers } from "@/services/users";
 import { usePerm } from "@/services/permissions";
 import type { SfOpportunity } from "@/types/salesforce";
@@ -218,7 +215,11 @@ function Loaded({ award, opp }: { award: Award; opp: SfOpportunity | undefined }
           </Section>
 
           <Section title="Linked projects">
-            <ProjectsDetail award={award} />
+            <LinkedProjectsCard
+              entityType="award"
+              entityId={award.id}
+              referrerLabel="Award"
+            />
           </Section>
 
           <Section title="Notes">
@@ -728,139 +729,3 @@ function TasksDetail({ opportunityId }: { opportunityId: string }) {
   );
 }
 
-// ── Projects section (sidebar) — uses project_award M2M ───────────────────
-
-function ProjectsDetail({ award }: { award: Award }) {
-  const location = useLocation();
-  const referrer = {
-    from: { pathname: location.pathname, label: "Award" },
-  };
-  const projectsQ = useProjects();
-  const createProject = useCreateProject();
-  const qc = useQueryClient();
-  const [creating, setCreating] = useState(false);
-  const [linking, setLinking] = useState(false);
-  const [name, setName] = useState("");
-  const [pick, setPick] = useState("");
-
-  // Fetch projects linked to THIS award via M2M
-  const linkedProjectsQ = useQuery({
-    queryKey: ["award-projects", award.id],
-    queryFn: async () => {
-      // Use the project_award endpoint — get all project_award rows,
-      // then cross-reference with projects list.
-      // Since there's no reverse endpoint yet, filter from all projects
-      // by checking project_award for each. For now, use a simpler
-      // approach: fetch all projects, then for each check if it has
-      // this award linked. OR add a backend endpoint.
-      // Simplest: just call the project's awards list for each project.
-      // Actually — let's query all project_award rows that reference this award.
-      const { data } = await api.get<{ data: any[] }>(`/api/awards/${award.id}/projects`);
-      return data?.data ?? [];
-    },
-    staleTime: 30_000,
-  });
-
-  const linkedProjectIds = new Set((linkedProjectsQ.data ?? []).map((p: any) => p.id));
-  const linked = (projectsQ.data ?? []).filter((p) => linkedProjectIds.has(p.id));
-  const linkable = (projectsQ.data ?? []).filter((p) => !linkedProjectIds.has(p.id));
-
-  async function linkAwardToProject(projectId: string) {
-    await api.post(`/api/projects/${projectId}/awards`, { entity_id: award.id });
-    qc.invalidateQueries({ queryKey: ["award-projects", award.id] });
-    qc.invalidateQueries({ queryKey: ["project-awards"] });
-  }
-
-  async function handleCreate(e: React.FormEvent) {
-    e.preventDefault();
-    if (!name.trim()) return;
-    const project = await createProject.mutateAsync({ name: name.trim() });
-    await linkAwardToProject(project.id);
-    setName(""); setCreating(false);
-  }
-
-  return (
-    <div>
-      <div className="mb-2 flex items-center justify-between">
-        <span className="text-[12px] text-ink-3">
-          {linked.length} project{linked.length === 1 ? "" : "s"}
-        </span>
-        <div className="flex items-center gap-1.5">
-          <button
-            type="button"
-            onClick={() => { setLinking(true); setCreating(false); }}
-            className="text-[11.5px] text-ink-3 hover:text-ink-2"
-          >
-            Link
-          </button>
-          <button
-            type="button"
-            onClick={() => { setCreating(true); setLinking(false); }}
-            className="flex items-center gap-1 rounded bg-accent px-2 py-0.5 text-[11.5px] text-surface hover:opacity-90"
-          >
-            <Plus size={10} /> New
-          </button>
-        </div>
-      </div>
-
-      {creating ? (
-        <form className="mb-2 flex items-center gap-1.5" onSubmit={handleCreate}>
-          <input
-            autoFocus
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="Project name"
-            className="h-7 flex-1 rounded border border-border-strong bg-surface px-2 text-[12px] text-ink outline-none focus:border-accent"
-          />
-          <button type="submit" className="rounded bg-accent px-2 py-0.5 text-[11.5px] text-surface">Create</button>
-        </form>
-      ) : null}
-
-      {linking ? (
-        <form
-          className="mb-2 flex items-center gap-1.5"
-          onSubmit={async (e) => {
-            e.preventDefault();
-            if (!pick) return;
-            await linkAwardToProject(pick);
-            setPick(""); setLinking(false);
-          }}
-        >
-          <select
-            autoFocus
-            value={pick}
-            onChange={(e) => setPick(e.target.value)}
-            className="h-7 flex-1 rounded border border-border-strong bg-surface px-2 text-[12px] text-ink outline-none focus:border-accent"
-          >
-            <option value="">Select project…</option>
-            {linkable.map((p) => (
-              <option key={p.id} value={p.id}>{p.name}</option>
-            ))}
-          </select>
-          <button type="submit" className="rounded bg-accent px-2 py-0.5 text-[11.5px] text-surface">Link</button>
-        </form>
-      ) : null}
-
-      {linked.length === 0 ? (
-        <div className="text-[12px] text-ink-4">No projects linked.</div>
-      ) : (
-        <ul className="space-y-1">
-          {linked.map((p) => (
-            <li key={p.id}>
-              <Link
-                to={`/projects/${p.id}`}
-                state={referrer}
-                className="group flex items-center gap-2 rounded border border-border-strong bg-surface px-3 py-1.5 hover:border-accent"
-              >
-                <span className="flex-1 truncate text-[12.5px] font-medium text-ink">
-                  {p.name}
-                </span>
-                <ExternalLink size={11} className="flex-shrink-0 text-ink-4 group-hover:text-accent" />
-              </Link>
-            </li>
-          ))}
-        </ul>
-      )}
-    </div>
-  );
-}

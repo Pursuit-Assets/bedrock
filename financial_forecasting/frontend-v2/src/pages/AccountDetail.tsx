@@ -7,7 +7,7 @@ import { api } from "@/lib/api";
 import { ChevronDown, ChevronRight, ExternalLink, Mail, Pencil, Phone, Plus, Search, UserPlus, X } from "lucide-react";
 
 import { AccountAvatar } from "@/components/AccountAvatar";
-import { BackLink as SharedBackLink } from "@/components/detail";
+import { BackLink as SharedBackLink, LinkedProjectsCard } from "@/components/detail";
 import { AccountTasksSection } from "@/components/AccountTasksSection";
 import { ActivityTimeline } from "@/components/ActivityTimeline";
 import { InlineSelect, InlineText } from "@/components/ui/InlineEdit";
@@ -302,6 +302,16 @@ export function AccountDetailPage() {
           <AwardsForAccountTable awards={accountAwards} opps={opps} />
         </SectionCard>
       ) : null}
+
+      <SectionCard title="Linked projects">
+        <div className="px-5 py-4">
+          <LinkedProjectsCard
+            entityType="account"
+            entityId={account.Id}
+            referrerLabel="Account"
+          />
+        </div>
+      </SectionCard>
 
       {/* Activity timeline — full width, below awards */}
       <ActivityTimeline

@@ -101,17 +101,21 @@ async def reconcile_all(conn, sf_client) -> Dict[str, Any]:
                 close_date = None
 
         try:
-            await conn.execute(
+            new_award_id = await conn.fetchval(
                 """
                 INSERT INTO bedrock.award (opportunity_id, award_status, award_date, notes)
                 VALUES ($1, $2, $3, $4)
                 ON CONFLICT (opportunity_id) WHERE deleted_at IS NULL DO NOTHING
+                RETURNING id
                 """,
                 opp_id,
                 initial_award_status(stage),
                 close_date,
                 f"Auto-created by reconciler — opp was in {stage} without an award row.",
             )
+            if new_award_id is not None:
+                from services.awards_service import _cascade_opp_projects_to_award
+                await _cascade_opp_projects_to_award(conn, opp_id, new_award_id)
             created += 1
             created_ids.append(opp_id)
         except Exception:
