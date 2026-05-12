@@ -1080,18 +1080,50 @@ async def get_cashflow(
         months = {m: {"actuals": 0.0, "scheduled": 0.0, "projected": 0.0}
                   for m in range(1, 13)}
 
+        # Today as YYYY-MM-DD; used to keep "actuals" strictly historical.
+        # Without this, paid payments with future-dated Payment_Date (a
+        # data-hygiene issue in SF where someone clicks Paid=true on a
+        # row whose Payment_Date still equals the original scheduled date)
+        # would show as future-month actuals on the dashboard.
+        from datetime import date as _date
+        today_iso = _date.today().isoformat()
+
         for r in won_result.get("records", []):
             amt = r.get("npe01__Payment_Amount__c") or 0
             if not amt:
                 continue
-            if r.get("npe01__Paid__c"):
-                date_str = r.get("npe01__Payment_Date__c")
+            payment_date = r.get("npe01__Payment_Date__c")
+            scheduled_date = r.get("npe01__Scheduled_Date__c")
+
+            # "Actuals" means: money already in the bank, in the FY we're
+            # asking about. Three conditions must hold:
+            #   1. Paid=true
+            #   2. Payment_Date is in the queried year (otherwise the
+            #      record is here because of disjunct (1) — Won-stage
+            #      payment scheduled this year — but the actual payment
+            #      happened in a different year and belongs to that
+            #      year's actuals, not ours)
+            #   3. Payment_Date is on or before today (a future
+            #      Payment_Date isn't an actual — treat as scheduled)
+            year_prefix = f"{year}-"
+            is_actual = (
+                bool(r.get("npe01__Paid__c"))
+                and payment_date
+                and payment_date.startswith(year_prefix)
+                and payment_date <= today_iso
+            )
+
+            if is_actual:
+                date_str = payment_date
                 key = "actuals"
             else:
-                date_str = r.get("npe01__Scheduled_Date__c")
+                # Falls back to scheduled — only count if the scheduled
+                # date is in this year (covers the disjunct-1 case where
+                # we matched on Won+Scheduled-in-year).
+                if not scheduled_date or not scheduled_date.startswith(year_prefix):
+                    continue
+                date_str = scheduled_date
                 key = "scheduled"
-            if not date_str:
-                continue
             try:
                 months[int(date_str[5:7])][key] += amt
             except (ValueError, KeyError):
@@ -1151,6 +1183,14 @@ async def get_cashflow_detail(
         m_end   = f"{year}-{month:02d}-{last_day:02d}"
 
         if type == "actuals":
+            # Matches the aggregate's actuals rule: must be paid, with a
+            # Payment_Date in the queried month AND on/before today. The
+            # extra "<= today" clamp prevents the dashboard from listing
+            # paid-but-future-dated payments under "actuals" (those will
+            # show as scheduled instead).
+            from datetime import date as _date
+            today_iso = _date.today().isoformat()
+            actuals_upper = min(m_end, today_iso)
             soql = f"""
                 SELECT Id, npe01__Payment_Amount__c, npe01__Payment_Date__c,
                        npe01__Scheduled_Date__c,
@@ -1161,7 +1201,7 @@ async def get_cashflow_detail(
                 WHERE npe01__Paid__c = true
                 AND npe01__Written_Off__c = false
                 AND npe01__Payment_Date__c >= {m_start}
-                AND npe01__Payment_Date__c <= {m_end}
+                AND npe01__Payment_Date__c <= {actuals_upper}
                 {bucket_clause}
                 ORDER BY npe01__Payment_Date__c ASC
                 LIMIT 500

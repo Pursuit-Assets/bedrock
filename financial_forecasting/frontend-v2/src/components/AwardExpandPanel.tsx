@@ -58,7 +58,7 @@ export function AwardExpandPanel({ award }: { award: Award }) {
   );
 
   return (
-    <div className="border-t border-border-strong bg-surface-2/40" style={{ height: AWARD_PANEL_HEIGHT }}>
+    <div className="overflow-hidden border-t border-b border-border-strong bg-surface-2/40" style={{ height: AWARD_PANEL_HEIGHT }}>
       <div className="flex items-center gap-1 border-b border-border-strong bg-surface px-4 pt-2">
         <TabButton active={tab === "reports"} onClick={() => setTab("reports")}>
           Reports {award.report_total > 0 ? `· ${award.report_done}/${award.report_total}` : ""}
@@ -74,7 +74,7 @@ export function AwardExpandPanel({ award }: { award: Award }) {
         </TabButton>
       </div>
 
-      <div className="h-[calc(100%-32px)] overflow-y-auto">
+      <div className="h-[calc(100%-32px)] overflow-y-auto pb-2">
         {tab === "reports" && <ReportsTab award={award} />}
         {tab === "payments" && <PaymentsTab opportunityId={award.opportunity_id} />}
         {tab === "tasks" && <TasksTab opportunityId={award.opportunity_id} />}
