@@ -1,9 +1,10 @@
 import { useMemo, useState } from "react";
-import { ChevronDown, ChevronRight } from "lucide-react";
+import { ChevronDown, ChevronRight, Search, X } from "lucide-react";
 
 import { ActivitySourceIcon } from "@/components/ActivitySourceIcon";
 import { useActivities, type ActivityFilters } from "@/services/activities";
 import { useAccounts } from "@/services/accounts";
+import { useContacts } from "@/services/contacts";
 import { useOpportunities } from "@/services/opportunities";
 import { fmtDate } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -34,11 +35,17 @@ export function ActivityTab({
   limit?: number;
 }) {
   const { data: raw = [], isLoading } = useActivities({ limit, ...filters });
+  const [query, setQuery] = useState("");
 
   const activities = useMemo(() => raw.filter(isEmailOrMeeting), [raw]);
 
   const { data: opps = [] } = useOpportunities();
   const { data: accounts = [] } = useAccounts();
+  // Pull contacts so we can resolve participants from `contact_ids` to
+  // names/emails (the activity itself only stores ids). Contacts also
+  // carry an AccountId so we can include the participant's company in
+  // the search index.
+  const { data: contacts = [] } = useContacts();
 
   const oppNames = useMemo(
     () => new Map(opps.map((o) => [o.Id, o.Name] as const)),
@@ -48,20 +55,65 @@ export function ActivityTab({
     () => new Map(accounts.map((a) => [a.Id, a.Name] as const)),
     [accounts],
   );
+  const contactById = useMemo(
+    () => new Map(contacts.map((c) => [c.Id, c] as const)),
+    [contacts],
+  );
+
+  // Filter on subject, snippet, description, resolved context name,
+  // activity owner, AND each participant's name + email + company.
+  // Memo-keyed on the data and query so typing stays cheap.
+  const visible = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return activities;
+    return activities.filter((a) => {
+      const ctx =
+        a._context_name ??
+        (a.opportunity_id ? oppNames.get(a.opportunity_id) ?? null : null) ??
+        (a.account_id ? accountNames.get(a.account_id) ?? null : null) ??
+        "";
+      const fields: string[] = [
+        a.subject ?? "",
+        a.email_snippet ?? "",
+        a.description ?? "",
+        ctx,
+        a.owner_name ?? "",
+        a.owner_email ?? "",
+      ];
+      for (const cid of a.contact_ids ?? []) {
+        const c = contactById.get(cid);
+        if (!c) continue;
+        if (c.Name) fields.push(c.Name);
+        if (c.FirstName) fields.push(c.FirstName);
+        if (c.LastName) fields.push(c.LastName);
+        if (c.Email) fields.push(c.Email);
+        const company = c.AccountId ? accountNames.get(c.AccountId) : null;
+        if (company) fields.push(company);
+      }
+      return fields.some((f) => f.toLowerCase().includes(q));
+    });
+  }, [activities, query, oppNames, accountNames, contactById]);
 
   return (
     <div className="flex h-full flex-col">
-      <div className="border-b border-border-strong px-4 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-ink-3">
-        {isLoading ? "Activity (…)" : `Activity (${activities.length})`}
+      <div className="flex items-center justify-between gap-3 border-b border-border-strong px-4 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-ink-3">
+        <span>
+          {isLoading
+            ? "Activity (…)"
+            : `Activity (${visible.length}${visible.length !== activities.length ? ` of ${activities.length}` : ""})`}
+        </span>
+        {activities.length > 0 ? <ActivitySearchBox value={query} onChange={setQuery} /> : null}
       </div>
-      <div className="flex-1 overflow-auto">
+      <div className="flex-1 overflow-auto pb-3">
         {isLoading ? (
           <div className="px-5 py-4 text-center text-[12px] text-ink-3">Loading activity…</div>
         ) : activities.length === 0 ? (
           <div className="px-5 py-4 text-center text-[12px] text-ink-3">{emptyMessage}</div>
+        ) : visible.length === 0 ? (
+          <div className="px-5 py-4 text-center text-[12px] text-ink-3">No activity matches.</div>
         ) : (
           <ul className="flex flex-col">
-            {activities.map((a) => (
+            {visible.map((a) => (
               <ActivityRow
                 key={a.id}
                 a={a}
@@ -72,6 +124,33 @@ export function ActivityTab({
           </ul>
         )}
       </div>
+    </div>
+  );
+}
+
+function ActivitySearchBox({ value, onChange }: { value: string; onChange: (s: string) => void }) {
+  return (
+    <div className="relative">
+      <Search
+        size={11}
+        className="pointer-events-none absolute left-1.5 top-1/2 -translate-y-1/2 text-ink-4"
+      />
+      <input
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder="Filter activity…"
+        className="h-6 w-[180px] rounded border border-border-strong bg-surface pl-5 pr-5 text-[11.5px] font-normal normal-case text-ink outline-none focus:border-accent"
+      />
+      {value ? (
+        <button
+          type="button"
+          onClick={() => onChange("")}
+          className="absolute right-1 top-1/2 -translate-y-1/2 text-ink-4 hover:text-ink-2"
+          aria-label="Clear"
+        >
+          <X size={11} />
+        </button>
+      ) : null}
     </div>
   );
 }

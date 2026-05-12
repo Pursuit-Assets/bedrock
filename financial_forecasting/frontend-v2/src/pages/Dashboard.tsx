@@ -450,7 +450,14 @@ function IndividualGoals({
         .filter((o) => isWon(o) && o.CloseDate && yearOf(o.CloseDate) === fy)
         .reduce((s, o) => s + (o.Amount ?? 0), 0);
 
-      const openOppsOwner = ownedOpps.filter(isOpen);
+      // Open pipeline + weighted pipeline are scoped to the same FY as
+      // the goal — opps with a CloseDate falling outside this year don't
+      // count toward an owner's FY goal, so they shouldn't be in the
+      // pipeline columns either. Previously these were unfiltered, which
+      // made the columns inconsistent with Closed Won.
+      const openOppsOwner = ownedOpps.filter(
+        (o) => isOpen(o) && o.CloseDate && yearOf(o.CloseDate) === fy,
+      );
       const openPipeline = openOppsOwner.reduce((s, o) => s + (o.Amount ?? 0), 0);
       const weightedPipeline = openOppsOwner.reduce(
         (s, o) => s + ((o.Amount ?? 0) * (o.Probability ?? 0)) / 100,

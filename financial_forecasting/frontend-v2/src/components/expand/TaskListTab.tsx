@@ -1,10 +1,14 @@
 import { useMemo, useState } from "react";
-import { Plus } from "lucide-react";
+import { Plus, Search, X } from "lucide-react";
 
 import { InlineDate, InlineSelect } from "@/components/ui/InlineEdit";
+import { SortableHeader } from "@/components/ui/SortableHeader";
+import { sortBy, useSort } from "@/lib/sort";
 import { useUpdateTask } from "@/services/opportunities";
 import { cn } from "@/lib/utils";
 import type { SfTask } from "@/types/salesforce";
+
+type TaskSortKey = "subject" | "status" | "due";
 
 const STATUS_OPTIONS = [
   { value: "Not Started", label: "Not Started" },
@@ -54,6 +58,12 @@ export function TaskListTab({
   contextResolver?: (t: SfTask) => string | null;
 }) {
   const updateTask = useUpdateTask();
+  // Tap the overdue counter to filter the list. State is local to the
+  // panel so different parent records (per-account, per-owner) each
+  // keep their own toggle.
+  const [overdueOnly, setOverdueOnly] = useState(false);
+  const [query, setQuery] = useState("");
+  const { sort, toggle } = useSort<TaskSortKey>();
 
   const open = useMemo(
     () => tasks.filter((t) => !isTaskClosed(t)),
@@ -63,6 +73,25 @@ export function TaskListTab({
     () => open.filter(isOverdue).length,
     [open],
   );
+  const visible = useMemo(() => {
+    const base = overdueOnly ? open.filter(isOverdue) : open;
+    const q = query.trim().toLowerCase();
+    const filtered = base.filter((t) => {
+      if (!q) return true;
+      if ((t.Subject ?? "").toLowerCase().includes(q)) return true;
+      if ((t.Status ?? "").toLowerCase().includes(q)) return true;
+      if ((t.WhatName ?? "").toLowerCase().includes(q)) return true;
+      return false;
+    });
+    if (sort.key == null) return filtered;
+    return sortBy(filtered, sort, (t, key) => {
+      switch (key) {
+        case "subject": return t.Subject ?? "";
+        case "status": return t.Status ?? "";
+        case "due": return t.ActivityDate ?? "";
+      }
+    });
+  }, [open, overdueOnly, query, sort]);
 
   const saveStatus = (id: string, status: string) =>
     updateTask.mutateAsync({ id, patch: { Status: status } }).then(() => undefined);
@@ -76,23 +105,46 @@ export function TaskListTab({
 
   return (
     <div className="px-4 py-3">
-      <div className="mb-2 flex items-center justify-between text-[11px] uppercase tracking-wider text-ink-3">
-        <span>{isLoading ? "…" : `${open.length} open`}</span>
-        {overdueCount > 0 ? (
-          <span className="font-semibold text-amber-700">
-            {overdueCount} overdue
-          </span>
-        ) : null}
+      <div className="mb-2 flex items-center justify-between gap-3 text-[11px] uppercase tracking-wider text-ink-3">
+        <span>
+          {isLoading ? "…" : `${visible.length} ${overdueOnly ? "overdue" : "open"}`}
+          {overdueOnly ? (
+            <button
+              type="button"
+              onClick={() => setOverdueOnly(false)}
+              className="ml-1.5 normal-case text-ink-3 underline underline-offset-2 hover:text-ink"
+            >
+              show all open ({open.length})
+            </button>
+          ) : null}
+        </span>
+        <div className="flex items-center gap-3">
+          {overdueCount > 0 ? (
+            <button
+              type="button"
+              onClick={() => setOverdueOnly((v) => !v)}
+              className={cn(
+                "font-semibold text-amber-700 underline-offset-2 hover:underline",
+                overdueOnly && "underline",
+              )}
+              aria-pressed={overdueOnly}
+              title={overdueOnly ? "Show all open tasks" : "Show overdue only"}
+            >
+              {overdueCount} overdue
+            </button>
+          ) : null}
+          {open.length > 0 ? <TaskSearchBox value={query} onChange={setQuery} /> : null}
+        </div>
       </div>
 
       {isLoading ? (
         <div className="text-[12px] text-ink-3">Loading tasks…</div>
-      ) : open.length === 0 ? (
+      ) : visible.length === 0 ? (
         <>
           <div className="rounded border border-dashed border-border-strong px-3 py-4 text-center text-[12px] text-ink-3">
-            {emptyMessage}
+            {overdueOnly ? "No overdue tasks." : emptyMessage}
           </div>
-          {onCreate ? (
+          {onCreate && !overdueOnly ? (
             <div className="mt-2 overflow-hidden rounded border border-border-strong bg-surface">
               <NewTaskRow placeholder={placeholder} onCreate={onCreate} />
             </div>
@@ -104,17 +156,19 @@ export function TaskListTab({
             <thead className="bg-surface-2 text-[10.5px] uppercase tracking-wider text-ink-3">
               <tr>
                 <th className="w-[28px] px-3 py-1.5"></th>
-                <th className="px-3 py-1.5 text-left font-semibold">Subject</th>
+                <th className="px-3 py-1.5 text-left font-semibold">
+                  <SortableHeader label="Subject" sortKey="subject" sort={sort} onToggle={toggle} />
+                </th>
                 <th className="w-[130px] px-3 py-1.5 text-left font-semibold">
-                  Status
+                  <SortableHeader label="Status" sortKey="status" sort={sort} onToggle={toggle} />
                 </th>
                 <th className="w-[110px] px-3 py-1.5 text-right font-semibold">
-                  Due
+                  <SortableHeader label="Due" sortKey="due" sort={sort} onToggle={toggle} align="right" />
                 </th>
               </tr>
             </thead>
             <tbody>
-              {open.map((t) => (
+              {visible.map((t) => (
                 <TaskRow
                   key={t.Id}
                   t={t}
@@ -126,7 +180,7 @@ export function TaskListTab({
               ))}
             </tbody>
           </table>
-          {onCreate ? (
+          {onCreate && !overdueOnly ? (
             <NewTaskRow placeholder={placeholder} onCreate={onCreate} />
           ) : null}
         </div>
@@ -255,6 +309,33 @@ function NewTaskRow({
           className="rounded border border-ink bg-ink px-2 py-0.5 text-[11px] font-medium text-surface hover:opacity-90 disabled:opacity-50"
         >
           Create
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+function TaskSearchBox({ value, onChange }: { value: string; onChange: (s: string) => void }) {
+  return (
+    <div className="relative">
+      <Search
+        size={11}
+        className="pointer-events-none absolute left-1.5 top-1/2 -translate-y-1/2 text-ink-4"
+      />
+      <input
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder="Filter tasks…"
+        className="h-6 w-[160px] rounded border border-border-strong bg-surface pl-5 pr-5 text-[11.5px] normal-case outline-none focus:border-accent"
+      />
+      {value ? (
+        <button
+          type="button"
+          onClick={() => onChange("")}
+          className="absolute right-1 top-1/2 -translate-y-1/2 text-ink-4 hover:text-ink-2"
+          aria-label="Clear"
+        >
+          <X size={11} />
         </button>
       ) : null}
     </div>
