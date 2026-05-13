@@ -157,7 +157,7 @@ There's exactly one file you'll be editing:
 financial_forecasting/frontend-v2/src/pages/home/Home<Your-Name>.tsx
 ```
 
-For example, Erica edits `HomeErica.tsx`. It currently just shows a "stub" placeholder — that's your starting point.
+For example, Erica edits `HomeErica.tsx`. It currently just renders the existing dashboard — that's your starting point.
 
 **Preview your page** at: `http://localhost:4200/home/<your-slug>` (e.g. `localhost:4200/home/erica`).
 
