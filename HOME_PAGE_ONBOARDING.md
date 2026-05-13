@@ -167,7 +167,14 @@ The page hot-reloads — every save shows up instantly.
 
 ## 7) Build your page
 
-This part is up to you. Some ideas:
+Your starting point is the **current dashboard view** — that's what your file renders out of the box. Customize freely:
+
+- Add sections above or below the dashboard by wrapping it in a div.
+- Replace the dashboard entirely with your own composition.
+- Copy pieces out of `src/pages/Dashboard.tsx` into your file and edit them.
+- Pull live data with the hooks in `src/services/*` (`useOpportunities`, `useProjects`, `useAwards`, `useContacts`, `useCurrentUser`, etc.).
+
+Some ideas:
 - The tasks / opportunities / awards you own this week
 - Shortcuts to the views you visit most
 - A personal scratchpad
