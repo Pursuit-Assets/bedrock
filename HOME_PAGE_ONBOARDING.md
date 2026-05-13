@@ -59,47 +59,51 @@ git checkout home/<your-name>
 
 ## 3) Set up environment variables
 
-Bedrock needs two `.env` files. Jacqueline will send you the values — paste them where you see `«ASK JAC FOR THE VALUE»`.
+Bedrock needs two `.env` files. Jacqueline will share the **filled-in** files with you directly via 1Password (preferred) or another secure channel — **don't paste secrets into Claude chat** (chat history isn't a safe place for credentials).
 
 ### 3a) Backend `.env`
 
-Create `financial_forecasting/.env` with this content:
+You'll receive a `financial_forecasting.env` file from Jacqueline. Save it as `financial_forecasting/.env` (the leading dot matters).
+
+For reference, the file looks like this (values redacted — you'll get the real ones):
 
 ```
-DATABASE_URL=«ASK JAC FOR THE VALUE»
-JWT_SECRET_KEY=«ASK JAC FOR THE VALUE»
+DATABASE_URL=postgresql://...
+JWT_SECRET_KEY=...
 
-GOOGLE_CLIENT_ID=«ASK JAC FOR THE VALUE»
-GOOGLE_CLIENT_SECRET=«ASK JAC FOR THE VALUE»
+GOOGLE_CLIENT_ID=...
+GOOGLE_CLIENT_SECRET=...
 GOOGLE_REDIRECT_URI=http://localhost:8000/auth/google/callback
 
-SF_INSTANCE_URL=«ASK JAC FOR THE VALUE»
-SALESFORCE_USERNAME=«ASK JAC FOR THE VALUE»
-SALESFORCE_PASSWORD=«ASK JAC FOR THE VALUE»
-SALESFORCE_CLIENT_ID=«ASK JAC FOR THE VALUE»
-SALESFORCE_CLIENT_SECRET=«ASK JAC FOR THE VALUE»
-SALESFORCE_DOMAIN=«ASK JAC FOR THE VALUE»
+SF_INSTANCE_URL=https://...
+SALESFORCE_USERNAME=...
+SALESFORCE_PASSWORD=...
+SALESFORCE_CLIENT_ID=...
+SALESFORCE_CLIENT_SECRET=...
+SALESFORCE_DOMAIN=login
 
-AIRTABLE_PAT=«ASK JAC FOR THE VALUE»
-
-OPENAI_API_KEY=«ASK JAC FOR THE VALUE»
-ANTHROPIC_API_KEY=«ASK JAC FOR THE VALUE»
+AIRTABLE_PAT=...
+OPENAI_API_KEY=...
+ANTHROPIC_API_KEY=...
 
 FRONTEND_URL=http://localhost:4200
 ```
 
 ### 3b) Frontend `.env.local`
 
-Create `financial_forecasting/frontend-v2/.env.local` with:
-
-```
-VITE_API_URL=http://localhost:8000
-```
+This one has no secrets — you can create it yourself.
 
 **Ask Claude:**
-> Create the two `.env` files at the paths above with the values I just pasted into this chat.
+> Create financial_forecasting/frontend-v2/.env.local with the content `VITE_API_URL=http://localhost:8000`.
 
-Then paste the values Jacqueline gave you into the chat, and Claude will put them in the right places. **Never commit these files** — they're already in `.gitignore`.
+Or run in Terminal:
+```bash
+echo "VITE_API_URL=http://localhost:8000" > financial_forecasting/frontend-v2/.env.local
+```
+
+### Important
+- **Do not paste real `.env` values into Claude chat.** Open the file in Finder / a text editor (TextEdit, Cursor, VS Code) and paste values directly there.
+- The `.env` files are already in `.gitignore` — they will never be committed. If you accidentally `git add` one, run `git rm --cached financial_forecasting/.env` to undo before committing.
 
 ---
 
