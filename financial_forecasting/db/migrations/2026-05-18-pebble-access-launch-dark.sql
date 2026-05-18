@@ -106,6 +106,7 @@ COMMENT ON COLUMN bedrock.user_config.permission_overrides IS
 DO $$
 DECLARE
     jp_org_user_id UUID;
+    admin_profile_id UUID;
 BEGIN
     BEGIN
         SELECT id INTO jp_org_user_id
@@ -126,13 +127,25 @@ BEGIN
         RETURN;
     END IF;
 
-    -- Upsert user_config row, merging pebble_access into existing overrides.
-    INSERT INTO bedrock.user_config (org_user_id, permission_overrides)
-    VALUES (jp_org_user_id, '{"pebble_access": true}'::jsonb)
+    -- Pre-resolve Admin profile id. If we end up creating a fresh
+    -- user_config row for JP (no row exists yet) we MUST point it at
+    -- Admin — without this, the new row would have profile_id=NULL
+    -- and get_user_permissions would fall through to the default
+    -- profile (Relationship Manager) at next login, silently
+    -- demoting JP to RM with only the pebble_access override. The
+    -- ON CONFLICT path doesn't touch profile_id so existing rows
+    -- keep their current profile.
+    SELECT id INTO admin_profile_id
+    FROM bedrock.permission_profile
+    WHERE name = 'Admin'
+    LIMIT 1;
+
+    INSERT INTO bedrock.user_config (org_user_id, profile_id, permission_overrides)
+    VALUES (jp_org_user_id, admin_profile_id, '{"pebble_access": true}'::jsonb)
     ON CONFLICT (org_user_id) DO UPDATE SET
         permission_overrides = COALESCE(bedrock.user_config.permission_overrides, '{}'::jsonb)
             || '{"pebble_access": true}'::jsonb,
         updated_at = now();
 
-    RAISE NOTICE 'JP launch-dark gate seeded for jp@pursuit.org (org_user_id=%)', jp_org_user_id;
+    RAISE NOTICE 'JP launch-dark gate seeded for jp@pursuit.org (org_user_id=%, admin_profile_id=%)', jp_org_user_id, admin_profile_id;
 END $$;

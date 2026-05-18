@@ -254,7 +254,7 @@ function App() {
                 element={
                   <ProtectedRoute>
                     <Layout>
-                      <PermissionGate permission={(can) => can('use_pebble_chat') || can('use_pebble_research')}>
+                      <PermissionGate permission={(can) => can('pebble_access') && (can('use_pebble_chat') || can('use_pebble_research'))}>
                         <Pebble />
                       </PermissionGate>
                     </Layout>

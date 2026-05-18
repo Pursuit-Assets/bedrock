@@ -60,8 +60,13 @@ ALTER TABLE bedrock.pebble_scratchpad
     ADD COLUMN IF NOT EXISTS last_event_seq BIGINT NOT NULL DEFAULT 0,
     ADD COLUMN IF NOT EXISTS originating_user_email TEXT,
     ADD COLUMN IF NOT EXISTS tier TEXT,
-    ADD COLUMN IF NOT EXISTS run_status TEXT NOT NULL DEFAULT 'running'
-        CHECK (run_status IN ('running','done','aborted','halted','failed'));
+    -- run_status is nullable + no DEFAULT so existing (historical)
+    -- scratchpad rows are NOT mass-marked as 'running' when the column
+    -- lands. The orchestrator sets 'running' on insert + transitions
+    -- it to terminal states; cockpit treats NULL as legacy / unknown.
+    -- CHECK allows NULL plus the five real states.
+    ADD COLUMN IF NOT EXISTS run_status TEXT
+        CHECK (run_status IS NULL OR run_status IN ('running','done','aborted','halted','failed'));
 
 -- SSE replay queries by session_id ordered by last_event_seq.
 -- The existing UNIQUE idx_pebble_sp_session(session_id) covers
@@ -72,7 +77,7 @@ COMMENT ON COLUMN bedrock.pebble_scratchpad.events_jsonl IS
 COMMENT ON COLUMN bedrock.pebble_scratchpad.last_event_seq IS
     'Monotonic counter. SSE subscriber sends ?since_seq=N to resume.';
 COMMENT ON COLUMN bedrock.pebble_scratchpad.run_status IS
-    'Top-level run state. Distinct from status (which is the legacy free-text). Cockpit binds the status pill to this column.';
+    'Top-level run state set by the L2 orchestrator. NULL on historical (pre-2026-05-18) rows — cockpit treats NULL as legacy/unknown. Real states: running | done | aborted | halted | failed. Distinct from status (legacy free-text).';
 
 -- ---------------------------------------------------------------------------
 -- pebble_meta_alerts — Meta-Observer interventions
@@ -185,9 +190,14 @@ CREATE TABLE IF NOT EXISTS bedrock.pebble_research_action_idempotency (
 
 CREATE INDEX IF NOT EXISTS idx_pebble_action_session_time
     ON bedrock.pebble_research_action_idempotency(session_id, occurred_at DESC);
-CREATE INDEX IF NOT EXISTS idx_pebble_action_ttl
-    ON bedrock.pebble_research_action_idempotency(occurred_at)
-    WHERE occurred_at < now() - INTERVAL '24 hours';
+-- TTL cleanup index. Plain occurred_at — NOT a partial index with
+-- `WHERE occurred_at < now() - INTERVAL '24 hours'` because PostgreSQL
+-- requires index predicates to use IMMUTABLE functions only, and now()
+-- is STABLE. A range scan on the cleanup job (DELETE WHERE
+-- occurred_at < now() - INTERVAL '24 hours') uses this index just as
+-- well at our row volume.
+CREATE INDEX IF NOT EXISTS idx_pebble_action_occurred_at
+    ON bedrock.pebble_research_action_idempotency(occurred_at);
 
 COMMENT ON TABLE bedrock.pebble_research_action_idempotency IS
     'Replay defense for swarm control endpoints (abort, abort-cluster, continue-to-T4). UNIQUE(request_id) means a duplicate request returns the cached response_summary rather than re-acting. 24h retention.';

@@ -212,15 +212,19 @@ CREATE TABLE IF NOT EXISTS bedrock.pebble_giving_history (
     evidence_excerpt         TEXT,
 
     -- Trend bucket — populated by E1/E2 when ≥3 data points
-    -- exist. NULL otherwise.
-    trend_direction          TEXT CHECK (trend_direction IN (
-        'increasing','flat','declining', NULL
+    -- exist. NULL otherwise. Column is nullable (no NOT NULL), so
+    -- NULL bypasses the CHECK entirely — IN-list does NOT include
+    -- NULL because `x IN (..., NULL)` collapses to NULL not TRUE
+    -- in SQL semantics (see test_migration_lints.py L3).
+    trend_direction          TEXT CHECK (trend_direction IS NULL OR trend_direction IN (
+        'increasing','flat','declining'
     )),
     trend_year_span          SMALLINT,    -- # of years in trend
 
-    -- Ideology cluster (E2 political only).
-    ideology_cluster         TEXT CHECK (ideology_cluster IN (
-        'liberal','conservative','mixed','unknown', NULL
+    -- Ideology cluster (E2 political only). Same nullable + IS NULL
+    -- pattern as trend_direction above.
+    ideology_cluster         TEXT CHECK (ideology_cluster IS NULL OR ideology_cluster IN (
+        'liberal','conservative','mixed','unknown'
     )),
 
     discovered_by            TEXT,        -- "cluster_e.doer_e1" etc.
