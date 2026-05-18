@@ -914,11 +914,13 @@ async def create_milestone(workstream_id: str, body: MilestoneCreate, user=Depen
 async def update_milestone(milestone_id: str, body: MilestoneUpdate, user=Depends(check_permission("edit_projects")), conn=Depends(get_db)):
     from datetime import date as d
     mid = uuid.UUID(milestone_id)
-    fields = body.model_dump(exclude_none=True)
+    # Use exclude_unset so explicit nulls flow through (e.g. clearing
+    # due_date). exclude_none would silently drop them.
+    fields = body.model_dump(exclude_unset=True)
     if not fields:
         raise HTTPException(status_code=400, detail="No fields to update")
 
-    if "owner_ids" in fields:
+    if "owner_ids" in fields and fields["owner_ids"] is not None:
         fields["owner_ids"] = [uuid.UUID(x) for x in fields["owner_ids"]]
     if "due_date" in fields:
         # Drop silently if migration hasn't run yet
