@@ -120,7 +120,13 @@ class ModelClient:
 
     def __init__(self):
         self._client = Anthropic()
-        self._last_usage = {"input": 0, "output": 0}
+        # Four-field token usage to capture Anthropic's prompt-caching fields.
+        # cache_create tokens are billed at 1.25x normal input rate;
+        # cache_read tokens are billed at 0.10x — a 10x cost cut. The
+        # _last_usage shape is read by harness.py and persisted to
+        # bedrock.pebble_harness_log (extended in
+        # 2026-05-18-pebble-ledger-instrumentation.sql).
+        self._last_usage = {"input": 0, "output": 0, "cache_create": 0, "cache_read": 0}
         self._last_provider = "anthropic"
 
         # Initialize OpenRouter client if key is available
@@ -197,6 +203,8 @@ class ModelClient:
         self._last_usage = {
             "input": message.usage.input_tokens,
             "output": message.usage.output_tokens,
+            "cache_create": getattr(message.usage, "cache_creation_input_tokens", 0) or 0,
+            "cache_read": getattr(message.usage, "cache_read_input_tokens", 0) or 0,
         }
         self._last_provider = f"anthropic/{config.model_id}"
 
@@ -242,9 +250,14 @@ class ModelClient:
             },
         )
         text = response.choices[0].message.content or ""
+        # OpenAI-compatible usage object doesn't expose cache fields; we leave
+        # cache_create/cache_read at 0. calculate_cost() short-circuits to $0
+        # for OpenRouter anyway since these are the free tier.
         usage = {
             "input": response.usage.prompt_tokens if response.usage else 0,
             "output": response.usage.completion_tokens if response.usage else 0,
+            "cache_create": 0,
+            "cache_read": 0,
         }
         self._last_usage = usage
         self._last_provider = f"openrouter/{model_id}"
@@ -252,22 +265,40 @@ class ModelClient:
                      model_id, agent_name, usage["input"], usage["output"])
         return {"text": text, "content": text, "usage": usage}
 
-    def _complete_anthropic(self, agent_name: str, prompt: str, system: str, config: ModelConfig) -> dict:
-        message = self._client.messages.create(
-            model=config.model_id,
-            max_tokens=config.max_tokens,
-            system=system,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=config.temperature,
-        )
+    def _complete_anthropic(self, agent_name: str, prompt: str, system: str | list, config: ModelConfig) -> dict:
+        # system may be a string (legacy callers) or a list of content blocks
+        # (cache-aware callers passing cache_control:ephemeral markers). The
+        # Anthropic SDK accepts either form on the system param. Promote bare
+        # strings to a single text block so cache-marked callers can opt in
+        # without affecting every existing call site.
+        kwargs: dict = {
+            "model": config.model_id,
+            "max_tokens": config.max_tokens,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": config.temperature,
+        }
+        if system:
+            kwargs["system"] = system
+        message = self._client.messages.create(**kwargs)
         self._last_usage = {
             "input": message.usage.input_tokens,
             "output": message.usage.output_tokens,
+            "cache_create": getattr(message.usage, "cache_creation_input_tokens", 0) or 0,
+            "cache_read": getattr(message.usage, "cache_read_input_tokens", 0) or 0,
         }
         self._last_provider = f"anthropic/{config.model_id}"
         text = message.content[0].text if message.content else ""
-        logger.info("Anthropic %s handled %s (%d in, %d out tokens)",
-                     config.model_id, agent_name, self._last_usage["input"], self._last_usage["output"])
+        # Cache breakdown surfaces in the harness log + cockpit cache-hit chip.
+        if self._last_usage["cache_create"] or self._last_usage["cache_read"]:
+            logger.info(
+                "Anthropic %s handled %s (%d in / %d out / %d cache_create / %d cache_read)",
+                config.model_id, agent_name,
+                self._last_usage["input"], self._last_usage["output"],
+                self._last_usage["cache_create"], self._last_usage["cache_read"],
+            )
+        else:
+            logger.info("Anthropic %s handled %s (%d in, %d out tokens)",
+                         config.model_id, agent_name, self._last_usage["input"], self._last_usage["output"])
         return {"text": text, "content": text, "usage": self._last_usage}
 
     def get_last_token_count(self) -> dict:
@@ -277,13 +308,36 @@ class ModelClient:
         return self._last_provider
 
     def calculate_cost(self, agent_name: str, tokens: dict) -> float:
-        # Free OpenRouter models cost $0
+        """Compute USD cost from a four-field tokens dict.
+
+        Delegates to ``pebble.llm.cost.calculate_cost_usd`` — the canonical
+        pricing path shared with the L1 Anthropic client. Keeping the math
+        in one place prevents drift when Anthropic ships price changes.
+
+        Anthropic's prompt-caching billing (per ``pebble/llm/cost.py``):
+          - cache_create tokens: 1.25× input rate
+          - cache_read tokens:   0.10× input rate
+          - regular input + output: configured per-Mtok rates
+
+        For OpenRouter free-tier calls we short-circuit to $0; OpenAI-
+        compatible usage objects don't expose cache fields anyway.
+
+        ``tokens`` dict accepts both the legacy two-field shape
+        ({"input", "output"}) and the new four-field shape
+        ({"input", "output", "cache_create", "cache_read"}). Missing
+        cache fields default to 0 so old call sites keep working.
+        """
         if "openrouter" in self._last_provider:
             return 0.0
+        from .llm.cost import calculate_cost_usd
         config = get_model_config(agent_name)
-        input_cost = (tokens["input"] / 1_000_000) * config.cost_per_mtok_input
-        output_cost = (tokens["output"] / 1_000_000) * config.cost_per_mtok_output
-        return input_cost + output_cost
+        return calculate_cost_usd(
+            model=config.model_id,
+            input_tokens=tokens.get("input", 0),
+            output_tokens=tokens.get("output", 0),
+            cache_creation_input_tokens=tokens.get("cache_create", 0),
+            cache_read_input_tokens=tokens.get("cache_read", 0),
+        )
 
     def estimate_cost(self, agent_name: str, input_tokens: float, output_tokens: float) -> float:
         config = get_model_config(agent_name)
