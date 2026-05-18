@@ -14,7 +14,7 @@
 import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import { useIsFetching, useQueryClient } from "@tanstack/react-query";
 import { Navigate } from "react-router-dom";
-import { RefreshCw } from "lucide-react";
+import { AlertTriangle, RefreshCw } from "lucide-react";
 
 import { PageHeader } from "@/components/PageHeader";
 import { OpportunityDrawer } from "@/components/OpportunityDrawer";
@@ -22,6 +22,7 @@ import { TaskDrawer, type FlatTask } from "@/components/TaskDrawer";
 import { HomeErrorBoundary } from "@/components/home/HomeErrorBoundary";
 import { HomeStatsStrip } from "@/components/home/HomeStatsStrip";
 import { Scratchpad } from "@/components/home/Scratchpad";
+import { useSalesforceStatus } from "@/services/auth";
 import { usePermissions } from "@/services/permissions";
 import type { SfOpportunity } from "@/types/salesforce";
 
@@ -146,6 +147,8 @@ export function HomeJp() {
 
       <HomeStatsStrip currentUserId={currentUserId} className="-mt-3 mb-1" />
 
+      <SalesforceBanner />
+
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-[360px_1fr]">
         <div className="flex flex-col gap-4">
           <HomeErrorBoundary section="Goal tracker">
@@ -184,6 +187,34 @@ export function HomeJp() {
         opportunity={drawerOpp}
         onClose={() => setDrawerOpp(null)}
       />
+    </div>
+  );
+}
+
+/** Surfaced when the backend reports Salesforce is disconnected so the
+ *  user understands why downstream modules are empty. Skipped while the
+ *  status query is loading (don't flash a banner that won't apply). */
+function SalesforceBanner() {
+  const { data, isLoading } = useSalesforceStatus();
+  if (isLoading) return null;
+  if (data?.connected) return null;
+  return (
+    <div
+      role="status"
+      className="flex items-center gap-2 rounded-md border border-amber/40 bg-amber-soft px-3 py-2 text-[12px] text-ink"
+    >
+      <AlertTriangle size={13} className="flex-shrink-0 text-amber" />
+      <span className="flex-1">
+        {data?.needs_reconnect
+          ? "Salesforce session expired. Reconnect to see opportunities and tasks."
+          : "Salesforce isn't connected. Opportunities and tasks won't load until you sign in."}
+      </span>
+      <a
+        href="/auth/salesforce/login"
+        className="rounded border border-amber/60 bg-surface px-2 py-0.5 text-[11px] font-semibold text-amber hover:bg-amber-soft"
+      >
+        Connect
+      </a>
     </div>
   );
 }

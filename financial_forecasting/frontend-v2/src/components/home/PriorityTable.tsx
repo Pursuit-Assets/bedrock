@@ -32,6 +32,7 @@ import {
   countOverdueTasks,
 } from "@/lib/priorityScoring";
 import { useSort } from "@/lib/sort";
+import { useLayoutPrefs } from "@/lib/useLayoutPrefs";
 import { SF_STAGE_OPTIONS, stageStatus } from "@/lib/stages";
 import { cn } from "@/lib/utils";
 import {
@@ -46,6 +47,7 @@ import { useActiveUsers } from "@/services/users";
 import type { SfOpportunity, SfTask } from "@/types/salesforce";
 
 const STORAGE_KEY_COLS = "bedrock:home:jp:priorities:cols";
+const STORAGE_KEY_PREFS = "bedrock:home:jp:priorities:prefs";
 const TOP_N_DEFAULT = 20;
 const TOP_N_MIN = 1;
 const TOP_N_MAX = 50;
@@ -137,10 +139,18 @@ export function PriorityTable({
   const canEdit = canEditOwn || canEditAll;
 
   // ── controls ───────────────────────────────────────────────────────────
-  const [ownerFilter, setOwnerFilter] = useState<OwnerFilter>(
-    currentUserId ? "me" : "all",
-  );
-  const [topN, setTopN] = useState<number>(TOP_N_DEFAULT);
+  const { prefs: tablePrefs, setPrefs: setTablePrefs } = useLayoutPrefs<{
+    ownerFilter: OwnerFilter;
+    topN: number;
+  }>(STORAGE_KEY_PREFS, {
+    ownerFilter: currentUserId ? "me" : "all",
+    topN: TOP_N_DEFAULT,
+  });
+  const ownerFilter = tablePrefs.ownerFilter;
+  const topN = tablePrefs.topN;
+  const setOwnerFilter = (v: OwnerFilter) => setTablePrefs({ ownerFilter: v });
+  const setTopN = (n: number) =>
+    setTablePrefs({ topN: Math.min(TOP_N_MAX, Math.max(TOP_N_MIN, n)) });
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
   const { widths, startResize } = useColumnWidths<ColKey>(

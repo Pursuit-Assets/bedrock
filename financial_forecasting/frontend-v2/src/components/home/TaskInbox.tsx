@@ -3,6 +3,7 @@ import { ChevronDown, Flag, Inbox } from "lucide-react";
 
 import { Tag } from "@/components/ui/Tag";
 import { fmtDate } from "@/lib/format";
+import { useLayoutPrefs } from "@/lib/useLayoutPrefs";
 import { cn } from "@/lib/utils";
 import type { SfMyTask } from "@/services/tasks";
 import { useActiveUsers } from "@/services/users";
@@ -34,6 +35,13 @@ export interface TaskInboxProps {
 type AssigneeFilter = "me" | "all" | string;
 type Sort = "deadline-asc" | "deadline-desc" | "priority" | "subject";
 
+interface InboxPrefs {
+  filter: AssigneeFilter;
+  sort: Sort;
+}
+
+const INBOX_PREFS_KEY = "bedrock:home:jp:inbox";
+
 /**
  * Daily-work inbox for SF tasks owned by the current user (or anyone).
  *
@@ -55,10 +63,15 @@ export function TaskInbox({
 }: TaskInboxProps) {
   const usersQ = useActiveUsers();
 
-  const [filter, setFilter] = useState<AssigneeFilter>(
-    currentUserId ? "me" : "all",
-  );
-  const [sort, setSort] = useState<Sort>("deadline-asc");
+  const { prefs, setPrefs } = useLayoutPrefs<InboxPrefs>(INBOX_PREFS_KEY, {
+    filter: currentUserId ? "me" : "all",
+    sort: "deadline-asc",
+  });
+  const filter = prefs.filter;
+  const sort = prefs.sort;
+  const setFilter = (v: AssigneeFilter) => setPrefs({ filter: v });
+  const setSort = (v: Sort) => setPrefs({ sort: v });
+
   const [urgent, setUrgent] = useState<Record<string, boolean>>(() =>
     readUrgent(),
   );

@@ -83,9 +83,16 @@ export function Drawer({
   );
 
   const dragStateRef = useRef<{ startX: number; startWidth: number } | null>(null);
+  /** Focus restoration target — the element that had focus when the
+   *  drawer opened. Returned to focus when it closes so a keyboard user
+   *  doesn't get dumped on document.body. */
+  const triggerRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     if (!open) return;
+    // Capture the trigger element once, on the open→true edge.
+    triggerRef.current =
+      (document.activeElement as HTMLElement | null) ?? null;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.preventDefault();
@@ -93,7 +100,15 @@ export function Drawer({
       }
     };
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      // Restore focus if the trigger is still in the DOM and focusable.
+      // Defer to next tick so React has flushed unmount-side effects.
+      const trigger = triggerRef.current;
+      if (trigger && document.contains(trigger)) {
+        window.setTimeout(() => trigger.focus({ preventScroll: true }), 0);
+      }
+    };
   }, [open, onClose]);
 
   const onPointerDown = useCallback(
