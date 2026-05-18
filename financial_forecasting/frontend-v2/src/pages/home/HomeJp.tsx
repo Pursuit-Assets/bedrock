@@ -12,11 +12,14 @@
  * loads lazily so other owners' homes and the rest of the app stay light.
  */
 import { lazy, Suspense, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { Navigate } from "react-router-dom";
+import { RefreshCw } from "lucide-react";
 
 import { PageHeader } from "@/components/PageHeader";
 import { OpportunityDrawer } from "@/components/OpportunityDrawer";
 import { TaskDrawer, type FlatTask } from "@/components/TaskDrawer";
+import { HomeErrorBoundary } from "@/components/home/HomeErrorBoundary";
 import { usePermissions } from "@/services/permissions";
 import type { SfOpportunity } from "@/types/salesforce";
 
@@ -49,9 +52,17 @@ const PriorityTable = lazy(() =>
 export function HomeJp() {
   const { data: permissions, isLoading } = usePermissions();
   const currentUserId = permissions?.sf_user_id ?? null;
+  const qc = useQueryClient();
 
   const [drawerTask, setDrawerTask] = useState<FlatTask | null>(null);
   const [drawerOpp, setDrawerOpp] = useState<SfOpportunity | null>(null);
+
+  const refreshAll = () => {
+    void qc.invalidateQueries({ queryKey: ["my-tasks"] });
+    void qc.invalidateQueries({ queryKey: ["opportunities"] });
+    void qc.invalidateQueries({ queryKey: ["owner-goals"] });
+    void qc.invalidateQueries({ queryKey: ["calendar-my-events"] });
+  };
 
   // Wait for the auth/permissions response before deciding visibility so a
   // signed-in JP doesn't get bounced on a flash of empty data.
@@ -73,29 +84,46 @@ export function HomeJp() {
       <PageHeader
         title="JP's home"
         subtitle="Today's calendar, your inbox, and the weighted priorities under one roof."
+        actions={
+          <button
+            type="button"
+            onClick={refreshAll}
+            title="Refresh all data"
+            aria-label="Refresh"
+            className="inline-flex h-7 items-center gap-1 rounded border border-border-strong bg-surface px-2 text-[11.5px] font-medium text-ink-2 hover:bg-surface-2"
+          >
+            <RefreshCw size={12} /> Refresh
+          </button>
+        }
       />
 
-      <Suspense fallback={<PaneSkeleton heightClass="h-[420px]" />}>
-        <div className="grid grid-cols-1 gap-4 xl:grid-cols-[360px_1fr]">
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-[360px_1fr]">
+        <HomeErrorBoundary section="Goal tracker">
           <Suspense fallback={<PaneSkeleton heightClass="h-[200px]" />}>
             <GoalTracker filterUserId={currentUserId} />
           </Suspense>
-          <CalendarInboxSplit
-            currentUserId={currentUserId}
-            onTaskClick={setDrawerTask}
-            height="calc(100vh - 320px)"
-            minHeight={420}
-            maxHeight={760}
-          />
-        </div>
-      </Suspense>
+        </HomeErrorBoundary>
+        <HomeErrorBoundary section="Calendar + Inbox">
+          <Suspense fallback={<PaneSkeleton heightClass="h-[420px]" />}>
+            <CalendarInboxSplit
+              currentUserId={currentUserId}
+              onTaskClick={setDrawerTask}
+              height="calc(100vh - 320px)"
+              minHeight={420}
+              maxHeight={760}
+            />
+          </Suspense>
+        </HomeErrorBoundary>
+      </div>
 
-      <Suspense fallback={<PaneSkeleton heightClass="h-[400px]" />}>
-        <PriorityTable
-          currentUserId={currentUserId}
-          onOpportunityClick={setDrawerOpp}
-        />
-      </Suspense>
+      <HomeErrorBoundary section="Priority table">
+        <Suspense fallback={<PaneSkeleton heightClass="h-[400px]" />}>
+          <PriorityTable
+            currentUserId={currentUserId}
+            onOpportunityClick={setDrawerOpp}
+          />
+        </Suspense>
+      </HomeErrorBoundary>
 
       <TaskDrawer task={drawerTask} onClose={() => setDrawerTask(null)} />
       <OpportunityDrawer

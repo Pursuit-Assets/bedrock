@@ -89,6 +89,7 @@ export function CalendarInboxSplit({
             events={calendarQ.data ?? []}
             tasks={tasksQ.data ?? []}
             loading={calendarQ.isLoading || tasksQ.isLoading}
+            needsReauth={calendarQ.error?.needsReauth ?? false}
             viewMode={prefs.viewMode}
             onViewModeChange={(v) => setPrefs({ viewMode: v })}
             weekOffset={prefs.weekOffset}
