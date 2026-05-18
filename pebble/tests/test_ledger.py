@@ -39,6 +39,7 @@ from pebble.orchestrator.ledger import (
     ToolCallEvent,
     compute_run_rollup,
     harness_result_to_event_kwargs,
+    observe_tool_call,
     record_token_event,
     record_tool_call,
 )
@@ -323,3 +324,109 @@ async def test_record_tool_call_swallows_db_errors():
         elapsed_ms=420,
         originating_user_email="jp@pursuit.org",
     )
+
+
+# ---------------------------------------------------------------------------
+# G. observe_tool_call context manager
+# ---------------------------------------------------------------------------
+
+def _capture_pool():
+    """Pool whose execute() captures the arguments."""
+    captured: dict = {"calls": []}
+    conn = AsyncMock()
+
+    async def fake_execute(*args, **kwargs):
+        captured["calls"].append({"args": args, "kwargs": kwargs})
+
+    conn.execute.side_effect = fake_execute
+
+    acm = AsyncMock()
+    acm.__aenter__ = AsyncMock(return_value=conn)
+    acm.__aexit__ = AsyncMock(return_value=False)
+
+    pool = MagicMock()
+    pool.acquire.return_value = acm
+    return pool, captured
+
+
+@pytest.mark.asyncio
+async def test_observe_tool_call_records_success():
+    pool, captured = _capture_pool()
+    async with observe_tool_call(
+        pool,
+        session_id="sess1",
+        tool="fec.search_contributions",
+        cluster="cluster_a_financial",
+        originating_user_email="jp@pursuit.org",
+    ) as obs:
+        obs["bytes_returned"] = 4096
+        obs["rate_limit_remaining"] = 998
+        obs["cost_usd"] = 0.0
+
+    # One INSERT recorded
+    assert len(captured["calls"]) == 1
+    args = captured["calls"][0]["args"]
+    # args[0] is the SQL, then positional: session_id, tool, cluster, agent_name,
+    # cost_usd, success, elapsed_ms, bytes_returned, cache_hit, ...
+    assert args[1] == "sess1"
+    assert args[2] == "fec.search_contributions"
+    assert args[3] == "cluster_a_financial"
+    assert args[6] is True       # success
+    assert args[8] == 4096        # bytes_returned
+    assert args[10] == 998        # rate_limit_remaining
+
+
+@pytest.mark.asyncio
+async def test_observe_tool_call_records_failure_and_reraises():
+    pool, captured = _capture_pool()
+
+    class FakeRateLimitError(Exception):
+        pass
+
+    with pytest.raises(FakeRateLimitError):
+        async with observe_tool_call(
+            pool,
+            session_id="sess1",
+            tool="propublica.download_990_xml",
+            cluster="cluster_d_network",
+            originating_user_email="jp@pursuit.org",
+        ) as obs:
+            obs["rate_limit_remaining"] = 0
+            raise FakeRateLimitError("retry-after 60")
+
+    # Event still recorded — success=False, error_class set
+    assert len(captured["calls"]) == 1
+    args = captured["calls"][0]["args"]
+    assert args[6] is False               # success
+    assert args[12] == "FakeRateLimitError"  # error_class
+
+
+@pytest.mark.asyncio
+async def test_observe_tool_call_default_cost_zero():
+    pool, captured = _capture_pool()
+    async with observe_tool_call(
+        pool,
+        session_id="sess1",
+        tool="wikipedia.fetch_full_profile",
+        originating_user_email="jp@pursuit.org",
+    ) as obs:
+        pass
+
+    args = captured["calls"][0]["args"]
+    assert args[5] == 0.0   # cost_usd default
+    assert args[9] is False  # cache_hit default
+
+
+@pytest.mark.asyncio
+async def test_observe_tool_call_cache_hit_marker():
+    pool, captured = _capture_pool()
+    async with observe_tool_call(
+        pool,
+        session_id="sess1",
+        tool="propublica.download_990_xml",
+        originating_user_email="jp@pursuit.org",
+    ) as obs:
+        obs["cache_hit"] = True   # bedrock.pebble_api_cache hit
+
+    args = captured["calls"][0]["args"]
+    assert args[9] is True  # cache_hit recorded

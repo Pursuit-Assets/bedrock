@@ -40,7 +40,11 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from db import get_db
-from routes.permissions import check_pebble_permission, check_permission_or_internal
+from routes.permissions import (
+    check_pebble_permission,
+    check_permission_or_internal,
+    require_pebble_access,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/pebble", tags=["pebble"])
@@ -395,3 +399,100 @@ async def ask_endpoint(
         media_type="text/event-stream",
         headers=response_headers,
     )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/pebble/ledger/{session_id}
+# GET /api/pebble/ledger/recent
+# ---------------------------------------------------------------------------
+#
+# Live token + cost ledger read-side. Gated by pebble_access (launch-dark
+# master gate) — only jp@pursuit.org sees this surface on main today.
+# Reads from bedrock.pebble_harness_log + bedrock.pebble_tool_call_log
+# via pebble.orchestrator.ledger.compute_run_rollup.
+#
+# These routes give JP a way to verify the cache-aware cost capture is
+# working without inspecting the DB directly. Wave 3 of the L2 swarm
+# plan replaces / supplements this with the SSE cockpit; until then,
+# polling this endpoint is the human-visible feedback loop.
+#
+# Order matters: /ledger/recent must be declared BEFORE /ledger/{session_id}
+# so FastAPI doesn't match "recent" as a session_id path parameter.
+
+@router.get("/ledger/recent")
+async def ledger_recent_sessions(
+    limit: int = 20,
+    pool=Depends(get_db),
+    user=Depends(require_pebble_access),
+):
+    """Recent sessions visible to the caller.
+
+    Returns the N most-recent distinct session_ids the caller appears
+    in (as either user_email or originating_user_email). Lets JP poll
+    "what runs have happened recently" without knowing session_ids
+    ahead of time.
+    """
+    caller_email = user.get("email", "")
+    if not caller_email:
+        return {"sessions": []}
+    limit = max(1, min(int(limit), 100))
+    async with pool.acquire() as conn:
+        # Recent sessions that touched pebble_harness_log. Restrict to
+        # rows where the caller is the originator — even with the
+        # master gate, JP shouldn't see ghosts from other users.
+        rows = await conn.fetch(
+            """SELECT session_id::text AS session_id,
+                      MIN(created_at) AS started_at,
+                      MAX(created_at) AS last_event_at,
+                      COUNT(*) AS call_count,
+                      COALESCE(SUM(cost_usd), 0) AS total_cost_usd
+               FROM bedrock.pebble_harness_log
+               WHERE session_id IS NOT NULL
+                 AND (user_email = $1 OR user_email IS NULL)
+               GROUP BY session_id
+               ORDER BY MAX(created_at) DESC
+               LIMIT $2""",
+            caller_email, limit,
+        )
+    return {
+        "sessions": [
+            {
+                "session_id": r["session_id"],
+                "started_at": r["started_at"].isoformat() if r["started_at"] else None,
+                "last_event_at": r["last_event_at"].isoformat() if r["last_event_at"] else None,
+                "call_count": int(r["call_count"]),
+                "total_cost_usd": float(r["total_cost_usd"]),
+            }
+            for r in rows
+        ],
+    }
+
+
+@router.get("/ledger/{session_id}")
+async def ledger_for_session(
+    session_id: str,
+    pool=Depends(get_db),
+    user=Depends(require_pebble_access),
+):
+    """Materialized RunLedger for one session.
+
+    Returns the run total + per-cluster + per-purpose rollups + cache
+    hit metrics. Authorized only when the caller has pebble_access.
+    Read-only; never mutates ledger rows.
+
+    session_id is treated as opaque text (matches the column shape on
+    pebble_harness_log + pebble_tool_call_log). Caller passes whatever
+    session_id was minted during the run.
+    """
+    # Lazy import — pebble package isn't part of the Bedrock startup
+    # path, but the read function has no async-context dependencies.
+    from pebble.orchestrator.ledger import compute_run_rollup
+    ledger = await compute_run_rollup(pool, session_id)
+    return {
+        "session_id": ledger.session_id,
+        "run_total": ledger.run_total.model_dump(mode="json"),
+        "cache_hit_ratio": ledger.run_total.cache.cache_hit_ratio,
+        "estimated_savings_usd": ledger.run_total.cache.estimated_savings_usd,
+        "by_cluster": {k: v.model_dump() for k, v in ledger.by_cluster.items()},
+        "by_purpose": {k: v.model_dump() for k, v in ledger.by_purpose.items()},
+    }

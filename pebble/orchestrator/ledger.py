@@ -17,8 +17,7 @@ Two tables back the ledger:
     pebble_harness_log; the cockpit needs them for tool-call burn
     rate vs allocated cap.
 
-Why a separate module from
-``pebble.storage.db.log_harness_outcome``:
+Why a separate module from ``pebble.storage.db.log_harness_outcome``:
 
   * The storage module is the per-call writer. The ledger is the
     per-run reader + roll-up + SSE-feed.
@@ -31,13 +30,20 @@ The ledger never owns a DB pool — callers pass a pool or a connection.
 This keeps the module callable from both the request thread (live
 queries during a run) and the SSE worker (background queries during
 replay) without coupling to one event loop.
+
+``observe_tool_call`` is the async context manager that L2 swarm
+clusters use to wrap their data-source dispatches. It captures
+start/end times and outcome, then records a ToolCallEvent — without
+swallowing the call's own exceptions.
 """
 
 from __future__ import annotations
 
 import logging
+import time
+from contextlib import asynccontextmanager
 from datetime import datetime
-from typing import Literal, Optional
+from typing import Any, AsyncIterator, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -434,6 +440,98 @@ async def compute_run_rollup(pool, session_id: str) -> RunLedger:
 # ---------------------------------------------------------------------------
 # Convenience: convert a HarnessResult into the record_token_event kwargs
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Tool-call observation context manager
+# ---------------------------------------------------------------------------
+
+@asynccontextmanager
+async def observe_tool_call(
+    pool,
+    *,
+    session_id: str,
+    tool: str,
+    originating_user_email: str,
+    cluster: Optional[str] = None,
+    agent_name: Optional[str] = None,
+    cost_usd: float = 0.0,
+) -> AsyncIterator[dict[str, Any]]:
+    """Wrap a data-source call so its outcome lands in pebble_tool_call_log.
+
+    Usage from a cluster's Doer (Wave 1+):
+
+        async with observe_tool_call(
+            pool,
+            session_id=sid,
+            cluster="cluster_a_financial",
+            tool="fec.search_contributions",
+            originating_user_email=user.email,
+        ) as obs:
+            try:
+                result = await asyncio.to_thread(fec.search_contributions, name)
+                obs["bytes_returned"] = len(json.dumps(result))
+                # success implied by absence of exception
+            except RateLimitError as e:
+                obs["rate_limit_remaining"] = 0
+                raise
+
+    Contract:
+      * Exceptions inside the block PROPAGATE — the ledger event is
+        recorded as success=False with error_class set, then the
+        exception re-raises so cluster-level error handling kicks in.
+      * The yielded dict accepts mutations during the block:
+          obs["bytes_returned"], obs["rate_limit_remaining"],
+          obs["rate_limit_reset_at"], obs["cache_hit"],
+          obs["cost_usd"] (override the default 0).
+      * The ledger record is best-effort: a DB write failure during
+        record_tool_call is logged + swallowed by record_tool_call's
+        own try/except, so it never re-raises into the cluster code.
+
+    Why a context manager and not a decorator: data sources are sync
+    functions called via asyncio.to_thread from the cluster. The
+    cluster is the natural place to capture session_id + cluster name
+    + user_email (those are run-context, not data-source-context).
+    Decorating data sources would require threading those values
+    through every signature.
+    """
+    started_at = time.monotonic()
+    obs: dict[str, Any] = {
+        "bytes_returned": None,
+        "rate_limit_remaining": None,
+        "rate_limit_reset_at": None,
+        "cache_hit": False,
+        "cost_usd": cost_usd,
+        "error_class": None,
+    }
+    success = True
+    exc_to_reraise: BaseException | None = None
+    try:
+        yield obs
+    except BaseException as e:
+        success = False
+        obs["error_class"] = type(e).__name__
+        exc_to_reraise = e
+    finally:
+        elapsed_ms = int((time.monotonic() - started_at) * 1000)
+        await record_tool_call(
+            pool,
+            session_id=session_id,
+            tool=tool,
+            cluster=cluster,
+            agent_name=agent_name,
+            cost_usd=float(obs.get("cost_usd") or 0.0),
+            success=success,
+            elapsed_ms=elapsed_ms,
+            bytes_returned=obs.get("bytes_returned"),
+            cache_hit=bool(obs.get("cache_hit", False)),
+            rate_limit_remaining=obs.get("rate_limit_remaining"),
+            rate_limit_reset_at=obs.get("rate_limit_reset_at"),
+            error_class=obs.get("error_class"),
+            originating_user_email=originating_user_email,
+        )
+        if exc_to_reraise is not None:
+            raise exc_to_reraise
+
 
 def harness_result_to_event_kwargs(
     result,
