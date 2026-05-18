@@ -112,6 +112,103 @@ async def log_harness_outcome(
         )
 
 
+# ---------------------------------------------------------------------------
+# Meta-Observer alerts
+# ---------------------------------------------------------------------------
+# Persists rows to bedrock.pebble_meta_alerts (created by the
+# 2026-05-18-pebble-swarm-runtime.sql migration). Each row is one
+# intervention the Meta-Observer made — anomaly detected + action
+# taken. Cockpit renders these as the "Meta-Observer feed" panel
+# (plan §6.3); ops dashboards aggregate by alert_kind.
+#
+# Best-effort: a DB failure here MUST NOT crash the research pipeline.
+# We swallow exceptions with a warning log — pipeline correctness does
+# not depend on alert persistence.
+
+# Whitelisted alert_kind / severity values match the CHECK constraint on
+# bedrock.pebble_meta_alerts so a typo turns into a Python error here
+# rather than a SQL constraint violation at INSERT time. Update both
+# this set AND the SQL CHECK when adding kinds.
+_META_ALERT_KINDS = frozenset({
+    "stall",
+    "runaway",
+    "off_rails",
+    "divergence",
+    "conflict_spike",
+    "low_novelty",
+    "cost_80",
+    "cost_100",
+    "injection_signature",
+    "global_cost_breach",
+})
+
+_META_ALERT_SEVERITIES = frozenset({
+    "warn",
+    "throttle",
+    "abort_cluster",
+    "replan",
+    "halt",
+})
+
+
+async def save_meta_alert(
+    *,
+    session_id: str,
+    alert_kind: str,
+    severity: str,
+    action_taken: str,
+    originating_user_email: str,
+    cluster: str | None = None,
+    payload: dict | None = None,
+    llm_introspection: bool = False,
+    llm_cost_usd: float = 0.0,
+    org_id: str = "pursuit",
+) -> None:
+    """Persist one Meta-Observer intervention.
+
+    Args mirror the columns of bedrock.pebble_meta_alerts. Validates
+    alert_kind / severity against the schema CHECK constraint client-
+    side so a typo surfaces immediately instead of at INSERT time.
+
+    On DB failure: log a warning and return. The Meta-Observer is
+    advisory; correctness of the research pipeline does not depend on
+    it. Tests pin this best-effort behavior.
+    """
+    if alert_kind not in _META_ALERT_KINDS:
+        raise ValueError(
+            f"unknown alert_kind {alert_kind!r}; allowed: {sorted(_META_ALERT_KINDS)}"
+        )
+    if severity not in _META_ALERT_SEVERITIES:
+        raise ValueError(
+            f"unknown severity {severity!r}; allowed: {sorted(_META_ALERT_SEVERITIES)}"
+        )
+    if not originating_user_email:
+        # Audit attribution is mandatory (§4.10). Reject empty rather
+        # than persisting a row that violates audit invariants.
+        raise ValueError("originating_user_email is required for meta alerts")
+
+    payload_json = json.dumps(payload) if payload is not None else None
+
+    try:
+        async with get_pool().acquire() as conn:
+            await conn.execute(
+                """INSERT INTO bedrock.pebble_meta_alerts
+                       (session_id, alert_kind, severity, cluster, action_taken,
+                        payload_json, llm_introspection, llm_cost_usd,
+                        originating_user_email, org_id)
+                   VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10)""",
+                session_id, alert_kind, severity, cluster, action_taken,
+                payload_json, llm_introspection, llm_cost_usd,
+                originating_user_email, org_id,
+            )
+    except Exception as exc:  # pragma: no cover - logged best-effort path
+        logger.warning(
+            "save_meta_alert failed (best-effort): %s — alert dropped: "
+            "session=%s kind=%s severity=%s",
+            exc, session_id, alert_kind, severity,
+        )
+
+
 async def get_daily_usage(user_email: str, date_str: str) -> dict | None:
     """Get daily cost usage for a user.  Returns None if no usage recorded."""
     async with get_pool().acquire() as conn:

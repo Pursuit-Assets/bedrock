@@ -46,6 +46,8 @@ from ..claim_templates import (
     claims_from_edgar_search,
     claims_from_wikipedia_infobox,
 )
+from ..storage.db import save_meta_alert
+from .guardrails import detect_injection_signatures
 from .verifier import verify_claim_once
 
 logger = logging.getLogger("pebble.orchestrator")
@@ -421,6 +423,31 @@ async def activate_foragers(
     return forager_claims
 
 
+# ---------------------------------------------------------------------------
+# Meta-Observer thresholds — plan §4.4
+# ---------------------------------------------------------------------------
+# These are the deterministic anomaly thresholds the prefilter uses to
+# emit meta_alerts. The Meta-Observer-as-asyncio-task design (§4.4) is
+# Wave 2; until then the prefilter itself is the observer for the
+# claim-verification stage of the pipeline. Same persistence schema,
+# same cockpit feed — different invocation point.
+
+# off_rails: >= this fraction of claims got REJECTED → verifier is
+# rejecting too aggressively OR Doers are producing too much garbage.
+# Either way the cockpit should see it.
+_META_OFF_RAILS_REJECT_RATIO = 0.50
+
+# low_novelty: >= this fraction of claims got admit_low_confidence
+# (i.e. verifier couldn't decide). Signals the source data quality is
+# weak — not a bug, but worth surfacing.
+_META_LOW_NOVELTY_RATIO = 0.60
+
+# injection_signature: even one prefilter outcome whose reason or
+# claim text contains a known injection signature trips a meta.warn.
+# 3+ hits in a run trips a meta.throttle (handled in Wave 2 when the
+# orchestrator can act on it; for now we still warn).
+
+
 async def _prefilter_claims_per_claim(
     claims: list[dict],
     prospect: dict,
@@ -428,6 +455,7 @@ async def _prefilter_claims_per_claim(
     budget: ProspectBudgetTracker,
     user_email: str | None = None,
     concurrency: int = 8,
+    session_id: str | None = None,
 ) -> list[dict]:
     """Per-claim Haiku verifier — runs BEFORE the run-level quorum.
 
@@ -449,6 +477,14 @@ async def _prefilter_claims_per_claim(
     pool doesn't fan-out into 30 parallel Haiku calls and trip an API
     rate limit. 30 claims at 8-wide ~= 4 batches × ~3s = ~12s wall time
     overhead.
+
+    Meta-alerts (§4.4): the prefilter emits meta_alert rows to
+    bedrock.pebble_meta_alerts when thresholds trip — off_rails on
+    high reject ratio, low_novelty on high admit_low_confidence ratio,
+    injection_signature when known injection phrases appear in claim
+    text. session_id is required for the meta_alert persistence path;
+    when None (legacy call sites that haven't been wired yet), meta
+    alerts are skipped but the prefilter still runs.
     """
     if not claims:
         return claims
@@ -544,6 +580,94 @@ async def _prefilter_claims_per_claim(
         prospect_id=prospect.get("id"),
         user_email=user_email,
     )
+
+    # --- Meta-Observer thresholds (§4.4) -----------------------------------
+    # Emit pebble_meta_alerts rows when the prefilter outcomes cross
+    # documented anomaly thresholds. Best-effort — DB failure here MUST
+    # NOT crash the research path (save_meta_alert swallows exceptions
+    # internally). Skipped when session_id or user_email is missing
+    # (audit attribution is mandatory; can't satisfy it without both).
+    if session_id and user_email and claims:
+        verified_total = len(claims) - len(budget_skipped)
+        denom = max(1, verified_total)
+        reject_ratio = rejected_count / denom
+        admit_low_ratio = admitted_low_count / denom
+
+        if reject_ratio >= _META_OFF_RAILS_REJECT_RATIO:
+            await save_meta_alert(
+                session_id=session_id,
+                alert_kind="off_rails",
+                severity="warn",
+                action_taken=(
+                    f"Per-claim verifier rejected {rejected_count}/{verified_total} "
+                    f"claims ({int(reject_ratio*100)}%); Doer outputs may be off-rails "
+                    f"or verifier may be over-rejecting"
+                ),
+                payload={
+                    "total": len(claims),
+                    "verified": verified_total,
+                    "rejected": rejected_count,
+                    "reject_ratio": round(reject_ratio, 3),
+                    "stage": "claim_prefilter",
+                },
+                originating_user_email=user_email,
+                cluster="claim_prefilter",
+            )
+
+        if admit_low_ratio >= _META_LOW_NOVELTY_RATIO:
+            await save_meta_alert(
+                session_id=session_id,
+                alert_kind="low_novelty",
+                severity="warn",
+                action_taken=(
+                    f"Per-claim verifier admitted {admitted_low_count}/{verified_total} "
+                    f"claims at low confidence ({int(admit_low_ratio*100)}%); "
+                    f"source data may be weak"
+                ),
+                payload={
+                    "total": len(claims),
+                    "verified": verified_total,
+                    "admit_low_confidence": admitted_low_count,
+                    "admit_low_ratio": round(admit_low_ratio, 3),
+                    "stage": "claim_prefilter",
+                },
+                originating_user_email=user_email,
+                cluster="claim_prefilter",
+            )
+
+        # Injection-signature scan over all claim text + source URLs.
+        # The prefilter sees every claim that survived the cluster
+        # stage; if any contains a known injection signature, the
+        # source it came from is suspect.
+        injection_hits: dict[str, list[str]] = {}
+        for c in claims:
+            text = (c.get("text") or "") + " " + (c.get("source_url") or "")
+            sigs = detect_injection_signatures(text)
+            if sigs:
+                origin = c.get("origin", "unknown")
+                injection_hits.setdefault(origin, []).extend(sigs)
+        if injection_hits:
+            total_sig_count = sum(len(v) for v in injection_hits.values())
+            severity = "throttle" if total_sig_count >= 3 else "warn"
+            await save_meta_alert(
+                session_id=session_id,
+                alert_kind="injection_signature",
+                severity=severity,
+                action_taken=(
+                    f"Detected {total_sig_count} prompt-injection signature(s) across "
+                    f"{len(injection_hits)} source(s); recommend reviewing affected claims"
+                ),
+                payload={
+                    "by_origin": {
+                        origin: sorted(set(sigs))
+                        for origin, sigs in injection_hits.items()
+                    },
+                    "stage": "claim_prefilter",
+                },
+                originating_user_email=user_email,
+                cluster="claim_prefilter",
+            )
+
     return kept
 
 
@@ -863,8 +987,15 @@ async def research_single_prospect(
 
     Returns a result dict with keys: contact_id, claims_count, and optionally cancelled=True.
     Saves profile and session to the database (matching prior inline behavior).
+
+    A session_id is minted at the start of the run and threaded through
+    every subsequent stage so meta-alerts, scratchpad events, and
+    harness_log entries can be correlated by ops + cockpit. The session
+    row itself is persisted at the end via _save_session_for_prospect,
+    using the same id.
     """
     budget = ProspectBudgetTracker(prospect_id=contact_id)
+    session_id = str(uuid.uuid4())
     # Derive name/org early for session saving
     org_names = list(prospect.get("organizations") or [])
     if prospect.get("organization") and prospect["organization"] not in org_names:
@@ -908,7 +1039,7 @@ async def research_single_prospect(
         if cancel_check():
             logger.info("Cancelled before foragers for %s", contact_id)
             await save_profile(contact_id, {"claims": structured_claims, "summary": "", "confidence_score": "low", "partial": True, "failed_agents": ["cancelled"]})
-            await _save_session_for_prospect(contact_id, {"claims": structured_claims}, name, primary_org, budget, "cancelled")
+            await _save_session_for_prospect(contact_id, {"claims": structured_claims}, name, primary_org, budget, "cancelled", session_id=session_id)
             return {"contact_id": contact_id, "claims_count": len(structured_claims), "cancelled": True}
 
         # Activate specialist foragers (conditional on richness thresholds)
@@ -941,7 +1072,7 @@ async def research_single_prospect(
         if cancel_check():
             logger.info("Cancelled before verification for %s", contact_id)
             await save_profile(contact_id, {"claims": all_claims, "summary": "", "confidence_score": "low", "partial": True, "failed_agents": ["cancelled"]})
-            await _save_session_for_prospect(contact_id, {"claims": all_claims}, name, primary_org, budget, "cancelled")
+            await _save_session_for_prospect(contact_id, {"claims": all_claims}, name, primary_org, budget, "cancelled", session_id=session_id)
             return {"contact_id": contact_id, "claims_count": len(all_claims), "cancelled": True}
 
         # URL pre-filter: drop claims with dead source URLs
@@ -961,7 +1092,8 @@ async def research_single_prospect(
         # below is the second line of defense.
         if all_claims and not budget.exceeded() and _per_claim_verifier_enabled():
             all_claims = await _prefilter_claims_per_claim(
-                all_claims, prospect, client, budget, user_email=user_email,
+                all_claims, prospect, client, budget,
+                user_email=user_email, session_id=session_id,
             )
 
         # Quorum verification (replaces single Opus fact-check)
@@ -986,7 +1118,7 @@ async def research_single_prospect(
         if cancel_check():
             logger.info("Cancelled before synthesis for %s", contact_id)
             await save_profile(contact_id, {"claims": verified_claims, "summary": "", "confidence_score": "medium", "partial": True, "failed_agents": ["cancelled"]})
-            await _save_session_for_prospect(contact_id, {"claims": verified_claims}, name, primary_org, budget, "cancelled")
+            await _save_session_for_prospect(contact_id, {"claims": verified_claims}, name, primary_org, budget, "cancelled", session_id=session_id)
             return {"contact_id": contact_id, "claims_count": len(verified_claims), "cancelled": True}
 
         # Synthesis (Opus, with pre-verified origin-tagged claims)
@@ -1020,7 +1152,7 @@ async def research_single_prospect(
     await save_profile(contact_id, profile)
     # Save session history entry
     session_status = "cancelled" if cancel_check() else "completed"
-    await _save_session_for_prospect(contact_id, profile, name, primary_org, budget, session_status)
+    await _save_session_for_prospect(contact_id, profile, name, primary_org, budget, session_status, session_id=session_id)
     return {"contact_id": contact_id, "claims_count": len(profile["claims"])}
 
 
@@ -1031,10 +1163,18 @@ async def _save_session_for_prospect(
     primary_org: str | None,
     budget: ProspectBudgetTracker,
     status: str,
+    session_id: str | None = None,
 ) -> None:
-    """Save a research session entry. Shared by normal and cancel paths."""
+    """Save a research session entry. Shared by normal and cancel paths.
+
+    session_id is optional for backward compatibility with legacy
+    callers; new callers (research_single_prospect) pass the run-level
+    session_id so meta_alerts and the persisted session row share the
+    same UUID. When None we mint a fresh one — the row will still
+    persist; cockpit just won't correlate it with mid-run meta alerts.
+    """
     await save_session(
-        session_id=str(uuid.uuid4()),
+        session_id=session_id or str(uuid.uuid4()),
         contact_id=contact_id,
         profile=profile,
         prospect_name=name,
