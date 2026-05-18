@@ -21,6 +21,7 @@ import { SettingsPage } from "./pages/Settings";
 import { CashFlowPage } from "./pages/CashFlow";
 import { PlatformIntakePage } from "./pages/PlatformIntake";
 import { PortfolioPage } from "./pages/Portfolio";
+import { HomePage, HomeIndexPage } from "./pages/home";
 
 export default function App() {
   return (
@@ -56,6 +57,8 @@ export default function App() {
         <Route path="/portfolio" element={<PortfolioPage />} />
         <Route path="/portfolio/:identifier" element={<PortfolioPage />} />
         <Route path="/feedback" element={<PlatformIntakePage />} />
+        <Route path="/home" element={<HomeIndexPage />} />
+        <Route path="/home/:slug" element={<HomePage />} />
         <Route path="/settings" element={<SettingsPage />} />
 
         {/* Backend redirects to /priorities after Google OAuth — alias it */}
