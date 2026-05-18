@@ -95,6 +95,7 @@ export interface ActiveUser {
   id: string;
   email: string;
   display_name: string;
+  sf_user_id: string | null;
   is_in_sf: boolean;
 }
 
