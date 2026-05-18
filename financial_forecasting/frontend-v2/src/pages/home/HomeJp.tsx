@@ -20,6 +20,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { OpportunityDrawer } from "@/components/OpportunityDrawer";
 import { TaskDrawer, type FlatTask } from "@/components/TaskDrawer";
 import { HomeErrorBoundary } from "@/components/home/HomeErrorBoundary";
+import { HomeStatsStrip } from "@/components/home/HomeStatsStrip";
 import { Scratchpad } from "@/components/home/Scratchpad";
 import { usePermissions } from "@/services/permissions";
 import type { SfOpportunity } from "@/types/salesforce";
@@ -123,8 +124,8 @@ export function HomeJp() {
   return (
     <div className="mx-auto flex w-full max-w-[1600px] flex-col gap-4 px-5 py-4">
       <PageHeader
-        title="JP's home"
-        subtitle="Today's calendar, your inbox, and the weighted priorities under one roof."
+        title={greeting(permissions?.name)}
+        subtitle="Calendar, inbox, priorities — your daily-work home base. Press R to refresh."
         actions={
           <button
             type="button"
@@ -142,6 +143,8 @@ export function HomeJp() {
           </button>
         }
       />
+
+      <HomeStatsStrip currentUserId={currentUserId} className="-mt-3 mb-1" />
 
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-[360px_1fr]">
         <div className="flex flex-col gap-4">
@@ -183,6 +186,19 @@ export function HomeJp() {
       />
     </div>
   );
+}
+
+/** Time-of-day greeting using the user's first name. Falls back to a
+ *  neutral title when permissions are still loading or name is missing. */
+function greeting(fullName: string | null | undefined): string {
+  const first = (fullName ?? "").trim().split(/\s+/)[0] ?? "";
+  const who = first || "JP";
+  const hour = new Date().getHours();
+  if (hour < 5) return `Up late, ${who}`;
+  if (hour < 12) return `Good morning, ${who}`;
+  if (hour < 17) return `Good afternoon, ${who}`;
+  if (hour < 21) return `Good evening, ${who}`;
+  return `Wrap-up, ${who}`;
 }
 
 function PaneSkeleton({ heightClass }: { heightClass: string }) {

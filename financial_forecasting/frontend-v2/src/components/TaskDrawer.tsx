@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import { Link } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 
 import { Drawer } from "@/components/ui/Drawer";
 import { InlineDate, InlineSelect, InlineText } from "@/components/ui/InlineEdit";
@@ -117,15 +118,27 @@ function TaskDrawerBody({ task }: { task: FlatTask }) {
   };
 
   const saveCrm = async (patch: Record<string, string | null>) => {
-    await updateCrm.mutateAsync({ id: task.id, patch });
-    invalidateMyTasks();
+    try {
+      await updateCrm.mutateAsync({ id: task.id, patch });
+      invalidateMyTasks();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Save failed";
+      toast.error(`Task save failed: ${msg}`);
+      throw e;
+    }
   };
 
   const saveProject = async (
     patch: { title?: string; status?: string; owner?: string; deadline?: string | null },
   ) => {
-    await updateProject.mutateAsync({ taskId: task.id, patch });
-    invalidateMyTasks();
+    try {
+      await updateProject.mutateAsync({ taskId: task.id, patch });
+      invalidateMyTasks();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Save failed";
+      toast.error(`Task save failed: ${msg}`);
+      throw e;
+    }
   };
 
   const titleSaver = task.source === "crm"

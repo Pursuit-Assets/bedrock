@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+import { toast } from "sonner";
 
 import { Drawer } from "@/components/ui/Drawer";
 import {
@@ -98,58 +99,82 @@ function OpportunityDrawerBody({ opp }: { opp: SfOpportunity }) {
     [usersQ.data],
   );
 
-  const saveStage = async (next: string) => {
-    await updateStage.mutateAsync({ id: oppId, newStage: next });
-  };
-
-  const saveAmount = async (raw: string) => {
-    const cleaned = raw.replace(/[$,\s]/g, "");
-    const parsed = cleaned === "" ? null : Number(cleaned);
-    if (parsed != null && !Number.isFinite(parsed)) {
-      throw new Error("Not a number");
+  /** Wrap a save so failures bubble up a hard-to-miss toast in addition
+   *  to the in-cell red-icon affordance. Always returns void so it slots
+   *  into `InlineEdit`'s `onSave` signature. */
+  const withToast = async (
+    label: string,
+    fn: () => Promise<unknown>,
+  ): Promise<void> => {
+    try {
+      await fn();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Save failed";
+      toast.error(`${label}: ${msg}`);
+      throw e;
     }
-    await updateOpp.mutateAsync({ id: oppId, patch: { Amount: parsed } });
   };
 
-  const saveCloseDate = async (next: string | null) => {
-    await updateOpp.mutateAsync({ id: oppId, patch: { CloseDate: next } });
-  };
+  const saveStage = (next: string) =>
+    withToast("Stage save failed", () =>
+      updateStage.mutateAsync({ id: oppId, newStage: next }),
+    );
 
-  const saveProbability = async (raw: string) => {
-    const cleaned = raw.replace(/[%\s]/g, "");
-    const parsed = cleaned === "" ? null : Number.parseInt(cleaned, 10);
-    if (parsed != null) {
-      if (!Number.isFinite(parsed) || parsed < 0 || parsed > 100) {
-        throw new Error("0–100");
+  const saveAmount = (raw: string) =>
+    withToast("Amount save failed", async () => {
+      const cleaned = raw.replace(/[$,\s]/g, "");
+      const parsed = cleaned === "" ? null : Number(cleaned);
+      if (parsed != null && !Number.isFinite(parsed)) {
+        throw new Error("Not a number");
       }
-    }
-    await updateOpp.mutateAsync({
-      id: oppId,
-      patch: { Manager_Probability_Override__c: parsed },
+      await updateOpp.mutateAsync({ id: oppId, patch: { Amount: parsed } });
     });
-  };
 
-  const saveOwner = async (ownerId: string) => {
-    const ownerName =
-      (usersQ.data ?? []).find((u) => u.Id === ownerId)?.Name ?? null;
-    await updateOpp.mutateAsync({
-      id: oppId,
-      patch: { OwnerId: ownerId },
-      displayPatch: { Owner: { Name: ownerName } },
+  const saveCloseDate = (next: string | null) =>
+    withToast("Close date save failed", () =>
+      updateOpp.mutateAsync({ id: oppId, patch: { CloseDate: next } }),
+    );
+
+  const saveProbability = (raw: string) =>
+    withToast("Probability save failed", async () => {
+      const cleaned = raw.replace(/[%\s]/g, "");
+      const parsed = cleaned === "" ? null : Number.parseInt(cleaned, 10);
+      if (parsed != null) {
+        if (!Number.isFinite(parsed) || parsed < 0 || parsed > 100) {
+          throw new Error("0–100");
+        }
+      }
+      await updateOpp.mutateAsync({
+        id: oppId,
+        patch: { Manager_Probability_Override__c: parsed },
+      });
     });
-  };
 
-  const saveForecast = async (next: string) => {
-    await updateOpp.mutateAsync({ id: oppId, patch: { ForecastCategory: next } });
-  };
+  const saveOwner = (ownerId: string) =>
+    withToast("Owner save failed", async () => {
+      const ownerName =
+        (usersQ.data ?? []).find((u) => u.Id === ownerId)?.Name ?? null;
+      await updateOpp.mutateAsync({
+        id: oppId,
+        patch: { OwnerId: ownerId },
+        displayPatch: { Owner: { Name: ownerName } },
+      });
+    });
 
-  const saveNextStep = async (next: string) => {
-    await updateOpp.mutateAsync({ id: oppId, patch: { NextStep: next } });
-  };
+  const saveForecast = (next: string) =>
+    withToast("Forecast save failed", () =>
+      updateOpp.mutateAsync({ id: oppId, patch: { ForecastCategory: next } }),
+    );
 
-  const saveDescription = async (next: string) => {
-    await updateOpp.mutateAsync({ id: oppId, patch: { Description: next } });
-  };
+  const saveNextStep = (next: string) =>
+    withToast("Next-step save failed", () =>
+      updateOpp.mutateAsync({ id: oppId, patch: { NextStep: next } }),
+    );
+
+  const saveDescription = (next: string) =>
+    withToast("Description save failed", () =>
+      updateOpp.mutateAsync({ id: oppId, patch: { Description: next } }),
+    );
 
   const probDisplay = (opp.Manager_Probability_Override__c ?? opp.Probability ?? null);
 

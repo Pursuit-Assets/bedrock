@@ -10,6 +10,7 @@ import {
   Plus,
   Repeat,
 } from "lucide-react";
+import { toast } from "sonner";
 
 import { AccountAvatar } from "@/components/AccountAvatar";
 import {
@@ -204,45 +205,65 @@ export function PriorityTable({
   }, [oppsQ.data, ownerFilter, currentUserId, tasksByOpp, topN, sort, userSorting]);
 
   // ── inline-edit savers ─────────────────────────────────────────────────
-  const saveStage = useCallback(
-    async (id: string, stage: string) => {
-      await updateStage.mutateAsync({ id, newStage: stage });
+  // Each saver re-throws on failure so the in-cell red-icon affordance
+  // from InlineEdit still fires. The toast adds a hard-to-miss top-level
+  // notification in case the user has moved focus away from the cell.
+  const withToast = useCallback(
+    async (label: string, fn: () => Promise<unknown>): Promise<void> => {
+      try {
+        await fn();
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : "Save failed";
+        toast.error(`${label}: ${msg}`);
+        throw e;
+      }
     },
-    [updateStage],
+    [],
+  );
+
+  const saveStage = useCallback(
+    (id: string, stage: string) =>
+      withToast("Stage save failed", () =>
+        updateStage.mutateAsync({ id, newStage: stage }),
+      ),
+    [updateStage, withToast],
   );
 
   const saveAmount = useCallback(
-    async (id: string, raw: string) => {
-      const cleaned = raw.replace(/[$,\s]/g, "");
-      const parsed = cleaned === "" ? null : Number(cleaned);
-      if (parsed != null && !Number.isFinite(parsed)) {
-        throw new Error("Not a number");
-      }
-      await updateOpp.mutateAsync({ id, patch: { Amount: parsed } });
-    },
-    [updateOpp],
+    (id: string, raw: string) =>
+      withToast("Amount save failed", async () => {
+        const cleaned = raw.replace(/[$,\s]/g, "");
+        const parsed = cleaned === "" ? null : Number(cleaned);
+        if (parsed != null && !Number.isFinite(parsed)) {
+          throw new Error("Not a number");
+        }
+        await updateOpp.mutateAsync({ id, patch: { Amount: parsed } });
+      }),
+    [updateOpp, withToast],
   );
 
   const saveProbability = useCallback(
-    async (id: string, raw: string) => {
-      const cleaned = raw.replace(/[%\s]/g, "");
-      const parsed = cleaned === "" ? null : Number.parseInt(cleaned, 10);
-      if (parsed != null && (!Number.isFinite(parsed) || parsed < 0 || parsed > 100)) {
-        throw new Error("0–100");
-      }
-      await updateOpp.mutateAsync({
-        id,
-        patch: { Manager_Probability_Override__c: parsed },
-      });
-    },
-    [updateOpp],
+    (id: string, raw: string) =>
+      withToast("Probability save failed", async () => {
+        const cleaned = raw.replace(/[%\s]/g, "");
+        const parsed = cleaned === "" ? null : Number.parseInt(cleaned, 10);
+        if (parsed != null && (!Number.isFinite(parsed) || parsed < 0 || parsed > 100)) {
+          throw new Error("0–100");
+        }
+        await updateOpp.mutateAsync({
+          id,
+          patch: { Manager_Probability_Override__c: parsed },
+        });
+      }),
+    [updateOpp, withToast],
   );
 
   const saveCloseDate = useCallback(
-    async (id: string, next: string | null) => {
-      await updateOpp.mutateAsync({ id, patch: { CloseDate: next } });
-    },
-    [updateOpp],
+    (id: string, next: string | null) =>
+      withToast("Close date save failed", () =>
+        updateOpp.mutateAsync({ id, patch: { CloseDate: next } }),
+      ),
+    [updateOpp, withToast],
   );
 
   // ── render ─────────────────────────────────────────────────────────────
