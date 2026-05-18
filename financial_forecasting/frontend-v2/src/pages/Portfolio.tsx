@@ -161,6 +161,10 @@ function PortfolioBody({ user, isSelf }: { user: ResolvedUser; isSelf: boolean }
     () => filterByOwnerSfId(oppsQ.data ?? [], user.sfUserId),
     [oppsQ.data, user.sfUserId],
   );
+  const myProjects = useMemo(
+    () => (projectsQ.data ?? []).filter((p) => sameEmail(p.owner_email, user.email)),
+    [projectsQ.data, user.email],
+  );
   const oppIdsOwnedByUser = useMemo(
     () => new Set(myOpps.map((o) => o.Id)),
     [myOpps],
@@ -197,9 +201,7 @@ function PortfolioBody({ user, isSelf }: { user: ResolvedUser; isSelf: boolean }
 
       <PortfolioTasks
         sfUserId={user.sfUserId}
-        userEmail={user.email}
-        userDisplayName={user.displayName}
-        projects={projectsQ.data ?? []}
+        projects={myProjects}
         projectsLoading={projectsQ.isLoading}
       />
 
@@ -237,6 +239,10 @@ function filterByOwnerSfId<T extends { OwnerId?: string | null }>(
   return rows.filter((r) => r.OwnerId === sfUserId);
 }
 
+function sameEmail(a: string | null | undefined, b: string): boolean {
+  if (!a) return false;
+  return a.toLowerCase() === b.toLowerCase();
+}
 
 function byId<T extends { Id?: string }>(rows: T[]): Map<string, T> {
   const m = new Map<string, T>();

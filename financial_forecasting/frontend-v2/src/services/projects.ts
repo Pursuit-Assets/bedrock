@@ -95,7 +95,6 @@ export interface ActiveUser {
   id: string;
   email: string;
   display_name: string;
-  sf_user_id: string | null;
   is_in_sf: boolean;
 }
 
@@ -105,9 +104,6 @@ export interface TaskPatch {
   owner?: string;
   owner_ids?: string[];
   deadline?: string | null;
-  start_date?: string | null;
-  description?: string;
-  sort_order?: number;
 }
 
 export function useActiveUsers() {
@@ -123,54 +119,11 @@ export function useActiveUsers() {
 
 export function useCreateTask(projectId: string) {
   const qc = useQueryClient();
-  const key = ["project-detail", projectId];
   return useMutation({
     mutationFn: async ({ milestoneId, title }: { milestoneId: string; title: string }) => {
       await api.post(`/api/milestones/${milestoneId}/tasks`, { title });
     },
-    onMutate: async ({ milestoneId, title }) => {
-      await qc.cancelQueries({ queryKey: key });
-      const prev = qc.getQueryData<ProjectDetail>(key);
-      const tempId = `temp-${Date.now()}`;
-      qc.setQueryData<ProjectDetail | undefined>(key, (cur) => {
-        if (!cur) return cur;
-        return {
-          ...cur,
-          workstreams: cur.workstreams.map((ws) => ({
-            ...ws,
-            milestones: ws.milestones.map((ms) =>
-              ms.id !== milestoneId
-                ? ms
-                : {
-                    ...ms,
-                    tasks: [
-                      ...ms.tasks,
-                      {
-                        id: tempId,
-                        title,
-                        status: "Not Started",
-                        owner: null,
-                        owner_ids: [],
-                        deadline: null,
-                        startDate: null,
-                        description: null,
-                        updates: null,
-                        links: [],
-                        dependsOn: [],
-                        sort_order: ms.tasks.length,
-                      } as ProjectTask,
-                    ],
-                  },
-            ),
-          })),
-        };
-      });
-      return { prev };
-    },
-    onError: (_e, _v, ctx) => {
-      if (ctx?.prev) qc.setQueryData(key, ctx.prev);
-    },
-    onSettled: () => qc.invalidateQueries({ queryKey: key }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["project-detail", projectId] }),
   });
 }
 
@@ -196,84 +149,21 @@ export function useDeleteTask(projectId: string) {
 
 export function useCreateMilestone(projectId: string) {
   const qc = useQueryClient();
-  const key = ["project-detail", projectId];
   return useMutation({
     mutationFn: async ({ workstreamId, title }: { workstreamId: string; title: string }) => {
       await api.post(`/api/workstreams/${workstreamId}/milestones`, { title });
     },
-    onMutate: async ({ workstreamId, title }) => {
-      await qc.cancelQueries({ queryKey: key });
-      const prev = qc.getQueryData<ProjectDetail>(key);
-      const tempId = `temp-${Date.now()}`;
-      qc.setQueryData<ProjectDetail | undefined>(key, (cur) => {
-        if (!cur) return cur;
-        return {
-          ...cur,
-          workstreams: cur.workstreams.map((ws) =>
-            ws.id !== workstreamId
-              ? ws
-              : {
-                  ...ws,
-                  milestones: [
-                    ...ws.milestones,
-                    {
-                      id: tempId,
-                      title,
-                      status: "On Track",
-                      priority: "",
-                      owner: null,
-                      owner_ids: [],
-                      due_date: null,
-                      description: "",
-                      sourceLinks: [],
-                      tasks: [],
-                    } as ProjectMilestone,
-                  ],
-                },
-          ),
-        };
-      });
-      return { prev };
-    },
-    onError: (_e, _v, ctx) => {
-      if (ctx?.prev) qc.setQueryData(key, ctx.prev);
-    },
-    onSettled: () => qc.invalidateQueries({ queryKey: key }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["project-detail", projectId] }),
   });
 }
 
 export function useCreateWorkstream(projectId: string) {
   const qc = useQueryClient();
-  const key = ["project-detail", projectId];
   return useMutation({
     mutationFn: async (name: string) => {
       await api.post(`/api/projects/${projectId}/workstreams`, { name });
     },
-    onMutate: async (name) => {
-      await qc.cancelQueries({ queryKey: key });
-      const prev = qc.getQueryData<ProjectDetail>(key);
-      const tempId = `temp-${Date.now()}`;
-      qc.setQueryData<ProjectDetail | undefined>(key, (cur) => {
-        if (!cur) return cur;
-        return {
-          ...cur,
-          workstreams: [
-            ...cur.workstreams,
-            {
-              id: tempId,
-              name,
-              description: "",
-              milestones: [],
-            } as ProjectWorkstream,
-          ],
-        };
-      });
-      return { prev };
-    },
-    onError: (_e, _v, ctx) => {
-      if (ctx?.prev) qc.setQueryData(key, ctx.prev);
-    },
-    onSettled: () => qc.invalidateQueries({ queryKey: key }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["project-detail", projectId] }),
   });
 }
 
@@ -304,48 +194,10 @@ export function useAllProjectDetails() {
 export function useUpdateMilestone(projectId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async ({ milestoneId, patch }: { milestoneId: string; patch: { due_date?: string | null; status?: string; title?: string; description?: string; priority?: string } }) => {
+    mutationFn: async ({ milestoneId, patch }: { milestoneId: string; patch: { due_date?: string | null; status?: string; title?: string } }) => {
       await api.put(`/api/milestones/${milestoneId}`, patch);
     },
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["project-detail", projectId] }); },
-  });
-}
-
-export function useDeleteMilestone(projectId: string) {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: async (milestoneId: string) => {
-      await api.delete(`/api/milestones/${milestoneId}`);
-    },
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["project-detail", projectId] }),
-  });
-}
-
-export function useDeleteWorkstream(projectId: string) {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: async (workstreamId: string) => {
-      await api.delete(`/api/workstreams/${workstreamId}`);
-    },
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["project-detail", projectId] }),
-  });
-}
-
-/** Workstream PATCH — currently only `name` + `description` + `sort_order`
- *  are mutable per the backend `WorkstreamUpdate` model. */
-export function useUpdateWorkstream(projectId: string) {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: async ({
-      workstreamId,
-      patch,
-    }: {
-      workstreamId: string;
-      patch: { name?: string; description?: string; sort_order?: number };
-    }) => {
-      await api.put(`/api/workstreams/${workstreamId}`, patch);
-    },
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["project-detail", projectId] }),
   });
 }
 
