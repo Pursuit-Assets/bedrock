@@ -1,6 +1,13 @@
+import { useMemo } from "react";
+
 import { Drawer } from "@/components/ui/Drawer";
+import {
+  InlineDate,
+  InlineSelect,
+  InlineText,
+} from "@/components/ui/InlineEdit";
 import { StageChip } from "@/components/ui/StageChip";
-import { stageStatus } from "@/lib/stages";
+import { stageStatus, SF_STAGE_OPTIONS } from "@/lib/stages";
 import { Tag } from "@/components/ui/Tag";
 import { fmtDate, fmtMoneyFull } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -8,12 +15,33 @@ import { useActivities } from "@/services/activities";
 import {
   useOpportunityPayments,
   useOpportunityTasks,
+  useUpdateOpportunity,
+  useUpdateOpportunityStage,
 } from "@/services/opportunities";
+import { usePerm } from "@/services/permissions";
+import { useActiveUsers } from "@/services/users";
 import type { SfOpportunity, SfPayment, SfTask } from "@/types/salesforce";
+
+const DRAWER_STORAGE_KEY = "bedrock:opp-drawer:width";
+
+const FORECAST_OPTIONS = [
+  { value: "Pipeline", label: "Pipeline" },
+  { value: "Best Case", label: "Best Case" },
+  { value: "Commit", label: "Commit" },
+  { value: "Omitted", label: "Omitted" },
+  { value: "Closed", label: "Closed" },
+];
 
 /**
  * Right-side drawer surfacing the meta + child collections for a single
  * opportunity: tasks, payments, recent activity. Mirrors AccountDrawer.
+ *
+ * Stage / Amount / Close Date / Probability / Owner / NextStep /
+ * Description are editable inline when the user has `edit_own_opportunities`
+ * (or `edit_all_opportunities`). Stage transitions go through the
+ * dedicated `useUpdateOpportunityStage` mutation so the server-side
+ * award auto-create handler fires on closed-won transitions; the success
+ * toast surfaces `award_created`.
  */
 export function OpportunityDrawer({
   opportunity,
@@ -38,6 +66,10 @@ export function OpportunityDrawer({
       }
       linkTo={opportunity ? `/opportunities/${opportunity.Id}` : undefined}
       width={680}
+      resizable
+      minWidth={480}
+      maxWidth={960}
+      storageKey={DRAWER_STORAGE_KEY}
     >
       {opportunity ? <OpportunityDrawerBody opp={opportunity} /> : null}
     </Drawer>
@@ -53,8 +85,73 @@ function OpportunityDrawerBody({ opp }: { opp: SfOpportunity }) {
     limit: 30,
   });
 
-  const openTasks = tasks.filter((t) => !t.IsClosed);
-  const closedTasks = tasks.filter((t) => t.IsClosed);
+  const updateOpp = useUpdateOpportunity();
+  const updateStage = useUpdateOpportunityStage();
+  const usersQ = useActiveUsers();
+  const canEditOwn = usePerm("edit_own_opportunities");
+  const canEditAll = usePerm("edit_all_opportunities");
+  const canEdit = canEditOwn || canEditAll;
+
+  const ownerOptions = useMemo(
+    () =>
+      (usersQ.data ?? []).map((u) => ({ value: u.Id, label: u.Name })),
+    [usersQ.data],
+  );
+
+  const saveStage = async (next: string) => {
+    await updateStage.mutateAsync({ id: oppId, newStage: next });
+  };
+
+  const saveAmount = async (raw: string) => {
+    const cleaned = raw.replace(/[$,\s]/g, "");
+    const parsed = cleaned === "" ? null : Number(cleaned);
+    if (parsed != null && !Number.isFinite(parsed)) {
+      throw new Error("Not a number");
+    }
+    await updateOpp.mutateAsync({ id: oppId, patch: { Amount: parsed } });
+  };
+
+  const saveCloseDate = async (next: string | null) => {
+    await updateOpp.mutateAsync({ id: oppId, patch: { CloseDate: next } });
+  };
+
+  const saveProbability = async (raw: string) => {
+    const cleaned = raw.replace(/[%\s]/g, "");
+    const parsed = cleaned === "" ? null : Number.parseInt(cleaned, 10);
+    if (parsed != null) {
+      if (!Number.isFinite(parsed) || parsed < 0 || parsed > 100) {
+        throw new Error("0–100");
+      }
+    }
+    await updateOpp.mutateAsync({
+      id: oppId,
+      patch: { Manager_Probability_Override__c: parsed },
+    });
+  };
+
+  const saveOwner = async (ownerId: string) => {
+    const ownerName =
+      (usersQ.data ?? []).find((u) => u.Id === ownerId)?.Name ?? null;
+    await updateOpp.mutateAsync({
+      id: oppId,
+      patch: { OwnerId: ownerId },
+      displayPatch: { Owner: { Name: ownerName } },
+    });
+  };
+
+  const saveForecast = async (next: string) => {
+    await updateOpp.mutateAsync({ id: oppId, patch: { ForecastCategory: next } });
+  };
+
+  const saveNextStep = async (next: string) => {
+    await updateOpp.mutateAsync({ id: oppId, patch: { NextStep: next } });
+  };
+
+  const saveDescription = async (next: string) => {
+    await updateOpp.mutateAsync({ id: oppId, patch: { Description: next } });
+  };
+
+  const probDisplay = (opp.Manager_Probability_Override__c ?? opp.Probability ?? null);
 
   return (
     <div className="flex flex-col gap-5 px-5 py-5">
@@ -62,22 +159,54 @@ function OpportunityDrawerBody({ opp }: { opp: SfOpportunity }) {
       <div className="grid grid-cols-3 gap-2">
         <Stat
           label="Stage"
-          value={<StageChip stage={opp.StageName} status={stageStatus(opp)} />}
+          value={
+            canEdit ? (
+              <InlineSelect
+                value={opp.StageName}
+                options={SF_STAGE_OPTIONS}
+                onSave={saveStage}
+                renderValue={() => (
+                  <StageChip stage={opp.StageName} status={stageStatus(opp)} />
+                )}
+                emptyLabel="—"
+              />
+            ) : (
+              <StageChip stage={opp.StageName} status={stageStatus(opp)} />
+            )
+          }
         />
         <Stat
           label="Amount"
           value={
-            <span className="mono text-[15px] font-semibold tabular-nums">
-              {opp.Amount ? fmtMoneyFull(opp.Amount) : "—"}
-            </span>
+            canEdit ? (
+              <InlineText
+                value={opp.Amount != null ? String(opp.Amount) : ""}
+                onSave={saveAmount}
+                formatDisplay={(raw) => {
+                  const n = Number(raw);
+                  return Number.isFinite(n) && n > 0 ? fmtMoneyFull(n) : "—";
+                }}
+                placeholder="0"
+                emptyLabel="—"
+                className="mono text-[15px] font-semibold tabular-nums"
+              />
+            ) : (
+              <span className="mono text-[15px] font-semibold tabular-nums">
+                {opp.Amount ? fmtMoneyFull(opp.Amount) : "—"}
+              </span>
+            )
           }
         />
         <Stat
           label="Close"
           value={
-            <span className="mono text-[13px] font-medium tabular-nums">
-              {fmtDate(opp.CloseDate)}
-            </span>
+            canEdit ? (
+              <InlineDate value={opp.CloseDate ?? null} onSave={saveCloseDate} />
+            ) : (
+              <span className="mono text-[13px] font-medium tabular-nums">
+                {fmtDate(opp.CloseDate)}
+              </span>
+            )
           }
         />
       </div>
@@ -85,9 +214,51 @@ function OpportunityDrawerBody({ opp }: { opp: SfOpportunity }) {
       {/* Meta block */}
       <Section title="Details">
         <dl className="grid grid-cols-2 gap-x-6 gap-y-2 px-4 py-3 text-[12.5px]">
-          <Meta label="Owner" value={opp.Owner?.Name} />
-          <Meta label="Probability" value={opp.Probability != null ? `${opp.Probability}%` : null} />
-          <Meta label="Forecast" value={opp.ForecastCategory} />
+          <Meta label="Owner">
+            {canEdit && ownerOptions.length > 0 ? (
+              <InlineSelect
+                value={opp.OwnerId ?? ""}
+                options={ownerOptions}
+                onSave={saveOwner}
+                renderValue={(v) =>
+                  ownerOptions.find((o) => o.value === v)?.label ??
+                  opp.Owner?.Name ??
+                  "—"
+                }
+                emptyLabel="—"
+              />
+            ) : (
+              <span>{opp.Owner?.Name ?? <span className="text-ink-4">—</span>}</span>
+            )}
+          </Meta>
+          <Meta label="Probability">
+            {canEdit ? (
+              <InlineText
+                value={probDisplay != null ? String(probDisplay) : ""}
+                onSave={saveProbability}
+                formatDisplay={(raw) => {
+                  const n = Number(raw);
+                  return Number.isFinite(n) ? `${n}%` : "—";
+                }}
+                placeholder="0"
+                emptyLabel="—"
+              />
+            ) : (
+              <span>{probDisplay != null ? `${probDisplay}%` : <span className="text-ink-4">—</span>}</span>
+            )}
+          </Meta>
+          <Meta label="Forecast">
+            {canEdit ? (
+              <InlineSelect
+                value={opp.ForecastCategory ?? ""}
+                options={FORECAST_OPTIONS}
+                onSave={saveForecast}
+                emptyLabel="—"
+              />
+            ) : (
+              <span>{opp.ForecastCategory ?? <span className="text-ink-4">—</span>}</span>
+            )}
+          </Meta>
           <Meta label="Lead source" value={opp.LeadSource} />
           <Meta label="Type" value={opp.RecordType?.Name} />
           <Meta
@@ -97,28 +268,69 @@ function OpportunityDrawerBody({ opp }: { opp: SfOpportunity }) {
         </dl>
       </Section>
 
+      {/* Next step + description */}
+      <Section title="Plan">
+        <div className="flex flex-col gap-3 px-4 py-3 text-[12.5px]">
+          <Meta label="Next step">
+            {canEdit ? (
+              <InlineText
+                value={opp.NextStep ?? ""}
+                onSave={saveNextStep}
+                placeholder="What's the next move?"
+                emptyLabel="—"
+                multiline
+              />
+            ) : opp.NextStep ? (
+              <span className="whitespace-pre-wrap">{opp.NextStep}</span>
+            ) : (
+              <span className="text-ink-4">—</span>
+            )}
+          </Meta>
+          <Meta label="Description">
+            {canEdit ? (
+              <InlineText
+                value={opp.Description ?? ""}
+                onSave={saveDescription}
+                placeholder="Add context"
+                emptyLabel="No description."
+                multiline
+              />
+            ) : opp.Description ? (
+              <span className="whitespace-pre-wrap">{opp.Description}</span>
+            ) : (
+              <span className="text-ink-4">No description.</span>
+            )}
+          </Meta>
+        </div>
+      </Section>
+
       {/* Tasks */}
       <Section title={`Tasks (${tasks.length})`}>
         {tasks.length === 0 ? (
           <Empty>No tasks logged on this opportunity.</Empty>
         ) : (
           <>
-            {openTasks.length > 0 ? (
+            {tasks.filter((t) => !t.IsClosed).length > 0 ? (
               <ul className="flex flex-col">
-                {openTasks.map((t) => (
-                  <TaskRow key={t.Id} t={t} />
-                ))}
-              </ul>
-            ) : null}
-            {closedTasks.length > 0 ? (
-              <details className="border-t border-border-strong">
-                <summary className="cursor-pointer px-4 py-2 text-[11.5px] text-ink-3 hover:text-ink">
-                  {closedTasks.length} closed
-                </summary>
-                <ul className="flex flex-col">
-                  {closedTasks.slice(0, 20).map((t) => (
+                {tasks
+                  .filter((t) => !t.IsClosed)
+                  .map((t) => (
                     <TaskRow key={t.Id} t={t} />
                   ))}
+              </ul>
+            ) : null}
+            {tasks.filter((t) => t.IsClosed).length > 0 ? (
+              <details className="border-t border-border-strong">
+                <summary className="cursor-pointer px-4 py-2 text-[11.5px] text-ink-3 hover:text-ink">
+                  {tasks.filter((t) => t.IsClosed).length} closed
+                </summary>
+                <ul className="flex flex-col">
+                  {tasks
+                    .filter((t) => t.IsClosed)
+                    .slice(0, 20)
+                    .map((t) => (
+                      <TaskRow key={t.Id} t={t} />
+                    ))}
                 </ul>
               </details>
             ) : null}
@@ -169,6 +381,12 @@ function OpportunityDrawerBody({ opp }: { opp: SfOpportunity }) {
           </ul>
         )}
       </Section>
+
+      {!canEdit ? (
+        <div className="rounded-md border border-dashed border-border-strong bg-surface-2 px-3 py-2 text-[11.5px] text-ink-3">
+          You don't have permission to edit opportunities.
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -264,10 +482,12 @@ function Meta({
   label,
   value,
   full,
+  children,
 }: {
   label: string;
-  value: React.ReactNode;
+  value?: React.ReactNode;
   full?: boolean;
+  children?: React.ReactNode;
 }) {
   return (
     <div className={cn("flex flex-col", full && "col-span-2")}>
@@ -275,7 +495,8 @@ function Meta({
         {label}
       </dt>
       <dd className="text-[12.5px] text-ink">
-        {value ? value : <span className="text-ink-4">—</span>}
+        {children ??
+          (value != null && value !== "" ? value : <span className="text-ink-4">—</span>)}
       </dd>
     </div>
   );
