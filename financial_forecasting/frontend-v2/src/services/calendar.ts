@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import axios from "axios";
 
 import { api } from "@/lib/api";
 
@@ -39,22 +40,46 @@ interface FetchOpts {
   calendarId?: string;
 }
 
+export interface CalendarFetchError extends Error {
+  /** True when the failure looks like a stale / missing Google OAuth token. */
+  needsReauth: boolean;
+  /** HTTP status if the failure was an HTTP response. */
+  status?: number;
+}
+
 async function fetchMyEvents(opts: FetchOpts): Promise<GCalEvent[]> {
   const params = new URLSearchParams();
   if (opts.start) params.set("start", opts.start);
   if (opts.end) params.set("end", opts.end);
   if (opts.limit) params.set("limit", String(opts.limit));
   if (opts.calendarId) params.set("calendar_id", opts.calendarId);
+  const qs = params.toString();
   try {
-    const qs = params.toString();
     const { data } = await api.get<CalendarResponse | GCalEvent[]>(
       qs ? `/api/calendar/my-events?${qs}` : "/api/calendar/my-events",
     );
     if (Array.isArray(data)) return data;
     return data?.data ?? [];
-  } catch {
-    // Calendar not connected / token expired — degrade gracefully so the
-    // home page still renders without a banner storm in the console.
+  } catch (e) {
+    // Surface auth / Google-token failures so the UI can show a
+    // "reconnect Google" affordance. Other failures (5xx, network)
+    // degrade silently — the calendar pane shows its empty state.
+    if (axios.isAxiosError(e)) {
+      const status = e.response?.status;
+      const detail =
+        (e.response?.data as { detail?: string } | undefined)?.detail ?? "";
+      const looksAuth =
+        status === 401 ||
+        status === 403 ||
+        /token|reauth|google|unauthorized|invalid_grant/i.test(detail);
+      if (looksAuth) {
+        const err: CalendarFetchError = Object.assign(
+          new Error("Google calendar reauth required"),
+          { needsReauth: true, status },
+        );
+        throw err;
+      }
+    }
     return [];
   }
 }
@@ -65,7 +90,7 @@ async function fetchMyEvents(opts: FetchOpts): Promise<GCalEvent[]> {
  * still render but show its empty state.
  */
 export function useMyCalendarEvents(opts: FetchOpts) {
-  return useQuery({
+  return useQuery<GCalEvent[], CalendarFetchError>({
     queryKey: ["calendar-my-events", opts.start, opts.end, opts.limit, opts.calendarId],
     queryFn: () => fetchMyEvents(opts),
     staleTime: 60_000,

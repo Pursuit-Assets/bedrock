@@ -116,6 +116,34 @@ export function GoalTracker({ filterUserId, className }: GoalTrackerProps) {
     stats.status === "on-track" ? "On track" : stats.status === "close" ? "Close" : "Behind pace";
 
   const heading = isTeam ? "Team goal" : ownerName ? `${ownerName}'s goal` : "My goal";
+  const goalsLoading = goalsQ.isLoading || oppsQ.isLoading;
+  const noGoalSet = !goalsLoading && goalAmount <= 0;
+
+  if (noGoalSet) {
+    return (
+      <section
+        className={cn(
+          "flex flex-col gap-2 rounded-lg border border-dashed border-border-strong bg-surface p-4",
+          className,
+        )}
+      >
+        <h2 className="text-[12px] font-semibold uppercase tracking-wider text-ink-3">
+          {heading}
+        </h2>
+        <p className="text-[12.5px] text-ink-3">
+          {isTeam
+            ? "No team goals have been set for the current fiscal year."
+            : "No revenue goal set for the current fiscal year."}
+        </p>
+        <a
+          href="/settings"
+          className="self-start text-[11.5px] font-medium text-accent-ink hover:underline"
+        >
+          Set a goal in Settings →
+        </a>
+      </section>
+    );
+  }
 
   return (
     <section
