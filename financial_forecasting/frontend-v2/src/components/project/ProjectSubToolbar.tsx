@@ -6,11 +6,16 @@ import type { ProjectView } from "@/components/project/ProjectViewSwitcher";
 import { MultiSelect } from "@/components/project/MultiSelect";
 
 export type StatusFilter = "all" | "open" | "done";
+export type DueFilter = "all" | "this_week" | "overdue";
 export type GroupBy = "none" | "status" | "workstream" | "milestone";
 
 export interface ProjectFilter {
   q: string;
   status: StatusFilter;
+  /** Quick-filter on task deadline. 'this_week' = tasks due in the
+   *  current Mon–Sun window plus anything overdue. 'overdue' = strictly
+   *  past-due open tasks. */
+  due: DueFilter;
   /** Empty = anyone. */
   ownerIds: string[];
   /** Empty = all workstreams. */
@@ -23,19 +28,20 @@ export interface ProjectFilter {
 export const DEFAULT_FILTER: ProjectFilter = {
   q: "",
   status: "all",
+  due: "all",
   ownerIds: [],
   workstreamIds: [],
   milestoneIds: [],
-  // Workstream is the gantt's default. Board view's auto-correct in
-  // this file maps unsupported groupBy values to "status" on first
-  // mount, so Board still defaults sensibly.
-  groupBy: "workstream",
+  // Board groups by status by default. The Timeline view doesn't read
+  // this field — it always groups workstream → milestone.
+  groupBy: "status",
 };
 
 export function isDefaultFilter(f: ProjectFilter): boolean {
   return (
     f.q === DEFAULT_FILTER.q &&
     f.status === DEFAULT_FILTER.status &&
+    f.due === DEFAULT_FILTER.due &&
     f.ownerIds.length === 0 &&
     f.workstreamIds.length === 0 &&
     f.milestoneIds.length === 0
@@ -137,26 +143,18 @@ export function ProjectSubToolbar({
     label: u.display_name || u.email,
   }));
 
-  const groupByOptions: { value: GroupBy; label: string }[] =
-    view === "board"
-      ? [
-          { value: "status", label: "Status" },
-          { value: "workstream", label: "Workstream" },
-          { value: "milestone", label: "Milestone" },
-        ]
-      : [
-          { value: "none", label: "No grouping" },
-          { value: "workstream", label: "Workstream" },
-          { value: "milestone", label: "Milestone" },
-        ];
+  // Group-by is only meaningful on Board. List has nothing to group;
+  // Timeline always uses workstream → milestone hierarchy.
+  const groupByOptions: { value: GroupBy; label: string }[] = [
+    { value: "status", label: "Status" },
+    { value: "workstream", label: "Workstream" },
+    { value: "milestone", label: "Milestone" },
+  ];
 
-  // If the current groupBy isn't supported in this view (e.g. "status"
-  // on Timeline), pick a sensible default. Run via microtask so it
-  // doesn't trip React state-update-during-render.
-  if (!groupByOptions.some((o) => o.value === filter.groupBy)) {
-    queueMicrotask(() =>
-      patch({ groupBy: view === "board" ? "status" : "none" }),
-    );
+  // If the user picked an unsupported groupBy in some prior session and
+  // is now on Board, normalize to "status".
+  if (view === "board" && !groupByOptions.some((o) => o.value === filter.groupBy)) {
+    queueMicrotask(() => patch({ groupBy: "status" }));
   }
 
   return (
@@ -200,6 +198,17 @@ export function ProjectSubToolbar({
         ]}
       />
 
+      <Pills<DueFilter>
+        ariaLabel="Due"
+        value={filter.due}
+        onChange={(v) => patch({ due: v })}
+        options={[
+          { value: "all", label: "Any time" },
+          { value: "this_week", label: "This week" },
+          { value: "overdue", label: "Overdue" },
+        ]}
+      />
+
       <MultiSelect
         label="Workstreams"
         values={filter.workstreamIds}
@@ -234,7 +243,7 @@ export function ProjectSubToolbar({
         width={240}
       />
 
-      {view !== "list" ? (
+      {view === "board" ? (
         <label className="flex items-center gap-1.5 text-[11.5px] text-ink-3">
           Group by
           <select
@@ -261,7 +270,7 @@ export function ProjectSubToolbar({
  * evaluated without re-walking the tree.
  */
 export function taskMatchesFilter(
-  task: { title: string; status: string; owner_ids: string[]; description: string | null },
+  task: { title: string; status: string; owner_ids: string[]; description: string | null; deadline?: string | null },
   milestone: { id: string },
   filter: ProjectFilter,
   workstreamId?: string,
@@ -272,12 +281,36 @@ export function taskMatchesFilter(
     const matchDesc = (task.description ?? "").toLowerCase().includes(ql);
     if (!matchTitle && !matchDesc) return false;
   }
+  const done = ["done", "complete", "completed", "cancelled", "canceled"].includes(
+    task.status.toLowerCase(),
+  );
   if (filter.status !== "all") {
-    const done = ["done", "complete", "completed", "cancelled", "canceled"].includes(
-      task.status.toLowerCase(),
-    );
     if (filter.status === "done" && !done) return false;
     if (filter.status === "open" && done) return false;
+  }
+  if (filter.due !== "all") {
+    // Closed tasks are excluded from both "this week" and "overdue" —
+    // these filters are about what still needs attention.
+    if (done) return false;
+    if (!task.deadline) return false;
+    const due = new Date(task.deadline);
+    const now = new Date();
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    // Monday-anchored week (matches the gantt's startOfWeek option).
+    const dow = todayStart.getDay(); // 0=Sun..6=Sat
+    const daysSinceMon = (dow + 6) % 7;
+    const weekStart = new Date(todayStart);
+    weekStart.setDate(todayStart.getDate() - daysSinceMon);
+    const weekEnd = new Date(weekStart);
+    weekEnd.setDate(weekStart.getDate() + 7); // exclusive
+    if (filter.due === "overdue") {
+      if (!(due < todayStart)) return false;
+    } else {
+      // "this_week" = overdue OR within the current Mon–Sun window
+      const isOverdue = due < todayStart;
+      const isThisWeek = due >= weekStart && due < weekEnd;
+      if (!isOverdue && !isThisWeek) return false;
+    }
   }
   if (
     filter.ownerIds.length > 0 &&

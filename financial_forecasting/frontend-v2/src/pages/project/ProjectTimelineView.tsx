@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import {
   addDays,
@@ -8,7 +8,6 @@ import {
   differenceInCalendarDays,
   endOfMonth,
   endOfQuarter,
-  endOfWeek,
   format,
   isAfter,
   isBefore,
@@ -31,6 +30,8 @@ import {
   type ProjectWorkstream,
 } from "@/services/projects";
 import { TaskDrawer } from "@/components/project/TaskDrawer";
+import { MilestoneDrawer } from "@/components/project/MilestoneDrawer";
+import { WorkstreamDrawer } from "@/components/project/WorkstreamDrawer";
 import {
   taskMatchesFilter,
   type ProjectFilter,
@@ -41,7 +42,6 @@ const ROW_HEIGHT = 28;
 const GROUP_HEADER_HEIGHT = 28;
 const SUBGROUP_HEADER_HEIGHT = 26;
 const HEADER_HEIGHT = 56;
-const MILESTONE_TRACK_HEIGHT = 32;
 const LEFT_COL = 320;
 const VIEW_HEIGHT = 640; // fixed gantt height; bottom scrollbar is always reachable
 
@@ -159,14 +159,12 @@ export function ProjectTimelineView({ detail, filter, canEdit }: ProjectTimeline
     });
   }
 
-  // Default milestone collapse depends on the active grouping:
-  //   - workstream grouping → milestones default collapsed (the WS rollup is the overview)
-  //   - milestone grouping  → milestones default expanded
-  //   - none                → milestones default expanded (flat list look)
+  // Milestones default collapsed so the workstream rollup is the
+  // overview; users expand individual milestones to drill in.
   function isMsCollapsed(msId: string) {
     const explicit = explicitMsState.get(msId);
     if (explicit !== undefined) return explicit;
-    return filter.groupBy === "workstream";
+    return true;
   }
 
   function toggleMs(id: string) {
@@ -252,17 +250,37 @@ export function ProjectTimelineView({ detail, filter, canEdit }: ProjectTimeline
       }
     }
     return out;
-  }, [tasks, detail.workstreams, collapsedWs, explicitMsState, filter.groupBy]);
+  }, [tasks, detail.workstreams, collapsedWs, explicitMsState]);
 
   // ── Date axis ─────────────────────────────────────────────────────────
+  // Align range start/end to the *major* tick boundary at the current
+  // zoom: weeks→month, months→quarter, quarters→year. This makes
+  // every major AND minor tick the same width, and prevents scrolling
+  // past the data range into empty padded columns.
   const range = useMemo(() => {
     const dates: Date[] = [today];
     for (const t of tasks) dates.push(t.start, t.end);
     for (const m of milestones) dates.push(m.due);
-    const start = startOfWeek(addDays(min(dates), -15), { weekStartsOn: 1 });
-    const end = endOfWeek(addDays(max(dates), 15), { weekStartsOn: 1 });
-    return { start, end };
-  }, [tasks, milestones, today]);
+    const minPadded = addDays(min(dates), -15);
+    const maxPadded = addDays(max(dates), 15);
+    if (zoom === "weeks") {
+      return {
+        start: startOfMonth(minPadded),
+        end: endOfMonth(maxPadded),
+      };
+    }
+    if (zoom === "months") {
+      return {
+        start: startOfQuarter(minPadded),
+        end: endOfQuarter(maxPadded),
+      };
+    }
+    // quarters → year boundaries
+    return {
+      start: new Date(minPadded.getFullYear(), 0, 1),
+      end: new Date(maxPadded.getFullYear() + 1, 0, 1),
+    };
+  }, [tasks, milestones, today, zoom]);
 
   const totalDays = differenceInCalendarDays(range.end, range.start) + 1;
   const totalWidth = totalDays * dayWidth;
@@ -285,8 +303,32 @@ export function ProjectTimelineView({ detail, filter, canEdit }: ProjectTimeline
     ? rowTops[rowTops.length - 1] + rows[rows.length - 1].height
     : 0;
 
+  // Center the viewport on today whenever the zoom or date range
+  // changes (which includes initial mount). The user can scroll
+  // wherever afterwards — we only re-center on those triggers.
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const todayX = xOf(today);
+    const target = Math.max(0, LEFT_COL + todayX - (el.clientWidth - LEFT_COL) / 2);
+    el.scrollLeft = target;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [zoom, range.start.getTime(), totalWidth]);
+
   const [drawerTaskId, setDrawerTaskId] = useState<string | null>(null);
   const drawerTask = drawerTaskId ? tasks.find((t) => t.task.id === drawerTaskId) : null;
+  const [drawerWsId, setDrawerWsId] = useState<string | null>(null);
+  const drawerWs = drawerWsId ? detail.workstreams.find((w) => w.id === drawerWsId) : null;
+  const [drawerMsId, setDrawerMsId] = useState<string | null>(null);
+  const drawerMsContext = (() => {
+    if (!drawerMsId) return null;
+    for (const ws of detail.workstreams) {
+      const ms = ws.milestones.find((m) => m.id === drawerMsId);
+      if (ms) return { ws, ms };
+    }
+    return null;
+  })();
 
   return (
     <div>
@@ -326,6 +368,7 @@ export function ProjectTimelineView({ detail, filter, canEdit }: ProjectTimeline
         // Fixed-height scroll container — horizontal scrollbar sits at
         // the bottom of this box no matter how many tasks are listed.
         <div
+          ref={scrollRef}
           className="overflow-auto rounded-lg border border-border-strong bg-surface"
           style={{ height: VIEW_HEIGHT }}
         >
@@ -333,72 +376,37 @@ export function ProjectTimelineView({ detail, filter, canEdit }: ProjectTimeline
             className="relative"
             style={{ width: LEFT_COL + totalWidth, minHeight: "100%" }}
           >
-            {/* Sticky top header (date axis + milestone diamond track) */}
+            {/* Sticky top header — date axis only */}
             <div
               className="sticky top-0 z-20 flex bg-surface-2"
-              style={{ height: HEADER_HEIGHT + MILESTONE_TRACK_HEIGHT }}
+              style={{ height: HEADER_HEIGHT }}
             >
-              {/* Left header — sticky both axes */}
               <div
-                className="sticky left-0 z-30 flex flex-col flex-shrink-0 border-r border-border-strong bg-surface-2"
-                style={{ width: LEFT_COL }}
+                className="sticky left-0 z-30 flex flex-shrink-0 items-center border-b border-r border-border-strong bg-surface-2 px-3 text-[11.5px] font-semibold text-ink-2"
+                style={{ width: LEFT_COL, height: HEADER_HEIGHT }}
               >
-                <div
-                  className="border-b border-border-strong px-3 py-2 text-[11.5px] font-semibold text-ink-2"
-                  style={{ height: HEADER_HEIGHT }}
-                >
-                  Tasks
-                </div>
-                <div
-                  style={{ height: MILESTONE_TRACK_HEIGHT }}
-                  className="border-b border-border bg-surface-2/40 px-3 py-1 text-[10.5px] uppercase tracking-wider text-ink-4"
-                >
-                  Milestone diamonds
-                </div>
+                Tasks
               </div>
 
-              {/* Right header — date axis + milestone diamonds */}
-              <div className="relative flex-shrink-0" style={{ width: totalWidth }}>
-                <div className="relative" style={{ height: HEADER_HEIGHT }}>
-                  {ticks.major.map((t) => (
-                    <div
-                      key={`maj-${t.date.toISOString()}`}
-                      className="absolute top-0 flex h-[28px] items-center border-l border-border-strong px-1.5 text-[11px] font-semibold text-ink-2"
-                      style={{ left: xOf(t.date), width: t.width }}
-                    >
-                      <span className="truncate">{t.label}</span>
-                    </div>
-                  ))}
-                  {ticks.minor.map((t) => (
-                    <div
-                      key={`min-${t.date.toISOString()}`}
-                      className="absolute flex h-[28px] items-center border-l border-border px-1 text-[10px] text-ink-3"
-                      style={{ top: 28, left: xOf(t.date), width: t.width }}
-                    >
-                      <span className="truncate">{t.label}</span>
-                    </div>
-                  ))}
-                </div>
-                <div
-                  className="relative border-b border-border bg-surface-2/40"
-                  style={{ height: MILESTONE_TRACK_HEIGHT }}
-                >
-                  {milestones.map((m) => (
-                    <button
-                      key={m.milestone.id}
-                      type="button"
-                      title={`${m.milestone.title} · ${format(m.due, "MMM d, yyyy")}`}
-                      onClick={() => {
-                        const t = tasks.find((x) => x.milestone.id === m.milestone.id);
-                        if (t) setDrawerTaskId(t.task.id);
-                      }}
-                      className="absolute -translate-x-1/2 hover:scale-110"
-                      style={{ left: xOf(m.due) + dayWidth / 2, top: 4 }}
-                    >
-                      <Diamond />
-                    </button>
-                  ))}
-                </div>
+              <div className="relative flex-shrink-0 border-b border-border-strong" style={{ width: totalWidth, height: HEADER_HEIGHT }}>
+                {ticks.major.map((t) => (
+                  <div
+                    key={`maj-${t.date.toISOString()}`}
+                    className="absolute top-0 flex h-[28px] items-center border-l border-border-strong px-1.5 text-[11px] font-semibold text-ink-2"
+                    style={{ left: xOf(t.date), width: t.width }}
+                  >
+                    <span className="truncate">{t.label}</span>
+                  </div>
+                ))}
+                {ticks.minor.map((t) => (
+                  <div
+                    key={`min-${t.date.toISOString()}`}
+                    className="absolute flex h-[28px] items-center border-l border-border px-1 text-[10px] text-ink-3"
+                    style={{ top: 28, left: xOf(t.date), width: t.width }}
+                  >
+                    <span className="truncate">{t.label}</span>
+                  </div>
+                ))}
               </div>
             </div>
 
@@ -413,45 +421,69 @@ export function ProjectTimelineView({ detail, filter, canEdit }: ProjectTimeline
                   if (r.kind === "workstream-header") {
                     const collapsed = collapsedWs.has(r.wsId);
                     return (
-                      <button
+                      <div
                         key={`ws-${r.wsId}-${i}`}
-                        type="button"
-                        onClick={() => toggleWs(r.wsId)}
-                        className="flex w-full items-center gap-1.5 border-b border-border bg-surface-2/80 px-2 text-left text-[12px] font-semibold text-ink-2 hover:bg-surface-2"
+                        className="flex w-full items-center border-b border-border bg-surface-2/80 text-[12px] font-semibold text-ink-2"
                         style={{ height: r.height }}
                       >
-                        {collapsed ? (
-                          <ChevronRight size={13} className="text-ink-3" />
-                        ) : (
-                          <ChevronDown size={13} className="text-ink-3" />
-                        )}
-                        <span className="truncate">{r.label}</span>
-                        <span className="ml-auto text-[10.5px] font-normal text-ink-4">
+                        <button
+                          type="button"
+                          onClick={() => toggleWs(r.wsId)}
+                          aria-label={collapsed ? "Expand workstream" : "Collapse workstream"}
+                          className="flex h-full items-center justify-center px-2 text-ink-3 hover:bg-surface-2 hover:text-ink"
+                        >
+                          {collapsed ? (
+                            <ChevronRight size={13} />
+                          ) : (
+                            <ChevronDown size={13} />
+                          )}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setDrawerWsId(r.wsId)}
+                          className="flex min-w-0 flex-1 items-center gap-1.5 truncate px-1 text-left hover:text-accent-ink hover:underline"
+                          title="Open workstream details"
+                        >
+                          <span className="truncate">{r.label}</span>
+                        </button>
+                        <span className="px-2 text-[10.5px] font-normal text-ink-4">
                           {r.span?.count ?? 0}
                         </span>
-                      </button>
+                      </div>
                     );
                   }
                   if (r.kind === "milestone-header") {
                     const collapsed = isMsCollapsed(r.msId);
                     return (
-                      <button
+                      <div
                         key={`ms-${r.msId}-${i}`}
-                        type="button"
-                        onClick={() => toggleMs(r.msId)}
-                        className="flex w-full items-center gap-1.5 border-b border-border bg-surface px-2 pl-6 text-left text-[11.5px] text-ink-3 hover:bg-surface-2"
+                        className="flex w-full items-center border-b border-border bg-surface text-[11.5px] text-ink-3"
                         style={{ height: r.height }}
                       >
-                        {collapsed ? (
-                          <ChevronRight size={11} className="text-ink-4" />
-                        ) : (
-                          <ChevronDown size={11} className="text-ink-4" />
-                        )}
-                        <span className="truncate">{r.label}</span>
-                        <span className="ml-auto text-[10.5px] text-ink-4">
+                        <button
+                          type="button"
+                          onClick={() => toggleMs(r.msId)}
+                          aria-label={collapsed ? "Expand milestone" : "Collapse milestone"}
+                          className="flex h-full items-center justify-center px-2 pl-6 text-ink-4 hover:bg-surface-2 hover:text-ink"
+                        >
+                          {collapsed ? (
+                            <ChevronRight size={11} />
+                          ) : (
+                            <ChevronDown size={11} />
+                          )}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setDrawerMsId(r.msId)}
+                          className="flex min-w-0 flex-1 items-center gap-1.5 truncate px-1 text-left hover:text-accent-ink hover:underline"
+                          title="Open milestone details"
+                        >
+                          <span className="truncate">{r.label}</span>
+                        </button>
+                        <span className="px-2 text-[10.5px] text-ink-4">
                           {r.span?.count ?? 0}
                         </span>
-                      </button>
+                      </div>
                     );
                   }
                   const t = r.task;
@@ -592,16 +624,34 @@ export function ProjectTimelineView({ detail, filter, canEdit }: ProjectTimeline
           onClose={() => setDrawerTaskId(null)}
         />
       ) : null}
-    </div>
-  );
-}
 
-function Diamond() {
-  return (
-    <span
-      aria-hidden
-      className="block h-3 w-3 rotate-45 bg-amber-500 ring-2 ring-amber-200"
-    />
+      {drawerWs ? (
+        <WorkstreamDrawer
+          workstream={drawerWs}
+          projectId={detail.id}
+          canEdit={canEdit}
+          onClose={() => setDrawerWsId(null)}
+          onOpenMilestone={(m) => {
+            setDrawerWsId(null);
+            setDrawerMsId(m.id);
+          }}
+        />
+      ) : null}
+
+      {drawerMsContext ? (
+        <MilestoneDrawer
+          milestone={drawerMsContext.ms}
+          workstream={drawerMsContext.ws}
+          projectId={detail.id}
+          canEdit={canEdit}
+          onClose={() => setDrawerMsId(null)}
+          onOpenTask={(t) => {
+            setDrawerMsId(null);
+            setDrawerTaskId(t.id);
+          }}
+        />
+      ) : null}
+    </div>
   );
 }
 
@@ -616,56 +666,55 @@ function generateTicks(start: Date, end: Date, zoom: Zoom): { major: Tick[]; min
   const major: Tick[] = [];
   const minor: Tick[] = [];
 
+  // Range is pre-aligned to the major tick boundary, so every tick
+  // starts exactly at `start` and the last tick ends exactly at `end`.
+  // No padding; no overflow past the data range.
+
   if (zoom === "weeks") {
-    let cursor = startOfMonth(start);
-    while (cursor <= end) {
-      const next = startOfMonth(addMonths(cursor, 1));
-      const spanStart = max([cursor, start]);
-      const spanEnd = min([addDays(next, -1), end]);
-      const width = (differenceInCalendarDays(spanEnd, spanStart) + 1) * dayWidth;
-      major.push({ date: spanStart, label: format(cursor, "MMM yyyy"), width });
+    // Major = month; Minor = week.
+    let cursor = start;
+    while (cursor < end) {
+      const next = addMonths(cursor, 1);
+      const width = differenceInCalendarDays(next, cursor) * dayWidth;
+      major.push({ date: cursor, label: format(cursor, "MMM yyyy"), width });
       cursor = next;
     }
     let wkCursor = startOfWeek(start, { weekStartsOn: 1 });
-    while (wkCursor <= end) {
+    while (wkCursor < end) {
       minor.push({ date: wkCursor, label: format(wkCursor, "MMM d"), width: 7 * dayWidth });
       wkCursor = addWeeks(wkCursor, 1);
     }
   } else if (zoom === "months") {
-    let cursor = startOfQuarter(start);
-    while (cursor <= end) {
-      const next = startOfQuarter(addQuarters(cursor, 1));
-      const spanStart = max([cursor, start]);
-      const spanEnd = min([endOfQuarter(cursor), end]);
-      const width = (differenceInCalendarDays(spanEnd, spanStart) + 1) * dayWidth;
-      major.push({ date: spanStart, label: format(cursor, "QQQ yyyy"), width });
+    // Major = quarter; Minor = month.
+    let cursor = start;
+    while (cursor < end) {
+      const next = addQuarters(cursor, 1);
+      const width = differenceInCalendarDays(next, cursor) * dayWidth;
+      major.push({ date: cursor, label: format(cursor, "QQQ yyyy"), width });
       cursor = next;
     }
-    let monCursor = startOfMonth(start);
-    while (monCursor <= end) {
-      const spanStart = max([monCursor, start]);
-      const spanEnd = min([endOfMonth(monCursor), end]);
-      const width = (differenceInCalendarDays(spanEnd, spanStart) + 1) * dayWidth;
-      minor.push({ date: spanStart, label: format(monCursor, "MMM"), width });
-      monCursor = addMonths(monCursor, 1);
+    let monCursor = start;
+    while (monCursor < end) {
+      const next = addMonths(monCursor, 1);
+      const width = differenceInCalendarDays(next, monCursor) * dayWidth;
+      minor.push({ date: monCursor, label: format(monCursor, "MMM"), width });
+      monCursor = next;
     }
   } else {
-    let cursor = new Date(start.getFullYear(), 0, 1);
-    while (cursor <= end) {
+    // Quarters zoom: Major = year; Minor = quarter.
+    let cursor = start;
+    while (cursor < end) {
       const next = new Date(cursor.getFullYear() + 1, 0, 1);
-      const spanStart = max([cursor, start]);
-      const spanEnd = min([addDays(next, -1), end]);
-      const width = (differenceInCalendarDays(spanEnd, spanStart) + 1) * dayWidth;
-      major.push({ date: spanStart, label: format(cursor, "yyyy"), width });
+      const width = differenceInCalendarDays(next, cursor) * dayWidth;
+      major.push({ date: cursor, label: format(cursor, "yyyy"), width });
       cursor = next;
     }
-    let qCursor = startOfQuarter(start);
-    while (qCursor <= end) {
-      const spanStart = max([qCursor, start]);
-      const spanEnd = min([endOfQuarter(qCursor), end]);
-      const width = (differenceInCalendarDays(spanEnd, spanStart) + 1) * dayWidth;
-      minor.push({ date: spanStart, label: format(qCursor, "QQQ"), width });
-      qCursor = startOfQuarter(addQuarters(qCursor, 1));
+    let qCursor = start;
+    while (qCursor < end) {
+      const next = addQuarters(qCursor, 1);
+      const width = differenceInCalendarDays(next, qCursor) * dayWidth;
+      minor.push({ date: qCursor, label: format(qCursor, "QQQ"), width });
+      qCursor = next;
     }
   }
 

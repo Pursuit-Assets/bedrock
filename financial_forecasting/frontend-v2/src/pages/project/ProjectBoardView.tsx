@@ -217,7 +217,13 @@ export function ProjectBoardView({ detail, filter, canEdit }: ProjectBoardViewPr
         onDragStart={onDragStart}
         onDragEnd={onDragEnd}
       >
-        <div className="flex gap-3 overflow-x-auto pb-2">
+        {/* Fixed-height board so the page doesn't grow unbounded with
+            many tasks. Each column fills the full height and scrolls
+            its cards internally — all columns line up at the bottom. */}
+        <div
+          className="flex gap-3 overflow-x-auto pb-2"
+          style={{ height: 640 }}
+        >
           {groups.map((g) => (
             <Column
               key={g.key}
@@ -274,13 +280,15 @@ function Column({
     <div
       ref={setNodeRef}
       className={cn(
-        "flex w-[280px] flex-shrink-0 flex-col rounded-md border border-border-strong bg-surface-2",
+        // h-full + flex-col ensures every column fills the parent's
+        // fixed height so all columns line up at the bottom.
+        "flex h-full w-[280px] flex-shrink-0 flex-col rounded-md border border-border-strong bg-surface-2",
         isOver && "ring-1 ring-accent",
       )}
     >
       <div
         className={cn(
-          "flex items-center justify-between rounded-t-md px-3 py-2 text-[11.5px] font-semibold uppercase tracking-wider",
+          "flex flex-shrink-0 items-center justify-between rounded-t-md px-3 py-2 text-[11.5px] font-semibold uppercase tracking-wider",
           headerStyle,
         )}
       >
@@ -290,7 +298,9 @@ function Column({
         </span>
       </div>
       <SortableContext items={items.map((bt) => bt.task.id)} strategy={verticalListSortingStrategy}>
-        <div className="flex flex-col gap-1.5 p-2">
+        {/* Card area scrolls vertically inside the column when content
+            overflows; the column itself stays a uniform height. */}
+        <div className="flex flex-1 flex-col gap-1.5 overflow-y-auto p-2">
           {items.map((bt) => (
             <SortableCard key={bt.task.id} bt={bt} onOpen={onOpen} />
           ))}

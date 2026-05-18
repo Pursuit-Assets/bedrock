@@ -18,6 +18,9 @@ import { useOpportunities } from "@/services/opportunities";
 import type { SfOpportunity } from "@/types/salesforce";
 import { useSalesforceStatus } from "@/services/auth";
 import { DescriptionEditor } from "@/components/project/DescriptionEditor";
+import { TaskDrawer } from "@/components/project/TaskDrawer";
+import { MilestoneDrawer } from "@/components/project/MilestoneDrawer";
+import { WorkstreamDrawer } from "@/components/project/WorkstreamDrawer";
 import {
   ProjectViewSwitcher,
   useProjectView,
@@ -307,10 +310,12 @@ function TaskRow({
   task,
   canEdit,
   projectId,
+  onOpenDrawer,
 }: {
   task: ProjectTask;
   canEdit: boolean;
   projectId: string;
+  onOpenDrawer: () => void;
 }) {
   const updateTask = useUpdateTask(projectId);
   const deleteTask = useDeleteTask(projectId);
@@ -395,16 +400,17 @@ function TaskRow({
             className="w-full rounded bg-surface-2 px-1.5 py-0.5 text-[13px] outline-none ring-1 ring-accent"
           />
         ) : (
-          <span
+          <button
+            type="button"
             className={cn(
-              "block min-w-0 flex-1 cursor-default truncate text-[13px]",
+              "block min-w-0 flex-1 cursor-pointer truncate rounded px-1 text-left text-[13px] hover:bg-black/[0.03] hover:text-accent-ink",
               closed && "text-ink-3 line-through",
-              canEdit && "cursor-text",
             )}
-            onClick={() => canEdit && setEditingTitle(true)}
+            onClick={onOpenDrawer}
+            title="Open task details"
           >
             {task.title}
-          </span>
+          </button>
         )}
       </div>
 
@@ -491,7 +497,17 @@ function TaskRow({
               <MoreHorizontal size={14} />
             </button>
             {actionsOpen && (
-              <div className="absolute right-0 top-full z-50 min-w-[120px] rounded-md border border-border-strong bg-surface shadow-lg">
+              <div className="absolute right-0 top-full z-50 min-w-[140px] rounded-md border border-border-strong bg-surface shadow-lg">
+                <button
+                  type="button"
+                  className="block w-full px-3 py-1.5 text-left text-[12px] hover:bg-surface-2"
+                  onClick={() => {
+                    setEditingTitle(true);
+                    setActionsOpen(false);
+                  }}
+                >
+                  Rename
+                </button>
                 <button
                   type="button"
                   className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12px] text-red-600 hover:bg-surface-2"
@@ -618,10 +634,14 @@ function MilestoneBlock({
   milestone,
   canEdit,
   projectId,
+  onOpenDrawer,
+  onOpenTaskDrawer,
 }: {
   milestone: ProjectMilestone;
   canEdit: boolean;
   projectId: string;
+  onOpenDrawer: () => void;
+  onOpenTaskDrawer: (taskId: string) => void;
 }) {
   const updateMilestone = useUpdateMilestone(projectId);
   const deleteMilestone = useDeleteMilestone(projectId);
@@ -704,16 +724,14 @@ function MilestoneBlock({
             className="min-w-0 flex-1 rounded bg-surface px-1.5 py-0.5 text-[12px] font-semibold outline-none ring-1 ring-accent"
           />
         ) : (
-          <span
-            className={cn(
-              "min-w-0 flex-1 truncate text-[12px] font-semibold text-ink-2",
-              canEdit && "cursor-text rounded px-1 hover:bg-black/[0.03]",
-            )}
-            onClick={() => canEdit && setEditingTitle(true)}
-            title={canEdit ? "Click to rename" : milestone.title}
+          <button
+            type="button"
+            className="min-w-0 flex-1 truncate rounded px-1 text-left text-[12px] font-semibold text-ink-2 hover:bg-black/[0.03] hover:text-accent-ink"
+            onClick={onOpenDrawer}
+            title="Open milestone details"
           >
             {milestone.title}
-          </span>
+          </button>
         )}
 
         {/* Status chip — click to change. */}
@@ -870,7 +888,13 @@ function MilestoneBlock({
       ) : null}
 
       {milestone.tasks.map((t) => (
-        <TaskRow key={t.id} task={t} canEdit={canEdit} projectId={projectId} />
+        <TaskRow
+          key={t.id}
+          task={t}
+          canEdit={canEdit}
+          projectId={projectId}
+          onOpenDrawer={() => onOpenTaskDrawer(t.id)}
+        />
       ))}
       {canEdit && (
         <AddTaskRow milestoneId={milestone.id} projectId={projectId} />
@@ -941,10 +965,16 @@ function WorkstreamSection({
   ws,
   canEdit,
   projectId,
+  onOpenDrawer,
+  onOpenMilestoneDrawer,
+  onOpenTaskDrawer,
 }: {
   ws: ProjectWorkstream;
   canEdit: boolean;
   projectId: string;
+  onOpenDrawer: () => void;
+  onOpenMilestoneDrawer: (msId: string) => void;
+  onOpenTaskDrawer: (taskId: string) => void;
 }) {
   const [open, setOpen] = useState(true);
   const [addingMilestone, setAddingMilestone] = useState(false);
@@ -1022,16 +1052,14 @@ function WorkstreamSection({
               className="min-w-0 flex-1 rounded bg-surface px-1.5 py-0.5 text-[13px] font-semibold outline-none ring-1 ring-accent"
             />
           ) : (
-            <span
-              className={cn(
-                "min-w-0 flex-1 truncate text-[13px] font-semibold text-ink",
-                canEdit && "cursor-text hover:bg-black/[0.03] rounded px-1",
-              )}
-              onClick={() => canEdit && setEditingName(true)}
-              title={canEdit ? "Click to rename" : ws.name}
+            <button
+              type="button"
+              className="min-w-0 flex-1 truncate rounded px-1 text-left text-[13px] font-semibold text-ink hover:bg-black/[0.03] hover:text-accent-ink"
+              onClick={onOpenDrawer}
+              title="Open workstream details"
             >
               {ws.name}
-            </span>
+            </button>
           )}
           <span className="mono flex-shrink-0 text-[11px] text-ink-3">
             {milestoneCount} milestone{milestoneCount === 1 ? "" : "s"} · {taskCount} task{taskCount === 1 ? "" : "s"}
@@ -1100,6 +1128,8 @@ function WorkstreamSection({
               milestone={ms}
               canEdit={canEdit}
               projectId={projectId}
+              onOpenDrawer={() => onOpenMilestoneDrawer(ms.id)}
+              onOpenTaskDrawer={onOpenTaskDrawer}
             />
           ))}
           {milestoneCount === 0 && !addingMilestone ? (
@@ -1795,6 +1825,37 @@ function ProjectListView({
   projectId,
   showAddWorkstream,
 }: ProjectListViewProps) {
+  // Side panel state — clicking a workstream/milestone/task name opens
+  // the relevant drawer. The existing inline-edit flows are still
+  // reachable via the `⋯` menu's "Rename" item.
+  const [openWsId, setOpenWsId] = useState<string | null>(null);
+  const [openMsId, setOpenMsId] = useState<string | null>(null);
+  const [openTaskId, setOpenTaskId] = useState<string | null>(null);
+
+  // Resolve the latest object from the workstream tree each render so
+  // the drawer reflects up-to-date data (e.g. after an inline edit).
+  const openWs = openWsId
+    ? workstreams.find((w) => w.id === openWsId) ?? null
+    : null;
+  const openMsCtx = (() => {
+    if (!openMsId) return null;
+    for (const w of workstreams) {
+      const m = w.milestones.find((x) => x.id === openMsId);
+      if (m) return { ws: w, ms: m };
+    }
+    return null;
+  })();
+  const openTaskCtx = (() => {
+    if (!openTaskId) return null;
+    for (const w of workstreams) {
+      for (const m of w.milestones) {
+        const t = m.tasks.find((x) => x.id === openTaskId);
+        if (t) return { ws: w, ms: m, task: t };
+      }
+    }
+    return null;
+  })();
+
   return (
     <>
       {workstreams.length === 0 ? (
@@ -1810,10 +1871,51 @@ function ProjectListView({
             ws={ws}
             canEdit={canEdit}
             projectId={projectId}
+            onOpenDrawer={() => setOpenWsId(ws.id)}
+            onOpenMilestoneDrawer={(msId) => setOpenMsId(msId)}
+            onOpenTaskDrawer={(taskId) => setOpenTaskId(taskId)}
           />
         ))
       )}
       {canEdit && showAddWorkstream ? <AddWorkstreamRow projectId={projectId} /> : null}
+
+      {openWs ? (
+        <WorkstreamDrawer
+          workstream={openWs}
+          projectId={projectId}
+          canEdit={canEdit}
+          onClose={() => setOpenWsId(null)}
+          onOpenMilestone={(m) => {
+            setOpenWsId(null);
+            setOpenMsId(m.id);
+          }}
+        />
+      ) : null}
+
+      {openMsCtx ? (
+        <MilestoneDrawer
+          milestone={openMsCtx.ms}
+          workstream={openMsCtx.ws}
+          projectId={projectId}
+          canEdit={canEdit}
+          onClose={() => setOpenMsId(null)}
+          onOpenTask={(t) => {
+            setOpenMsId(null);
+            setOpenTaskId(t.id);
+          }}
+        />
+      ) : null}
+
+      {openTaskCtx ? (
+        <TaskDrawer
+          task={openTaskCtx.task}
+          milestone={openTaskCtx.ms}
+          workstream={openTaskCtx.ws}
+          projectId={projectId}
+          canEdit={canEdit}
+          onClose={() => setOpenTaskId(null)}
+        />
+      ) : null}
     </>
   );
 }
