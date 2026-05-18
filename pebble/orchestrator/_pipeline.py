@@ -19,6 +19,7 @@ Decomposition pattern:
 import asyncio
 import json
 import logging
+import os
 import re
 import uuid
 from dataclasses import dataclass, field
@@ -45,10 +46,25 @@ from ..claim_templates import (
     claims_from_edgar_search,
     claims_from_wikipedia_infobox,
 )
+from .verifier import verify_claim_once
 
 logger = logging.getLogger("pebble.orchestrator")
 
 PROSPECT_COST_CAP_USD = 0.50
+
+# Per-claim verifier (§4.3) — the Haiku check that runs BEFORE the
+# run-level 2-of-3 quorum. Default on. Operations can set
+# PEBBLE_PER_CLAIM_VERIFIER_DISABLED=true to fall back to quorum-only
+# behavior in case of a cost regression or quality bug; the env var is
+# a kill switch, not a feature flag — the per-claim verifier is the
+# default behavior. The flag is read once per run, not per claim,
+# so toggling mid-run has no effect.
+_PER_CLAIM_VERIFIER_DISABLED_ENV = "PEBBLE_PER_CLAIM_VERIFIER_DISABLED"
+
+
+def _per_claim_verifier_enabled() -> bool:
+    raw = os.environ.get(_PER_CLAIM_VERIFIER_DISABLED_ENV, "").strip().lower()
+    return raw not in ("1", "true", "yes", "on")
 
 # Strip markdown fences that LLMs sometimes wrap around JSON
 _FENCE_RE = re.compile(r"^```(?:json)?\s*\n?(.*?)\n?```\s*$", re.DOTALL)
@@ -405,6 +421,132 @@ async def activate_foragers(
     return forager_claims
 
 
+async def _prefilter_claims_per_claim(
+    claims: list[dict],
+    prospect: dict,
+    client: ModelClient,
+    budget: ProspectBudgetTracker,
+    user_email: str | None = None,
+    concurrency: int = 8,
+) -> list[dict]:
+    """Per-claim Haiku verifier — runs BEFORE the run-level quorum.
+
+    Plan §4.3 + §4.11. Each claim gets a single-shot verifier check via
+    verify_claim_once. Outcomes:
+
+        approve            → keep, mark pre_verified=True
+        reject             → drop (logged for cockpit + retro)
+        admit_low_confidence → keep, mark confidence=low + verifier_note
+                              (the FAIL-CLOSED branch — adversary cannot
+                              force a drop by breaking the verifier's JSON)
+
+    Verifier costs roll into the prospect budget. If the budget exhausts
+    mid-pass, remaining claims pass through unverified (the quorum below
+    is the second line of defense, so no claim escapes unchecked even
+    when this layer is cost-bounded out).
+
+    Concurrency bounded to ``concurrency`` (default 8) so a 30-claim
+    pool doesn't fan-out into 30 parallel Haiku calls and trip an API
+    rate limit. 30 claims at 8-wide ~= 4 batches × ~3s = ~12s wall time
+    overhead.
+    """
+    if not claims:
+        return claims
+
+    sem = asyncio.Semaphore(concurrency)
+    verdicts: list[tuple[int, object]] = []  # (idx, ClaimVerdict | None)
+
+    async def _verify_one(idx: int, claim: dict):
+        async with sem:
+            # Re-check budget INSIDE the semaphore — by the time a queued
+            # task acquires the sem, an earlier sibling may have already
+            # exhausted the prospect budget. The outside-the-sem check
+            # would race: all N tasks would observe the not-yet-spent
+            # budget at gather() time and all proceed to call.
+            if budget.exceeded():
+                verdicts.append((idx, None))
+                return
+            verdict = await asyncio.to_thread(
+                verify_claim_once,
+                claim,
+                client=client,
+                source_excerpt="",  # the URL + claim text are enough for
+                                    # one-shot template-claim verification;
+                                    # forager claims with richer evidence
+                                    # are routed through verify_claim_loop
+                                    # in Wave 2 when the cluster Doer
+                                    # surface lands.
+                source_origin=claim.get("origin", "unknown"),
+            )
+            budget.add(verdict.cost_usd)
+            verdicts.append((idx, verdict))
+            # Persist the per-claim outcome to harness_log for cockpit
+            # rendering + retros. We name the agent "claim_prefilter" so
+            # ops can grep distinct from the run-level quorum.
+            await log_harness_outcome(
+                agent_name="claim_prefilter",
+                outcome=verdict.outcome,
+                cost_usd=verdict.cost_usd,
+                error=json.dumps({
+                    "claim_index": idx,
+                    "claim_text": claim.get("text", "")[:200],
+                    "source_url": claim.get("source_url", ""),
+                    "origin": claim.get("origin", "unknown"),
+                    "reason": verdict.reason[:200],
+                    "attempts": verdict.attempts,
+                }),
+                prospect_id=prospect.get("id"),
+                user_email=user_email,
+            )
+
+    await asyncio.gather(*[_verify_one(i, c) for i, c in enumerate(claims)])
+
+    kept: list[dict] = []
+    rejected_count = 0
+    admitted_low_count = 0
+    approved_count = 0
+    budget_skipped: list[dict] = []
+    for idx, verdict in sorted(verdicts, key=lambda t: t[0]):
+        if verdict is None:
+            # Budget exhausted before we got to this one. Pass through —
+            # quorum is the second line of defense.
+            budget_skipped.append(claims[idx])
+            continue
+        if verdict.outcome == "reject":
+            rejected_count += 1
+            continue
+        if verdict.outcome == "admit_low_confidence":
+            admitted_low_count += 1
+        else:
+            approved_count += 1
+        kept.append(verdict.claim)
+
+    # Any claims we skipped because the budget exhausted MUST still go
+    # to the quorum — they cannot silently drop. Re-stitch in original
+    # order at the end so cockpit rendering stays stable.
+    kept.extend(budget_skipped)
+
+    logger.info(
+        "Per-claim verifier: %d approve, %d admit_low, %d reject, %d skipped(budget) — %d kept of %d",
+        approved_count, admitted_low_count, rejected_count, len(budget_skipped),
+        len(kept), len(claims),
+    )
+    await log_harness_outcome(
+        agent_name="claim_prefilter_summary",
+        outcome="success",
+        error=json.dumps({
+            "total_claims": len(claims),
+            "approved": approved_count,
+            "admit_low_confidence": admitted_low_count,
+            "rejected": rejected_count,
+            "budget_skipped": len(budget_skipped),
+        }),
+        prospect_id=prospect.get("id"),
+        user_email=user_email,
+    )
+    return kept
+
+
 async def quorum_verify_claims(
     claims: list[dict],
     prospect: dict,
@@ -428,7 +570,17 @@ async def quorum_verify_claims(
     verifier_names = ["verifier_source", "verifier_consistency", "verifier_crossref"]
 
     async def _run_verifier(agent_name: str) -> set[int]:
-        """Run a single verifier, return set of approved claim indices."""
+        """Run a single verifier, return set of approved claim indices.
+
+        FAIL-CLOSED on parse failure (§4.11 of the L2 swarm plan).
+        Returning the full index set on JSON garbage hands an adversary
+        who can poison verifier input (via 990 free-text bleeding into
+        the Haiku context, e.g.) a path to bypass quorum entirely. Each
+        verifier failing closed returns the empty set; the 2-of-3
+        majority means a single broken verifier still admits good
+        claims via the other two — but two simultaneous fail-closeds
+        correctly drop everything rather than rubber-stamping.
+        """
         harness = WorkerHarness(agent_name, harness_config_for_agent(agent_name), client)
         spec = TaskSpec(
             agent_name=agent_name,
@@ -445,9 +597,28 @@ async def quorum_verify_claims(
                 approved = set(data.get("approved", []))
                 return approved
             except (json.JSONDecodeError, TypeError):
-                logger.warning("Failed to parse verifier output from %s", agent_name)
-        # On failure, approve all (fail-open to avoid losing claims)
-        return set(range(len(claims)))
+                logger.warning(
+                    "Failed to parse verifier output from %s — failing CLOSED, "
+                    "rejecting all from this verifier (§4.11)",
+                    agent_name,
+                )
+                await log_harness_outcome(
+                    agent_name=agent_name,
+                    outcome="killed_schema_fail",
+                    error="verifier parse failure - failing closed",
+                    prospect_id=prospect.get("id"),
+                    user_email=user_email,
+                )
+                return set()
+        # Verifier call itself errored (timeout, retries, schema, budget).
+        # FAIL-CLOSED: this verifier contributes no approvals; the
+        # remaining two verifiers carry the 2-of-3 vote.
+        logger.warning(
+            "Verifier %s did not succeed (%s) — failing CLOSED, contributing "
+            "zero approvals to the quorum",
+            agent_name, result.outcome.value,
+        )
+        return set()
 
     # Run all 3 verifiers in parallel
     results = await asyncio.gather(*[_run_verifier(name) for name in verifier_names])
@@ -781,6 +952,17 @@ async def research_single_prospect(
                     "URL pre-filter dropped %d claims: %s",
                     len(dropped), [c.get("source_url") for c in dropped],
                 )
+
+        # Per-claim verifier (§4.3) — Haiku checks each claim individually
+        # before the run-level quorum. Drops weak claims early so the
+        # quorum + Opus synthesis don't pay token cost on garbage. Each
+        # verdict is logged for the cockpit and the cost goes through
+        # the standard prospect-budget tracker. The run-level quorum
+        # below is the second line of defense.
+        if all_claims and not budget.exceeded() and _per_claim_verifier_enabled():
+            all_claims = await _prefilter_claims_per_claim(
+                all_claims, prospect, client, budget, user_email=user_email,
+            )
 
         # Quorum verification (replaces single Opus fact-check)
         # Build enriched Wikipedia context: full text + infobox summary

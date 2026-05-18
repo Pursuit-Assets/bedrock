@@ -71,6 +71,7 @@ AGENT_TIERS = {
     "verifier_source": ModelTier.WORKER,
     "verifier_consistency": ModelTier.WORKER,
     "verifier_crossref": ModelTier.WORKER,
+    "claim_verifier_singleclaim": ModelTier.WORKER,
     "fact_check_agent": ModelTier.QUEEN,
     "profile_synthesizer": ModelTier.QUEEN,
     # Ask Pebble chat agents

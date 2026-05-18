@@ -9,6 +9,18 @@ from typing import Any, Callable
 
 from .model_client import ModelClient, ModelTier, get_model_config, AGENT_TIERS, ESCALATION_CHAIN
 
+
+def _wrap_retrieved(content: str | None, origin: str) -> str:
+    """Lazy proxy to pebble.orchestrator.guardrails.wrap_retrieved.
+
+    Imported on first call to break the harness↔orchestrator circular
+    import. Template functions registered below call this on every
+    invocation, so the first invocation pays one import; subsequent
+    calls hit Python's module cache.
+    """
+    from .orchestrator.guardrails import wrap_retrieved  # local
+    return wrap_retrieved(content, origin)
+
 logger = logging.getLogger("pebble.harness")
 
 
@@ -117,12 +129,18 @@ def _tpl_wealth(data: dict, source_urls: list[str]) -> tuple[str, str]:
     prospect = data["prospect"]
     name = f"{prospect.get('first_name', '')} {prospect.get('last_name', '')}".strip()
     sections = []
+    # FEC / OC / USA are structured JSON but their string fields
+    # (purpose, description, employer) can still carry injection
+    # payloads — wrap each block so the Doer treats them as data.
     if data.get("fec_data"):
-        sections.append(f"FEC Contributions:\n{json.dumps(data['fec_data'][:10], default=str)}")
+        body = json.dumps(data["fec_data"][:10], default=str)
+        sections.append(_wrap_retrieved(body, "fec"))
     if data.get("oc_data"):
-        sections.append(f"OpenCorporates Officer Positions:\n{json.dumps(data['oc_data'][:10], default=str)}")
+        body = json.dumps(data["oc_data"][:10], default=str)
+        sections.append(_wrap_retrieved(body, "opencorporates"))
     if data.get("usa_data"):
-        sections.append(f"USAspending Awards:\n{json.dumps(data['usa_data'][:10], default=str)}")
+        body = json.dumps(data["usa_data"][:10], default=str)
+        sections.append(_wrap_retrieved(body, "usaspending"))
     prompt = (
         f"Analyze financial signals for {name} and produce claims about giving capacity, "
         f"wealth indicators, and financial connections.\n\n"
@@ -144,14 +162,21 @@ def _tpl_philanthropy(data: dict, source_urls: list[str]) -> tuple[str, str]:
     prospect = data["prospect"]
     name = f"{prospect.get('first_name', '')} {prospect.get('last_name', '')}".strip()
     sections = []
+    # 990 and EDGAR are JSON-structured — the natural-language attack
+    # surface there is limited but non-zero (990 free-text fields can
+    # carry purpose strings). Wrap to be consistent.
     if data.get("propublica_data"):
-        sections.append(f"ProPublica 990 Data:\n{json.dumps(data['propublica_data'], default=str)[:2000]}")
+        body = json.dumps(data["propublica_data"], default=str)[:2000]
+        sections.append(_wrap_retrieved(body, "propublica_990"))
     if data.get("edgar_data"):
-        sections.append(f"EDGAR Filings:\n{json.dumps(data['edgar_data'][:10], default=str)}")
+        body = json.dumps(data["edgar_data"][:10], default=str)
+        sections.append(_wrap_retrieved(body, "edgar"))
+    # Wikipedia extract is the highest-risk surface — free-text article
+    # body, can carry injection payloads — wrap unconditionally.
     if data.get("wiki_data"):
         extract = data["wiki_data"].get("extract", "") if isinstance(data["wiki_data"], dict) else ""
         if extract:
-            sections.append(f"Wikipedia:\n{extract[:1500]}")
+            sections.append(_wrap_retrieved(extract[:1500], "wikipedia"))
     prompt = (
         f"Analyze nonprofit and biographical data for {name} and produce claims about "
         f"philanthropic activity, board service, and nonprofit affiliations.\n\n"
@@ -219,6 +244,72 @@ def _tpl_verifier_crossref(data: dict, source_urls: list[str]) -> tuple[str, str
         "You check cross-references. Approve claims corroborated by other claims or from "
         "authoritative standalone sources. Reject unsupported low-confidence claims. "
         "Output valid JSON only, no markdown fences."
+    )
+    return prompt, system
+
+
+@register_template("claim_verifier_singleclaim")
+def _tpl_claim_verifier_singleclaim(data: dict, source_urls: list[str]) -> tuple[str, str]:
+    """Per-claim verifier (Haiku, WORKER tier). Plan §4.3.
+
+    Inputs (in data):
+        claim_text:  string. The claim being verified.
+        source_url:  string. The URL the claim's evidence is supposed
+                     to come from. Always passed through to the model
+                     so it can reason about source plausibility even
+                     when fetching is out-of-band.
+        source_excerpt: optional. The retrieved excerpt that motivated
+                     the claim. Wrapped in <retrieved_data> before
+                     embedding — the wrapping happens at the orchestrator
+                     layer so the wrapper logic is auditable in one place.
+        redo_hint:   optional. Set on retries to nudge the Doer toward
+                     specific failures (used by verify_claim_loop only;
+                     for one-shot verification it is empty).
+
+    Output schema (validated by the orchestrator, NOT the harness — the
+    harness only checks valid JSON):
+        {
+            "outcome": "approve" | "reject" | "redo",
+            "reason":  string,                 // 1 sentence
+            "confidence_hint": "high"|"medium"|"low"|null
+        }
+    """
+    claim_text = data.get("claim_text", "")
+    source_url = data.get("source_url", "")
+    source_excerpt = data.get("source_excerpt", "")
+    redo_hint = data.get("redo_hint", "")
+
+    excerpt_block = f"\nSource excerpt:\n{source_excerpt}\n" if source_excerpt else ""
+    hint_block = f"\nPrevious attempt failed for this reason: {redo_hint}\n" if redo_hint else ""
+
+    prompt = (
+        f"Verify this single claim against its cited source.\n"
+        f"\n"
+        f"Claim: {claim_text}\n"
+        f"Source URL: {source_url}\n"
+        f"{excerpt_block}{hint_block}\n"
+        f"Decision rules:\n"
+        f"  approve — claim is plausibly supported by the cited source kind\n"
+        f"            (.gov, .edu, propublica.org, sec.gov, fec.gov, opencorporates,\n"
+        f"            wikipedia.org, established institutional site) AND the claim\n"
+        f"            text does not contradict the source excerpt.\n"
+        f"  reject  — source URL is suspicious / unrecognizable / a known\n"
+        f"            content farm, OR the source excerpt directly contradicts\n"
+        f"            the claim, OR the claim contains hedged language\n"
+        f"            (\"may have\", \"is rumored\") that is not factual.\n"
+        f"  redo    — claim is potentially true but cited weakly; the Doer\n"
+        f"            should re-emit with a tighter citation or be more\n"
+        f"            specific about what the source actually supports.\n"
+        f"            Provide a one-sentence reason the Doer can act on.\n"
+        f"\n"
+        f'Output JSON only: {{"outcome": "approve"|"reject"|"redo", '
+        f'"reason": "...", "confidence_hint": "high"|"medium"|"low"|null}}'
+    )
+    system = (
+        "You verify a single claim against its cited source. Decide approve, "
+        "reject, or redo. Be strict on source credibility but generous when "
+        "the claim text plausibly matches the source kind. Output valid JSON "
+        "only, no markdown fences."
     )
     return prompt, system
 
