@@ -8,7 +8,7 @@ import {
   startOfDay,
   startOfWeek,
 } from "date-fns";
-import { CalendarDays, CheckCircle2, ChevronLeft, ChevronRight } from "lucide-react";
+import { AlertTriangle, CalendarDays, CheckCircle2, ChevronLeft, ChevronRight } from "lucide-react";
 
 import { Tag } from "@/components/ui/Tag";
 import { cn } from "@/lib/utils";
@@ -28,6 +28,8 @@ export interface WeeklyCalendarProps {
   events: GCalEvent[];
   tasks: SfMyTask[];
   loading?: boolean;
+  /** When set, the calendar pane shows a "reconnect Google" banner. */
+  needsReauth?: boolean;
 
   viewMode: CalendarViewMode;
   onViewModeChange: (m: CalendarViewMode) => void;
@@ -71,6 +73,7 @@ export function WeeklyCalendar({
   events,
   tasks,
   loading = false,
+  needsReauth = false,
   viewMode,
   onViewModeChange,
   weekOffset,
@@ -177,6 +180,8 @@ export function WeeklyCalendar({
           </NavButton>
         </div>
       </header>
+
+      {needsReauth ? <ReauthBanner /> : null}
 
       <div
         className="grid flex-1 grid-flow-col overflow-x-auto overflow-y-hidden"
@@ -335,6 +340,26 @@ function TaskCell({
         <div className="truncate text-[10px] text-ink-3">{task.WhatName}</div>
       ) : null}
     </button>
+  );
+}
+
+function ReauthBanner() {
+  return (
+    <div
+      role="status"
+      className="flex flex-shrink-0 items-center gap-2 border-b border-amber/40 bg-amber-soft px-3 py-2 text-[11.5px] text-amber"
+    >
+      <AlertTriangle size={13} className="flex-shrink-0" />
+      <span className="flex-1">
+        Google Calendar access expired. Sign out and back in to reconnect.
+      </span>
+      <a
+        href="/auth/logout"
+        className="rounded border border-amber/60 bg-surface px-2 py-0.5 text-[11px] font-semibold text-amber hover:bg-amber-soft"
+      >
+        Sign out
+      </a>
+    </div>
   );
 }
 
