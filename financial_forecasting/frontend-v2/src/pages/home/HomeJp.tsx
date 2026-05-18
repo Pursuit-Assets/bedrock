@@ -12,7 +12,7 @@
  * loads lazily so other owners' homes and the rest of the app stay light.
  */
 import { lazy, Suspense, useCallback, useEffect, useState } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useIsFetching, useQueryClient } from "@tanstack/react-query";
 import { Navigate } from "react-router-dom";
 import { RefreshCw } from "lucide-react";
 
@@ -29,10 +29,15 @@ import type { SfOpportunity } from "@/types/salesforce";
  * else hitting /home/jp (including admins) gets bounced to /dashboard.
  * Other owners can still see their own /home/<slug> pages.
  *
+ * Matches on email *or* SF user id so a future email change (alias,
+ * domain migration) doesn't lock JP out. Either match is enough.
+ *
  * To open it up later: replace this constant with a permission key or
  * remove the gate entirely.
  */
 const HOME_JP_GATE_EMAIL = "jp@pursuit.org";
+/** Set when known. Leave empty string to disable the sf-user-id leg. */
+const HOME_JP_GATE_SF_USER_ID = "";
 
 const GoalTracker = lazy(() =>
   import("@/components/home/GoalTracker").then((m) => ({
@@ -54,6 +59,19 @@ export function HomeJp() {
   const { data: permissions, isLoading } = usePermissions();
   const currentUserId = permissions?.sf_user_id ?? null;
   const qc = useQueryClient();
+  const inFlight = useIsFetching({
+    predicate: (q) => {
+      const k = q.queryKey;
+      if (!Array.isArray(k) || typeof k[0] !== "string") return false;
+      return (
+        k[0] === "my-tasks" ||
+        k[0] === "opportunities" ||
+        k[0] === "owner-goals" ||
+        k[0] === "calendar-my-events"
+      );
+    },
+  });
+  const refreshing = inFlight > 0;
 
   const [drawerTask, setDrawerTask] = useState<FlatTask | null>(null);
   const [drawerOpp, setDrawerOpp] = useState<SfOpportunity | null>(null);
@@ -94,7 +112,11 @@ export function HomeJp() {
   }
 
   const viewerEmail = (permissions?.email ?? "").toLowerCase().trim();
-  if (viewerEmail !== HOME_JP_GATE_EMAIL) {
+  const viewerSfId = (permissions?.sf_user_id ?? "").trim();
+  const allowed =
+    viewerEmail === HOME_JP_GATE_EMAIL ||
+    (HOME_JP_GATE_SF_USER_ID !== "" && viewerSfId === HOME_JP_GATE_SF_USER_ID);
+  if (!allowed) {
     return <Navigate to="/dashboard" replace />;
   }
 
@@ -107,11 +129,16 @@ export function HomeJp() {
           <button
             type="button"
             onClick={refreshAll}
-            title="Refresh all data"
-            aria-label="Refresh"
+            title="Refresh all data (R)"
+            aria-label="Refresh data"
+            aria-busy={refreshing}
             className="inline-flex h-7 items-center gap-1 rounded border border-border-strong bg-surface px-2 text-[11.5px] font-medium text-ink-2 hover:bg-surface-2"
           >
-            <RefreshCw size={12} /> Refresh
+            <RefreshCw
+              size={12}
+              className={refreshing ? "animate-spin text-accent" : ""}
+            />
+            {refreshing ? "Refreshing…" : "Refresh"}
           </button>
         }
       />
