@@ -9,47 +9,25 @@
  *
  * Phase 2 (after each owner ships): we'll add a "redirect /home to the
  * current user's home" rule and surface a nav link.
- *
- * Each owner's home is `React.lazy`-loaded so a heavy build on one
- * person's branch (e.g., calendar + inbox + priority table on JP's)
- * does not load on any other owner's home, nor on the rest of the app.
  */
-import { lazy, type ComponentType, type LazyExoticComponent } from "react";
+import type { ComponentType } from "react";
 
-const HomeAllie = lazy(() =>
-  import("./HomeAllie").then((m) => ({ default: m.HomeAllie })),
-);
-const HomeAndrew = lazy(() =>
-  import("./HomeAndrew").then((m) => ({ default: m.HomeAndrew })),
-);
-const HomeAngie = lazy(() =>
-  import("./HomeAngie").then((m) => ({ default: m.HomeAngie })),
-);
-const HomeDevika = lazy(() =>
-  import("./HomeDevika").then((m) => ({ default: m.HomeDevika })),
-);
-const HomeErica = lazy(() =>
-  import("./HomeErica").then((m) => ({ default: m.HomeErica })),
-);
-const HomeGuilherme = lazy(() =>
-  import("./HomeGuilherme").then((m) => ({ default: m.HomeGuilherme })),
-);
-const HomeJp = lazy(() =>
-  import("./HomeJp").then((m) => ({ default: m.HomeJp })),
-);
-const HomeNick = lazy(() =>
-  import("./HomeNick").then((m) => ({ default: m.HomeNick })),
-);
-const HomeTrent = lazy(() =>
-  import("./HomeTrent").then((m) => ({ default: m.HomeTrent })),
-);
+import { HomeAllie } from "./HomeAllie";
+import { HomeAndrew } from "./HomeAndrew";
+import { HomeAngie } from "./HomeAngie";
+import { HomeDevika } from "./HomeDevika";
+import { HomeErica } from "./HomeErica";
+import { HomeGuilherme } from "./HomeGuilherme";
+import { HomeJp } from "./HomeJp";
+import { HomeNick } from "./HomeNick";
+import { HomeTrent } from "./HomeTrent";
 
 export interface OwnerHome {
   slug: string;
   name: string;
   /** Email used to recognize "this is my home" on login (set later). */
   email?: string;
-  component: LazyExoticComponent<ComponentType>;
+  component: ComponentType;
 }
 
 export const OWNER_HOMES: OwnerHome[] = [
