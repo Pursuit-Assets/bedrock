@@ -55,9 +55,19 @@ async def _fetch_user_permissions(email: str) -> dict:
 def require_pebble_permission(permission_key: str):
     """FastAPI dependency: verify user has a specific Pebble permission.
 
+    Composite gate: requires BOTH ``pebble_access`` (the launch-dark
+    master gate, currently JP-only via Bedrock's user_config.
+    permission_overrides) AND the requested ``permission_key``. The
+    pebble_access check happens FIRST so the error distinguishes
+    "Pebble disabled for this user" from "you can chat but not write".
+
     Reads X-User-Email header (NOT body — avoids double body consumption).
-    Calls Bedrock to resolve permissions, caches result for 5 min.
-    Stores verified email + full permission map on request.state.
+    Calls Bedrock to resolve permissions (which applies profile +
+    Admin-autofill-except-pebble_access + permission_overrides), caches
+    result for 5 min.
+
+    Stores verified email + full permission map on request.state for
+    downstream dependencies (check_daily_cost_limit, etc.).
     """
     async def _check(request: Request):
         user_email = request.headers.get("X-User-Email", "").strip()
@@ -85,6 +95,13 @@ def require_pebble_permission(permission_key: str):
                         status_code=503,
                         detail="Cannot verify permissions — try again later",
                     )
+
+        # Master gate first — clearer 403 messages for the frontend to
+        # distinguish "launch-dark disabled" from "feature-specific deny".
+        if not perms.get("pebble_access", False):
+            raise HTTPException(
+                status_code=403, detail="Permission denied: pebble_access",
+            )
 
         if not perms.get(permission_key, False):
             raise HTTPException(

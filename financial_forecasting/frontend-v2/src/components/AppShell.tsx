@@ -20,6 +20,7 @@ import {
 import { GlobalSearch } from "@/components/GlobalSearch";
 import { cn } from "@/lib/utils";
 import { useCurrentUser, useSalesforceStatus, startSalesforceConnect } from "@/services/auth";
+import { usePebbleAccess } from "@/services/permissions";
 
 const NAV_GROUPS = [
   {
@@ -170,6 +171,15 @@ function Sidebar({
 }) {
   const { data: user } = useCurrentUser();
   const sf = useSalesforceStatus();
+  const pebbleAccess = usePebbleAccess();
+
+  // Filter NAV_GROUPS: hide the Pebble group unless the launch-dark gate
+  // grants this user pebble_access. Strict (false-while-loading) hook used
+  // intentionally — JP-only on main means non-JP users must never see the
+  // group flash visible during the /api/permissions/me round-trip.
+  const visibleNavGroups = NAV_GROUPS.filter(
+    (group) => group.label !== "Pebble" || pebbleAccess,
+  );
 
   return (
     <aside
@@ -227,7 +237,7 @@ function Sidebar({
       )}
 
       <nav className="flex flex-col">
-        {NAV_GROUPS.map((group) => (
+        {visibleNavGroups.map((group) => (
           <div key={group.label}>
             {!collapsed && (
               <div className="px-2 pb-1 pt-3 text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">

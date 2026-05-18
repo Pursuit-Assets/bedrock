@@ -36,3 +36,25 @@ export function usePerm(key: string): boolean {
   // Default true while loading so the UI doesn't flash read-only state
   return data?.permissions?.[key] ?? true;
 }
+
+/**
+ * Strict per-permission hook for launch-dark gates (currently
+ * pebble_access).
+ *
+ * Unlike usePerm, this defaults to FALSE while loading — required so the
+ * Pebble sidebar entry / page does not flash visible to non-JP users
+ * during the brief window between mount and /api/permissions/me returning.
+ *
+ * Use this anywhere a feature is restricted and a brief "flash of visible
+ * content" would be a real product issue.
+ */
+export function useStrictPerm(key: string): boolean {
+  const { data, isLoading } = usePermissions();
+  if (isLoading) return false;
+  return data?.permissions?.[key] === true;
+}
+
+/** Convenience alias for the master Pebble launch-dark gate. */
+export function usePebbleAccess(): boolean {
+  return useStrictPerm("pebble_access");
+}

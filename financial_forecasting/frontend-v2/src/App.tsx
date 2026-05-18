@@ -3,6 +3,7 @@ import { Toaster } from "sonner";
 
 import { AppShell } from "./components/AppShell";
 import { AuthGate } from "./components/AuthGate";
+import { PebbleAccessGate } from "./components/PebbleAccessGate";
 import { DashboardPage } from "./pages/Dashboard";
 import { AccountsPage } from "./pages/Accounts";
 import { AccountDetailPage } from "./pages/AccountDetail";
@@ -53,7 +54,14 @@ export default function App() {
         <Route path="/contacts" element={<ContactsPage />} />
         <Route path="/contacts/:id" element={<ContactDetailPage />} />
         <Route path="/cashflow" element={<CashFlowPage />} />
-        <Route path="/pebble" element={<PebblePage />} />
+        <Route
+          path="/pebble"
+          element={
+            <PebbleAccessGate>
+              <PebblePage />
+            </PebbleAccessGate>
+          }
+        />
         <Route path="/feedback" element={<PlatformIntakePage />} />
         <Route path="/settings" element={<SettingsPage />} />
 

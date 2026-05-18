@@ -31,7 +31,21 @@ PERMISSION_KEYS = [
     "use_pebble_chat", "use_pebble_research", "pebble_crm_write",
     "trigger_data_sync", "manage_users_roles", "edit_permission_profiles",
     "manage_owner_goals",
+    # Top-level Pebble gate. Launch-dark on main (2026-05-18). Defaults
+    # false in every profile, including Admin. Granted via per-user
+    # permission_overrides on bedrock.user_config — currently only
+    # jp@pursuit.org. See ADMIN_AUTOFILL_EXCLUDED below.
+    "pebble_access",
 ]
+
+# Permission keys that the Admin profile MUST NOT auto-fill to true.
+# Used by get_user_permissions to keep launch-dark gates strictly per-user
+# rather than role-implicit. Adding a key here means: even an Admin must
+# have an explicit grant (via profile permissions or user_config overrides)
+# to receive the key.
+ADMIN_AUTOFILL_EXCLUDED = frozenset({
+    "pebble_access",
+})
 
 
 # ── Helpers ──
@@ -81,18 +95,55 @@ async def _ensure_org_user(email: str, name: str, db) -> Optional[Dict[str, Any]
     return None
 
 
+def _apply_overrides(perms: dict, overrides_raw) -> dict:
+    """Merge per-user permission_overrides on top of profile permissions.
+
+    Overrides win — both for granting (true) and denying (false) — so a
+    user can be explicitly excluded from a profile-granted permission.
+    """
+    overrides = _parse_perms(overrides_raw)
+    if not overrides:
+        return perms
+    for key, value in overrides.items():
+        # Only allow boolean overrides (defense against malformed rows).
+        if isinstance(value, bool):
+            perms[key] = value
+    return perms
+
+
+def _admin_autofill(perms: dict) -> dict:
+    """Force every PERMISSION_KEYS entry true on an Admin profile,
+    EXCEPT keys listed in ADMIN_AUTOFILL_EXCLUDED (launch-dark gates).
+    Existing values are preserved via setdefault.
+    """
+    for key in PERMISSION_KEYS:
+        if key in ADMIN_AUTOFILL_EXCLUDED:
+            continue
+        perms.setdefault(key, True)
+    return perms
+
+
 async def get_user_permissions(email: str, db) -> Dict[str, Any]:
     """Get resolved permissions for a user. Auto-provisions if needed.
 
     Reads from public.org_users (canonical identity) + bedrock.user_config
-    (app-specific permission profile). Auto-creates user_config with default
-    profile on first Bedrock visit.
+    (app-specific permission profile + permission_overrides). Auto-creates
+    user_config with default profile on first Bedrock visit.
+
+    Resolution order (later layers win):
+        1. Profile permissions (bedrock.permission_profile.permissions).
+        2. Admin auto-fill — for Admin profile, every key in
+           PERMISSION_KEYS defaults to true UNLESS the key is in
+           ADMIN_AUTOFILL_EXCLUDED (launch-dark gates).
+        3. Per-user permission_overrides (bedrock.user_config.
+           permission_overrides) — wins for grant-or-deny.
     """
     try:
         row = await db.fetchrow(
             "SELECT ou.id, ou.sf_user_id, ou.email, ou.display_name AS name, "
             "COALESCE(ou.is_active, true) AS is_active, "
             "uc.profile_id, "
+            "COALESCE(uc.permission_overrides, '{}'::jsonb) AS permission_overrides, "
             "pp.permissions, pp.name AS profile_name "
             "FROM public.org_users ou "
             "LEFT JOIN bedrock.user_config uc ON uc.org_user_id = ou.id "
@@ -111,8 +162,8 @@ async def get_user_permissions(email: str, db) -> Dict[str, Any]:
             # User has user_config — resolve permissions
             perms = _parse_perms(result.get("permissions"))
             if result.get("profile_name") == "Admin":
-                for key in PERMISSION_KEYS:
-                    perms.setdefault(key, True)
+                _admin_autofill(perms)
+            _apply_overrides(perms, result.get("permission_overrides"))
             result["permissions"] = perms
             return result
         # User exists in org_users but has no user_config — auto-provision
@@ -135,8 +186,15 @@ async def get_user_permissions(email: str, db) -> Dict[str, Any]:
         )
         perms = _parse_perms(profile["permissions"]) if profile else {}
         if profile and profile["name"] == "Admin":
-            for key in PERMISSION_KEYS:
-                perms.setdefault(key, True)
+            _admin_autofill(perms)
+        # Fetch any newly-present overrides (a parallel migration / seed
+        # may have populated them between the JOIN and the INSERT).
+        overrides_raw = await db.fetchval(
+            "SELECT COALESCE(permission_overrides, '{}'::jsonb) "
+            "FROM bedrock.user_config WHERE org_user_id = $1",
+            result["id"],
+        )
+        _apply_overrides(perms, overrides_raw)
         result["permissions"] = perms
         result["profile_name"] = profile["name"] if profile else None
         result["profile_id"] = profile_id
@@ -170,8 +228,13 @@ async def get_user_permissions(email: str, db) -> Dict[str, Any]:
     result["org_user_id"] = result["id"]
     perms = _parse_perms(profile["permissions"]) if profile else {}
     if profile and profile["name"] == "Admin":
-        for key in PERMISSION_KEYS:
-            perms.setdefault(key, True)
+        _admin_autofill(perms)
+    overrides_raw = await db.fetchval(
+        "SELECT COALESCE(permission_overrides, '{}'::jsonb) "
+        "FROM bedrock.user_config WHERE org_user_id = $1",
+        result["id"],
+    )
+    _apply_overrides(perms, overrides_raw)
     result["permissions"] = perms
     result["profile_name"] = profile["name"] if profile else None
     result["profile_id"] = profile_id
@@ -240,6 +303,68 @@ def check_permission_or_internal(permission_key: str):
         user["_app_user"] = user_data
         return user
     return _check
+
+
+def check_pebble_permission(sub_permission: str):
+    """Composite gate for Pebble routes: requires BOTH pebble_access AND
+    a specific sub-permission (use_pebble_chat / use_pebble_research /
+    pebble_crm_write / ...).
+
+    Why composite: pebble_access is the launch-dark master gate (currently
+    JP-only). Even an Admin who has use_pebble_chat=true (via Admin auto-
+    fill) cannot access /api/pebble/* without an explicit pebble_access
+    override. This keeps "ship to main, restrict to JP" expressible
+    without breaking the existing sub-permission contracts.
+
+    Service accounts (internal API key) bypass both checks, same shape
+    as check_permission_or_internal — Pebble-side calls back to Bedrock
+    don't re-authenticate as humans.
+
+    Error semantics:
+      * 403 "Permission denied: pebble_access" — user lacks the master gate
+      * 403 "Permission denied: <sub_permission>" — user has the master
+        gate but not the sub-permission
+
+    The distinct error messages let the frontend distinguish "Pebble is
+    not enabled for you" from "Pebble is enabled but you can't chat".
+    """
+    async def _check(user=Depends(require_auth_or_internal), db=Depends(get_db)):
+        if user.get("is_service"):
+            return user
+        email = user.get("email", "")
+        user_data = await get_user_permissions(email, db)
+        perms = user_data.get("permissions") or {}
+        if not perms.get("pebble_access", False):
+            raise HTTPException(403, "Permission denied: pebble_access")
+        if not perms.get(sub_permission, False):
+            raise HTTPException(403, f"Permission denied: {sub_permission}")
+        user["_permissions"] = perms
+        user["_app_user"] = user_data
+        return user
+    return _check
+
+
+async def require_pebble_access(
+    user=Depends(require_auth_or_internal),
+    db=Depends(get_db),
+):
+    """Lightweight pebble_access-only gate for routes that don't have a
+    specific sub-permission (cockpit SSE, abort, continue endpoints).
+
+    Service accounts (internal API key) bypass — same as
+    check_permission_or_internal. Returns the user dict with resolved
+    permissions attached.
+    """
+    if user.get("is_service"):
+        return user
+    email = user.get("email", "")
+    user_data = await get_user_permissions(email, db)
+    perms = user_data.get("permissions") or {}
+    if not perms.get("pebble_access", False):
+        raise HTTPException(403, "Permission denied: pebble_access")
+    user["_permissions"] = perms
+    user["_app_user"] = user_data
+    return user
 
 
 async def resolve_task_lock(task_id: str, user: dict, db, salesforce) -> dict:

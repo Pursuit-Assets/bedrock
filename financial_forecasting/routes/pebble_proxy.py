@@ -40,13 +40,23 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from db import get_db
-from routes.permissions import check_permission_or_internal
+from routes.permissions import check_pebble_permission, check_permission_or_internal
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/pebble", tags=["pebble"])
 
-# Module-level stable reference so tests override correctly.
-require_ask_perm = check_permission_or_internal("use_pebble_chat")
+# Composite gate: requires BOTH pebble_access (launch-dark master gate,
+# currently JP-only via user_config.permission_overrides) AND
+# use_pebble_chat (the existing sub-permission for the Ask Mode chat
+# surface).
+#
+# Pre-2026-05-18 this was check_permission_or_internal("use_pebble_chat")
+# — that's still valid for internal service-to-service calls (Pebble
+# calling back into Bedrock with X-Internal-Key bypasses both checks),
+# but human callers must now clear the master gate first.
+#
+# Module-level stable reference so tests can override.
+require_ask_perm = check_pebble_permission("use_pebble_chat")
 
 
 # Pebble's URL + auth. Default localhost for dev; production MUST
