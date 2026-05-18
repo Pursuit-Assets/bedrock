@@ -6,6 +6,28 @@ import { AppShell } from "./components/AppShell";
 import { AuthGate } from "./components/AuthGate";
 import { LoginPage } from "./pages/Login";
 import { PageSkeleton } from "./components/PageSkeleton";
+import { usePermissions } from "./services/permissions";
+
+/**
+ * Per-owner default landing. Keyed by lowercased email. Anyone whose
+ * email isn't in this map falls through to `/dashboard` (the global
+ * default). Add yourself here when your `/home/<slug>` page is real
+ * enough to be your homepage.
+ */
+const PERSONAL_HOME_BY_EMAIL: Record<string, string> = {
+  "jp@pursuit.org": "/home/jp",
+};
+
+const DEFAULT_LANDING = "/dashboard";
+
+/** Resolve the right landing page for the current user. */
+function RootRedirect() {
+  const { data, isLoading } = usePermissions();
+  if (isLoading) return <PageSkeleton />;
+  const email = (data?.email ?? "").toLowerCase().trim();
+  const dest = PERSONAL_HOME_BY_EMAIL[email] ?? DEFAULT_LANDING;
+  return <Navigate to={dest} replace />;
+}
 
 /**
  * Route-level code splitting.
@@ -113,7 +135,7 @@ export default function App() {
           }
         >
           <Route element={<RouteSuspense />}>
-            <Route index element={<Navigate to="/dashboard" replace />} />
+            <Route index element={<RootRedirect />} />
             <Route path="/dashboard" element={<DashboardPage />} />
             <Route path="/accounts" element={<AccountsPage />} />
             <Route path="/accounts/:id" element={<AccountDetailPage />} />
@@ -135,8 +157,10 @@ export default function App() {
             <Route path="/home/:slug" element={<HomePage />} />
             <Route path="/settings" element={<SettingsPage />} />
 
-            {/* Backend redirects to /priorities after Google OAuth — alias it */}
-            <Route path="/priorities" element={<Navigate to="/dashboard" replace />} />
+            {/* Backend redirects to /priorities after Google OAuth — route
+                through the per-owner landing resolver so JP (and any future
+                allowlisted email) lands on their home instead. */}
+            <Route path="/priorities" element={<RootRedirect />} />
 
             <Route path="*" element={<Navigate to="/dashboard" replace />} />
           </Route>
