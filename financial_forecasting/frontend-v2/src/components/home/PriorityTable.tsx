@@ -7,6 +7,7 @@ import {
   Clock,
   Flame,
   Inbox,
+  Plus,
   Repeat,
 } from "lucide-react";
 
@@ -16,6 +17,7 @@ import {
   InlineSelect,
   InlineText,
 } from "@/components/ui/InlineEdit";
+import { SavedViewsPicker } from "@/components/ui/SavedViewsPicker";
 import { StageChip } from "@/components/ui/StageChip";
 import { Tag } from "@/components/ui/Tag";
 import { Tooltip } from "@/components/ui/Tooltip";
@@ -32,6 +34,7 @@ import { useSort } from "@/lib/sort";
 import { SF_STAGE_OPTIONS, stageStatus } from "@/lib/stages";
 import { cn } from "@/lib/utils";
 import {
+  useCreateTask,
   useOpportunities,
   useUpdateOpportunity,
   useUpdateOpportunityStage,
@@ -91,6 +94,13 @@ const DEFAULT_WIDTHS: Record<ColKey, number> = {
 
 type OwnerFilter = "me" | "all" | string;
 
+interface PriorityFilters {
+  ownerFilter: OwnerFilter;
+  topN: number;
+  sortKey: ColKey | null;
+  sortDir: "asc" | "desc";
+}
+
 export interface PriorityTableProps {
   currentUserId?: string | null;
   /** Click an opportunity name → caller opens OpportunityDrawer. */
@@ -137,7 +147,7 @@ export function PriorityTable({
     DEFAULT_WIDTHS,
   );
 
-  const { sort, toggle } = useSort<ColKey>({
+  const { sort, toggle, setSort } = useSort<ColKey>({
     key: null,
     direction: "asc",
   });
@@ -267,13 +277,27 @@ export function PriorityTable({
         {userSorting ? (
           <button
             type="button"
-            onClick={() => toggle("amount")}
+            onClick={() => setSort({ key: null, direction: "asc" })}
             className="h-7 rounded border border-border-strong bg-surface px-2 text-[11.5px] font-medium text-ink-2 hover:bg-surface-2"
             title="Restore weighted-priority order"
           >
             Reset sort
           </button>
         ) : null}
+        <SavedViewsPicker<PriorityFilters>
+          scopeKey="home-priorities"
+          currentFilters={{
+            ownerFilter,
+            topN,
+            sortKey: sort.key,
+            sortDir: sort.direction,
+          }}
+          onLoad={(f) => {
+            setOwnerFilter(f.ownerFilter);
+            setTopN(Math.min(TOP_N_MAX, Math.max(TOP_N_MIN, f.topN)));
+            setSort({ key: f.sortKey, direction: f.sortDir });
+          }}
+        />
       </header>
 
       <div className="flex-1 overflow-x-auto">
@@ -528,7 +552,7 @@ function PriorityRow({
             colSpan={COLUMN_ORDER.length}
             className="border-b border-border-strong bg-surface-2/40 px-3 py-2"
           >
-            <ExpandedTasks tasks={tasks} />
+            <ExpandedTasks opportunityId={opp.Id} tasks={tasks} />
           </td>
         </tr>
       ) : null}
@@ -599,18 +623,22 @@ function AlertChips({
   );
 }
 
-function ExpandedTasks({ tasks }: { tasks: SfTask[] }) {
-  if (tasks.length === 0) {
-    return (
-      <div className="px-2 py-1 text-[11.5px] italic text-ink-3">
-        No tasks on this opportunity.
-      </div>
-    );
-  }
+function ExpandedTasks({
+  opportunityId,
+  tasks,
+}: {
+  opportunityId: string;
+  tasks: SfTask[];
+}) {
   const open = tasks.filter((t) => t.Status !== "Completed" && !t.IsClosed);
   const closed = tasks.filter((t) => t.Status === "Completed" || t.IsClosed);
   return (
     <div className="flex flex-col gap-1.5 text-[11.5px]">
+      {open.length === 0 && closed.length === 0 ? (
+        <div className="py-1 italic text-ink-3">
+          No tasks on this opportunity yet.
+        </div>
+      ) : null}
       {open.length > 0 ? (
         <ul className="flex flex-col">
           {open.map((t) => (
@@ -618,6 +646,7 @@ function ExpandedTasks({ tasks }: { tasks: SfTask[] }) {
           ))}
         </ul>
       ) : null}
+      <QuickCreateTask opportunityId={opportunityId} />
       {closed.length > 0 ? (
         <details>
           <summary className="cursor-pointer text-ink-3 hover:text-ink">
@@ -631,6 +660,61 @@ function ExpandedTasks({ tasks }: { tasks: SfTask[] }) {
         </details>
       ) : null}
     </div>
+  );
+}
+
+function QuickCreateTask({ opportunityId }: { opportunityId: string }) {
+  const createTask = useCreateTask();
+  const canCreate = usePerm("create_tasks");
+  const [draft, setDraft] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  if (!canCreate) return null;
+
+  const submit = async () => {
+    const subject = draft.trim();
+    if (!subject) return;
+    setError(null);
+    try {
+      await createTask.mutateAsync({
+        opportunityId,
+        body: { Subject: subject, Status: "Not Started" },
+      });
+      setDraft("");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Save failed");
+    }
+  };
+
+  return (
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        void submit();
+      }}
+      className="flex items-center gap-2 py-0.5"
+    >
+      <span
+        aria-hidden
+        className="grid h-5 w-5 place-items-center text-ink-4"
+      >
+        <Plus size={12} />
+      </span>
+      <input
+        type="text"
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        placeholder="Add a task — Enter to save"
+        aria-label="New task subject"
+        disabled={createTask.isPending}
+        className="min-w-0 flex-1 rounded border border-transparent bg-transparent px-1.5 py-0.5 text-[12px] text-ink placeholder:text-ink-4 hover:border-border-strong focus:border-accent focus:bg-surface focus:outline-none focus:ring-1 focus:ring-accent disabled:opacity-60"
+      />
+      {error ? (
+        <span role="alert" className="text-[10.5px] text-red">
+          {error}
+        </span>
+      ) : null}
+    </form>
   );
 }
 

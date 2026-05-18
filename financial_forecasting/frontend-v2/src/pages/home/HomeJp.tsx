@@ -11,7 +11,7 @@
  * Everything heavy (calendar + inbox + priority table + recharts donut)
  * loads lazily so other owners' homes and the rest of the app stay light.
  */
-import { lazy, Suspense, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Navigate } from "react-router-dom";
 import { RefreshCw } from "lucide-react";
@@ -20,6 +20,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { OpportunityDrawer } from "@/components/OpportunityDrawer";
 import { TaskDrawer, type FlatTask } from "@/components/TaskDrawer";
 import { HomeErrorBoundary } from "@/components/home/HomeErrorBoundary";
+import { Scratchpad } from "@/components/home/Scratchpad";
 import { usePermissions } from "@/services/permissions";
 import type { SfOpportunity } from "@/types/salesforce";
 
@@ -57,12 +58,30 @@ export function HomeJp() {
   const [drawerTask, setDrawerTask] = useState<FlatTask | null>(null);
   const [drawerOpp, setDrawerOpp] = useState<SfOpportunity | null>(null);
 
-  const refreshAll = () => {
+  const refreshAll = useCallback(() => {
     void qc.invalidateQueries({ queryKey: ["my-tasks"] });
     void qc.invalidateQueries({ queryKey: ["opportunities"] });
     void qc.invalidateQueries({ queryKey: ["owner-goals"] });
     void qc.invalidateQueries({ queryKey: ["calendar-my-events"] });
-  };
+  }, [qc]);
+
+  // Keyboard shortcut: `R` (no modifier, no input focused) refreshes all data.
+  // Skipped when the user is typing in a textarea / input so it doesn't
+  // hijack the Scratchpad or inline-edit fields.
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key !== "r" && e.key !== "R") return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return; // let Cmd+R / Ctrl+R reload
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) {
+        return;
+      }
+      e.preventDefault();
+      refreshAll();
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [refreshAll]);
 
   // Wait for the auth/permissions response before deciding visibility so a
   // signed-in JP doesn't get bounced on a flash of empty data.
@@ -98,11 +117,16 @@ export function HomeJp() {
       />
 
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-[360px_1fr]">
-        <HomeErrorBoundary section="Goal tracker">
-          <Suspense fallback={<PaneSkeleton heightClass="h-[200px]" />}>
-            <GoalTracker filterUserId={currentUserId} />
-          </Suspense>
-        </HomeErrorBoundary>
+        <div className="flex flex-col gap-4">
+          <HomeErrorBoundary section="Goal tracker">
+            <Suspense fallback={<PaneSkeleton heightClass="h-[200px]" />}>
+              <GoalTracker filterUserId={currentUserId} />
+            </Suspense>
+          </HomeErrorBoundary>
+          <HomeErrorBoundary section="Scratchpad">
+            <Scratchpad />
+          </HomeErrorBoundary>
+        </div>
         <HomeErrorBoundary section="Calendar + Inbox">
           <Suspense fallback={<PaneSkeleton heightClass="h-[420px]" />}>
             <CalendarInboxSplit
