@@ -136,13 +136,25 @@ const STATUS_OPTIONS = [
   "Cancelled",
 ] as const;
 
-function statusDotClass(status: string): string {
+/**
+ * Text chip color for task statuses on the list view. Intuitive
+ * mapping: grey = Not Started, blue = In Progress, red = Blocked,
+ * green = Done. Cancelled gets muted grey with strikethrough.
+ */
+function statusChipClass(status: string): string {
   const s = (status ?? "").toLowerCase();
-  if (s === "in progress" || s === "in_progress") return "bg-blue-500";
-  if (s === "blocked") return "bg-amber-500";
-  if (s === "done" || s === "complete" || s === "completed") return "bg-green-500";
-  if (s === "cancelled" || s === "canceled") return "bg-ink-4";
-  return "border-2 border-ink-3 bg-transparent";
+  if (s === "blocked") return "bg-red-100 text-red-700 border border-red-200";
+  if (s === "in progress" || s === "in_progress") {
+    return "bg-blue-100 text-blue-700 border border-blue-200";
+  }
+  if (s === "done" || s === "complete" || s === "completed") {
+    return "bg-emerald-100 text-emerald-700 border border-emerald-200";
+  }
+  if (s === "cancelled" || s === "canceled") {
+    return "bg-zinc-100 text-zinc-400 border border-zinc-200 line-through";
+  }
+  // Not Started / unknown — neutral grey.
+  return "bg-zinc-100 text-zinc-600 border border-zinc-200";
 }
 
 function useOutsideClick(ref: React.RefObject<HTMLElement | null>, onClose: () => void) {
@@ -173,20 +185,22 @@ function StatusDot({
   useOutsideClick(ref, () => setOpen(false));
 
   return (
-    <div ref={ref} className="relative flex items-center justify-center">
+    <div ref={ref} className="relative flex items-center justify-start">
       <button
         type="button"
         disabled={!canEdit}
         onClick={() => canEdit && setOpen((o) => !o)}
         className={cn(
-          "h-3 w-3 rounded-full flex-shrink-0",
-          statusDotClass(status),
-          canEdit && "cursor-pointer hover:opacity-80",
+          "inline-flex items-center justify-center rounded px-1.5 py-px text-[10.5px] font-medium",
+          statusChipClass(status),
+          canEdit && "cursor-pointer hover:ring-1 hover:ring-accent",
         )}
-        title={status}
-      />
+        title={canEdit ? `${status} — click to change` : status}
+      >
+        {status || "Not Started"}
+      </button>
       {open && (
-        <div className="absolute left-4 top-0 z-50 min-w-[140px] rounded-md border border-border-strong bg-surface shadow-lg">
+        <div className="absolute left-0 top-full z-50 mt-1 min-w-[140px] rounded-md border border-border-strong bg-surface shadow-lg">
           {STATUS_OPTIONS.map((opt) => (
             <button
               key={opt}
@@ -198,9 +212,13 @@ function StatusDot({
               }}
             >
               <span
-                className={cn("h-2.5 w-2.5 rounded-full flex-shrink-0", statusDotClass(opt))}
-              />
-              {opt}
+                className={cn(
+                  "inline-flex items-center rounded px-1.5 py-px text-[10.5px] font-medium",
+                  statusChipClass(opt),
+                )}
+              >
+                {opt}
+              </span>
             </button>
           ))}
         </div>
@@ -335,9 +353,9 @@ function TaskRow({
 
   return (
     <div className="group border-b border-border-strong last:border-b-0 hover:bg-surface-2/60">
-    <div className="grid grid-cols-[36px_1fr_160px_110px_32px] items-center">
-      {/* Status dot */}
-      <div className="flex items-center justify-center">
+    <div className="grid grid-cols-[110px_1fr_160px_110px_32px] items-center">
+      {/* Status chip */}
+      <div className="flex items-center justify-start px-2">
         <StatusDot
           status={task.status ?? "Not Started"}
           canEdit={canEdit}
@@ -494,7 +512,7 @@ function TaskRow({
     {/* Task description sub-row — expanded inline editor. Indents to
         align with the title column above. */}
     {descOpen ? (
-      <div className="border-t border-border bg-surface px-[52px] py-2">
+      <div className="border-t border-border bg-surface px-[126px] py-2">
         <DescriptionEditor
           value={task.description}
           canEdit={canEdit}
@@ -612,6 +630,10 @@ function MilestoneBlock({
   const [titleDraft, setTitleDraft] = useState(milestone.title);
   const [statusOpen, setStatusOpen] = useState(false);
   const [actionsOpen, setActionsOpen] = useState(false);
+  // Milestone description is collapsed by default — click the chevron
+  // on the milestone header to reveal/edit it.
+  const milestoneHasDescription = (milestone.description ?? "").trim().length > 0;
+  const [descOpen, setDescOpen] = useState(false);
   const statusRef = useRef<HTMLDivElement>(null);
   const actionsRef = useRef<HTMLDivElement>(null);
   useOutsideClick(statusRef, () => setStatusOpen(false));
@@ -649,6 +671,22 @@ function MilestoneBlock({
     <div className="border-b border-border-strong last:border-b-0">
       {/* Milestone header — full-width flex */}
       <div className="flex items-center gap-2 border-b border-border-strong bg-surface-2/50 px-4 py-1.5">
+        {milestoneHasDescription || canEdit ? (
+          <button
+            type="button"
+            onClick={() => setDescOpen((v) => !v)}
+            title={descOpen ? "Hide description" : (milestoneHasDescription ? "Show description" : "Add description")}
+            className={cn(
+              "flex h-4 w-4 flex-shrink-0 items-center justify-center rounded text-ink-4 hover:bg-surface-2 hover:text-ink",
+              milestoneHasDescription ? "opacity-100" : "opacity-40 hover:opacity-100",
+              descOpen && "opacity-100 text-ink-2",
+            )}
+          >
+            {descOpen ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+          </button>
+        ) : (
+          <span className="h-4 w-4 flex-shrink-0" />
+        )}
         {editingTitle && canEdit ? (
           <input
             autoFocus
@@ -812,21 +850,24 @@ function MilestoneBlock({
         )}
       </div>
 
-      {/* Milestone description row — collapsible inline editor. */}
-      <div className="border-b border-border bg-surface px-4 py-1.5">
-        <DescriptionEditor
-          value={milestone.description}
-          canEdit={canEdit}
-          placeholder="Add a description for this milestone"
-          compact
-          onSave={(d) =>
-            updateMilestone.mutateAsync({
-              milestoneId: milestone.id,
-              patch: { description: d },
-            }).then(() => undefined)
-          }
-        />
-      </div>
+      {/* Milestone description row — collapsed by default, toggled via
+          the chevron on the milestone header. */}
+      {descOpen ? (
+        <div className="border-b border-border bg-surface px-4 py-1.5">
+          <DescriptionEditor
+            value={milestone.description}
+            canEdit={canEdit}
+            placeholder="Add a description for this milestone"
+            compact
+            onSave={(d) =>
+              updateMilestone.mutateAsync({
+                milestoneId: milestone.id,
+                patch: { description: d },
+              }).then(() => undefined)
+            }
+          />
+        </div>
+      ) : null}
 
       {milestone.tasks.map((t) => (
         <TaskRow key={t.id} task={t} canEdit={canEdit} projectId={projectId} />

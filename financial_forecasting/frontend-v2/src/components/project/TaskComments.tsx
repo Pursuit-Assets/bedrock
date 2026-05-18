@@ -1,6 +1,7 @@
 import { useMemo, useRef, useState } from "react";
 import { Loader2, MoreHorizontal, Send } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
+import { toast } from "sonner";
 
 import { cn } from "@/lib/utils";
 import { initials } from "@/lib/format";
@@ -60,7 +61,18 @@ export function TaskComments({ taskId }: TaskCommentsProps) {
 
       <CommentComposer
         onSubmit={async (content) => {
-          await createComment.mutateAsync(content);
+          try {
+            await createComment.mutateAsync(content);
+          } catch (err) {
+            console.error("Comment create failed", err);
+            const msg = (err as { response?: { data?: { detail?: string } }; message?: string })
+              ?.response?.data?.detail
+              ?? (err as { message?: string })?.message
+              ?? "Failed to post comment";
+            toast.error(msg);
+            // Re-throw so the composer doesn't clear the textarea.
+            throw err;
+          }
         }}
         submitting={createComment.isPending}
       />
@@ -158,8 +170,13 @@ function CommentComposer({
   async function commit() {
     const trimmed = value.trim();
     if (!trimmed || submitting) return;
-    await onSubmit(trimmed);
-    setValue("");
+    try {
+      await onSubmit(trimmed);
+      setValue("");
+    } catch {
+      // Parent already toasted; keep the textarea content so the user
+      // can retry without retyping.
+    }
   }
 
   return (

@@ -26,7 +26,10 @@ export const DEFAULT_FILTER: ProjectFilter = {
   ownerIds: [],
   workstreamIds: [],
   milestoneIds: [],
-  groupBy: "status",
+  // Workstream is the gantt's default. Board view's auto-correct in
+  // this file maps unsupported groupBy values to "status" on first
+  // mount, so Board still defaults sensibly.
+  groupBy: "workstream",
 };
 
 export function isDefaultFilter(f: ProjectFilter): boolean {
