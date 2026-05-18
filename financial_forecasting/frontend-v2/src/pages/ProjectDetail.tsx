@@ -16,6 +16,24 @@ import { fmtDate, initials } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { useOpportunities } from "@/services/opportunities";
 import type { SfOpportunity } from "@/types/salesforce";
+import { useSalesforceStatus } from "@/services/auth";
+import { DescriptionEditor } from "@/components/project/DescriptionEditor";
+import { TaskDrawer } from "@/components/project/TaskDrawer";
+import { MilestoneDrawer } from "@/components/project/MilestoneDrawer";
+import { WorkstreamDrawer } from "@/components/project/WorkstreamDrawer";
+import {
+  ProjectViewSwitcher,
+  useProjectView,
+} from "@/components/project/ProjectViewSwitcher";
+import {
+  ProjectSubToolbar,
+  DEFAULT_FILTER,
+  isDefaultFilter,
+  taskMatchesFilter,
+  type ProjectFilter,
+} from "@/components/project/ProjectSubToolbar";
+import { ProjectBoardView } from "@/pages/project/ProjectBoardView";
+import { ProjectTimelineView } from "@/pages/project/ProjectTimelineView";
 import { useContacts } from "@/services/contacts";
 import { useAwards } from "@/services/awards";
 import { usePerm } from "@/services/permissions";
@@ -24,11 +42,14 @@ import {
   useCreateMilestone,
   useCreateTask,
   useCreateWorkstream,
+  useDeleteMilestone,
   useDeleteTask,
+  useDeleteWorkstream,
   useProjectDetail,
   useUpdateMilestone,
   useUpdateProject,
   useUpdateTask,
+  useUpdateWorkstream,
   type ActiveUser,
   type ProjectMilestone,
   type ProjectTask,
@@ -118,13 +139,25 @@ const STATUS_OPTIONS = [
   "Cancelled",
 ] as const;
 
-function statusDotClass(status: string): string {
+/**
+ * Text chip color for task statuses on the list view. Intuitive
+ * mapping: grey = Not Started, blue = In Progress, red = Blocked,
+ * green = Done. Cancelled gets muted grey with strikethrough.
+ */
+function statusChipClass(status: string): string {
   const s = (status ?? "").toLowerCase();
-  if (s === "in progress" || s === "in_progress") return "bg-blue-500";
-  if (s === "blocked") return "bg-amber-500";
-  if (s === "done" || s === "complete" || s === "completed") return "bg-green-500";
-  if (s === "cancelled" || s === "canceled") return "bg-ink-4";
-  return "border-2 border-ink-3 bg-transparent";
+  if (s === "blocked") return "bg-red-100 text-red-700 border border-red-200";
+  if (s === "in progress" || s === "in_progress") {
+    return "bg-blue-100 text-blue-700 border border-blue-200";
+  }
+  if (s === "done" || s === "complete" || s === "completed") {
+    return "bg-emerald-100 text-emerald-700 border border-emerald-200";
+  }
+  if (s === "cancelled" || s === "canceled") {
+    return "bg-zinc-100 text-zinc-400 border border-zinc-200 line-through";
+  }
+  // Not Started / unknown — neutral grey.
+  return "bg-zinc-100 text-zinc-600 border border-zinc-200";
 }
 
 function useOutsideClick(ref: React.RefObject<HTMLElement | null>, onClose: () => void) {
@@ -155,20 +188,22 @@ function StatusDot({
   useOutsideClick(ref, () => setOpen(false));
 
   return (
-    <div ref={ref} className="relative flex items-center justify-center">
+    <div ref={ref} className="relative flex items-center justify-start">
       <button
         type="button"
         disabled={!canEdit}
         onClick={() => canEdit && setOpen((o) => !o)}
         className={cn(
-          "h-3 w-3 rounded-full flex-shrink-0",
-          statusDotClass(status),
-          canEdit && "cursor-pointer hover:opacity-80",
+          "inline-flex items-center justify-center rounded px-1.5 py-px text-[10.5px] font-medium",
+          statusChipClass(status),
+          canEdit && "cursor-pointer hover:ring-1 hover:ring-accent",
         )}
-        title={status}
-      />
+        title={canEdit ? `${status} — click to change` : status}
+      >
+        {status || "Not Started"}
+      </button>
       {open && (
-        <div className="absolute left-4 top-0 z-50 min-w-[140px] rounded-md border border-border-strong bg-surface shadow-lg">
+        <div className="absolute left-0 top-full z-50 mt-1 min-w-[140px] rounded-md border border-border-strong bg-surface shadow-lg">
           {STATUS_OPTIONS.map((opt) => (
             <button
               key={opt}
@@ -180,9 +215,13 @@ function StatusDot({
               }}
             >
               <span
-                className={cn("h-2.5 w-2.5 rounded-full flex-shrink-0", statusDotClass(opt))}
-              />
-              {opt}
+                className={cn(
+                  "inline-flex items-center rounded px-1.5 py-px text-[10.5px] font-medium",
+                  statusChipClass(opt),
+                )}
+              >
+                {opt}
+              </span>
             </button>
           ))}
         </div>
@@ -271,10 +310,12 @@ function TaskRow({
   task,
   canEdit,
   projectId,
+  onOpenDrawer,
 }: {
   task: ProjectTask;
   canEdit: boolean;
   projectId: string;
+  onOpenDrawer: () => void;
 }) {
   const updateTask = useUpdateTask(projectId);
   const deleteTask = useDeleteTask(projectId);
@@ -284,6 +325,10 @@ function TaskRow({
   const [ownerPickerOpen, setOwnerPickerOpen] = useState(false);
   const [editingDate, setEditingDate] = useState(false);
   const [actionsOpen, setActionsOpen] = useState(false);
+  // Description expand is row-local — empty-and-noneditable hides the
+  // chevron entirely; otherwise click toggles the description sub-row.
+  const hasDescription = (task.description ?? "").trim().length > 0;
+  const [descOpen, setDescOpen] = useState(false);
   const actionsRef = useRef<HTMLDivElement>(null);
   const ownerRef = useRef<HTMLDivElement>(null);
 
@@ -312,9 +357,10 @@ function TaskRow({
   }
 
   return (
-    <div className="group grid grid-cols-[36px_1fr_160px_110px_32px] items-center border-b border-border-strong hover:bg-surface-2/60 last:border-b-0">
-      {/* Status dot */}
-      <div className="flex items-center justify-center">
+    <div className="group border-b border-border-strong last:border-b-0 hover:bg-surface-2/60">
+    <div className="grid grid-cols-[110px_1fr_160px_110px_32px] items-center">
+      {/* Status chip */}
+      <div className="flex items-center justify-start px-2">
         <StatusDot
           status={task.status ?? "Not Started"}
           canEdit={canEdit}
@@ -322,8 +368,24 @@ function TaskRow({
         />
       </div>
 
-      {/* Title */}
-      <div className="min-w-0 py-2 pr-2">
+      {/* Title (+ description toggle on hover when collapsed) */}
+      <div className="flex min-w-0 items-center gap-1 py-2 pr-2">
+        {(hasDescription || canEdit) ? (
+          <button
+            type="button"
+            onClick={() => setDescOpen((v) => !v)}
+            title={descOpen ? "Hide description" : (hasDescription ? "Show description" : "Add description")}
+            className={cn(
+              "flex h-4 w-4 flex-shrink-0 items-center justify-center rounded text-ink-4 hover:bg-surface-2 hover:text-ink",
+              hasDescription ? "opacity-100" : "opacity-0 group-hover:opacity-60",
+              descOpen && "opacity-100 text-ink-2",
+            )}
+          >
+            {descOpen ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+          </button>
+        ) : (
+          <span className="h-4 w-4 flex-shrink-0" />
+        )}
         {editingTitle && canEdit ? (
           <input
             autoFocus
@@ -338,16 +400,17 @@ function TaskRow({
             className="w-full rounded bg-surface-2 px-1.5 py-0.5 text-[13px] outline-none ring-1 ring-accent"
           />
         ) : (
-          <span
+          <button
+            type="button"
             className={cn(
-              "block cursor-default truncate text-[13px]",
+              "block min-w-0 flex-1 cursor-pointer truncate rounded px-1 text-left text-[13px] hover:bg-black/[0.03] hover:text-accent-ink",
               closed && "text-ink-3 line-through",
-              canEdit && "cursor-text",
             )}
-            onClick={() => canEdit && setEditingTitle(true)}
+            onClick={onOpenDrawer}
+            title="Open task details"
           >
             {task.title}
-          </span>
+          </button>
         )}
       </div>
 
@@ -434,7 +497,17 @@ function TaskRow({
               <MoreHorizontal size={14} />
             </button>
             {actionsOpen && (
-              <div className="absolute right-0 top-full z-50 min-w-[120px] rounded-md border border-border-strong bg-surface shadow-lg">
+              <div className="absolute right-0 top-full z-50 min-w-[140px] rounded-md border border-border-strong bg-surface shadow-lg">
+                <button
+                  type="button"
+                  className="block w-full px-3 py-1.5 text-left text-[12px] hover:bg-surface-2"
+                  onClick={() => {
+                    setEditingTitle(true);
+                    setActionsOpen(false);
+                  }}
+                >
+                  Rename
+                </button>
                 <button
                   type="button"
                   className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12px] text-red-600 hover:bg-surface-2"
@@ -451,6 +524,27 @@ function TaskRow({
           </>
         )}
       </div>
+    </div>
+    {/* Task description sub-row — expanded inline editor. Indents to
+        align with the title column above. */}
+    {descOpen ? (
+      <div className="border-t border-border bg-surface px-[126px] py-2">
+        <DescriptionEditor
+          value={task.description}
+          canEdit={canEdit}
+          placeholder="Add description"
+          compact
+          onSave={(d) =>
+            new Promise<void>((resolve, reject) =>
+              updateTask.mutate(
+                { taskId: task.id, patch: { description: d } },
+                { onSuccess: () => resolve(), onError: (e) => reject(e) },
+              ),
+            )
+          }
+        />
+      </div>
+    ) : null}
     </div>
   );
 }
@@ -524,53 +618,204 @@ function milestoneStatusCls(s: string) {
   if (l === "blocked") return "bg-red-100 text-red-700";
   if (l === "done" || l === "complete" || l === "completed") return "bg-surface-2 text-ink-4";
   if (l === "in_progress" || l === "in progress") return "bg-accent/10 text-accent-ink";
+  if (l === "not started" || l === "not_started") return "bg-zinc-200 text-zinc-700";
   return "bg-surface-2 text-ink-3";
 }
+
+const MILESTONE_STATUS_OPTIONS = [
+  "Not Started",
+  "On Track",
+  "At Risk",
+  "Blocked",
+  "Done",
+] as const;
 
 function MilestoneBlock({
   milestone,
   canEdit,
   projectId,
+  onOpenDrawer,
+  onOpenTaskDrawer,
 }: {
   milestone: ProjectMilestone;
   canEdit: boolean;
   projectId: string;
+  onOpenDrawer: () => void;
+  onOpenTaskDrawer: (taskId: string) => void;
 }) {
   const updateMilestone = useUpdateMilestone(projectId);
+  const deleteMilestone = useDeleteMilestone(projectId);
   const [editingDate, setEditingDate] = useState(false);
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [titleDraft, setTitleDraft] = useState(milestone.title);
+  const [statusOpen, setStatusOpen] = useState(false);
+  const [actionsOpen, setActionsOpen] = useState(false);
+  // Milestone description is collapsed by default — click the chevron
+  // on the milestone header to reveal/edit it.
+  const milestoneHasDescription = (milestone.description ?? "").trim().length > 0;
+  const [descOpen, setDescOpen] = useState(false);
+  const statusRef = useRef<HTMLDivElement>(null);
+  const actionsRef = useRef<HTMLDivElement>(null);
+  useOutsideClick(statusRef, () => setStatusOpen(false));
+  useOutsideClick(actionsRef, () => setActionsOpen(false));
+
+  useEffect(() => setTitleDraft(milestone.title), [milestone.title]);
+
   const overdue =
     !editingDate &&
     milestone.due_date &&
     new Date(milestone.due_date).getTime() < Date.now();
 
+  function commitTitle() {
+    const trimmed = titleDraft.trim();
+    if (trimmed && trimmed !== milestone.title) {
+      updateMilestone.mutate({ milestoneId: milestone.id, patch: { title: trimmed } });
+    } else {
+      setTitleDraft(milestone.title);
+    }
+    setEditingTitle(false);
+  }
+
+  function handleDelete() {
+    if (
+      confirm(
+        `Delete milestone "${milestone.title}"? This also removes its tasks.`,
+      )
+    ) {
+      deleteMilestone.mutate(milestone.id);
+    }
+    setActionsOpen(false);
+  }
+
   return (
     <div className="border-b border-border-strong last:border-b-0">
       {/* Milestone header — full-width flex */}
       <div className="flex items-center gap-2 border-b border-border-strong bg-surface-2/50 px-4 py-1.5">
-        <span className="min-w-0 flex-1 truncate text-[12px] font-semibold text-ink-2">
-          {milestone.title}
-        </span>
-        {milestone.status ? (
-          <span
+        {milestoneHasDescription || canEdit ? (
+          <button
+            type="button"
+            onClick={() => setDescOpen((v) => !v)}
+            title={descOpen ? "Hide description" : (milestoneHasDescription ? "Show description" : "Add description")}
             className={cn(
-              "flex-shrink-0 rounded px-1.5 py-px text-[10.5px] font-medium",
-              milestoneStatusCls(milestone.status),
+              "flex h-4 w-4 flex-shrink-0 items-center justify-center rounded text-ink-4 hover:bg-surface-2 hover:text-ink",
+              milestoneHasDescription ? "opacity-100" : "opacity-40 hover:opacity-100",
+              descOpen && "opacity-100 text-ink-2",
             )}
           >
-            {milestone.status}
-          </span>
-        ) : null}
-        {/* Due date — click to edit */}
+            {descOpen ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+          </button>
+        ) : (
+          <span className="h-4 w-4 flex-shrink-0" />
+        )}
+        {editingTitle && canEdit ? (
+          <input
+            autoFocus
+            type="text"
+            value={titleDraft}
+            onChange={(e) => setTitleDraft(e.target.value)}
+            onBlur={commitTitle}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") commitTitle();
+              if (e.key === "Escape") {
+                setTitleDraft(milestone.title);
+                setEditingTitle(false);
+              }
+            }}
+            className="min-w-0 flex-1 rounded bg-surface px-1.5 py-0.5 text-[12px] font-semibold outline-none ring-1 ring-accent"
+          />
+        ) : (
+          <button
+            type="button"
+            className="min-w-0 flex-1 truncate rounded px-1 text-left text-[12px] font-semibold text-ink-2 hover:bg-black/[0.03] hover:text-accent-ink"
+            onClick={onOpenDrawer}
+            title="Open milestone details"
+          >
+            {milestone.title}
+          </button>
+        )}
+
+        {/* Status chip — click to change. */}
+        <div ref={statusRef} className="relative flex-shrink-0">
+          <button
+            type="button"
+            disabled={!canEdit}
+            onClick={() => canEdit && setStatusOpen((o) => !o)}
+            className={cn(
+              "rounded px-1.5 py-px text-[10.5px] font-medium",
+              milestoneStatusCls(milestone.status || "On Track"),
+              canEdit && "hover:ring-1 hover:ring-accent",
+            )}
+          >
+            {milestone.status || (canEdit ? "Set status" : "—")}
+          </button>
+          {statusOpen && (
+            <div className="absolute right-0 top-full z-50 mt-1 min-w-[140px] rounded-md border border-border-strong bg-surface shadow-lg">
+              {MILESTONE_STATUS_OPTIONS.map((s) => (
+                <button
+                  key={s}
+                  type="button"
+                  onClick={() => {
+                    updateMilestone.mutate({
+                      milestoneId: milestone.id,
+                      patch: { status: s },
+                    });
+                    setStatusOpen(false);
+                  }}
+                  className={cn(
+                    "flex w-full items-center justify-between px-3 py-1.5 text-left text-[12px] hover:bg-surface-2",
+                    s === milestone.status && "bg-surface-2",
+                  )}
+                >
+                  <span
+                    className={cn(
+                      "rounded px-1.5 py-px text-[10.5px] font-medium",
+                      milestoneStatusCls(s),
+                    )}
+                  >
+                    {s}
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Due date — click to edit. Commits on change (native date
+            picker doesn't reliably fire blur after selection) and on
+            blur as a safety net. */}
         {editingDate && canEdit ? (
           <input
             autoFocus
             type="date"
             defaultValue={milestone.due_date ?? ""}
-            onBlur={(e) => {
-              updateMilestone.mutate({ milestoneId: milestone.id, patch: { due_date: e.target.value || null } });
+            onChange={(e) => {
+              updateMilestone.mutate({
+                milestoneId: milestone.id,
+                patch: { due_date: e.target.value || null },
+              });
               setEditingDate(false);
             }}
-            onKeyDown={(e) => { if (e.key === "Escape") setEditingDate(false); }}
+            onBlur={(e) => {
+              const next = e.target.value || null;
+              if (next !== (milestone.due_date ?? null)) {
+                updateMilestone.mutate({
+                  milestoneId: milestone.id,
+                  patch: { due_date: next },
+                });
+              }
+              setEditingDate(false);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") setEditingDate(false);
+              if (e.key === "Enter") {
+                const val = (e.target as HTMLInputElement).value || null;
+                updateMilestone.mutate({
+                  milestoneId: milestone.id,
+                  patch: { due_date: val },
+                });
+                setEditingDate(false);
+              }
+            }}
             className="mono h-6 rounded border border-accent bg-surface px-1.5 text-[11.5px] outline-none"
           />
         ) : (
@@ -589,10 +834,67 @@ function MilestoneBlock({
         <span className="flex-shrink-0 text-[11px] text-ink-4">
           {milestone.tasks.length} task{milestone.tasks.length === 1 ? "" : "s"}
         </span>
+
+        {canEdit && (
+          <div ref={actionsRef} className="relative flex-shrink-0">
+            <button
+              type="button"
+              onClick={() => setActionsOpen((o) => !o)}
+              className="flex h-6 w-6 items-center justify-center rounded text-ink-4 hover:bg-surface-2 hover:text-ink"
+              aria-label="Milestone actions"
+            >
+              <MoreHorizontal size={13} />
+            </button>
+            {actionsOpen && (
+              <div className="absolute right-0 top-full z-50 min-w-[160px] rounded-md border border-border-strong bg-surface shadow-lg">
+                <button
+                  type="button"
+                  onClick={() => { setEditingTitle(true); setActionsOpen(false); }}
+                  className="block w-full px-3 py-1.5 text-left text-[12px] hover:bg-surface-2"
+                >
+                  Rename
+                </button>
+                <button
+                  type="button"
+                  onClick={handleDelete}
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12px] text-red-600 hover:bg-surface-2"
+                >
+                  <Trash2 size={12} />
+                  Delete milestone
+                </button>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
+      {/* Milestone description row — collapsed by default, toggled via
+          the chevron on the milestone header. */}
+      {descOpen ? (
+        <div className="border-b border-border bg-surface px-4 py-1.5">
+          <DescriptionEditor
+            value={milestone.description}
+            canEdit={canEdit}
+            placeholder="Add a description for this milestone"
+            compact
+            onSave={(d) =>
+              updateMilestone.mutateAsync({
+                milestoneId: milestone.id,
+                patch: { description: d },
+              }).then(() => undefined)
+            }
+          />
+        </div>
+      ) : null}
+
       {milestone.tasks.map((t) => (
-        <TaskRow key={t.id} task={t} canEdit={canEdit} projectId={projectId} />
+        <TaskRow
+          key={t.id}
+          task={t}
+          canEdit={canEdit}
+          projectId={projectId}
+          onOpenDrawer={() => onOpenTaskDrawer(t.id)}
+        />
       ))}
       {canEdit && (
         <AddTaskRow milestoneId={milestone.id} projectId={projectId} />
@@ -663,43 +965,106 @@ function WorkstreamSection({
   ws,
   canEdit,
   projectId,
+  onOpenDrawer,
+  onOpenMilestoneDrawer,
+  onOpenTaskDrawer,
 }: {
   ws: ProjectWorkstream;
   canEdit: boolean;
   projectId: string;
+  onOpenDrawer: () => void;
+  onOpenMilestoneDrawer: (msId: string) => void;
+  onOpenTaskDrawer: (taskId: string) => void;
 }) {
   const [open, setOpen] = useState(true);
   const [addingMilestone, setAddingMilestone] = useState(false);
+  const [editingName, setEditingName] = useState(false);
+  const [nameDraft, setNameDraft] = useState(ws.name);
+  const [actionsOpen, setActionsOpen] = useState(false);
+  const actionsRef = useRef<HTMLDivElement>(null);
+  useOutsideClick(actionsRef, () => setActionsOpen(false));
+
+  const updateWorkstream = useUpdateWorkstream(projectId);
+  const deleteWorkstream = useDeleteWorkstream(projectId);
 
   const milestoneCount = ws.milestones.length;
   const taskCount = ws.milestones.reduce((s, ms) => s + ms.tasks.length, 0);
+
+  useEffect(() => setNameDraft(ws.name), [ws.name]);
 
   function handleAddMilestone() {
     setOpen(true);
     setAddingMilestone(true);
   }
 
+  function commitName() {
+    const trimmed = nameDraft.trim();
+    if (trimmed && trimmed !== ws.name) {
+      updateWorkstream.mutate({ workstreamId: ws.id, patch: { name: trimmed } });
+    } else {
+      setNameDraft(ws.name);
+    }
+    setEditingName(false);
+  }
+
+  function handleDelete() {
+    if (
+      confirm(
+        `Delete workstream "${ws.name}"? This also removes its milestones and tasks.`,
+      )
+    ) {
+      deleteWorkstream.mutate(ws.id);
+    }
+    setActionsOpen(false);
+  }
+
   return (
-    <div className="border-l-4 border-accent overflow-hidden rounded-lg border border-border-strong bg-surface shadow-sm mt-3 first:mt-0">
+    <div className="border-l-4 border-accent rounded-lg border border-border-strong bg-surface shadow-sm mt-3 first:mt-0">
       {/* Workstream header */}
       <div className="flex items-center border-b border-border-strong bg-surface-2">
         <button
           type="button"
           onClick={() => setOpen((o) => !o)}
-          className="flex flex-1 items-center gap-2 px-4 py-2.5 text-left hover:bg-black/[0.02]"
+          className="flex flex-shrink-0 items-center px-3 py-2.5 hover:bg-black/[0.02]"
+          aria-label={open ? "Collapse workstream" : "Expand workstream"}
         >
           {open ? (
-            <ChevronDown size={13} className="flex-shrink-0 text-ink-3" />
+            <ChevronDown size={13} className="text-ink-3" />
           ) : (
-            <ChevronRight size={13} className="flex-shrink-0 text-ink-3" />
+            <ChevronRight size={13} className="text-ink-3" />
           )}
-          <span className="min-w-0 flex-1 truncate text-[13px] font-semibold text-ink">
-            {ws.name}
-          </span>
+        </button>
+        <div className="flex min-w-0 flex-1 items-center gap-2 py-2.5 pr-2">
+          {editingName && canEdit ? (
+            <input
+              autoFocus
+              type="text"
+              value={nameDraft}
+              onChange={(e) => setNameDraft(e.target.value)}
+              onBlur={commitName}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") commitName();
+                if (e.key === "Escape") {
+                  setNameDraft(ws.name);
+                  setEditingName(false);
+                }
+              }}
+              className="min-w-0 flex-1 rounded bg-surface px-1.5 py-0.5 text-[13px] font-semibold outline-none ring-1 ring-accent"
+            />
+          ) : (
+            <button
+              type="button"
+              className="min-w-0 flex-1 truncate rounded px-1 text-left text-[13px] font-semibold text-ink hover:bg-black/[0.03] hover:text-accent-ink"
+              onClick={onOpenDrawer}
+              title="Open workstream details"
+            >
+              {ws.name}
+            </button>
+          )}
           <span className="mono flex-shrink-0 text-[11px] text-ink-3">
             {milestoneCount} milestone{milestoneCount === 1 ? "" : "s"} · {taskCount} task{taskCount === 1 ? "" : "s"}
           </span>
-        </button>
+        </div>
         {canEdit && (
           <button
             type="button"
@@ -709,16 +1074,62 @@ function WorkstreamSection({
             + Milestone
           </button>
         )}
+        {canEdit && (
+          <div ref={actionsRef} className="relative flex-shrink-0">
+            <button
+              type="button"
+              onClick={() => setActionsOpen((o) => !o)}
+              className="flex h-full items-center border-l border-border-strong px-2.5 text-ink-4 hover:bg-black/[0.02] hover:text-ink"
+              aria-label="Workstream actions"
+            >
+              <MoreHorizontal size={14} />
+            </button>
+            {actionsOpen && (
+              <div className="absolute right-0 top-full z-50 min-w-[160px] rounded-md border border-border-strong bg-surface shadow-lg">
+                <button
+                  type="button"
+                  onClick={() => { setEditingName(true); setActionsOpen(false); }}
+                  className="block w-full px-3 py-1.5 text-left text-[12px] hover:bg-surface-2"
+                >
+                  Rename
+                </button>
+                <button
+                  type="button"
+                  onClick={handleDelete}
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12px] text-red-600 hover:bg-surface-2"
+                >
+                  <Trash2 size={12} />
+                  Delete workstream
+                </button>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {open && (
         <>
+          <div className="border-b border-border bg-surface px-4 py-2">
+            <DescriptionEditor
+              value={ws.description}
+              canEdit={canEdit}
+              placeholder="Add a description for this workstream"
+              onSave={(d) =>
+                updateWorkstream.mutateAsync({
+                  workstreamId: ws.id,
+                  patch: { description: d },
+                }).then(() => undefined)
+              }
+            />
+          </div>
           {ws.milestones.map((ms) => (
             <MilestoneBlock
               key={ms.id}
               milestone={ms}
               canEdit={canEdit}
               projectId={projectId}
+              onOpenDrawer={() => onOpenMilestoneDrawer(ms.id)}
+              onOpenTaskDrawer={onOpenTaskDrawer}
             />
           ))}
           {milestoneCount === 0 && !addingMilestone ? (
@@ -1398,13 +1809,146 @@ function EditableProjectDescription({
 
 // ── Page ──────────────────────────────────────────────────────────────────────
 
+interface ProjectListViewProps {
+  workstreams: ProjectWorkstream[];
+  canEdit: boolean;
+  projectId: string;
+  /** Hide the "+ Add workstream" affordance when a filter is active —
+   *  otherwise the empty filtered tree looks like the project itself is
+   *  empty. */
+  showAddWorkstream: boolean;
+}
+
+function ProjectListView({
+  workstreams,
+  canEdit,
+  projectId,
+  showAddWorkstream,
+}: ProjectListViewProps) {
+  // Side panel state — clicking a workstream/milestone/task name opens
+  // the relevant drawer. The existing inline-edit flows are still
+  // reachable via the `⋯` menu's "Rename" item.
+  const [openWsId, setOpenWsId] = useState<string | null>(null);
+  const [openMsId, setOpenMsId] = useState<string | null>(null);
+  const [openTaskId, setOpenTaskId] = useState<string | null>(null);
+
+  // Resolve the latest object from the workstream tree each render so
+  // the drawer reflects up-to-date data (e.g. after an inline edit).
+  const openWs = openWsId
+    ? workstreams.find((w) => w.id === openWsId) ?? null
+    : null;
+  const openMsCtx = (() => {
+    if (!openMsId) return null;
+    for (const w of workstreams) {
+      const m = w.milestones.find((x) => x.id === openMsId);
+      if (m) return { ws: w, ms: m };
+    }
+    return null;
+  })();
+  const openTaskCtx = (() => {
+    if (!openTaskId) return null;
+    for (const w of workstreams) {
+      for (const m of w.milestones) {
+        const t = m.tasks.find((x) => x.id === openTaskId);
+        if (t) return { ws: w, ms: m, task: t };
+      }
+    }
+    return null;
+  })();
+
+  return (
+    <>
+      {workstreams.length === 0 ? (
+        <div className="mt-2 rounded-lg border border-border-strong bg-surface px-5 py-10 text-center text-[12.5px] text-ink-3 shadow-sm">
+          {showAddWorkstream
+            ? "No workstreams on this project yet."
+            : "No tasks match the current filter."}
+        </div>
+      ) : (
+        workstreams.map((ws) => (
+          <WorkstreamSection
+            key={ws.id}
+            ws={ws}
+            canEdit={canEdit}
+            projectId={projectId}
+            onOpenDrawer={() => setOpenWsId(ws.id)}
+            onOpenMilestoneDrawer={(msId) => setOpenMsId(msId)}
+            onOpenTaskDrawer={(taskId) => setOpenTaskId(taskId)}
+          />
+        ))
+      )}
+      {canEdit && showAddWorkstream ? <AddWorkstreamRow projectId={projectId} /> : null}
+
+      {openWs ? (
+        <WorkstreamDrawer
+          workstream={openWs}
+          projectId={projectId}
+          canEdit={canEdit}
+          onClose={() => setOpenWsId(null)}
+          onOpenMilestone={(m) => {
+            setOpenWsId(null);
+            setOpenMsId(m.id);
+          }}
+        />
+      ) : null}
+
+      {openMsCtx ? (
+        <MilestoneDrawer
+          milestone={openMsCtx.ms}
+          workstream={openMsCtx.ws}
+          projectId={projectId}
+          canEdit={canEdit}
+          onClose={() => setOpenMsId(null)}
+          onOpenTask={(t) => {
+            setOpenMsId(null);
+            setOpenTaskId(t.id);
+          }}
+        />
+      ) : null}
+
+      {openTaskCtx ? (
+        <TaskDrawer
+          task={openTaskCtx.task}
+          milestone={openTaskCtx.ms}
+          workstream={openTaskCtx.ws}
+          projectId={projectId}
+          canEdit={canEdit}
+          onClose={() => setOpenTaskId(null)}
+        />
+      ) : null}
+    </>
+  );
+}
+
 export function ProjectDetailPage() {
   const { id = "" } = useParams<{ id: string }>();
   const detailQ = useProjectDetail(id);
   const detail = detailQ.data;
   const canEdit = usePerm("edit_projects");
 
+  const [view, setView] = useProjectView();
+  const [filter, setFilter] = useState<ProjectFilter>(DEFAULT_FILTER);
+  const { data: activeUsers = [] } = useActiveUsers();
+
   const workstreams: ProjectWorkstream[] = detail?.workstreams ?? [];
+
+  // Filter tree for the List view. Workstreams + milestones disappear
+  // when nothing inside them survives the filter — keeps the view honest
+  // about what's hidden.
+  const filteredWorkstreams = useMemo(() => {
+    if (isDefaultFilter(filter)) return workstreams;
+    return workstreams
+      .map((ws) => ({
+        ...ws,
+        milestones: ws.milestones
+          .map((ms) => ({
+            ...ms,
+            tasks: ms.tasks.filter((t) => taskMatchesFilter(t, ms, filter, ws.id)),
+          }))
+          .filter((ms) => ms.tasks.length > 0),
+      }))
+      .filter((ws) => ws.milestones.length > 0);
+  }, [workstreams, filter]);
 
   if (detailQ.isLoading) {
     return (
@@ -1453,28 +1997,57 @@ export function ProjectDetailPage() {
         />
       </div>
 
-      {/* Board */}
-      <section className="mt-6">
-        {workstreams.length === 0 ? (
-          <div className="mt-2 rounded-lg border border-border-strong bg-surface px-5 py-10 text-center text-[12.5px] text-ink-3 shadow-sm">
-            No workstreams on this project yet.
-          </div>
+      {/* View switcher */}
+      <div className="mt-5 flex items-center gap-3">
+        <ProjectViewSwitcher value={view} onChange={setView} />
+      </div>
+
+      {/* Sub-toolbar — applies to all three views */}
+      <ProjectSubToolbar
+        view={view}
+        filter={filter}
+        onChange={setFilter}
+        owners={activeUsers}
+        workstreams={workstreams}
+      />
+
+      {/* Selected view */}
+      <section className="mt-4">
+        {view === "list" ? (
+          <ProjectListView
+            workstreams={filteredWorkstreams}
+            canEdit={canEdit}
+            projectId={id}
+            showAddWorkstream={isDefaultFilter(filter)}
+          />
+        ) : view === "board" ? (
+          <ProjectBoardView detail={detail} filter={filter} canEdit={canEdit} />
         ) : (
-          workstreams.map((ws) => (
-            <WorkstreamSection
-              key={ws.id}
-              ws={ws}
-              canEdit={canEdit}
-              projectId={id}
-            />
-          ))
+          <ProjectTimelineView detail={detail} filter={filter} canEdit={canEdit} />
         )}
-        {canEdit && <AddWorkstreamRow projectId={id} />}
       </section>
 
-      {/* Linked sections */}
+      {/* Linked sections — these pull from Salesforce; when SF isn't
+          connected they render empty (the hooks degrade to []) so we
+          surface a banner so the empty state isn't mysterious. */}
+      <SalesforceOfflineBanner />
       <LinkedRevenueSection projectId={id} />
       <LinkedContactsSection projectId={id} />
+    </div>
+  );
+}
+
+function SalesforceOfflineBanner() {
+  const sf = useSalesforceStatus();
+  if (sf.isLoading) return null;
+  if (sf.data?.connected) return null;
+  return (
+    <div className="mt-4 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-[12px] text-amber-900">
+      <span className="font-medium">Salesforce not connected.</span>{" "}
+      The Awards/Opportunities and Contacts sections below need a Salesforce session to populate. Project workstreams, milestones, and tasks above work without it.{" "}
+      <a href="/settings" className="underline">
+        Connect →
+      </a>
     </div>
   );
 }

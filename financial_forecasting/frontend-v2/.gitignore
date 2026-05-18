@@ -4,6 +4,13 @@ dist-ssr
 *.local
 .vite
 
+# TypeScript incremental build cache
+*.tsbuildinfo
+
+# Compiled vite config (tsc -b emits these from vite.config.ts)
+vite.config.js
+vite.config.d.ts
+
 # Re-include src/lib/ — the root .gitignore globs `lib/` for Python's
 # virtualenv layout, which incidentally catches our React lib/ folder.
 !src/lib/

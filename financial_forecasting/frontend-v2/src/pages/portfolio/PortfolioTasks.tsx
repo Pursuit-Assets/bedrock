@@ -32,7 +32,7 @@ import { riskForTask, riskTextClass, type RiskLevel } from "@/lib/risk";
 import { InlineDate, InlineSelect, InlineText } from "@/components/ui/InlineEdit";
 import { SectionCard, withReferrer } from "@/components/detail";
 import { useUpdateTask as useUpdateSfTask, useUserTasks as useSfUserTasks } from "@/services/opportunities";
-import { useUpdateTask as useUpdateProjectTask, type BedrockProject } from "@/services/projects";
+import { useActiveUsers, useUpdateTask as useUpdateProjectTask, type BedrockProject } from "@/services/projects";
 import type { SfTask } from "@/types/salesforce";
 
 const SF_STATUS_OPTIONS = [
@@ -53,6 +53,15 @@ const PROJECT_STATUS_OPTIONS = [
 ];
 
 type TaskSource = "sf" | "project";
+
+interface ProjectTaskRaw {
+  id: string;
+  title: string;
+  status: string;
+  deadline: string | null;
+  owner: string | null;
+  owner_ids: string[];
+}
 
 type ParentKind = "opportunity" | "account" | "contact" | "project" | "other";
 
@@ -78,6 +87,15 @@ interface UnifiedTask {
 
 interface PortfolioTasksProps {
   sfUserId: string | null;
+  /** Email of the user whose tasks we're showing — used to resolve
+   *  their org_user_id for project-task ownership matching. */
+  userEmail: string;
+  /** Display name of the user — fallback signal for matching the
+   *  `task.owner` text column when `owner_ids` is empty. */
+  userDisplayName: string;
+  /** Every active project. PortfolioTasks scans them for tasks owned
+   *  by `userEmail` — NOT limited to projects the user owns, because
+   *  most task assignments live in projects owned by someone else. */
   projects: BedrockProject[];
   projectsLoading: boolean;
 }
@@ -110,9 +128,43 @@ function isInFocusWindow(deadline: string | null, done: boolean): boolean {
   return risk === "overdue" || risk === "due-soon";
 }
 
-export function PortfolioTasks({ sfUserId, projects, projectsLoading }: PortfolioTasksProps) {
+export function PortfolioTasks({
+  sfUserId,
+  userEmail,
+  userDisplayName,
+  projects,
+  projectsLoading,
+}: PortfolioTasksProps) {
   const sfTasksQ = useSfUserTasks(sfUserId ?? undefined);
   const projectTasksQs = useUserProjectTaskQueries(projects);
+  const activeUsersQ = useActiveUsers();
+
+  // Resolve EVERY org_users row that maps to this user. Match on
+  // either gmail (org_user.email) or Salesforce id (org_user.sf_user_id)
+  // — a single human can be represented by multiple org_users rows in
+  // segundo-db if their accounts were provisioned separately. Tasks
+  // assigned through any of those identities should all surface here.
+  const userOrgIds = useMemo(() => {
+    const lower = userEmail.toLowerCase();
+    const out = new Set<string>();
+    for (const u of activeUsersQ.data ?? []) {
+      const emailMatch = (u.email ?? "").toLowerCase() === lower;
+      const sfMatch = sfUserId != null && u.sf_user_id === sfUserId;
+      if (emailMatch || sfMatch) out.add(u.id);
+    }
+    return out;
+  }, [activeUsersQ.data, userEmail, sfUserId]);
+
+  function taskBelongsToUser(t: ProjectTaskRaw): boolean {
+    if (t.owner_ids && t.owner_ids.some((id) => userOrgIds.has(id))) return true;
+    if (
+      (t.owner ?? "").trim().length > 0 &&
+      t.owner!.trim().toLowerCase() === userDisplayName.trim().toLowerCase()
+    ) {
+      return true;
+    }
+    return false;
+  }
 
   const [showDone, setShowDone] = useState(false);
   const [scope, setScope] = useState<Scope>(readStoredScope);
@@ -137,6 +189,7 @@ export function PortfolioTasks({ sfUserId, projects, projectsLoading }: Portfoli
     for (const { projectId, tasks } of projectTasksQs) {
       const p = projById.get(projectId);
       for (const t of tasks) {
+        if (!taskBelongsToUser(t)) continue;
         out.push(normalizeProjectTask(t, projectId, p?.name ?? projectId));
       }
     }
@@ -251,15 +304,6 @@ function useUserProjectTaskQueries(projects: BedrockProject[]) {
     projectId: p.id,
     tasks: (queries[i]?.data ?? []) as ProjectTaskRaw[],
   }));
-}
-
-interface ProjectTaskRaw {
-  id: string;
-  title: string;
-  status: string;
-  deadline: string | null;
-  owner: string | null;
-  owner_ids: string[];
 }
 
 // ── Normalizers ──────────────────────────────────────────────────────────
