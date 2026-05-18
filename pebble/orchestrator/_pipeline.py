@@ -46,9 +46,21 @@ from ..claim_templates import (
     claims_from_edgar_search,
     claims_from_wikipedia_infobox,
 )
-from ..storage.db import save_meta_alert
+from ..storage.db import save_conflicts, save_meta_alert
 from .guardrails import detect_injection_signatures
 from .verifier import verify_claim_once
+
+
+def detect_conflicts(claims: list[dict], person_name: str) -> list[dict]:
+    """Lazy proxy to pebble.clusters.conflict_detector.detect_conflicts.
+
+    Imported at call time to break the orchestrator↔clusters circular
+    import (clusters/__init__.py imports ProspectBudgetTracker from
+    here, so a module-level `from ..clusters.conflict_detector import
+    detect_conflicts` deadlocks during initial import).
+    """
+    from ..clusters.conflict_detector import detect_conflicts as _impl
+    return _impl(claims, person_name)
 
 logger = logging.getLogger("pebble.orchestrator")
 
@@ -1114,6 +1126,49 @@ async def research_single_prospect(
         if all_claims and not budget.exceeded():
             verified_claims = await quorum_verify_claims(all_claims, prospect, client, budget, user_email=user_email)
 
+        # Conflict detection (§4.4 + §5.3) — find role / financial / temporal
+        # contradictions across the verified claim pool. Persist to
+        # bedrock.pebble_conflict_log so the cockpit + retros can render
+        # them; emit a `divergence` meta-alert when conflicts found so
+        # the Meta-Observer feed surfaces the divergence in real time.
+        # Best-effort: detect_conflicts is deterministic regex+heuristics
+        # so it won't raise, but save_conflicts can fail if the DB is
+        # unhappy — we log + continue rather than crash.
+        run_conflicts: list[dict] = []
+        if verified_claims:
+            try:
+                run_conflicts = detect_conflicts(verified_claims, name)
+            except Exception as e:
+                logger.warning("detect_conflicts failed (best-effort): %s", e)
+                run_conflicts = []
+            if run_conflicts:
+                try:
+                    await save_conflicts(session_id, contact_id, run_conflicts)
+                except Exception as e:
+                    logger.warning("save_conflicts failed (best-effort): %s", e)
+                if user_email:
+                    # ≥3 conflicts is the §4.4 conflict_spike threshold.
+                    severity = "warn"
+                    alert_kind = "divergence"
+                    if len(run_conflicts) >= 3:
+                        alert_kind = "conflict_spike"
+                    await save_meta_alert(
+                        session_id=session_id,
+                        alert_kind=alert_kind,
+                        severity=severity,
+                        action_taken=(
+                            f"Detected {len(run_conflicts)} cross-claim conflict(s) "
+                            f"in verified pool (role / financial / temporal)"
+                        ),
+                        payload={
+                            "conflict_count": len(run_conflicts),
+                            "types": sorted({c.get("type", "unknown") for c in run_conflicts}),
+                            "stage": "post_quorum",
+                        },
+                        originating_user_email=user_email,
+                        cluster="conflict_detector",
+                    )
+
         # Cancel checkpoint: before synthesis (most expensive LLM call)
         if cancel_check():
             logger.info("Cancelled before synthesis for %s", contact_id)
@@ -1130,6 +1185,7 @@ async def research_single_prospect(
                 "confidence_score": profile_data.get("confidence_score", "medium"),
                 "partial": profile_data.get("partial", False),
                 "failed_agents": profile_data.get("failed_agents", []),
+                "conflicts": run_conflicts,
             }
         else:
             profile = {
@@ -1138,6 +1194,7 @@ async def research_single_prospect(
                 "confidence_score": "medium",
                 "partial": enriched.get("partial", False),
                 "failed_agents": enriched.get("failed_agents", []),
+                "conflicts": run_conflicts,
             }
     except Exception as e:
         logger.exception("Prospect %s failed: %s", contact_id, e)
