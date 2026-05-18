@@ -12,12 +12,23 @@
  * loads lazily so other owners' homes and the rest of the app stay light.
  */
 import { lazy, Suspense, useState } from "react";
+import { Navigate } from "react-router-dom";
 
 import { PageHeader } from "@/components/PageHeader";
 import { OpportunityDrawer } from "@/components/OpportunityDrawer";
 import { TaskDrawer, type FlatTask } from "@/components/TaskDrawer";
 import { usePermissions } from "@/services/permissions";
 import type { SfOpportunity } from "@/types/salesforce";
+
+/**
+ * Identity gate — hard-coded while this page is in solo dogfood. Anyone
+ * else hitting /home/jp (including admins) gets bounced to /dashboard.
+ * Other owners can still see their own /home/<slug> pages.
+ *
+ * To open it up later: replace this constant with a permission key or
+ * remove the gate entirely.
+ */
+const HOME_JP_GATE_EMAIL = "jp@pursuit.org";
 
 const GoalTracker = lazy(() =>
   import("@/components/home/GoalTracker").then((m) => ({
@@ -36,11 +47,26 @@ const PriorityTable = lazy(() =>
 );
 
 export function HomeJp() {
-  const { data: permissions } = usePermissions();
+  const { data: permissions, isLoading } = usePermissions();
   const currentUserId = permissions?.sf_user_id ?? null;
 
   const [drawerTask, setDrawerTask] = useState<FlatTask | null>(null);
   const [drawerOpp, setDrawerOpp] = useState<SfOpportunity | null>(null);
+
+  // Wait for the auth/permissions response before deciding visibility so a
+  // signed-in JP doesn't get bounced on a flash of empty data.
+  if (isLoading) {
+    return (
+      <div className="mx-auto w-full max-w-[1600px] px-5 py-4">
+        <PaneSkeleton heightClass="h-[420px]" />
+      </div>
+    );
+  }
+
+  const viewerEmail = (permissions?.email ?? "").toLowerCase().trim();
+  if (viewerEmail !== HOME_JP_GATE_EMAIL) {
+    return <Navigate to="/dashboard" replace />;
+  }
 
   return (
     <div className="mx-auto flex w-full max-w-[1600px] flex-col gap-4 px-5 py-4">
