@@ -8,16 +8,10 @@ import { ColGroup, ResizableTh } from "@/components/ui/ResizableTable";
 import { SortableHeader } from "@/components/ui/SortableHeader";
 import { Toolbar } from "@/components/ui/Toolbar";
 import { totalWidth, useColumnWidths } from "@/lib/columnWidths";
-import { cn } from "@/lib/utils";
 import { fmtDate } from "@/lib/format";
 import { sortBy, useSort } from "@/lib/sort";
-import { useCurrentUser } from "@/services/auth";
 import { useProjects, useCreateProject, type BedrockProject } from "@/services/projects";
 import { toast } from "sonner";
-
-type OwnerFilter = "all" | "mine";
-type ActivityFilter = "all" | "recent";
-const RECENT_DAYS = 30;
 
 type ColKey = "name" | "owner" | "created" | "updated";
 
@@ -60,10 +54,7 @@ function extractProject(p: BedrockProject, key: ColKey): unknown {
 
 export function ProjectsPage() {
   const { data, isLoading, isError, error } = useProjects();
-  const { data: me } = useCurrentUser();
   const [q, setQ] = useState("");
-  const [ownerFilter, setOwnerFilter] = useState<OwnerFilter>("all");
-  const [activityFilter, setActivityFilter] = useState<ActivityFilter>("all");
   const navigate = useNavigate();
 
   const { sort, toggle } = useSort<ColKey>({
@@ -94,43 +85,16 @@ export function ProjectsPage() {
 
   const projects = data ?? [];
 
-  const recentCutoff = useMemo(() => {
-    const d = new Date();
-    d.setDate(d.getDate() - RECENT_DAYS);
-    return d.toISOString();
-  }, []);
-  const myEmail = me?.email?.toLowerCase() ?? "";
-
   const filtered = useMemo(() => {
-    const ql = q.toLowerCase();
-    const f = projects.filter((p) => {
-      if (ownerFilter === "mine") {
-        if (!myEmail || (p.owner_email ?? "").toLowerCase() !== myEmail) return false;
-      }
-      if (activityFilter === "recent") {
-        if (!p.updated_at || p.updated_at < recentCutoff) return false;
-      }
-      if (!ql) return true;
-      return (
-        p.name.toLowerCase().includes(ql) ||
-        (p.description ?? "").toLowerCase().includes(ql) ||
-        (p.owner_email ?? "").toLowerCase().includes(ql)
-      );
-    });
+    const f = projects.filter(
+      (p) =>
+        !q ||
+        p.name.toLowerCase().includes(q.toLowerCase()) ||
+        (p.description ?? "").toLowerCase().includes(q.toLowerCase()) ||
+        (p.owner_email ?? "").toLowerCase().includes(q.toLowerCase()),
+    );
     return sortBy(f, sort, extractProject);
-  }, [projects, q, ownerFilter, activityFilter, myEmail, recentCutoff, sort]);
-
-  // Counts for the pill labels — computed off `projects` (pre-filter) so
-  // pill counts don't drop to 0 as the user narrows.
-  const counts = useMemo(() => {
-    const mine = myEmail
-      ? projects.filter((p) => (p.owner_email ?? "").toLowerCase() === myEmail).length
-      : 0;
-    const recent = projects.filter(
-      (p) => p.updated_at && p.updated_at >= recentCutoff,
-    ).length;
-    return { all: projects.length, mine, recent };
-  }, [projects, myEmail, recentCutoff]);
+  }, [projects, q, sort]);
 
   const tableMinWidth = totalWidth(widths);
 
@@ -209,27 +173,6 @@ export function ProjectsPage() {
             className="h-7 w-72 rounded border border-border-strong bg-surface pl-7 pr-3 text-[12.5px] text-ink outline-none focus:border-accent"
           />
         </div>
-
-        <FilterPills<OwnerFilter>
-          ariaLabel="Owner filter"
-          value={ownerFilter}
-          onChange={setOwnerFilter}
-          options={[
-            { value: "all", label: "All", count: counts.all },
-            { value: "mine", label: "Mine", count: counts.mine },
-          ]}
-        />
-
-        <FilterPills<ActivityFilter>
-          ariaLabel="Activity filter"
-          value={activityFilter}
-          onChange={setActivityFilter}
-          options={[
-            { value: "all", label: "Any time" },
-            { value: "recent", label: "Recent", count: counts.recent },
-          ]}
-        />
-
         <span className="ml-auto text-[11.5px] text-ink-3">
           {filtered.length.toLocaleString()} of{" "}
           {projects.length.toLocaleString()}
@@ -370,59 +313,6 @@ const ProjectRow = memo(function ProjectRow({ p, onOpen }: RowProps) {
     </tr>
   );
 });
-
-interface FilterPillsProps<V extends string> {
-  ariaLabel: string;
-  value: V;
-  onChange: (v: V) => void;
-  options: { value: V; label: string; count?: number }[];
-}
-
-function FilterPills<V extends string>({
-  ariaLabel,
-  value,
-  onChange,
-  options,
-}: FilterPillsProps<V>) {
-  return (
-    <div
-      role="tablist"
-      aria-label={ariaLabel}
-      className="inline-flex overflow-hidden rounded-md border border-border-strong bg-surface"
-    >
-      {options.map((opt) => {
-        const active = opt.value === value;
-        return (
-          <button
-            key={opt.value}
-            type="button"
-            role="tab"
-            aria-selected={active}
-            onClick={() => onChange(opt.value)}
-            className={cn(
-              "flex items-center gap-1.5 border-l border-border-strong px-2.5 py-1 text-[11.5px] font-medium first:border-l-0",
-              active
-                ? "bg-ink text-surface"
-                : "text-ink-3 hover:bg-surface-2 hover:text-ink-2",
-            )}
-          >
-            <span>{opt.label}</span>
-            {typeof opt.count === "number" ? (
-              <span
-                className={cn(
-                  "rounded px-1 text-[10.5px] tabular-nums",
-                  active ? "bg-surface/20" : "bg-surface-2 text-ink-3",
-                )}
-              >
-                {opt.count}
-              </span>
-            ) : null}
-          </button>
-        );
-      })}
-    </div>
-  );
-}
 
 function SkeletonRows() {
   return (
