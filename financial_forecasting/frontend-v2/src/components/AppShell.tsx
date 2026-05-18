@@ -79,8 +79,11 @@ export function AppShell() {
   const { pathname } = useLocation();
   const sf = useSalesforceStatus();
 
-  // Allow Settings so the user can connect SF even when not yet connected.
-  const isSettingsPage = pathname.startsWith("/settings");
+  // Pages that don't fundamentally need Salesforce — Settings (so the user
+  // can connect SF), Projects (planning lives in Bedrock's own DB), and
+  // Feedback (intake form). Anything else 503s the SF gate when SF is off.
+  const SF_OPTIONAL_PREFIXES = ["/settings", "/projects", "/feedback"];
+  const sfOptional = SF_OPTIONAL_PREFIXES.some((p) => pathname.startsWith(p));
   const sfNotConnected = !sf.isLoading && sf.data?.connected === false;
 
   const navType = useNavigationType();
@@ -131,7 +134,7 @@ export function AppShell() {
       <GlobalSearch open={searchOpen} onClose={() => setSearchOpen(false)} />
       <Sidebar collapsed={collapsed} onToggle={toggle} onSearchOpen={() => setSearchOpen(true)} />
       <main className="flex flex-col overflow-hidden">
-        {sfNotConnected && !isSettingsPage ? (
+        {sfNotConnected && !sfOptional ? (
           <SalesforceGate />
         ) : (
           <div ref={scrollRef} className="flex-1 overflow-y-auto">
