@@ -1272,7 +1272,18 @@ async def get_cashflow_detail(
                 "amount": amt,
                 "weighted_amount": round(amt * prob / 100, 2) if type == "projected" else None,
                 "probability": prob if type == "projected" else None,
-                "date": r.get("npe01__Payment_Date__c") or r.get("npe01__Scheduled_Date__c"),
+                # Date column should reflect why this row is in the
+                # selected cashflow cell. Actuals → the day it was paid.
+                # Scheduled/outstanding/projected → the day it's scheduled
+                # for (the date that put it in the column the user clicked).
+                # The previous fallback `Payment_Date or Scheduled_Date`
+                # caused scheduled rows with a stray non-null Payment_Date
+                # to display the wrong month.
+                "date": (
+                    r.get("npe01__Payment_Date__c")
+                    if type == "actuals"
+                    else r.get("npe01__Scheduled_Date__c")
+                ),
                 "opp_name": opp.get("Name"),
                 "account_name": (opp.get("Account") or {}).get("Name"),
                 "stage": opp.get("StageName"),
