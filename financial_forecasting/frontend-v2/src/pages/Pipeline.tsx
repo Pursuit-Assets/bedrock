@@ -286,15 +286,21 @@ export function PipelinePage() {
   }, [opps, scope, stageFilter, q]);
 
   // Chip-filter facets — owner options are the union of:
-  //   (a) active SF users that own at least one row in the current view, and
+  //   (a) every active SF user (always — so you can filter to a
+  //       teammate even if they have zero rows right now), and
   //   (b) inactive users that own at least one row in the current view.
-  // Inactive users with zero visible rows are dropped entirely (the
-  // user's instruction: "only show active Salesforce users + inactive
-  // ones that have records in the table").
+  // Inactive users with zero visible rows are dropped. Per user spec:
+  //   "active Salesforce users + inactive ones that have records in the
+  //    table".
   // Record types come from the opps present in the current view.
   const chipFacets = useMemo(() => {
     const all = allUsersQ.data ?? [];
-    const userById = new Map(all.map((u) => [u.Id, u]));
+    const activeById = new Map(
+      all.filter((u) => u.IsActive).map((u) => [u.Id, u]),
+    );
+    const inactiveById = new Map(
+      all.filter((u) => !u.IsActive).map((u) => [u.Id, u]),
+    );
 
     const ownersInView = new Set<string>();
     const ownerNameFromData = new Map<string, string>();
@@ -309,14 +315,16 @@ export function PipelinePage() {
 
     type OwnerOption = { value: string; label: string };
     const ownerOptions: OwnerOption[] = [];
+    // (a) every active user
+    for (const u of activeById.values()) {
+      ownerOptions.push({ value: u.Id, label: u.Name });
+    }
+    // (b) inactive users with rows in the current view
     for (const id of ownersInView) {
-      const u = userById.get(id);
-      const name = u?.Name ?? ownerNameFromData.get(id) ?? id;
-      const isInactive = u ? !u.IsActive : false;
-      ownerOptions.push({
-        value: id,
-        label: isInactive ? `${name} (inactive)` : name,
-      });
+      if (activeById.has(id)) continue;
+      const inactive = inactiveById.get(id);
+      const name = inactive?.Name ?? ownerNameFromData.get(id) ?? id;
+      ownerOptions.push({ value: id, label: `${name} (inactive)` });
     }
     ownerOptions.sort((a, b) => a.label.localeCompare(b.label));
 
