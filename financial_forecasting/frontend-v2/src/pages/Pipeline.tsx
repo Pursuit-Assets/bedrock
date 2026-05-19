@@ -483,6 +483,13 @@ export function PipelinePage() {
     [updateOpp],
   );
 
+  const saveCloseDate = useCallback(
+    async (id: string, next: string | null) => {
+      await updateOpp.mutateAsync({ id, patch: { CloseDate: next } });
+    },
+    [updateOpp],
+  );
+
   const tableMinWidth = totalWidth(widths);
 
   // ── Virtualization ─────────────────────────────────────────────────
@@ -728,6 +735,7 @@ export function PipelinePage() {
                         onSaveOwner={(ownerId) => saveOwner(o.Id, ownerId)}
                         onSavePaymentDate={(next) => savePaymentDate(o.Id, next)}
                         onSavePriority={(next) => savePriority(o.Id, next)}
+                        onSaveCloseDate={(next) => saveCloseDate(o.Id, next)}
                         isExpanded={isExpanded}
                         onToggleExpand={() => setExpandedId(isExpanded ? null : o.Id)}
                         canEdit={canEdit}
@@ -1059,6 +1067,7 @@ interface RowProps {
   onSaveOwner: (ownerId: string) => Promise<void>;
   onSavePaymentDate: (next: string | null) => Promise<void>;
   onSavePriority: (next: string) => Promise<void>;
+  onSaveCloseDate: (next: string | null) => Promise<void>;
   isExpanded: boolean;
   onToggleExpand: () => void;
   canEdit: boolean;
@@ -1119,6 +1128,7 @@ const OpportunityRow = memo(function OpportunityRow({
   onSaveOwner,
   onSavePaymentDate,
   onSavePriority,
+  onSaveCloseDate,
   isExpanded,
   onToggleExpand,
   canEdit,
@@ -1211,7 +1221,11 @@ const OpportunityRow = memo(function OpportunityRow({
     ) : (
       <span className="tabular-nums text-right block">{(o.Manager_Probability_Override__c ?? o.Probability) != null ? `${o.Manager_Probability_Override__c ?? o.Probability}%` : "—"}</span>
     ),
-    close: <>{fmtDate(o.CloseDate)}</>,
+    close: canEdit ? (
+      <InlineDate value={o.CloseDate} onSave={onSaveCloseDate} align="right" placeholder="—" />
+    ) : (
+      <span className="block text-right text-[13px] tabular-nums text-ink-2">{fmtDate(o.CloseDate)}</span>
+    ),
     paymentDate: canEdit ? (
       <InlineDate value={o.PaymentDate__c} onSave={onSavePaymentDate} align="right" placeholder="—" />
     ) : (
@@ -1226,7 +1240,7 @@ const OpportunityRow = memo(function OpportunityRow({
     priority: "overflow-hidden px-3 py-1 text-[12.5px]",
     amount: cn(numCell, o.Amount && o.Amount > 0 && "font-semibold"),
     probability: cn(numCell),
-    close: "cursor-pointer overflow-hidden truncate px-3 py-1 text-right text-[13px] tabular-nums text-ink-2",
+    close: "overflow-hidden px-3 py-1",
     paymentDate: "overflow-hidden px-3 py-1",
   };
 
@@ -1236,11 +1250,7 @@ const OpportunityRow = memo(function OpportunityRow({
       style={{ height: ROW_HEIGHT }}
     >
       {visibleCols.map((key) => (
-        <td
-          key={key}
-          className={cellCls[key]}
-          onClick={key === "close" ? onOpen : undefined}
-        >
+        <td key={key} className={cellCls[key]}>
           {cells[key]}
         </td>
       ))}
