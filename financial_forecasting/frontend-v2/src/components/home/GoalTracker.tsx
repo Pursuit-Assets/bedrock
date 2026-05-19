@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+import { Link } from "react-router-dom";
 import { Cell, Pie, PieChart, ResponsiveContainer } from "recharts";
 
 import { Tag } from "@/components/ui/Tag";
@@ -119,6 +120,16 @@ export function GoalTracker({ filterUserId, className }: GoalTrackerProps) {
   const goalsLoading = goalsQ.isLoading || oppsQ.isLoading;
   const noGoalSet = !goalsLoading && goalAmount <= 0;
 
+  // Drill destinations: collected segment matches AWARD_ELIGIBLE_STAGES
+  // (closed-won-equivalent); the surrounding ring (projected/remaining)
+  // is best inspected as the user's full open + won pipeline. The
+  // `?scope=won` / `?scope=open` switch in Pipeline.tsx already maps to
+  // the right is{Won,Open} predicate.
+  const collectedHref =
+    "/pipeline?scope=won" + (filterUserId ? `&owner=${encodeURIComponent(filterUserId)}` : "");
+  const projectedHref =
+    "/pipeline?scope=open" + (filterUserId ? `&owner=${encodeURIComponent(filterUserId)}` : "");
+
   if (noGoalSet) {
     return (
       <section
@@ -160,7 +171,11 @@ export function GoalTracker({ filterUserId, className }: GoalTrackerProps) {
       </header>
 
       <div className="flex items-center gap-4">
-        <div className="relative h-32 w-32 flex-shrink-0">
+        <Link
+          to={collectedHref}
+          title="Open closed-won opportunities behind this goal"
+          className="relative h-32 w-32 flex-shrink-0 rounded-full focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+        >
           <ResponsiveContainer width="100%" height="100%">
             <PieChart>
               <Pie
@@ -188,7 +203,7 @@ export function GoalTracker({ filterUserId, className }: GoalTrackerProps) {
               {Math.round(stats.gPct * 100)}% of {fmtDollars(goalAmount)}
             </div>
           </div>
-        </div>
+        </Link>
 
         <dl className="flex flex-1 flex-col gap-1.5 text-[11.5px]">
           <div className="flex items-baseline justify-between">
@@ -205,7 +220,11 @@ export function GoalTracker({ filterUserId, className }: GoalTrackerProps) {
               {Math.round(stats.yPct * 100)}%
             </dd>
           </div>
-          <div className="mt-1 flex items-center gap-1.5">
+          <Link
+            to={projectedHref}
+            title="Open pipeline driving this projection"
+            className="mt-1 inline-flex w-fit items-center gap-1.5 rounded px-1 py-px hover:bg-accent-soft hover:text-accent-ink"
+          >
             <span
               className="inline-block h-2 w-2 rounded-full"
               style={{ background: COLORS.projected }}
@@ -217,7 +236,7 @@ export function GoalTracker({ filterUserId, className }: GoalTrackerProps) {
                 {fmtDollars(stats.projected)}
               </span>
             </span>
-          </div>
+          </Link>
         </dl>
       </div>
     </section>
