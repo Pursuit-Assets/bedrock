@@ -1817,15 +1817,16 @@ async def get_users(
 ):
     """Get Salesforce users (active + inactive, grouped by IsActive).
 
-    Filters to real licensed users only — UserType='Standard' AND
-    UserLicense.Name='Salesforce'. Integration / Analytics / Chatter /
-    Security / Automated Process users are on different licenses
-    ('Salesforce Integration', 'Analytics Cloud Integration User',
-    'Chatter Free', etc.) and get excluded by the license filter even
-    when they share UserType='Standard'.
+    Filters to humans by excluding the well-known system / integration
+    users by Name pattern: Security User, Chatter Expert, Insights /
+    Integration / Analytics Cloud accounts, Automated Process, and
+    Slackbot. A previous attempt to filter on UserLicense.Name = 'Salesforce'
+    returned zero rows in Pursuit's org (their humans aren't on a
+    license literally named "Salesforce"), so we go back to Name-based
+    exclusion which is what the user actually called out.
     """
     try:
-        cache_key = f"users:{limit}:real-licensees-v2"
+        cache_key = f"users:{limit}:name-exclude-v3"
         cached = cache.get(cache_key)
         if cached is not None:
             return cached
@@ -1836,7 +1837,13 @@ async def get_users(
         SELECT Id, Name, Email, IsActive
         FROM User
         WHERE UserType = 'Standard'
-        AND UserLicense.Name = 'Salesforce'
+        AND (NOT Name LIKE '%Integration%')
+        AND (NOT Name LIKE '%Security User%')
+        AND (NOT Name LIKE '%Chatter Expert%')
+        AND (NOT Name LIKE 'Insights%')
+        AND (NOT Name LIKE 'Slackbot%')
+        AND (NOT Name LIKE 'Automated Process%')
+        AND (NOT Name LIKE 'Platform Integration%')
         ORDER BY IsActive DESC, Name ASC
         LIMIT {limit}
         """
