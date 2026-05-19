@@ -126,6 +126,7 @@ type ColKey =
   | "name"
   | "owner"
   | "stage"
+  | "priority"
   | "amount"
   | "probability"
   | "close"
@@ -135,6 +136,7 @@ const COLUMN_ORDER: ColKey[] = [
   "name",
   "owner",
   "stage",
+  "priority",
   "amount",
   "probability",
   "close",
@@ -143,11 +145,14 @@ const COLUMN_ORDER: ColKey[] = [
 
 // Defaults balanced for ~1280px viewport. Mirrors the legacy DEFAULT_VISIBLE
 // set: name+account / owner / stage / amount / probability / close /
-// 1st-payment. Sum ≈ 1110 to leave a touch of horizontal slack.
+// 1st-payment. Sum ≈ 1110 to leave a touch of horizontal slack. Priority
+// is hidden by default (opt-in via column chooser) so existing layouts
+// don't shift.
 const DEFAULT_WIDTHS: Record<ColKey, number> = {
   name: 260,
   owner: 150,
   stage: 150,
+  priority: 100,
   amount: 130,
   probability: 90,
   close: 110,
@@ -158,11 +163,22 @@ const COL_LABELS: Record<ColKey, string> = {
   name: "Opportunity",
   owner: "Owner",
   stage: "Stage",
+  priority: "Priority",
   amount: "Amount",
   probability: "Prob.",
   close: "Close",
   paymentDate: "1st Payment",
 };
+
+const DEFAULT_VISIBLE_COLS: ColKey[] = [
+  "name",
+  "owner",
+  "stage",
+  "amount",
+  "probability",
+  "close",
+  "paymentDate",
+];
 
 const ROW_HEIGHT = 44; // px — must match the row's actual rendered height
 
@@ -177,6 +193,12 @@ function extractOpp(o: SfOpportunity, key: ColKey): unknown {
     case "name": return o.Name;
     case "owner": return o.Owner?.Name;
     case "stage": return o.StageName;
+    // Sort: High > Medium > Low > (empty). Map to a numeric rank so the
+    // sort comparator orders them sensibly instead of alphabetically.
+    case "priority": {
+      const rank: Record<string, number> = { High: 3, Medium: 2, Low: 1 };
+      return rank[o.Priority__c ?? ""] ?? 0;
+    }
     case "amount": return o.Amount ?? 0;
     case "probability": return o.Probability ?? 0;
     case "close": return o.CloseDate;
@@ -199,7 +221,7 @@ export function PipelinePage() {
   const canEdit = usePerm("edit_all_opportunities");
 
   const { visible: visibleCols, toggle: toggleCol, replaceAll: replaceVisibleCols } =
-    useColumnVisibility("bedrock-v2:vis:pipeline", COLUMN_ORDER);
+    useColumnVisibility("bedrock-v2:vis:pipeline", COLUMN_ORDER, DEFAULT_VISIBLE_COLS);
 
   const { sort, toggle } = useSort<ColKey>({ key: "close", direction: "asc" });
   const { widths, startResize, replaceAll: replaceWidths } = useColumnWidths<ColKey>(
@@ -451,6 +473,16 @@ export function PipelinePage() {
     [updateOpp],
   );
 
+  const savePriority = useCallback(
+    async (id: string, next: string) => {
+      await updateOpp.mutateAsync({
+        id,
+        patch: { Priority__c: next || null },
+      });
+    },
+    [updateOpp],
+  );
+
   const tableMinWidth = totalWidth(widths);
 
   // ── Virtualization ─────────────────────────────────────────────────
@@ -695,6 +727,7 @@ export function PipelinePage() {
                         onSaveProbability={(raw) => saveProbability(o.Id, raw)}
                         onSaveOwner={(ownerId) => saveOwner(o.Id, ownerId)}
                         onSavePaymentDate={(next) => savePaymentDate(o.Id, next)}
+                        onSavePriority={(next) => savePriority(o.Id, next)}
                         isExpanded={isExpanded}
                         onToggleExpand={() => setExpandedId(isExpanded ? null : o.Id)}
                         canEdit={canEdit}
@@ -1025,6 +1058,7 @@ interface RowProps {
   onSaveProbability: (raw: string) => Promise<void>;
   onSaveOwner: (ownerId: string) => Promise<void>;
   onSavePaymentDate: (next: string | null) => Promise<void>;
+  onSavePriority: (next: string) => Promise<void>;
   isExpanded: boolean;
   onToggleExpand: () => void;
   canEdit: boolean;
@@ -1044,6 +1078,35 @@ function pipelinePercentDisplay(raw: string): string {
   return Number.isFinite(n) ? `${n}%` : raw;
 }
 
+// Priority cell options — empty string clears the value via the
+// existing patch path (the row's savePriority maps "" → null).
+const PIPELINE_PRIORITY_OPTIONS = [
+  { value: "", label: "—" },
+  { value: "High", label: "High" },
+  { value: "Medium", label: "Medium" },
+  { value: "Low", label: "Low" },
+];
+
+function PriorityDot({ value }: { value: string | null }) {
+  if (!value) return <span className="text-ink-4">—</span>;
+  const tone =
+    value === "High"
+      ? "border-red bg-red-soft text-red"
+      : value === "Medium"
+      ? "border-amber bg-amber-soft text-amber"
+      : "border-border-strong bg-surface-2 text-ink-3";
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center rounded border px-1.5 py-0.5 text-[11.5px] font-medium",
+        tone,
+      )}
+    >
+      {value}
+    </span>
+  );
+}
+
 const OpportunityRow = memo(function OpportunityRow({
   o,
   logoUrl,
@@ -1055,6 +1118,7 @@ const OpportunityRow = memo(function OpportunityRow({
   onSaveProbability,
   onSaveOwner,
   onSavePaymentDate,
+  onSavePriority,
   isExpanded,
   onToggleExpand,
   canEdit,
@@ -1113,6 +1177,16 @@ const OpportunityRow = memo(function OpportunityRow({
         <span className="text-ink-4">—</span>
       )
     ),
+    priority: canEdit ? (
+      <InlineSelect
+        value={o.Priority__c ?? ""}
+        options={PIPELINE_PRIORITY_OPTIONS}
+        onSave={onSavePriority}
+        renderValue={(v) => <PriorityDot value={v ?? o.Priority__c ?? null} />}
+      />
+    ) : (
+      <PriorityDot value={o.Priority__c ?? null} />
+    ),
     amount: canEdit ? (
       <InlineText
         value={o.Amount != null ? String(o.Amount) : ""}
@@ -1149,6 +1223,7 @@ const OpportunityRow = memo(function OpportunityRow({
     name: "overflow-hidden px-3 py-1 text-[13px]",
     owner: "overflow-hidden px-3 py-1 text-[12.5px] text-ink-2",
     stage: "overflow-hidden px-3 py-1 text-[13px]",
+    priority: "overflow-hidden px-3 py-1 text-[12.5px]",
     amount: cn(numCell, o.Amount && o.Amount > 0 && "font-semibold"),
     probability: cn(numCell),
     close: "cursor-pointer overflow-hidden truncate px-3 py-1 text-right text-[13px] tabular-nums text-ink-2",
