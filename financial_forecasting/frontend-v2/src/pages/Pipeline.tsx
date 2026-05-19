@@ -225,15 +225,26 @@ export function PipelinePage() {
   }, [opps]);
   const enrichmentQ = useAccountsEnrichment(accountIdsForEnrichment);
 
-  // Stage <select> options come from the distinct stage names actually
-  // present in the org. Avoids showing stages SF doesn't accept.
-  const stageOptions = useMemo(() => {
+  // Stage <select> options are the curated 7 canonical stages in
+  // funnel order — see SF_STAGE_OPTIONS in lib/stages.ts. Rows already
+  // in a legacy stage continue to display that stage as their resting
+  // value (HTML select handles unknown selected values), but opening
+  // the dropdown only offers the 7 canonical choices.
+  const stageOptions = useMemo(
+    () => SF_STAGE_OPTIONS.map((s) => ({ value: s.value, label: s.label })),
+    [],
+  );
+
+  // Filter chip's stage options — keep data-derived so users can still
+  // filter to historical legacy stages (e.g. "Closed Lost" rollups).
+  // Sorted by canonical funnel position; unknown legacy values fall to
+  // the end.
+  const stageFilterOptions = useMemo(() => {
+    const rank = new Map(SF_STAGE_OPTIONS.map((s, i) => [s.value, i]));
     const seen = new Set<string>();
-    for (const o of opps) {
-      if (o.StageName) seen.add(o.StageName);
-    }
+    for (const o of opps) if (o.StageName) seen.add(o.StageName);
     return Array.from(seen)
-      .sort()
+      .sort((a, b) => (rank.get(a) ?? 9999) - (rank.get(b) ?? 9999))
       .map((s) => ({ value: s, label: s }));
   }, [opps]);
 
@@ -260,7 +271,7 @@ export function PipelinePage() {
       if (o.RecordType?.Name) recordTypes.add(o.RecordType.Name);
     }
     return {
-      stage: stageOptions,
+      stage: stageFilterOptions,
       owner: Array.from(ownerNames.entries())
         .map(([id, name]) => ({
           value: id,
@@ -273,7 +284,7 @@ export function PipelinePage() {
         { value: "No", label: "No" },
       ],
     };
-  }, [opps, usersQ.data, stageOptions]);
+  }, [opps, usersQ.data, stageFilterOptions]);
 
   // Owner-id → display-name lookup for filter-chip rendering.
   const ownerLabelLookup = useMemo(() => {

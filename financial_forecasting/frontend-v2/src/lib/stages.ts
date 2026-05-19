@@ -110,12 +110,16 @@ export function stageStatus(
  * from the API once we wire that up).
  */
 /**
- * Curated 7-stage funnel surfaced in the Pipeline + Opportunity Detail
+ * Curated stage funnel surfaced in the Pipeline + Opportunity Detail
  * dropdowns. Salesforce's picklist has dozens of variants from legacy
  * record types; only these are usable for new edits per Jac. Existing
  * opps in dropped stages display their current stage on the record
  * but you can't reassign them to those values from the dropdown — they
- * have to be moved to one of the 7 to be edited further.
+ * have to be moved to one of these to be edited further.
+ *
+ * Order: forward funnel (New Lead → Closed / Completed), then the two
+ * "exit-but-not-won" outcomes (Closed Lost, Withdrawn) at the tail so
+ * the happy path reads top-to-bottom.
  */
 export const SF_STAGE_OPTIONS: { value: string; label: string }[] = [
   { value: "New Lead", label: "New Lead" },
@@ -125,4 +129,6 @@ export const SF_STAGE_OPTIONS: { value: string; label: string }[] = [
   { value: "Contracting", label: "Contracting" },
   { value: "Collecting / In Effect", label: "Collecting / In Effect" },
   { value: "Closed / Completed", label: "Closed / Completed" },
+  { value: "Closed Lost", label: "Closed Lost" },
+  { value: "Withdrawn", label: "Withdrawn" },
 ];
