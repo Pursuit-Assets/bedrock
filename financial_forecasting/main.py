@@ -1108,20 +1108,27 @@ async def get_cashflow(
             #   3. Payment_Date is on or before today (a future
             #      Payment_Date isn't an actual — treat as scheduled)
             year_prefix = f"{year}-"
-            is_actual = (
+            # Money already in the bank — any year, on/before today.
+            already_received = (
                 bool(r.get("npe01__Paid__c"))
                 and payment_date
-                and payment_date.startswith(year_prefix)
                 and payment_date <= today_iso
             )
+            is_actual_this_year = (
+                already_received
+                and payment_date.startswith(year_prefix)
+            )
 
-            if is_actual:
+            if is_actual_this_year:
                 date_str = payment_date
                 key = "actuals"
+            elif already_received:
+                # Paid in a different year. Belongs to that year's
+                # actuals, not this view's outstanding/scheduled.
+                continue
             else:
-                # Falls back to scheduled — only count if the scheduled
-                # date is in this year (covers the disjunct-1 case where
-                # we matched on Won+Scheduled-in-year).
+                # Not yet received → scheduled. Only count if the
+                # scheduled date is in this year.
                 if not scheduled_date or not scheduled_date.startswith(year_prefix):
                     continue
                 date_str = scheduled_date
@@ -1209,18 +1216,13 @@ async def get_cashflow_detail(
                 LIMIT 500
             """
         elif type in ("scheduled", "outstanding"):
-            # Mirror the aggregate's scheduled/outstanding rule (see
-            # `get_cashflow` above). A won-stage payment scheduled in
-            # the queried month counts as scheduled/outstanding unless
-            # it qualifies as a "true actual" — paid AND Payment_Date
-            # in the same year AND on/before today. Filtering by
-            # `Paid=false` alone misses paid-but-cross-year and
-            # paid-but-future-Payment_Date rows (a data-hygiene quirk
-            # in SF), which is why the aggregate showed a non-zero
-            # outstanding total but the detail returned no rows.
+            # Outstanding/scheduled = won-stage payment scheduled in
+            # the queried month whose money isn't already in the bank.
+            # Excludes anything paid with a past Payment_Date (regardless
+            # of year — if it's received, it's not outstanding). Future
+            # Payment_Date counts as outstanding still (money not in yet).
             from datetime import date as _date
             today_iso = _date.today().isoformat()
-            year_start = f"{year}-01-01"
             soql = f"""
                 SELECT Id, npe01__Payment_Amount__c, npe01__Scheduled_Date__c,
                        npe01__Paid__c, npe01__Payment_Date__c,
@@ -1235,7 +1237,6 @@ async def get_cashflow_detail(
                 AND (
                     npe01__Paid__c = false
                     OR npe01__Payment_Date__c = null
-                    OR npe01__Payment_Date__c < {year_start}
                     OR npe01__Payment_Date__c > {today_iso}
                 )
                 {bucket_clause}
