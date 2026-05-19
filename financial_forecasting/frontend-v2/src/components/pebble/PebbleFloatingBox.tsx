@@ -11,6 +11,10 @@ import {
 
 import { useLayoutPrefs } from "@/lib/useLayoutPrefs";
 import { cn } from "@/lib/utils";
+import {
+  usePebbleAutomations,
+  usePebbleSessions,
+} from "@/services/pebbleSessions";
 import { PebbleAskTab } from "./PebbleAskTab";
 import { PebbleAutomationsTab } from "./PebbleAutomationsTab";
 import { PebbleNotesTab } from "./PebbleNotesTab";
@@ -168,6 +172,19 @@ function Panel({
   onTabChange: (t: TabId) => void;
   onClose: () => void;
 }) {
+  const sessionsQ = usePebbleSessions();
+  const automationsQ = usePebbleAutomations();
+  const activeWork = (sessionsQ.data?.sessions ?? []).filter(
+    (s) => s.status !== "done" && s.status !== "failed",
+  ).length;
+  const pendingAutomations = automationsQ.data?.automations.length ?? 0;
+  const badgeFor = (id: TabId): number | null => {
+    if (id === "work") return activeWork > 0 ? activeWork : null;
+    if (id === "automations")
+      return pendingAutomations > 0 ? pendingAutomations : null;
+    return null;
+  };
+
   return (
     <section
       role="dialog"
@@ -201,6 +218,7 @@ function Panel({
         {TABS.map((t) => {
           const active = t.id === tab;
           const Icon = t.icon;
+          const count = badgeFor(t.id);
           return (
             <button
               key={t.id}
@@ -219,6 +237,19 @@ function Panel({
             >
               <Icon size={12} />
               <span>{t.label}</span>
+              {count != null ? (
+                <span
+                  aria-label={`${count} pending`}
+                  className={cn(
+                    "mono inline-flex h-4 min-w-[16px] items-center justify-center rounded-full px-1 text-[9.5px] font-semibold tabular-nums",
+                    active
+                      ? "bg-accent text-white"
+                      : "bg-red text-white",
+                  )}
+                >
+                  {count}
+                </span>
+              ) : null}
             </button>
           );
         })}

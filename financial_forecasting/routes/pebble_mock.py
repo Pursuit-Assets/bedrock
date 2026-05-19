@@ -270,6 +270,150 @@ async def _stream(query: str, conversation_id: str) -> AsyncGenerator[str, None]
 # ── Route ──────────────────────────────────────────────────────────
 
 
+# ── Sessions + Automations mock state ─────────────────────────────
+#
+# In real life these come from `bedrock.pebble_chat_session` and a
+# `bedrock.pebble_proposed_write` table (or equivalent in the engine).
+# Until then, return scripted fixtures so the Work + Automations tabs
+# render real-looking lists.
+
+
+def _mock_sessions() -> list[dict[str, Any]]:
+    """Synthetic active research flows."""
+    return [
+        {
+            "session_id": "ses-7f29",
+            "title": "Deep-dive on Goldman Sachs Foundation",
+            "query": "What's Goldman's grant history and who are the key program officers?",
+            "status": "tool_calling",
+            "tool_in_progress": "search_account_history",
+            "started_at": "2026-05-19T13:42:01Z",
+            "cost_usd": 0.094,
+            "steps_done": 3,
+            "steps_total": 5,
+        },
+        {
+            "session_id": "ses-9e51",
+            "title": "Q3 stewardship plan draft",
+            "query": "Draft the Q3 stewardship cadence for my top 10 accounts",
+            "status": "planning",
+            "tool_in_progress": None,
+            "started_at": "2026-05-19T13:47:55Z",
+            "cost_usd": 0.012,
+            "steps_done": 0,
+            "steps_total": 0,
+        },
+        {
+            "session_id": "ses-a128",
+            "title": "Pipeline at-risk audit",
+            "query": "Which open opps haven't been touched in 30+ days and what's the lift?",
+            "status": "done",
+            "tool_in_progress": None,
+            "started_at": "2026-05-19T11:14:22Z",
+            "completed_at": "2026-05-19T11:18:09Z",
+            "cost_usd": 0.214,
+            "steps_done": 6,
+            "steps_total": 6,
+        },
+    ]
+
+
+def _mock_automations() -> list[dict[str, Any]]:
+    """Synthetic propose_write queue."""
+    return [
+        {
+            "action_id": "act-001",
+            "kind": "update_opportunity_stage",
+            "record_label": "Goldman Sachs Foundation — AIJI Year 3",
+            "record_href": "/opportunities/OPP-001",
+            "diff_preview": "Stage: Proposal Negotiation → Verbal Commitment",
+            "rationale": (
+                "Email thread from Goldman PM on 2026-05-17 confirms verbal "
+                "intent to fund at $2.5M. Last status update was 14 days "
+                "ago at the Proposal Negotiation stage."
+            ),
+            "proposed_at": "2026-05-19T09:02:11Z",
+            "confidence": 0.91,
+        },
+        {
+            "action_id": "act-002",
+            "kind": "create_task",
+            "record_label": "Bloomberg Philanthropies — Workforce",
+            "record_href": "/opportunities/OPP-002",
+            "diff_preview": (
+                "+ Subject: Follow up on revised budget\n"
+                "+ Due: 2026-05-21\n"
+                "+ Priority: High"
+            ),
+            "rationale": (
+                "No contact recorded in 60 days. Bloomberg's grant cycle "
+                "typically closes by July; a budget reply window is opening."
+            ),
+            "proposed_at": "2026-05-19T10:18:33Z",
+            "confidence": 0.78,
+        },
+        {
+            "action_id": "act-003",
+            "kind": "update_opportunity_amount",
+            "record_label": "Robin Hood — Capital Grant",
+            "record_href": "/opportunities/OPP-003",
+            "diff_preview": "Amount: $1,000,000 → $1,250,000",
+            "rationale": (
+                "Robin Hood's Q1 board memo (parsed 2026-05-15) increased the "
+                "capital allocation ceiling. Adjusting the open ask to match."
+            ),
+            "proposed_at": "2026-05-19T07:45:09Z",
+            "confidence": 0.66,
+        },
+    ]
+
+
+@router.get("/api/pebble/sessions")
+async def pebble_sessions_mock(request: Request) -> dict[str, Any]:
+    """List in-flight + recent Pebble research flows.
+
+    Real shape will paginate + permission-scope; this returns the full
+    fixture array sorted by status (planning > tool_calling > done).
+    """
+    if not MOCK_ENABLED:
+        return {"data": [], "mock": False}
+    sessions = _mock_sessions()
+    order = {"planning": 0, "tool_calling": 1, "waiting": 2, "done": 3}
+    sessions.sort(key=lambda s: order.get(s.get("status", "done"), 9))
+    return {"data": sessions, "mock": True}
+
+
+@router.get("/api/pebble/automations")
+async def pebble_automations_mock(request: Request) -> dict[str, Any]:
+    """Propose_write review queue. Each item is a SuggestedAction
+    awaiting human approval."""
+    if not MOCK_ENABLED:
+        return {"data": [], "mock": False}
+    return {"data": _mock_automations(), "mock": True}
+
+
+@router.post("/api/pebble/automations/{action_id}/approve")
+async def pebble_automation_approve_mock(
+    action_id: str, request: Request
+) -> dict[str, Any]:
+    """No-op approval for the mock — pretends to apply."""
+    if not MOCK_ENABLED:
+        return {"ok": False, "error": "mock_disabled"}
+    logger.info("[pebble-mock] approved automation %s", action_id)
+    return {"ok": True, "action_id": action_id, "applied": True}
+
+
+@router.post("/api/pebble/automations/{action_id}/reject")
+async def pebble_automation_reject_mock(
+    action_id: str, request: Request
+) -> dict[str, Any]:
+    """No-op rejection for the mock."""
+    if not MOCK_ENABLED:
+        return {"ok": False, "error": "mock_disabled"}
+    logger.info("[pebble-mock] rejected automation %s", action_id)
+    return {"ok": True, "action_id": action_id, "rejected": True}
+
+
 @router.post("/api/pebble/ask")
 async def pebble_ask_mock(request: Request) -> StreamingResponse:
     """SSE relay → frontend Pebble floating box.
