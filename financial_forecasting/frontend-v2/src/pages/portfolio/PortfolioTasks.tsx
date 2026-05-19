@@ -135,7 +135,12 @@ export function PortfolioTasks({
   projects,
   projectsLoading,
 }: PortfolioTasksProps) {
-  const sfTasksQ = useSfUserTasks(sfUserId ?? undefined);
+  const [showDone, setShowDone] = useState(false);
+  // Expand the SF query to include closed tasks when the user ticks
+  // "Show done". Backend filters by IsClosed by default; without this
+  // flag, done SF tasks would never enter the dataset and the checkbox
+  // would have nothing to reveal.
+  const sfTasksQ = useSfUserTasks(sfUserId ?? undefined, showDone);
   const projectTasksQs = useUserProjectTaskQueries(projects);
   const activeUsersQ = useActiveUsers();
 
@@ -166,7 +171,6 @@ export function PortfolioTasks({
     return false;
   }
 
-  const [showDone, setShowDone] = useState(false);
   const [scope, setScope] = useState<Scope>(readStoredScope);
 
   // Persist scope so the user's preference rides through refreshes —
