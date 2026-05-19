@@ -23,6 +23,8 @@ from pydantic import BaseModel, Field
 
 from auth import require_auth
 from db import get_db
+from dependencies import get_mcp_client
+from routes.projects import _enrich_opp_ids_with_sf
 from security import validate_salesforce_id
 
 logger = logging.getLogger(__name__)
@@ -220,6 +222,7 @@ async def get_award(
     award_id: str,
     conn=Depends(get_db),
     user=Depends(require_auth),
+    client=Depends(get_mcp_client),
 ) -> Dict[str, Any]:
     try:
         aid = uuid.UUID(award_id)
@@ -231,7 +234,23 @@ async def get_award(
     )
     if not row:
         raise HTTPException(status_code=404, detail="Award not found")
-    return _serialize(row)
+    out = _serialize(row)
+    # Enrich with SF Opportunity display fields so the AwardDetail page
+    # can render headline data (account, opp name, amount, paid, owner,
+    # record type) for users who haven't connected their own Salesforce
+    # session — uses the service-account SF via get_mcp_client.
+    opp_lookup = await _enrich_opp_ids_with_sf([out.get("opportunity_id")], client)
+    sf = opp_lookup.get(out.get("opportunity_id")) or {}
+    out["opportunity_name"] = sf.get("Name")
+    out["account_id"] = sf.get("AccountId")
+    out["account_name"] = sf.get("AccountName")
+    out["amount"] = sf.get("Amount")
+    out["stage_name"] = sf.get("StageName")
+    out["owner_id"] = sf.get("OwnerId")
+    out["owner_name"] = sf.get("OwnerName")
+    out["record_type_name"] = sf.get("RecordTypeName")
+    out["payments_made"] = sf.get("PaymentsMade")
+    return out
 
 
 @router.patch("/{award_id}")

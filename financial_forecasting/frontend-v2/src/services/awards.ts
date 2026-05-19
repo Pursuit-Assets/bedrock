@@ -24,6 +24,21 @@ export interface Award {
   report_overdue: number;
   next_report_date: string | null;
   next_report_status: AwardReportStatus | null;
+
+  // Server-enriched SF display fields (populated by GET /api/awards/{id}
+  // via the service-account SF client). Optional because the list
+  // endpoint and the by-opp endpoint don't enrich today, and SF may be
+  // unreachable. Use as a fallback when useOpportunities() returns []
+  // for users without their own SF session.
+  opportunity_name?: string | null;
+  account_id?: string | null;
+  account_name?: string | null;
+  amount?: number | null;
+  stage_name?: string | null;
+  owner_id?: string | null;
+  owner_name?: string | null;
+  record_type_name?: string | null;
+  payments_made?: number | null;
 }
 
 export interface AwardReport {

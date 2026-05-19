@@ -38,7 +38,9 @@ async def _enrich_opp_ids_with_sf(opp_ids, client) -> dict:
     try:
         in_list = ", ".join(f"'{i}'" for i in ids)
         soql = (
-            "SELECT Id, Name, Account.Name, Amount, StageName, OwnerId, Owner.Name "
+            "SELECT Id, Name, AccountId, Account.Name, Amount, StageName, "
+            "OwnerId, Owner.Name, RecordType.Name, "
+            "npe01__Payments_Made__c "
             f"FROM Opportunity WHERE Id IN ({in_list}) LIMIT {len(ids)}"
         )
         result = await client.salesforce.query(soql)
@@ -47,11 +49,14 @@ async def _enrich_opp_ids_with_sf(opp_ids, client) -> dict:
         for r in records:
             out[r["Id"]] = {
                 "Name": r.get("Name"),
+                "AccountId": r.get("AccountId"),
                 "AccountName": (r.get("Account") or {}).get("Name"),
                 "Amount": r.get("Amount"),
                 "StageName": r.get("StageName"),
                 "OwnerId": r.get("OwnerId"),
                 "OwnerName": (r.get("Owner") or {}).get("Name"),
+                "RecordTypeName": (r.get("RecordType") or {}).get("Name"),
+                "PaymentsMade": r.get("npe01__Payments_Made__c"),
             }
         return out
     except Exception as e:
@@ -1328,11 +1333,14 @@ async def get_project_awards(
     for r in base_rows:
         sf = opp_lookup.get(r["opportunity_id"]) or {}
         r["opportunity_name"] = sf.get("Name")
+        r["account_id"] = sf.get("AccountId")
         r["account_name"] = sf.get("AccountName")
         r["amount"] = sf.get("Amount")
         r["stage_name"] = sf.get("StageName")
         r["owner_id"] = sf.get("OwnerId")
         r["owner_name"] = sf.get("OwnerName")
+        r["record_type_name"] = sf.get("RecordTypeName")
+        r["payments_made"] = sf.get("PaymentsMade")
     return {"success": True, "data": base_rows}
 
 
