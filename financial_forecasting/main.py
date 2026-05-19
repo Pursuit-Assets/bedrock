@@ -1209,17 +1209,35 @@ async def get_cashflow_detail(
                 LIMIT 500
             """
         elif type in ("scheduled", "outstanding"):
+            # Mirror the aggregate's scheduled/outstanding rule (see
+            # `get_cashflow` above). A won-stage payment scheduled in
+            # the queried month counts as scheduled/outstanding unless
+            # it qualifies as a "true actual" — paid AND Payment_Date
+            # in the same year AND on/before today. Filtering by
+            # `Paid=false` alone misses paid-but-cross-year and
+            # paid-but-future-Payment_Date rows (a data-hygiene quirk
+            # in SF), which is why the aggregate showed a non-zero
+            # outstanding total but the detail returned no rows.
+            from datetime import date as _date
+            today_iso = _date.today().isoformat()
+            year_start = f"{year}-01-01"
             soql = f"""
                 SELECT Id, npe01__Payment_Amount__c, npe01__Scheduled_Date__c,
+                       npe01__Paid__c, npe01__Payment_Date__c,
                        npe01__Opportunity__c,
                        npe01__Opportunity__r.Name, npe01__Opportunity__r.StageName,
                        npe01__Opportunity__r.Account.Name
                 FROM npe01__OppPayment__c
-                WHERE npe01__Paid__c = false
-                AND npe01__Written_Off__c = false
+                WHERE npe01__Written_Off__c = false
                 AND npe01__Opportunity__r.StageName IN {won_stages}
                 AND npe01__Scheduled_Date__c >= {m_start}
                 AND npe01__Scheduled_Date__c <= {m_end}
+                AND (
+                    npe01__Paid__c = false
+                    OR npe01__Payment_Date__c = null
+                    OR npe01__Payment_Date__c < {year_start}
+                    OR npe01__Payment_Date__c > {today_iso}
+                )
                 {bucket_clause}
                 ORDER BY npe01__Scheduled_Date__c ASC
                 LIMIT 500
