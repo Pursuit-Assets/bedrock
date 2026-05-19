@@ -11,11 +11,52 @@ from pydantic import BaseModel
 
 from auth import require_auth
 from db import get_db
+from dependencies import get_mcp_client
 from routes.permissions import require_admin, check_permission
 from security import validate_salesforce_id
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["projects"])
+
+
+async def _enrich_opp_ids_with_sf(opp_ids, client) -> dict:
+    """Batch-fetch a small set of Opportunity display fields and return
+    a {opp_id: {Name, Account, Amount, StageName, OwnerId, Owner.Name}}
+    dict. Uses whatever SF client the request has — which falls back to
+    the service-account SF (per get_mcp_client) when the caller has no
+    per-user SF cookie. This lets users without a personal SF account
+    still see linked-award / linked-opp details on the project page.
+
+    Best-effort: returns {} silently on any SF error so the project page
+    still renders the bedrock-side data even if SF is misconfigured.
+    """
+    ids = [o for o in dict.fromkeys(opp_ids) if o]  # dedupe, preserve order, drop falsy
+    if not ids:
+        return {}
+    if not client or "salesforce" not in (client.connected_services or []):
+        return {}
+    try:
+        in_list = ", ".join(f"'{i}'" for i in ids)
+        soql = (
+            "SELECT Id, Name, Account.Name, Amount, StageName, OwnerId, Owner.Name "
+            f"FROM Opportunity WHERE Id IN ({in_list}) LIMIT {len(ids)}"
+        )
+        result = await client.salesforce.query(soql)
+        records = result.get("records", []) or []
+        out = {}
+        for r in records:
+            out[r["Id"]] = {
+                "Name": r.get("Name"),
+                "AccountName": (r.get("Account") or {}).get("Name"),
+                "Amount": r.get("Amount"),
+                "StageName": r.get("StageName"),
+                "OwnerId": r.get("OwnerId"),
+                "OwnerName": (r.get("Owner") or {}).get("Name"),
+            }
+        return out
+    except Exception as e:
+        logger.warning(f"SF enrichment for project linked-revenue failed: {e}")
+        return {}
 
 # ── Pydantic models ──
 
@@ -663,19 +704,43 @@ async def unlink_opportunity(project_id: str, opportunity_id: str, user=Depends(
 
 
 @router.get("/projects/{project_id}/opportunities")
-async def get_project_opportunities(project_id: str, user=Depends(check_permission("view_projects")), conn=Depends(get_db)):
-    """Get all Opportunities linked to a Project."""
+async def get_project_opportunities(
+    project_id: str,
+    user=Depends(check_permission("view_projects")),
+    conn=Depends(get_db),
+    client=Depends(get_mcp_client),
+):
+    """Get all Opportunities linked to a Project.
+
+    Each row is enriched with the SF Opportunity's display fields
+    (Name / Account.Name / Amount / StageName / Owner) so the project
+    page can render meaningful detail for users without a personal SF
+    session — falls back to the service-account client via
+    get_mcp_client.
+    """
     pid = uuid.UUID(project_id)
     rows = await conn.fetch(
         "SELECT id, opportunity_id, role, created_at "
         "FROM bedrock.project_opportunity WHERE project_id = $1 ORDER BY created_at",
         pid,
     )
-    return {"success": True, "data": [
+    base = [
         {"id": str(r["id"]), "opportunity_id": r["opportunity_id"],
          "role": r["role"], "created_at": r["created_at"].isoformat() if r["created_at"] else None}
         for r in rows
-    ]}
+    ]
+    opp_lookup = await _enrich_opp_ids_with_sf(
+        [r["opportunity_id"] for r in base], client,
+    )
+    for r in base:
+        sf = opp_lookup.get(r["opportunity_id"]) or {}
+        r["opportunity_name"] = sf.get("Name")
+        r["account_name"] = sf.get("AccountName")
+        r["amount"] = sf.get("Amount")
+        r["stage_name"] = sf.get("StageName")
+        r["owner_id"] = sf.get("OwnerId")
+        r["owner_name"] = sf.get("OwnerName")
+    return {"success": True, "data": base}
 
 
 # ── Bulk Import ──
@@ -1238,7 +1303,12 @@ async def unlink_award(project_id: str, award_id: str, user=Depends(check_permis
 
 
 @router.get("/projects/{project_id}/awards")
-async def get_project_awards(project_id: str, user=Depends(check_permission("view_projects")), conn=Depends(get_db)):
+async def get_project_awards(
+    project_id: str,
+    user=Depends(check_permission("view_projects")),
+    conn=Depends(get_db),
+    client=Depends(get_mcp_client),
+):
     pid = uuid.UUID(project_id)
     rows = await conn.fetch(
         "SELECT pa.id, pa.award_id, a.opportunity_id, a.award_status, a.award_date, a.period_end_date "
@@ -1247,7 +1317,23 @@ async def get_project_awards(project_id: str, user=Depends(check_permission("vie
         "WHERE pa.project_id = $1 ORDER BY pa.created_at",
         pid,
     )
-    return {"success": True, "data": [dict(r) for r in rows]}
+    base_rows = [dict(r) for r in rows]
+    # Enrich each row with the opportunity's display fields (Name,
+    # Account.Name, Amount, StageName, Owner) via the SF client so the
+    # project page can render award details for users who don't have
+    # their own Salesforce session.
+    opp_lookup = await _enrich_opp_ids_with_sf(
+        [r["opportunity_id"] for r in base_rows], client,
+    )
+    for r in base_rows:
+        sf = opp_lookup.get(r["opportunity_id"]) or {}
+        r["opportunity_name"] = sf.get("Name")
+        r["account_name"] = sf.get("AccountName")
+        r["amount"] = sf.get("Amount")
+        r["stage_name"] = sf.get("StageName")
+        r["owner_id"] = sf.get("OwnerId")
+        r["owner_name"] = sf.get("OwnerName")
+    return {"success": True, "data": base_rows}
 
 
 # ── Reverse lookup: Award → Projects ────────────────────────────────────
