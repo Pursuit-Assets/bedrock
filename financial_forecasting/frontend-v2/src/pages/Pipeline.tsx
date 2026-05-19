@@ -1,5 +1,5 @@
 import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { ChevronDown, ChevronRight, Plus, Search, X } from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 
@@ -185,6 +185,39 @@ export function PipelinePage() {
   const [recordType, setRecordType] = useState<RecordType>("All");
   // Stage card click on the funnel strip → narrow the table to one stage.
   const [stageFilter, setStageFilter] = useState<string | null>(null);
+
+  // Drill-throughs from elsewhere (home stats, GoalTracker, dashboard
+  // numbers) can pass `?scope=open&stage=Discovery&closing=week` to land
+  // here with filters pre-applied. Read once on mount.
+  const [searchParams] = useSearchParams();
+  useEffect(() => {
+    const s = searchParams.get("scope");
+    if (s === "open" || s === "won" || s === "lost" || s === "all") {
+      setScope(s);
+    }
+    const st = searchParams.get("stage");
+    if (st) setStageFilter(st);
+    // `?closing=week` is a convenience flag for the home "Closing this
+    // week" chip — translates to a CloseDate-before-(today+8) rule
+    // (which the chip semantics define as "≤ +7 days"; the rule engine
+    // uses strict `before`, so we shift the boundary by one day).
+    if (searchParams.get("closing") === "week") {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const wk = new Date(today);
+      wk.setDate(wk.getDate() + 8);
+      setRules((r) => [
+        ...r,
+        {
+          id: `closing-week-${today.getTime()}`,
+          field: "closeDate" as PipelineField,
+          op: "before",
+          values: [wk.toISOString().slice(0, 10)],
+        },
+      ]);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   // Chip-based filter rules (parity with Cleanup). Persisted into
   // saved views alongside scope/recordType.
   const [rules, setRules] = useState<FilterRule<PipelineField>[]>([]);

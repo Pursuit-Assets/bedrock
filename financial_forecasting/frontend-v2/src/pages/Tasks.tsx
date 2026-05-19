@@ -1,4 +1,5 @@
-import { memo, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { Search } from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 
@@ -156,6 +157,31 @@ export function TasksPage() {
 
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>("All");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("Open");
+
+  // Allow drill-throughs from elsewhere in the app (e.g. the home page's
+  // "Overdue tasks" chip) to land here with the right filter already set
+  // by passing `?status=Overdue` etc. Read-once on mount so the user can
+  // still change filters after they're sent in.
+  const [searchParams] = useSearchParams();
+  useEffect(() => {
+    const requested = searchParams.get("status");
+    if (!requested) return;
+    const match = STATUS_FILTERS.find(
+      (f) => f.value.toLowerCase() === requested.toLowerCase(),
+    );
+    if (match) setStatusFilter(match.value);
+    const src = searchParams.get("source");
+    if (src) {
+      const m = SOURCE_FILTERS.find(
+        (f) => f.value.toLowerCase() === src.toLowerCase(),
+      );
+      if (m) setSourceFilter(m.value);
+    }
+    // Intentionally empty deps — this fires once per navigation. React
+    // Router replaces searchParams when the URL changes, so the
+    // identity-stability is enough.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const [q, setQ] = useState("");
   const [drawerTask, setDrawerTask] = useState<FlatTask | null>(null);
 
