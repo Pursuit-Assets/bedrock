@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { Link, useLocation, useParams } from "react-router-dom";
 import { ExternalLink, Plus } from "lucide-react";
+import { toast } from "sonner";
 
 import { AccountAvatar } from "@/components/AccountAvatar";
 import { ActivityTimeline } from "@/components/ActivityTimeline";
@@ -37,6 +38,7 @@ import {
   useUpdateOpportunity,
   useUpdateOpportunityStage,
 } from "@/services/opportunities";
+import { usePerm } from "@/services/permissions";
 import { useActiveUsers } from "@/services/users";
 
 /** Filter values for the Payments section pill toggle. */
@@ -69,6 +71,9 @@ export function OpportunityDetailPage() {
   const updateStage = useUpdateOpportunityStage();
   const createAccount = useCreateAccount();
   const createContact = useCreateContact();
+  const canEditOwn = usePerm("edit_own_opportunities");
+  const canEditAll = usePerm("edit_all_opportunities");
+  const canEdit = canEditOwn || canEditAll;
 
   const ownerOptions = useMemo(
     () => (usersQ.data ?? []).map((u) => ({ value: u.Id, label: u.Name })),
@@ -167,10 +172,25 @@ export function OpportunityDetailPage() {
     );
   }
 
-  const patch = (field: string, val: unknown): Promise<void> =>
-    updateOpp.mutateAsync({ id: opp.Id, patch: { [field]: val } }).then(() => undefined);
+  // All inline-edit closures short-circuit when the user can't edit this
+  // opportunity. The JSX below also renders a read-only fallback when
+  // `canEdit` is false, so this is belt-and-suspenders — covers any
+  // callsite where a perm check was overlooked.
+  const patch = (field: string, val: unknown): Promise<void> => {
+    if (!canEdit) {
+      toast.error("You don't have permission to edit this opportunity");
+      return Promise.resolve();
+    }
+    return updateOpp
+      .mutateAsync({ id: opp.Id, patch: { [field]: val } })
+      .then(() => undefined);
+  };
 
   const saveOwner = async (ownerId: string) => {
+    if (!canEdit) {
+      toast.error("You don't have permission to edit this opportunity");
+      return;
+    }
     const ownerName = (usersQ.data ?? []).find((u) => u.Id === ownerId)?.Name ?? null;
     await updateOpp.mutateAsync({
       id: opp.Id,
