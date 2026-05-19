@@ -94,10 +94,15 @@ export function PebbleFloatingBox() {
     const handler = (e: KeyboardEvent) => {
       if (e.key !== "`" || e.metaKey || e.ctrlKey || e.altKey) return;
       const t = e.target as HTMLElement | null;
+      // Don't hijack the keystroke when focus is in a text field, an
+      // open `<select>` (InlineSelect uses one — backtick would clobber
+      // the user's Stage pick), or any contenteditable region. We allow
+      // `<button>` through so action rows still respond to "`".
       if (
         t &&
         (t.tagName === "INPUT" ||
           t.tagName === "TEXTAREA" ||
+          t.tagName === "SELECT" ||
           t.isContentEditable)
       ) {
         return;
@@ -109,15 +114,27 @@ export function PebbleFloatingBox() {
     return () => window.removeEventListener("keydown", handler);
   }, [toggle]);
 
-  // Escape closes (but only when nothing nested is focused that would
-  // also want Escape — we keep it simple and just close).
+  // Escape closes the box, but only when the keystroke isn't already
+  // owned by a text field, select, or contenteditable region — those
+  // need Esc to cancel their own edits without us also collapsing the
+  // surrounding panel. The Ask textarea is exempt from "close on Esc"
+  // for the same reason; cancel-while-streaming has its own handler.
   useEffect(() => {
     if (!prefs.open) return;
     const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        close();
+      if (e.key !== "Escape") return;
+      const t = e.target as HTMLElement | null;
+      if (
+        t &&
+        (t.tagName === "INPUT" ||
+          t.tagName === "TEXTAREA" ||
+          t.tagName === "SELECT" ||
+          t.isContentEditable)
+      ) {
+        return;
       }
+      e.preventDefault();
+      close();
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
