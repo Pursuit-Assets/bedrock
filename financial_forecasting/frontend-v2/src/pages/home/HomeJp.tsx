@@ -23,7 +23,6 @@ import { TaskDrawer, type FlatTask } from "@/components/TaskDrawer";
 import { HomeErrorBoundary } from "@/components/home/HomeErrorBoundary";
 import { HomeStatsStrip } from "@/components/home/HomeStatsStrip";
 import { Scratchpad } from "@/components/home/Scratchpad";
-import { PebbleFloatingBox } from "@/components/pebble/PebbleFloatingBox";
 import { useSalesforceStatus } from "@/services/auth";
 import { usePermissions } from "@/services/permissions";
 import type { SfAccount, SfOpportunity } from "@/types/salesforce";
@@ -209,10 +208,9 @@ export function HomeJp() {
         onClose={() => setDrawerAccount(null)}
       />
 
-      {/* Pebble floating toolbox — portals to document.body. Lives across
-          all of HomeJp's interactions; cross-route mount comes later
-          when this graduates to App.tsx. */}
-      <PebbleFloatingBox />
+      {/* Pebble floating toolbox is mounted globally in App.tsx (gated to
+          jp@pursuit.org), so every authenticated route — not just home —
+          gets the toolbox. Don't mount it here too: it would double-render. */}
     </div>
   );
 }

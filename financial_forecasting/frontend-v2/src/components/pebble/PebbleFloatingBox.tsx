@@ -140,6 +140,30 @@ export function PebbleFloatingBox() {
   );
 }
 
+/** Wrapper that keeps a tab in the DOM (so its state and any in-flight
+ *  effects survive) while hiding it from the user when inactive. */
+function TabSlot({
+  id,
+  active,
+  children,
+}: {
+  id: TabId;
+  active: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <div
+      id={`pebble-tab-${id}`}
+      role="tabpanel"
+      hidden={!active}
+      aria-hidden={!active}
+      className={cn("absolute inset-0", active ? "flex flex-col" : "")}
+    >
+      {children}
+    </div>
+  );
+}
+
 function Launcher({ open, onClick }: { open: boolean; onClick: () => void }) {
   return (
     <button
@@ -255,15 +279,24 @@ function Panel({
         })}
       </nav>
 
-      <div
-        id={`pebble-tab-${tab}`}
-        role="tabpanel"
-        className="flex-1 overflow-hidden"
-      >
-        {tab === "ask" ? <PebbleAskTab /> : null}
-        {tab === "work" ? <PebbleWorkTab /> : null}
-        {tab === "automations" ? <PebbleAutomationsTab /> : null}
-        {tab === "notes" ? <PebbleNotesTab /> : null}
+      {/* All four tabs mount once and stay mounted. We toggle visibility
+          via `hidden` instead of conditional render so per-tab state —
+          including in-flight Ask streams and Notes drafts — survives
+          a tab switch. The badge counts and query polling are owned by
+          this Panel; tabs themselves are pure views over shared hooks. */}
+      <div className="relative flex-1 overflow-hidden">
+        <TabSlot id="ask" active={tab === "ask"}>
+          <PebbleAskTab isActive={tab === "ask"} />
+        </TabSlot>
+        <TabSlot id="work" active={tab === "work"}>
+          <PebbleWorkTab />
+        </TabSlot>
+        <TabSlot id="automations" active={tab === "automations"}>
+          <PebbleAutomationsTab />
+        </TabSlot>
+        <TabSlot id="notes" active={tab === "notes"}>
+          <PebbleNotesTab />
+        </TabSlot>
       </div>
     </section>
   );

@@ -44,6 +44,11 @@ router = APIRouter()
 # dev gets the mock without explicit configuration.
 MOCK_ENABLED = os.getenv("PEBBLE_REAL_ENGINE", "false").lower() != "true"
 
+# How many incremental draft_emitted events to send per response.
+# Higher = smoother stream, slower perceived "thinking" — five reads
+# about right for the 60-word responses the mock emits.
+FAKE_STREAM_CHUNK_COUNT = 5
+
 
 # ── SSE encode helpers ─────────────────────────────────────────────
 
@@ -203,26 +208,64 @@ def _script(query: str, conversation_id: str) -> list[dict[str, Any]]:
             }
         )
 
+    citations_payload = [
+        {
+            "cite_id": f"cite-{i + 1}",
+            "entity_type": etype,
+            "entity_id": eid,
+            "title": title,
+            "href": href,
+        }
+        for i, (etype, eid, title, href) in enumerate(citations)
+    ]
+
+    # Incremental draft_emitted events — the frontend reducer overwrites
+    # response state on each draft, so emitting partial text reads as a
+    # token-by-token stream. Five chunks roughly mirrors how a real LLM
+    # output paces (front-loaded then trailing).
+    def _draft_chunks(full: str, n: int) -> list[str]:
+        words = full.split(" ")
+        if len(words) <= n:
+            return [full]
+        # Cumulative slices at roughly even word boundaries.
+        slices = []
+        for i in range(1, n):
+            cut = max(1, (len(words) * i) // n)
+            slices.append(" ".join(words[:cut]))
+        slices.append(full)
+        return slices
+
+    for chunk in _draft_chunks(text, FAKE_STREAM_CHUNK_COUNT):
+        events.append(
+            {
+                "kind": "draft_emitted",
+                "payload": {
+                    "draft": {
+                        "plan_id": plan_id,
+                        "text": chunk,
+                        # Citations only appear on the final draft so they
+                        # don't strobe in/out during streaming.
+                        "citations": []
+                        if chunk != text
+                        else citations_payload,
+                        "suggested_actions": [],
+                        "charts": [],
+                        "degraded": False,
+                        "degradation_reason": None,
+                    }
+                },
+            }
+        )
+
     final_response = {
         "plan_id": plan_id,
         "text": text,
-        "citations": [
-            {
-                "cite_id": f"cite-{i + 1}",
-                "entity_type": etype,
-                "entity_id": eid,
-                "title": title,
-                "href": href,
-            }
-            for i, (etype, eid, title, href) in enumerate(citations)
-        ],
+        "citations": citations_payload,
         "suggested_actions": [],
         "charts": [],
         "degraded": False,
         "degradation_reason": None,
     }
-    # Draft first (incremental render), then final.
-    events.append({"kind": "draft_emitted", "payload": {"draft": final_response}})
     events.append(
         {
             "kind": "eval_emitted",
@@ -247,7 +290,14 @@ def _script(query: str, conversation_id: str) -> list[dict[str, Any]]:
 
 async def _stream(query: str, conversation_id: str) -> AsyncGenerator[str, None]:
     events = _script(query, conversation_id)
-    for ev in events:
+    # Pre-compute the index of the final draft so per-chunk pacing can
+    # give it a slightly longer settle pause regardless of whether the
+    # script attached citations.
+    last_draft_idx = max(
+        (i for i, e in enumerate(events) if e["kind"] == "draft_emitted"),
+        default=-1,
+    )
+    for i, ev in enumerate(events):
         kind = ev["kind"]
         # Latency profile mimics real LLM-orchestrator pacing without
         # being annoying. Planning is the slowest step; tool calls
@@ -260,7 +310,10 @@ async def _stream(query: str, conversation_id: str) -> AsyncGenerator[str, None]
             duration_ms = ev["payload"].get("duration_ms", 300)
             await asyncio.sleep(duration_ms / 1000)
         elif kind == "draft_emitted":
-            await asyncio.sleep(0.25)
+            # Per-chunk pacing. ~0.18s between partials reads as a
+            # believable token cadence; the final chunk gets a slightly
+            # longer pause so the reader notices the response "settled."
+            await asyncio.sleep(0.32 if i == last_draft_idx else 0.18)
         elif kind == "eval_emitted":
             await asyncio.sleep(0.4)
         # response_final fires immediately after eval

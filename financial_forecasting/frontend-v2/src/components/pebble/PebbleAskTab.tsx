@@ -41,7 +41,14 @@ interface ResponseState {
   degraded: boolean;
 }
 
-export function PebbleAskTab() {
+interface PebbleAskTabProps {
+  /** True when this tab is the visible one inside the floating box.
+   *  Used to refocus the textarea on tab switch (the tab is mounted
+   *  permanently to preserve state, so we can't rely on mount focus). */
+  isActive?: boolean;
+}
+
+export function PebbleAskTab({ isActive = true }: PebbleAskTabProps) {
   const [draft, setDraft] = useState("");
   const [state, setState] = useState<AskState>({ kind: "idle" });
   const [plan, setPlan] = useState<PlanState | null>(null);
@@ -50,10 +57,13 @@ export function PebbleAskTab() {
   const abortRef = useRef<AbortController | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
-  // Autofocus on mount so the user can just type immediately.
+  // Focus the textarea every time the tab becomes visible — keeps the
+  // "open box → start typing" UX even after tab switches.
   useEffect(() => {
-    textareaRef.current?.focus();
-  }, []);
+    if (isActive) {
+      textareaRef.current?.focus();
+    }
+  }, [isActive]);
 
   const reset = useCallback(() => {
     setState({ kind: "idle" });

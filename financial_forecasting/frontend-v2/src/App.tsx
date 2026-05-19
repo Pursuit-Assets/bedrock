@@ -6,6 +6,7 @@ import { AppShell } from "./components/AppShell";
 import { AuthGate } from "./components/AuthGate";
 import { LoginPage } from "./pages/Login";
 import { PageSkeleton } from "./components/PageSkeleton";
+import { PebbleFloatingBox } from "./components/pebble/PebbleFloatingBox";
 import { usePermissions } from "./services/permissions";
 
 /**
@@ -27,6 +28,23 @@ function RootRedirect() {
   const email = (data?.email ?? "").toLowerCase().trim();
   const dest = PERSONAL_HOME_BY_EMAIL[email] ?? DEFAULT_LANDING;
   return <Navigate to={dest} replace />;
+}
+
+/**
+ * Identity gate for the Pebble floating toolbox.
+ *
+ * Pebble is JP's dogfood surface while the engine is still in flight,
+ * so it mounts globally for him on every authenticated route (Dashboard,
+ * Pipeline, Account detail, etc.) but stays invisible to everyone else.
+ * Add an email here when their owner profile is ready for Pebble.
+ */
+const PEBBLE_ALLOWED_EMAILS = new Set(["jp@pursuit.org"]);
+
+function PebbleGate() {
+  const { data } = usePermissions();
+  const email = (data?.email ?? "").toLowerCase().trim();
+  if (!PEBBLE_ALLOWED_EMAILS.has(email)) return null;
+  return <PebbleFloatingBox />;
 }
 
 /**
@@ -131,6 +149,7 @@ export default function App() {
           element={
             <AuthGate>
               <AppShell />
+              <PebbleGate />
             </AuthGate>
           }
         >

@@ -50,12 +50,18 @@ async function fetchPebbleSessions(): Promise<{
   }
 }
 
-export function usePebbleSessions() {
+/**
+ * @param enabled When the floating box is closed, pass `false` to pause
+ *   polling and avoid useless fetches. Cached data stays warm so the
+ *   box reopens with the last-known list instantly.
+ */
+export function usePebbleSessions(enabled: boolean = true) {
   return useQuery({
     queryKey: ["pebble-sessions"],
     queryFn: fetchPebbleSessions,
+    enabled,
     staleTime: 30_000,
-    refetchInterval: 15_000, // gentle polling so in-flight flows tick
+    refetchInterval: enabled ? 15_000 : false,
     retry: false,
   });
 }
@@ -92,10 +98,13 @@ async function fetchPebbleAutomations(): Promise<{
   }
 }
 
-export function usePebbleAutomations() {
+/** @param enabled See {@link usePebbleSessions} — pass `false` when the
+ *  floating box is closed to skip the initial fetch. */
+export function usePebbleAutomations(enabled: boolean = true) {
   return useQuery({
     queryKey: ["pebble-automations"],
     queryFn: fetchPebbleAutomations,
+    enabled,
     staleTime: 60_000,
     retry: false,
   });
