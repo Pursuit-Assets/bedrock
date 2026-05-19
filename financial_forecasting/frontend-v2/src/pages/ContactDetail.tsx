@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import { Link, useLocation, useParams } from "react-router-dom";
 import { ExternalLink, Mail, Phone } from "lucide-react";
+import { toast } from "sonner";
 
 import { AccountAvatar } from "@/components/AccountAvatar";
 import { ActivityTimeline } from "@/components/ActivityTimeline";
@@ -19,6 +20,7 @@ import { isOpen, stageStatus } from "@/lib/stages";
 import { useAccountEnrichment } from "@/services/accounts";
 import { useActivities } from "@/services/activities";
 import { useContacts, useUpdateContact } from "@/services/contacts";
+import { usePerm } from "@/services/permissions";
 import { useOpportunities } from "@/services/opportunities";
 import { useActiveUsers } from "@/services/users";
 import type { SfContact } from "@/types/salesforce";
@@ -56,6 +58,7 @@ export function ContactDetailPage() {
   const enrichment = useAccountEnrichment(contact?.AccountId ?? null);
   const usersQ = useActiveUsers();
   const updateContact = useUpdateContact();
+  const canEdit = usePerm("edit_contacts");
 
   const ownerOptions = useMemo(
     () => (usersQ.data ?? []).map((u) => ({ value: u.Id, label: u.Name })),
@@ -84,8 +87,14 @@ export function ContactDetailPage() {
 
   // Inline-edit dispatcher — converts empty strings to null so SF
   // clears the field instead of writing "" (which is invalid for some
-  // typed fields like LinkedIn URL).
+  // typed fields like LinkedIn URL). Short-circuits when the user
+  // can't edit contacts so the InlineEdit affordances never blow up
+  // into a 403 from the server.
   const patch = (field: string, val: unknown): Promise<void> => {
+    if (!canEdit) {
+      toast.error("You don't have permission to edit contacts");
+      return Promise.resolve();
+    }
     const normalized = val === "" ? null : val;
     return updateContact
       .mutateAsync({ id: contact.Id, patch: { [field]: normalized } })
@@ -93,6 +102,10 @@ export function ContactDetailPage() {
   };
 
   const saveOwner = async (ownerId: string) => {
+    if (!canEdit) {
+      toast.error("You don't have permission to edit contacts");
+      return;
+    }
     const ownerName = (usersQ.data ?? []).find((u) => u.Id === ownerId)?.Name ?? null;
     await updateContact.mutateAsync({
       id: contact.Id,
