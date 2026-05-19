@@ -1108,20 +1108,27 @@ async def get_cashflow(
             #   3. Payment_Date is on or before today (a future
             #      Payment_Date isn't an actual — treat as scheduled)
             year_prefix = f"{year}-"
-            is_actual = (
+            # Money already in the bank — any year, on/before today.
+            already_received = (
                 bool(r.get("npe01__Paid__c"))
                 and payment_date
-                and payment_date.startswith(year_prefix)
                 and payment_date <= today_iso
             )
+            is_actual_this_year = (
+                already_received
+                and payment_date.startswith(year_prefix)
+            )
 
-            if is_actual:
+            if is_actual_this_year:
                 date_str = payment_date
                 key = "actuals"
+            elif already_received:
+                # Paid in a different year. Belongs to that year's
+                # actuals, not this view's outstanding/scheduled.
+                continue
             else:
-                # Falls back to scheduled — only count if the scheduled
-                # date is in this year (covers the disjunct-1 case where
-                # we matched on Won+Scheduled-in-year).
+                # Not yet received → scheduled. Only count if the
+                # scheduled date is in this year.
                 if not scheduled_date or not scheduled_date.startswith(year_prefix):
                     continue
                 date_str = scheduled_date
@@ -1209,17 +1216,29 @@ async def get_cashflow_detail(
                 LIMIT 500
             """
         elif type in ("scheduled", "outstanding"):
+            # Outstanding/scheduled = won-stage payment scheduled in
+            # the queried month whose money isn't already in the bank.
+            # Excludes anything paid with a past Payment_Date (regardless
+            # of year — if it's received, it's not outstanding). Future
+            # Payment_Date counts as outstanding still (money not in yet).
+            from datetime import date as _date
+            today_iso = _date.today().isoformat()
             soql = f"""
                 SELECT Id, npe01__Payment_Amount__c, npe01__Scheduled_Date__c,
+                       npe01__Paid__c, npe01__Payment_Date__c,
                        npe01__Opportunity__c,
                        npe01__Opportunity__r.Name, npe01__Opportunity__r.StageName,
                        npe01__Opportunity__r.Account.Name
                 FROM npe01__OppPayment__c
-                WHERE npe01__Paid__c = false
-                AND npe01__Written_Off__c = false
+                WHERE npe01__Written_Off__c = false
                 AND npe01__Opportunity__r.StageName IN {won_stages}
                 AND npe01__Scheduled_Date__c >= {m_start}
                 AND npe01__Scheduled_Date__c <= {m_end}
+                AND (
+                    npe01__Paid__c = false
+                    OR npe01__Payment_Date__c = null
+                    OR npe01__Payment_Date__c > {today_iso}
+                )
                 {bucket_clause}
                 ORDER BY npe01__Scheduled_Date__c ASC
                 LIMIT 500
@@ -1254,7 +1273,18 @@ async def get_cashflow_detail(
                 "amount": amt,
                 "weighted_amount": round(amt * prob / 100, 2) if type == "projected" else None,
                 "probability": prob if type == "projected" else None,
-                "date": r.get("npe01__Payment_Date__c") or r.get("npe01__Scheduled_Date__c"),
+                # Date column should reflect why this row is in the
+                # selected cashflow cell. Actuals → the day it was paid.
+                # Scheduled/outstanding/projected → the day it's scheduled
+                # for (the date that put it in the column the user clicked).
+                # The previous fallback `Payment_Date or Scheduled_Date`
+                # caused scheduled rows with a stray non-null Payment_Date
+                # to display the wrong month.
+                "date": (
+                    r.get("npe01__Payment_Date__c")
+                    if type == "actuals"
+                    else r.get("npe01__Scheduled_Date__c")
+                ),
                 "opp_name": opp.get("Name"),
                 "account_name": (opp.get("Account") or {}).get("Name"),
                 "stage": opp.get("StageName"),
@@ -1838,7 +1868,13 @@ async def get_my_tasks(
 
         salesforce = client.salesforce
 
-        where_clauses = ["IsClosed = false"]
+        # Filter to real Tasks — exclude Email / Call / ListEmail / etc.
+        # subtypes which clutter the view with auto-captured email
+        # activity that has Subject = "true" or other garbage.
+        where_clauses = [
+            "IsClosed = false",
+            "(TaskSubtype = 'Task' OR TaskSubtype = null)",
+        ]
         if start:
             where_clauses.append(f"ActivityDate >= {start}")
         if end:
@@ -1912,6 +1948,8 @@ async def get_opportunity_tasks(
     validate_salesforce_id(opportunity_id, "opportunity_id")
     try:
         salesforce = client.salesforce
+        # TaskSubtype filter — drop Email / Call / ListEmail subtypes
+        # that get auto-captured by integrations with Subject = "true".
         query = f"""
         SELECT Id, Subject, Status, Priority, ActivityDate, Description,
                IsClosed, OwnerId, Owner.Name, WhoId, Who.Name, WhatId,
@@ -1919,6 +1957,7 @@ async def get_opportunity_tasks(
                CreatedById, CreatedBy.Name, CreatedDate, LastModifiedDate
         FROM Task
         WHERE WhatId = '{opportunity_id}'
+          AND (TaskSubtype = 'Task' OR TaskSubtype = null)
         ORDER BY ActivityDate DESC NULLS LAST
         """
         if limit is not None:
@@ -2050,6 +2089,7 @@ async def get_account_tasks(
                CreatedById, CreatedBy.Name, CreatedDate, LastModifiedDate
         FROM Task
         WHERE WhatId IN ({whatid_list})
+          AND (TaskSubtype = 'Task' OR TaskSubtype = null)
         ORDER BY ActivityDate DESC NULLS LAST
         """
         if limit is not None:
@@ -2120,6 +2160,7 @@ async def get_user_tasks(
                CreatedById, CreatedBy.Name, CreatedDate, LastModifiedDate
         FROM Task
         WHERE OwnerId = '{owner_id}' AND IsClosed = false
+          AND (TaskSubtype = 'Task' OR TaskSubtype = null)
         ORDER BY ActivityDate ASC NULLS LAST
         """
         if limit is not None:
@@ -2190,6 +2231,7 @@ async def get_contact_tasks(
                CreatedById, CreatedBy.Name, CreatedDate, LastModifiedDate
         FROM Task
         WHERE WhoId = '{contact_id}'
+          AND (TaskSubtype = 'Task' OR TaskSubtype = null)
         ORDER BY ActivityDate DESC NULLS LAST
         """
         if limit is not None:
