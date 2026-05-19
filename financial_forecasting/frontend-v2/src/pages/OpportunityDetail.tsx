@@ -75,26 +75,23 @@ export function OpportunityDetailPage() {
     [usersQ.data],
   );
 
-  // Stage options come from the live SF data (distinct StageName values
-  // across all loaded opps). Falls back to the canonical SF_STAGE_OPTIONS
-  // list — and always includes the current opp's stage even if it's not
-  // in either set, so a renamed/legacy stage stays selectable.
+  // Stage options are the curated 7 from SF_STAGE_OPTIONS. If the
+  // current opp is in a non-canonical / legacy stage, include it as
+  // the selected display value so the dropdown still renders correctly
+  // — but only the 7 canonical values are selectable for new edits.
   const stageOptions = useMemo(() => {
-    const seen = new Map<string, string>();
-    for (const o of opps ?? []) {
-      if (o.StageName) seen.set(o.StageName, o.StageName);
+    const out = SF_STAGE_OPTIONS.map((s) => ({ value: s.value, label: s.label }));
+    if (
+      opp?.StageName &&
+      !SF_STAGE_OPTIONS.some((s) => s.value === opp.StageName)
+    ) {
+      out.unshift({
+        value: opp.StageName,
+        label: `${opp.StageName} (legacy)`,
+      });
     }
-    if (seen.size === 0) {
-      for (const s of SF_STAGE_OPTIONS) seen.set(s.value, s.label);
-    }
-    if (opp?.StageName && !seen.has(opp.StageName)) {
-      seen.set(opp.StageName, opp.StageName);
-    }
-    const rank = new Map(SF_STAGE_OPTIONS.map((s, i) => [s.value, i]));
-    return Array.from(seen.entries())
-      .map(([value, label]) => ({ value, label }))
-      .sort((a, b) => (rank.get(a.value) ?? 9999) - (rank.get(b.value) ?? 9999));
-  }, [opps, opp?.StageName]);
+    return out;
+  }, [opp?.StageName]);
 
   const accountOptions = useMemo(
     () =>
