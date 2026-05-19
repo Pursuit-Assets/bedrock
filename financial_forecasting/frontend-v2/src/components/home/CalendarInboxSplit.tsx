@@ -84,7 +84,7 @@ export function CalendarInboxSplit({
             <CalendarDays size={13} /> Calendar
           </span>
         ),
-        node: (
+        node: (api) => (
           <WeeklyCalendar
             events={calendarQ.data ?? []}
             tasks={tasksQ.data ?? []}
@@ -97,6 +97,7 @@ export function CalendarInboxSplit({
             showWeekends={prefs.showWeekends}
             onShowWeekendsChange={(v) => setPrefs({ showWeekends: v })}
             onTaskClick={onTaskClick}
+            onCollapse={api.collapse}
           />
         ),
       }}
@@ -108,7 +109,7 @@ export function CalendarInboxSplit({
             <Inbox size={13} /> Inbox
           </span>
         ),
-        node: (
+        node: (api) => (
           <TaskInbox
             tasks={tasksQ.data ?? []}
             loading={tasksQ.isLoading}
@@ -116,6 +117,7 @@ export function CalendarInboxSplit({
             maxHeight={prefs.inboxHeight}
             onHeightChange={(h) => setPrefs({ inboxHeight: h })}
             onTaskClick={onTaskClick}
+            onCollapse={api.collapse}
           />
         ),
       }}

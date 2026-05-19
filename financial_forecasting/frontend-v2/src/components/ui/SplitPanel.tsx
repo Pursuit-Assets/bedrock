@@ -6,18 +6,32 @@ import { cn } from "@/lib/utils";
 /**
  * Resizable two-pane split with edge-tab collapse.
  *
- * Either side can be dragged shut; when it reaches 0%, the pane is hidden
- * and the matching `collapsedTab` strip appears on that edge. Clicking the
- * strip restores the pane to its previous size.
+ * Either side can be dragged shut OR collapsed via the callback handed
+ * to its `node` render function (so panes can render their own chevron
+ * inside their header). When a side reaches 0%, the pane is hidden and
+ * the matching `collapsedTab` strip appears on that edge. Clicking the
+ * strip (or programmatically calling `collapse(false)`) restores it.
  *
  * Layout (split percentages) persists to localStorage under `storageKey`.
  *
  * Ported behavior of `frontend/src/pages/Priorities.tsx:176–457`
  * (`CalendarInboxSplit`), generalized as a reusable primitive.
  */
+export interface SplitPaneApi {
+  /** True when this pane is currently collapsed to its edge tab. */
+  isCollapsed: boolean;
+  /** Collapse the pane to its edge tab (drag-equivalent). */
+  collapse: () => void;
+  /** Restore the pane to its previous size. */
+  expand: () => void;
+  /** Toggle helper. */
+  toggle: () => void;
+}
+
 export interface SplitPaneConfig {
-  /** Pane content. */
-  node: ReactNode;
+  /** Pane content. May be a node or a render-fn taking the pane API
+   *  (so the pane can wire its own collapse chevron). */
+  node: ReactNode | ((api: SplitPaneApi) => ReactNode);
   /** Default size as a percentage (0–100). */
   defaultPct?: number;
   /** Minimum size as a percentage before snap-collapse. */
@@ -58,8 +72,26 @@ export function SplitPanel({
   const [leftCollapsed, setLeftCollapsed] = useState(false);
   const [rightCollapsed, setRightCollapsed] = useState(false);
 
+  const collapseLeft = useCallback(() => leftRef.current?.collapse(), [leftRef]);
   const expandLeft = useCallback(() => leftRef.current?.expand(), [leftRef]);
+  const collapseRight = useCallback(() => rightRef.current?.collapse(), [rightRef]);
   const expandRight = useCallback(() => rightRef.current?.expand(), [rightRef]);
+
+  const leftApi: SplitPaneApi = {
+    isCollapsed: leftCollapsed,
+    collapse: collapseLeft,
+    expand: expandLeft,
+    toggle: leftCollapsed ? expandLeft : collapseLeft,
+  };
+  const rightApi: SplitPaneApi = {
+    isCollapsed: rightCollapsed,
+    collapse: collapseRight,
+    expand: expandRight,
+    toggle: rightCollapsed ? expandRight : collapseRight,
+  };
+
+  const leftNode = typeof left.node === "function" ? left.node(leftApi) : left.node;
+  const rightNode = typeof right.node === "function" ? right.node(rightApi) : right.node;
 
   return (
     <div
@@ -93,7 +125,7 @@ export function SplitPanel({
           collapsedSize={0}
           onResize={(size) => setLeftCollapsed(size.asPercentage === 0)}
         >
-          {left.node}
+          {leftNode}
         </Panel>
 
         <Separator
@@ -116,7 +148,7 @@ export function SplitPanel({
           collapsedSize={0}
           onResize={(size) => setRightCollapsed(size.asPercentage === 0)}
         >
-          {right.node}
+          {rightNode}
         </Panel>
       </Group>
 

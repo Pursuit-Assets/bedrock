@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ChevronDown, Flag, Inbox } from "lucide-react";
+import { ChevronDown, Flag, Inbox, PanelRightClose } from "lucide-react";
 
 import { Tag } from "@/components/ui/Tag";
 import { fmtDate } from "@/lib/format";
@@ -29,6 +29,9 @@ export interface TaskInboxProps {
   onTaskClick?: (task: FlatTask) => void;
   /** Optional decoration on the header (icon + title come from this slot). */
   headerSlot?: React.ReactNode;
+  /** When provided, renders a collapse chevron in the header that hides
+   *  this pane to the right edge (caller wires it to a SplitPanel handle). */
+  onCollapse?: () => void;
   className?: string;
 }
 
@@ -59,6 +62,7 @@ export function TaskInbox({
   onHeightChange,
   onTaskClick,
   headerSlot,
+  onCollapse,
   className,
 }: TaskInboxProps) {
   const usersQ = useActiveUsers();
@@ -173,6 +177,17 @@ export function TaskInbox({
         <span className="ml-0.5 rounded bg-surface px-1.5 py-px text-[11px] font-semibold text-ink-3">
           {visible.length}
         </span>
+        {onCollapse ? (
+          <button
+            type="button"
+            onClick={onCollapse}
+            aria-label="Collapse inbox to right edge"
+            title="Collapse inbox"
+            className="grid h-6 w-6 place-items-center rounded text-ink-3 hover:bg-surface hover:text-ink"
+          >
+            <PanelRightClose size={13} />
+          </button>
+        ) : null}
         <div className="flex-1" />
         <FilterSelect
           ariaLabel="Assignee filter"

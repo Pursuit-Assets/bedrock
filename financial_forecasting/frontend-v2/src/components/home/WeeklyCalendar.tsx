@@ -8,7 +8,14 @@ import {
   startOfDay,
   startOfWeek,
 } from "date-fns";
-import { AlertTriangle, CalendarDays, CheckCircle2, ChevronLeft, ChevronRight } from "lucide-react";
+import {
+  AlertTriangle,
+  CalendarDays,
+  CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
+  PanelLeftClose,
+} from "lucide-react";
 
 import { Tag } from "@/components/ui/Tag";
 import { cn } from "@/lib/utils";
@@ -47,6 +54,9 @@ export interface WeeklyCalendarProps {
   onEventClick?: (ev: GCalEvent) => void;
 
   headerSlot?: React.ReactNode;
+  /** When provided, renders a collapse chevron in the header that
+   *  hides this pane (caller wires it to a SplitPanel handle). */
+  onCollapse?: () => void;
   className?: string;
 }
 
@@ -83,6 +93,7 @@ export function WeeklyCalendar({
   onTaskClick,
   onEventClick,
   headerSlot,
+  onCollapse,
   className,
 }: WeeklyCalendarProps) {
   const days = useMemo(() => {
@@ -141,6 +152,17 @@ export function WeeklyCalendar({
             <CalendarDays size={15} className="text-accent" /> Calendar
           </div>
         )}
+        {onCollapse ? (
+          <button
+            type="button"
+            onClick={onCollapse}
+            aria-label="Collapse calendar to left edge"
+            title="Collapse calendar"
+            className="grid h-6 w-6 place-items-center rounded text-ink-3 hover:bg-surface hover:text-ink"
+          >
+            <PanelLeftClose size={13} />
+          </button>
+        ) : null}
         {eventCount > 0 ? (
           <Tag>{eventCount} events</Tag>
         ) : null}
