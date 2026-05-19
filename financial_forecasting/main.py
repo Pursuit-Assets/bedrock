@@ -346,6 +346,15 @@ async def services_health_check(
 # this widened — see tasks/stage-schema-drift.md § "Known pre-existing defects" item 3.
 VALID_STAGES = {s.value for s in OpportunityStage} | WON_STAGES_SET | LOST_STAGES_SET
 
+# ISA (Income Share Agreement) opportunities are a separate revenue
+# stream owned by another team and are explicitly out-of-scope for
+# bedrock — they should never surface in the pipeline / search /
+# cashflow views. Filter at the SOQL layer so the API never returns
+# them. SOQL `!=` includes NULLs, so opps with no RecordType still
+# pass through.
+ISA_EXCLUDE_WHERE = "RecordType.Name != 'ISA'"
+ISA_EXCLUDE_VIA_OPP = "npe01__Opportunity__r.RecordType.Name != 'ISA'"
+
 
 @app.get("/api/salesforce/opportunities")
 async def get_opportunities(
@@ -364,7 +373,7 @@ async def get_opportunities(
         # Server-side cache — key encodes all filter params
         stage_val = stage.value if stage else None
         stages_key = ",".join(sorted(stages)) if stages else None
-        cache_key = f"opps:{stage_val}:{stages_key}:{record_type}:{active_only}:{limit}"
+        cache_key = f"opps:no-isa:{stage_val}:{stages_key}:{record_type}:{active_only}:{limit}"
         cached = cache.get(cache_key)
         if cached is not None:
             return cached
@@ -396,7 +405,8 @@ async def get_opportunities(
         FROM Opportunity
         """
 
-        where_clauses = []
+        # ISA opps are always excluded — baseline WHERE clause.
+        where_clauses = [ISA_EXCLUDE_WHERE]
         if stage:
             where_clauses.append(f"StageName = '{stage.value}'")
         if stages:
@@ -408,8 +418,7 @@ async def get_opportunities(
             where_clauses.append(f"RecordType.Name = '{escape_soql_string(record_type)}'")
         if active_only:
             where_clauses.append("Active_Opportunity__c = true")
-        if where_clauses:
-            query += " WHERE " + " AND ".join(where_clauses)
+        query += " WHERE " + " AND ".join(where_clauses)
 
         query += " ORDER BY CloseDate DESC"
         if limit is not None:
@@ -436,19 +445,25 @@ async def get_opportunity_record_types(
     client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user=Depends(require_auth),
 ):
-    """Return active Opportunity RecordTypes as [{id, name}]."""
-    cached = cache.get("opp_record_types")
+    """Return active Opportunity RecordTypes as [{id, name}].
+
+    ISA is excluded — see ISA_EXCLUDE_WHERE comment. We don't want users
+    to be able to create or move opps onto the ISA record type from this
+    app.
+    """
+    cached = cache.get("opp_record_types:no-isa")
     if cached is not None:
         return cached
     salesforce = client.salesforce
     result = await salesforce.query(
         "SELECT Id, Name FROM RecordType "
         "WHERE SObjectType = 'Opportunity' AND IsActive = true "
+        "AND Name != 'ISA' "
         "ORDER BY Name"
     )
     records = result.get("records", [])
     out = [{"id": r["Id"], "name": r["Name"]} for r in records]
-    cache.set("opp_record_types", out, 3600)
+    cache.set("opp_record_types:no-isa", out, 3600)
     return out
 
 
@@ -976,18 +991,22 @@ def _cashflow_bucket_soql(bucket: str) -> str:
     """Return a SOQL fragment to AND into a payment query so it only
     matches the requested record-type bucket.
 
+    Every bucket carries the ISA exclusion — ISA opps are not in scope
+    for bedrock's cashflow views.
+
     Buckets:
-        all             — no filter
+        all             — only ISA excluded
         philanthropy    — RecordType.Name = 'Philanthropy' AND not a Capital Grant
         capital_grants  — Philanthropy_Type__c = 'Capital Grant' (any RT, but in
                           practice all sit under Philanthropy)
         pbc             — RecordType.Name = 'PBC'
-        other           — neither Philanthropy nor PBC (includes NULL RT;
+        other           — neither Philanthropy nor PBC nor ISA (includes NULL RT;
                           Capital Grants are excluded since they're RT=Philanthropy)
     """
-    if bucket == "all":
-        return ""
     opp = "npe01__Opportunity__r"
+    isa = f" AND {opp}.RecordType.Name != 'ISA'"
+    if bucket == "all":
+        return isa
     if bucket == "philanthropy":
         return (
             f" AND {opp}.RecordType.Name = 'Philanthropy' "
@@ -995,17 +1014,20 @@ def _cashflow_bucket_soql(bucket: str) -> str:
             f"OR {opp}.Philanthropy_Type__c = null)"
         )
     if bucket == "capital_grants":
-        return f" AND {opp}.Philanthropy_Type__c = 'Capital Grant'"
+        return (
+            f" AND {opp}.Philanthropy_Type__c = 'Capital Grant'"
+            + isa
+        )
     if bucket == "pbc":
         return f" AND {opp}.RecordType.Name = 'PBC'"
     if bucket == "other":
         return (
             f" AND ({opp}.RecordType.Name = null OR "
-            f"{opp}.RecordType.Name NOT IN ('Philanthropy', 'PBC')) "
+            f"{opp}.RecordType.Name NOT IN ('Philanthropy', 'PBC', 'ISA')) "
             f"AND ({opp}.Philanthropy_Type__c != 'Capital Grant' "
             f"OR {opp}.Philanthropy_Type__c = null)"
         )
-    return ""
+    return isa
 
 
 @app.get("/api/salesforce/cashflow")
@@ -3069,11 +3091,13 @@ async def search_opportunities(
             query = (
                 f"SELECT {fields} FROM Opportunity "
                 f"WHERE (Name LIKE '%{safe_q}%' OR Account.Name LIKE '%{safe_q}%') "
+                f"AND {ISA_EXCLUDE_WHERE} "
                 f"ORDER BY CloseDate DESC LIMIT {limit}"
             )
         else:
             query = (
                 f"SELECT {fields} FROM Opportunity "
+                f"WHERE {ISA_EXCLUDE_WHERE} "
                 f"ORDER BY CloseDate DESC LIMIT {limit}"
             )
 

@@ -43,7 +43,7 @@ import {
   useUpdateOpportunityStage,
 } from "@/services/opportunities";
 import { usePerm } from "@/services/permissions";
-import { useActiveUsers } from "@/services/users";
+import { useActiveUsers, useUsers } from "@/services/users";
 import type { SfOpportunity } from "@/types/salesforce";
 import { toast } from "sonner";
 
@@ -207,6 +207,10 @@ export function PipelinePage() {
   });
   const accountsQ = useAccounts();
   const usersQ = useActiveUsers();
+  // `allUsersQ` includes inactive users — only used by the chip facet
+  // so an inactive owner who still has rows in the loaded data can be
+  // filtered for. Write-side owner pickers stay on `usersQ` (active).
+  const allUsersQ = useUsers();
   const updateOpp = useUpdateOpportunity();
   const updateStage = useUpdateOpportunityStage();
 
@@ -257,34 +261,57 @@ export function PipelinePage() {
     [usersQ.data],
   );
 
-  // Chip-filter facets — owners include inactive users (so historical
-  // owners still appear), record types come straight from the opps
-  // present in the loaded dataset.
+  // Chip-filter facets — owner options are the union of:
+  //   (a) every active SF user, and
+  //   (b) inactive users that actually own a row in the loaded data.
+  // Record types come from the opps present in the loaded dataset.
   const chipFacets = useMemo(() => {
-    const activeIds = new Set((usersQ.data ?? []).map((u) => u.Id));
-    const ownerNames = new Map<string, string>();
+    const all = allUsersQ.data ?? [];
+    const activeById = new Map(
+      all.filter((u) => u.IsActive).map((u) => [u.Id, u]),
+    );
+    const inactiveById = new Map(
+      all.filter((u) => !u.IsActive).map((u) => [u.Id, u]),
+    );
+
+    // Owner IDs that appear in current opps — used to keep inactive
+    // owners visible if they still own rows.
+    const ownersInData = new Set<string>();
+    const ownerNameFromData = new Map<string, string>();
     const recordTypes = new Set<string>();
     for (const o of opps) {
-      if (o.OwnerId && o.Owner?.Name && !ownerNames.has(o.OwnerId)) {
-        ownerNames.set(o.OwnerId, o.Owner.Name);
+      if (o.OwnerId) {
+        ownersInData.add(o.OwnerId);
+        if (o.Owner?.Name) ownerNameFromData.set(o.OwnerId, o.Owner.Name);
       }
       if (o.RecordType?.Name) recordTypes.add(o.RecordType.Name);
     }
+
+    type OwnerOption = { value: string; label: string };
+    const ownerOptions: OwnerOption[] = [];
+    // (a) all active users
+    for (const u of activeById.values()) {
+      ownerOptions.push({ value: u.Id, label: u.Name });
+    }
+    // (b) inactive users that have rows in the loaded data
+    for (const id of ownersInData) {
+      if (activeById.has(id)) continue;
+      const inactive = inactiveById.get(id);
+      const name = inactive?.Name ?? ownerNameFromData.get(id) ?? id;
+      ownerOptions.push({ value: id, label: `${name} (inactive)` });
+    }
+    ownerOptions.sort((a, b) => a.label.localeCompare(b.label));
+
     return {
       stage: stageFilterOptions,
-      owner: Array.from(ownerNames.entries())
-        .map(([id, name]) => ({
-          value: id,
-          label: activeIds.has(id) ? name : `${name} (inactive)`,
-        }))
-        .sort((a, b) => a.label.localeCompare(b.label)),
+      owner: ownerOptions,
       recordType: Array.from(recordTypes).sort().map((v) => ({ value: v, label: v })),
       active: [
         { value: "Yes", label: "Yes" },
         { value: "No", label: "No" },
       ],
     };
-  }, [opps, usersQ.data, stageFilterOptions]);
+  }, [opps, allUsersQ.data, stageFilterOptions]);
 
   // Owner-id → display-name lookup for filter-chip rendering.
   const ownerLabelLookup = useMemo(() => {
