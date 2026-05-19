@@ -401,7 +401,8 @@ async def get_opportunities(
                Reporting_Method__c, npsp__Next_Grant_Deadline_Due_Date__c,
                Ask_Amount_if_different_from_actual__c,
                Philanthropy_Type__c,
-               Manager_Probability_Override__c
+               Manager_Probability_Override__c,
+               Priority__c
         FROM Opportunity
         """
 

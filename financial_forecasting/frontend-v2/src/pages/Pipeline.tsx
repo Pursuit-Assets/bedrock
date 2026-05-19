@@ -86,6 +86,11 @@ const PIPELINE_FILTERABLE = {
   stage: { label: "Stage", type: "select", getValue: (o: SfOpportunity) => o.StageName ?? "" },
   owner: { label: "Owner", type: "select", getValue: (o: SfOpportunity) => o.OwnerId ?? "" },
   recordType: { label: "Record Type", type: "select", getValue: (o: SfOpportunity) => o.RecordType?.Name ?? "" },
+  priority: {
+    label: "Priority",
+    type: "select",
+    getValue: (o: SfOpportunity) => o.Priority__c ?? "",
+  },
   active: {
     label: "Active",
     type: "select",
@@ -332,6 +337,11 @@ export function PipelinePage() {
       stage: stageFilterOptions,
       owner: ownerOptions,
       recordType: Array.from(recordTypes).sort().map((v) => ({ value: v, label: v })),
+      priority: [
+        { value: "High", label: "High" },
+        { value: "Medium", label: "Medium" },
+        { value: "Low", label: "Low" },
+      ],
       active: [
         { value: "Yes", label: "Yes" },
         { value: "No", label: "No" },
@@ -530,6 +540,7 @@ export function PipelinePage() {
             stage: chipFacets.stage,
             owner: chipFacets.owner,
             recordType: chipFacets.recordType,
+            priority: chipFacets.priority,
             active: chipFacets.active,
           }}
           onAdd={(r) => setRules((prev) => [...prev, r])}
