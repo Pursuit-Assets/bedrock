@@ -1,18 +1,23 @@
 import { useMemo } from "react";
 import { Link } from "react-router-dom";
+import { toast } from "sonner";
 
 import { Drawer } from "@/components/ui/Drawer";
+import { InlineSelect, InlineText } from "@/components/ui/InlineEdit";
 import { StageChip } from "@/components/ui/StageChip";
 import { Tag } from "@/components/ui/Tag";
 import { fmtDate, fmtMoney, fmtMoneyFull } from "@/lib/format";
 import { isOpen, stageStatus } from "@/lib/stages";
 import { cn } from "@/lib/utils";
+import { useUpdateAccount } from "@/services/accounts";
 import { useActivities } from "@/services/activities";
 import { useContacts } from "@/services/contacts";
 import {
   useOpportunities,
   useOpportunityTasks,
 } from "@/services/opportunities";
+import { usePerm } from "@/services/permissions";
+import { useActiveUsers } from "@/services/users";
 import type { SfAccount, SfTask } from "@/types/salesforce";
 
 export function AccountDrawer({
@@ -50,6 +55,38 @@ function AccountDrawerBody({ account }: { account: SfAccount }) {
     accountId,
     limit: 30,
   });
+  const updateAccount = useUpdateAccount();
+  const usersQ = useActiveUsers();
+  const canEdit = usePerm("edit_accounts");
+
+  const ownerOptions = useMemo(
+    () => (usersQ.data ?? []).map((u) => ({ value: u.Id, label: u.Name })),
+    [usersQ.data],
+  );
+
+  const saveField = (field: string, val: unknown) => {
+    if (!canEdit) {
+      toast.error("You don't have permission to edit accounts");
+      return Promise.resolve();
+    }
+    return updateAccount
+      .mutateAsync({ id: accountId, patch: { [field]: val } })
+      .then(() => undefined);
+  };
+
+  const saveOwner = async (ownerId: string) => {
+    if (!canEdit) {
+      toast.error("You don't have permission to edit accounts");
+      return;
+    }
+    const ownerName =
+      (usersQ.data ?? []).find((u) => u.Id === ownerId)?.Name ?? null;
+    await updateAccount.mutateAsync({
+      id: accountId,
+      patch: { OwnerId: ownerId },
+      displayPatch: { Owner: { Name: ownerName } },
+    });
+  };
 
   const oppsForAccount = useMemo(
     () => opps.filter((o) => o.AccountId === accountId),
@@ -70,6 +107,64 @@ function AccountDrawerBody({ account }: { account: SfAccount }) {
         <Stat label="Closed opps" value={closedCount > 0 ? String(closedCount) : "—"} />
         <Stat label="Lifetime" value={lifetime > 0 ? fmtMoneyFull(lifetime) : "—"} />
       </div>
+
+      {/* Details — owner + the most-edited contact-card-style fields. The
+          long-form CRM fields (Industry / BillingCity / Description etc.)
+          live on the full detail page; this section keeps the drawer
+          actionable without becoming a sprawling form. */}
+      <Section title="Details">
+        <div className="flex flex-col gap-1 px-4 py-3 text-[12.5px]">
+          <DetailRow label="Account owner">
+            {canEdit ? (
+              <InlineSelect
+                value={account.OwnerId ?? null}
+                options={ownerOptions}
+                onSave={saveOwner}
+                renderValue={() => (
+                  <span className="text-[12.5px] text-ink-2">
+                    {account.Owner?.Name ??
+                      ownerOptions.find((o) => o.value === account.OwnerId)
+                        ?.label ??
+                      "—"}
+                  </span>
+                )}
+              />
+            ) : (
+              <span className="text-[12.5px] text-ink-2">
+                {account.Owner?.Name ?? "—"}
+              </span>
+            )}
+          </DetailRow>
+          <DetailRow label="Phone">
+            {canEdit ? (
+              <InlineText
+                value={account.Phone ?? ""}
+                onSave={(v) => saveField("Phone", v || null)}
+                placeholder="—"
+                emptyLabel="—"
+              />
+            ) : (
+              <span className="text-[12.5px] text-ink-2">
+                {account.Phone || "—"}
+              </span>
+            )}
+          </DetailRow>
+          <DetailRow label="Website">
+            {canEdit ? (
+              <InlineText
+                value={account.Website ?? ""}
+                onSave={(v) => saveField("Website", v || null)}
+                placeholder="—"
+                emptyLabel="—"
+              />
+            ) : (
+              <span className="text-[12.5px] text-ink-2">
+                {account.Website || "—"}
+              </span>
+            )}
+          </DetailRow>
+        </div>
+      </Section>
 
       {/* Open opportunities */}
       <Section title={`Open opportunities (${openOpps.length})`}>
@@ -268,4 +363,21 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 
 function Empty({ children }: { children: React.ReactNode }) {
   return <div className="px-4 py-5 text-center text-[12px] text-ink-3">{children}</div>;
+}
+
+function DetailRow({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="flex items-center gap-3 py-0.5">
+      <span className="w-32 flex-shrink-0 text-[11px] font-semibold uppercase tracking-wider text-ink-3">
+        {label}
+      </span>
+      <span className="min-w-0 flex-1">{children}</span>
+    </div>
+  );
 }

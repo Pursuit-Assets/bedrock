@@ -1,15 +1,18 @@
 import { useMemo } from "react";
 import { Link } from "react-router-dom";
 import { ExternalLink, Linkedin, Mail, Phone } from "lucide-react";
+import { toast } from "sonner";
 
 import { Drawer } from "@/components/ui/Drawer";
+import { InlineText } from "@/components/ui/InlineEdit";
 import { StageChip } from "@/components/ui/StageChip";
 import { Tag } from "@/components/ui/Tag";
 import { fmtDate, fmtMoney, initials } from "@/lib/format";
 import { isOpen, stageStatus } from "@/lib/stages";
 import { useActivities } from "@/services/activities";
-import { useContacts } from "@/services/contacts";
+import { useContacts, useUpdateContact } from "@/services/contacts";
 import { useContactTasks, useOpportunities } from "@/services/opportunities";
+import { usePerm } from "@/services/permissions";
 import type { SfContact } from "@/types/salesforce";
 
 export function ContactDrawer({
@@ -65,6 +68,18 @@ function ContactDrawerBody({ contact }: { contact: SfContact }) {
   const { data: contactTasks = [], isLoading: tasksLoading } = useContactTasks(
     contact.Id,
   );
+  const updateContact = useUpdateContact();
+  const canEdit = usePerm("edit_contacts");
+
+  const saveField = (field: string, val: unknown) => {
+    if (!canEdit) {
+      toast.error("You don't have permission to edit contacts");
+      return Promise.resolve();
+    }
+    return updateContact
+      .mutateAsync({ id: contact.Id, patch: { [field]: val } })
+      .then(() => undefined);
+  };
 
   // Account count: union of AccountId + Primary Affiliation across all
   // contact rows for this person (deduped). For one human across multiple
@@ -186,6 +201,70 @@ function ContactDrawerBody({ contact }: { contact: SfContact }) {
         />
         <Stat label="Last activity" value={fmtDate(lastActivity)} />
       </div>
+
+      {/* Details — editable subset of the most-touched contact fields.
+          Email is intentionally kept as the mailto: chip in the header
+          card; if it's wrong, update in the full ContactDetail page. */}
+      <Section title="Details">
+        <div className="flex flex-col gap-1 px-4 py-3 text-[12.5px]">
+          <DetailRow label="Title">
+            {canEdit ? (
+              <InlineText
+                value={contact.Title ?? ""}
+                onSave={(v) => saveField("Title", v || null)}
+                placeholder="—"
+                emptyLabel="—"
+              />
+            ) : (
+              <span className="text-[12.5px] text-ink-2">
+                {contact.Title || "—"}
+              </span>
+            )}
+          </DetailRow>
+          <DetailRow label="Phone">
+            {canEdit ? (
+              <InlineText
+                value={contact.Phone ?? ""}
+                onSave={(v) => saveField("Phone", v || null)}
+                placeholder="—"
+                emptyLabel="—"
+              />
+            ) : (
+              <span className="text-[12.5px] text-ink-2">
+                {contact.Phone || "—"}
+              </span>
+            )}
+          </DetailRow>
+          <DetailRow label="Mobile">
+            {canEdit ? (
+              <InlineText
+                value={contact.MobilePhone ?? ""}
+                onSave={(v) => saveField("MobilePhone", v || null)}
+                placeholder="—"
+                emptyLabel="—"
+              />
+            ) : (
+              <span className="text-[12.5px] text-ink-2">
+                {contact.MobilePhone || "—"}
+              </span>
+            )}
+          </DetailRow>
+          <DetailRow label="LinkedIn">
+            {canEdit ? (
+              <InlineText
+                value={contact.LinkedIn_URL__c ?? ""}
+                onSave={(v) => saveField("LinkedIn_URL__c", v || null)}
+                placeholder="https://linkedin.com/in/…"
+                emptyLabel="—"
+              />
+            ) : (
+              <span className="text-[12.5px] text-ink-2">
+                {contact.LinkedIn_URL__c || "—"}
+              </span>
+            )}
+          </DetailRow>
+        </div>
+      </Section>
 
       {/* Open opportunities where this contact is primary */}
       <Section
@@ -346,6 +425,23 @@ function Section({
       </div>
       {children}
     </section>
+  );
+}
+
+function DetailRow({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="flex items-center gap-3 py-0.5">
+      <span className="w-24 flex-shrink-0 text-[11px] font-semibold uppercase tracking-wider text-ink-3">
+        {label}
+      </span>
+      <span className="min-w-0 flex-1">{children}</span>
+    </div>
   );
 }
 
