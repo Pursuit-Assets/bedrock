@@ -1817,13 +1817,15 @@ async def get_users(
 ):
     """Get Salesforce users (active + inactive, grouped by IsActive).
 
-    Filters to UserType='Standard' to exclude system/integration users
-    like Slackbot, Security User, Automated Process, Chatter Expert,
-    and Insight Security Users — these have valid SF Ids but aren't
-    real people and shouldn't appear in owner pickers or filters.
+    Filters to real licensed users only — UserType='Standard' AND
+    UserLicense.Name='Salesforce'. Integration / Analytics / Chatter /
+    Security / Automated Process users are on different licenses
+    ('Salesforce Integration', 'Analytics Cloud Integration User',
+    'Chatter Free', etc.) and get excluded by the license filter even
+    when they share UserType='Standard'.
     """
     try:
-        cache_key = f"users:{limit}:standard-only"
+        cache_key = f"users:{limit}:real-licensees-v2"
         cached = cache.get(cache_key)
         if cached is not None:
             return cached
@@ -1834,6 +1836,7 @@ async def get_users(
         SELECT Id, Name, Email, IsActive
         FROM User
         WHERE UserType = 'Standard'
+        AND UserLicense.Name = 'Salesforce'
         ORDER BY IsActive DESC, Name ASC
         LIMIT {limit}
         """
