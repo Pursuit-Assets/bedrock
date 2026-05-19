@@ -1815,9 +1815,15 @@ async def get_users(
     client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user = Depends(require_auth)
 ):
-    """Get Salesforce users (active + inactive, grouped by IsActive)."""
+    """Get Salesforce users (active + inactive, grouped by IsActive).
+
+    Filters to UserType='Standard' to exclude system/integration users
+    like Slackbot, Security User, Automated Process, Chatter Expert,
+    and Insight Security Users — these have valid SF Ids but aren't
+    real people and shouldn't appear in owner pickers or filters.
+    """
     try:
-        cache_key = f"users:{limit}"
+        cache_key = f"users:{limit}:standard-only"
         cached = cache.get(cache_key)
         if cached is not None:
             return cached
@@ -1827,6 +1833,7 @@ async def get_users(
         query = f"""
         SELECT Id, Name, Email, IsActive
         FROM User
+        WHERE UserType = 'Standard'
         ORDER BY IsActive DESC, Name ASC
         LIMIT {limit}
         """
