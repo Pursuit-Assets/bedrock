@@ -43,7 +43,7 @@ import {
   useUpdateOpportunityStage,
 } from "@/services/opportunities";
 import { usePerm } from "@/services/permissions";
-import { useActiveUsers } from "@/services/users";
+import { useActiveUsers, useUsers } from "@/services/users";
 import type { SfOpportunity } from "@/types/salesforce";
 import { toast } from "sonner";
 
@@ -86,6 +86,11 @@ const PIPELINE_FILTERABLE = {
   stage: { label: "Stage", type: "select", getValue: (o: SfOpportunity) => o.StageName ?? "" },
   owner: { label: "Owner", type: "select", getValue: (o: SfOpportunity) => o.OwnerId ?? "" },
   recordType: { label: "Record Type", type: "select", getValue: (o: SfOpportunity) => o.RecordType?.Name ?? "" },
+  priority: {
+    label: "Priority",
+    type: "select",
+    getValue: (o: SfOpportunity) => o.Priority__c ?? "",
+  },
   active: {
     label: "Active",
     type: "select",
@@ -121,6 +126,7 @@ type ColKey =
   | "name"
   | "owner"
   | "stage"
+  | "priority"
   | "amount"
   | "probability"
   | "close"
@@ -130,6 +136,7 @@ const COLUMN_ORDER: ColKey[] = [
   "name",
   "owner",
   "stage",
+  "priority",
   "amount",
   "probability",
   "close",
@@ -138,11 +145,14 @@ const COLUMN_ORDER: ColKey[] = [
 
 // Defaults balanced for ~1280px viewport. Mirrors the legacy DEFAULT_VISIBLE
 // set: name+account / owner / stage / amount / probability / close /
-// 1st-payment. Sum ≈ 1110 to leave a touch of horizontal slack.
+// 1st-payment. Sum ≈ 1110 to leave a touch of horizontal slack. Priority
+// is hidden by default (opt-in via column chooser) so existing layouts
+// don't shift.
 const DEFAULT_WIDTHS: Record<ColKey, number> = {
   name: 260,
   owner: 150,
   stage: 150,
+  priority: 100,
   amount: 130,
   probability: 90,
   close: 110,
@@ -153,11 +163,22 @@ const COL_LABELS: Record<ColKey, string> = {
   name: "Opportunity",
   owner: "Owner",
   stage: "Stage",
+  priority: "Priority",
   amount: "Amount",
   probability: "Prob.",
   close: "Close",
   paymentDate: "1st Payment",
 };
+
+const DEFAULT_VISIBLE_COLS: ColKey[] = [
+  "name",
+  "owner",
+  "stage",
+  "amount",
+  "probability",
+  "close",
+  "paymentDate",
+];
 
 const ROW_HEIGHT = 44; // px — must match the row's actual rendered height
 
@@ -172,6 +193,12 @@ function extractOpp(o: SfOpportunity, key: ColKey): unknown {
     case "name": return o.Name;
     case "owner": return o.Owner?.Name;
     case "stage": return o.StageName;
+    // Sort: High > Medium > Low > (empty). Map to a numeric rank so the
+    // sort comparator orders them sensibly instead of alphabetically.
+    case "priority": {
+      const rank: Record<string, number> = { High: 3, Medium: 2, Low: 1 };
+      return rank[o.Priority__c ?? ""] ?? 0;
+    }
     case "amount": return o.Amount ?? 0;
     case "probability": return o.Probability ?? 0;
     case "close": return o.CloseDate;
@@ -194,7 +221,7 @@ export function PipelinePage() {
   const canEdit = usePerm("edit_all_opportunities");
 
   const { visible: visibleCols, toggle: toggleCol, replaceAll: replaceVisibleCols } =
-    useColumnVisibility("bedrock-v2:vis:pipeline", COLUMN_ORDER);
+    useColumnVisibility("bedrock-v2:vis:pipeline", COLUMN_ORDER, DEFAULT_VISIBLE_COLS);
 
   const { sort, toggle } = useSort<ColKey>({ key: "close", direction: "asc" });
   const { widths, startResize, replaceAll: replaceWidths } = useColumnWidths<ColKey>(
@@ -207,6 +234,10 @@ export function PipelinePage() {
   });
   const accountsQ = useAccounts();
   const usersQ = useActiveUsers();
+  // `allUsersQ` includes inactive users — only used by the chip facet
+  // so an inactive owner who still has rows in the loaded data can be
+  // filtered for. Write-side owner pickers stay on `usersQ` (active).
+  const allUsersQ = useUsers();
   const updateOpp = useUpdateOpportunity();
   const updateStage = useUpdateOpportunityStage();
 
@@ -225,15 +256,26 @@ export function PipelinePage() {
   }, [opps]);
   const enrichmentQ = useAccountsEnrichment(accountIdsForEnrichment);
 
-  // Stage <select> options come from the distinct stage names actually
-  // present in the org. Avoids showing stages SF doesn't accept.
-  const stageOptions = useMemo(() => {
+  // Stage <select> options are the curated 7 canonical stages in
+  // funnel order — see SF_STAGE_OPTIONS in lib/stages.ts. Rows already
+  // in a legacy stage continue to display that stage as their resting
+  // value (HTML select handles unknown selected values), but opening
+  // the dropdown only offers the 7 canonical choices.
+  const stageOptions = useMemo(
+    () => SF_STAGE_OPTIONS.map((s) => ({ value: s.value, label: s.label })),
+    [],
+  );
+
+  // Filter chip's stage options — keep data-derived so users can still
+  // filter to historical legacy stages (e.g. "Closed Lost" rollups).
+  // Sorted by canonical funnel position; unknown legacy values fall to
+  // the end.
+  const stageFilterOptions = useMemo(() => {
+    const rank = new Map(SF_STAGE_OPTIONS.map((s, i) => [s.value, i]));
     const seen = new Set<string>();
-    for (const o of opps) {
-      if (o.StageName) seen.add(o.StageName);
-    }
+    for (const o of opps) if (o.StageName) seen.add(o.StageName);
     return Array.from(seen)
-      .sort()
+      .sort((a, b) => (rank.get(a) ?? 9999) - (rank.get(b) ?? 9999))
       .map((s) => ({ value: s, label: s }));
   }, [opps]);
 
@@ -246,34 +288,88 @@ export function PipelinePage() {
     [usersQ.data],
   );
 
-  // Chip-filter facets — owners include inactive users (so historical
-  // owners still appear), record types come straight from the opps
-  // present in the loaded dataset.
+  // Opps that match the toolbar filters (scope pill, stage pill, search
+  // box) — used to populate the chip-filter picker facets so the picker
+  // reflects what's visible in the table, not the entire server load.
+  // We intentionally don't apply existing chip `rules` here: doing so
+  // would shrink the picker to "current selection only" once you add an
+  // owner filter, defeating the purpose of switching owners.
+  const oppsInView = useMemo(() => {
+    return opps.filter((o) => {
+      if (!inScope(o, scope)) return false;
+      if (stageFilter && o.StageName !== stageFilter) return false;
+      if (q) {
+        const needle = q.toLowerCase();
+        const hay =
+          (o.Name ?? "").toLowerCase() +
+          " " +
+          (o.Account?.Name ?? "").toLowerCase() +
+          " " +
+          (o.Owner?.Name ?? "").toLowerCase();
+        if (!hay.includes(needle)) return false;
+      }
+      return true;
+    });
+  }, [opps, scope, stageFilter, q]);
+
+  // Chip-filter facets — owner options are the union of:
+  //   (a) every active SF user (always — so you can filter to a
+  //       teammate even if they have zero rows right now), and
+  //   (b) inactive users that own at least one row in the current view.
+  // Inactive users with zero visible rows are dropped. Per user spec:
+  //   "active Salesforce users + inactive ones that have records in the
+  //    table".
+  // Record types come from the opps present in the current view.
   const chipFacets = useMemo(() => {
-    const activeIds = new Set((usersQ.data ?? []).map((u) => u.Id));
-    const ownerNames = new Map<string, string>();
+    const all = allUsersQ.data ?? [];
+    const activeById = new Map(
+      all.filter((u) => u.IsActive).map((u) => [u.Id, u]),
+    );
+    const inactiveById = new Map(
+      all.filter((u) => !u.IsActive).map((u) => [u.Id, u]),
+    );
+
+    const ownersInView = new Set<string>();
+    const ownerNameFromData = new Map<string, string>();
     const recordTypes = new Set<string>();
-    for (const o of opps) {
-      if (o.OwnerId && o.Owner?.Name && !ownerNames.has(o.OwnerId)) {
-        ownerNames.set(o.OwnerId, o.Owner.Name);
+    for (const o of oppsInView) {
+      if (o.OwnerId) {
+        ownersInView.add(o.OwnerId);
+        if (o.Owner?.Name) ownerNameFromData.set(o.OwnerId, o.Owner.Name);
       }
       if (o.RecordType?.Name) recordTypes.add(o.RecordType.Name);
     }
+
+    type OwnerOption = { value: string; label: string };
+    const ownerOptions: OwnerOption[] = [];
+    // (a) every active user
+    for (const u of activeById.values()) {
+      ownerOptions.push({ value: u.Id, label: u.Name });
+    }
+    // (b) inactive users with rows in the current view
+    for (const id of ownersInView) {
+      if (activeById.has(id)) continue;
+      const inactive = inactiveById.get(id);
+      const name = inactive?.Name ?? ownerNameFromData.get(id) ?? id;
+      ownerOptions.push({ value: id, label: `${name} (inactive)` });
+    }
+    ownerOptions.sort((a, b) => a.label.localeCompare(b.label));
+
     return {
-      stage: stageOptions,
-      owner: Array.from(ownerNames.entries())
-        .map(([id, name]) => ({
-          value: id,
-          label: activeIds.has(id) ? name : `${name} (inactive)`,
-        }))
-        .sort((a, b) => a.label.localeCompare(b.label)),
+      stage: stageFilterOptions,
+      owner: ownerOptions,
       recordType: Array.from(recordTypes).sort().map((v) => ({ value: v, label: v })),
+      priority: [
+        { value: "High", label: "High" },
+        { value: "Medium", label: "Medium" },
+        { value: "Low", label: "Low" },
+      ],
       active: [
         { value: "Yes", label: "Yes" },
         { value: "No", label: "No" },
       ],
     };
-  }, [opps, usersQ.data, stageOptions]);
+  }, [oppsInView, allUsersQ.data, stageFilterOptions]);
 
   // Owner-id → display-name lookup for filter-chip rendering.
   const ownerLabelLookup = useMemo(() => {
@@ -377,6 +473,23 @@ export function PipelinePage() {
     [updateOpp],
   );
 
+  const savePriority = useCallback(
+    async (id: string, next: string) => {
+      await updateOpp.mutateAsync({
+        id,
+        patch: { Priority__c: next || null },
+      });
+    },
+    [updateOpp],
+  );
+
+  const saveCloseDate = useCallback(
+    async (id: string, next: string | null) => {
+      await updateOpp.mutateAsync({ id, patch: { CloseDate: next } });
+    },
+    [updateOpp],
+  );
+
   const tableMinWidth = totalWidth(widths);
 
   // ── Virtualization ─────────────────────────────────────────────────
@@ -466,6 +579,7 @@ export function PipelinePage() {
             stage: chipFacets.stage,
             owner: chipFacets.owner,
             recordType: chipFacets.recordType,
+            priority: chipFacets.priority,
             active: chipFacets.active,
           }}
           onAdd={(r) => setRules((prev) => [...prev, r])}
@@ -620,6 +734,8 @@ export function PipelinePage() {
                         onSaveProbability={(raw) => saveProbability(o.Id, raw)}
                         onSaveOwner={(ownerId) => saveOwner(o.Id, ownerId)}
                         onSavePaymentDate={(next) => savePaymentDate(o.Id, next)}
+                        onSavePriority={(next) => savePriority(o.Id, next)}
+                        onSaveCloseDate={(next) => saveCloseDate(o.Id, next)}
                         isExpanded={isExpanded}
                         onToggleExpand={() => setExpandedId(isExpanded ? null : o.Id)}
                         canEdit={canEdit}
@@ -950,6 +1066,8 @@ interface RowProps {
   onSaveProbability: (raw: string) => Promise<void>;
   onSaveOwner: (ownerId: string) => Promise<void>;
   onSavePaymentDate: (next: string | null) => Promise<void>;
+  onSavePriority: (next: string) => Promise<void>;
+  onSaveCloseDate: (next: string | null) => Promise<void>;
   isExpanded: boolean;
   onToggleExpand: () => void;
   canEdit: boolean;
@@ -969,6 +1087,35 @@ function pipelinePercentDisplay(raw: string): string {
   return Number.isFinite(n) ? `${n}%` : raw;
 }
 
+// Priority cell options — empty string clears the value via the
+// existing patch path (the row's savePriority maps "" → null).
+const PIPELINE_PRIORITY_OPTIONS = [
+  { value: "", label: "—" },
+  { value: "High", label: "High" },
+  { value: "Medium", label: "Medium" },
+  { value: "Low", label: "Low" },
+];
+
+function PriorityDot({ value }: { value: string | null }) {
+  if (!value) return <span className="text-ink-4">—</span>;
+  const tone =
+    value === "High"
+      ? "border-red bg-red-soft text-red"
+      : value === "Medium"
+      ? "border-amber bg-amber-soft text-amber"
+      : "border-border-strong bg-surface-2 text-ink-3";
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center rounded border px-1.5 py-0.5 text-[11.5px] font-medium",
+        tone,
+      )}
+    >
+      {value}
+    </span>
+  );
+}
+
 const OpportunityRow = memo(function OpportunityRow({
   o,
   logoUrl,
@@ -980,6 +1127,8 @@ const OpportunityRow = memo(function OpportunityRow({
   onSaveProbability,
   onSaveOwner,
   onSavePaymentDate,
+  onSavePriority,
+  onSaveCloseDate,
   isExpanded,
   onToggleExpand,
   canEdit,
@@ -1038,6 +1187,16 @@ const OpportunityRow = memo(function OpportunityRow({
         <span className="text-ink-4">—</span>
       )
     ),
+    priority: canEdit ? (
+      <InlineSelect
+        value={o.Priority__c ?? ""}
+        options={PIPELINE_PRIORITY_OPTIONS}
+        onSave={onSavePriority}
+        renderValue={(v) => <PriorityDot value={v ?? o.Priority__c ?? null} />}
+      />
+    ) : (
+      <PriorityDot value={o.Priority__c ?? null} />
+    ),
     amount: canEdit ? (
       <InlineText
         value={o.Amount != null ? String(o.Amount) : ""}
@@ -1062,7 +1221,11 @@ const OpportunityRow = memo(function OpportunityRow({
     ) : (
       <span className="tabular-nums text-right block">{(o.Manager_Probability_Override__c ?? o.Probability) != null ? `${o.Manager_Probability_Override__c ?? o.Probability}%` : "—"}</span>
     ),
-    close: <>{fmtDate(o.CloseDate)}</>,
+    close: canEdit ? (
+      <InlineDate value={o.CloseDate} onSave={onSaveCloseDate} align="right" placeholder="—" />
+    ) : (
+      <span className="block text-right text-[13px] tabular-nums text-ink-2">{fmtDate(o.CloseDate)}</span>
+    ),
     paymentDate: canEdit ? (
       <InlineDate value={o.PaymentDate__c} onSave={onSavePaymentDate} align="right" placeholder="—" />
     ) : (
@@ -1074,9 +1237,10 @@ const OpportunityRow = memo(function OpportunityRow({
     name: "overflow-hidden px-3 py-1 text-[13px]",
     owner: "overflow-hidden px-3 py-1 text-[12.5px] text-ink-2",
     stage: "overflow-hidden px-3 py-1 text-[13px]",
+    priority: "overflow-hidden px-3 py-1 text-[12.5px]",
     amount: cn(numCell, o.Amount && o.Amount > 0 && "font-semibold"),
     probability: cn(numCell),
-    close: "cursor-pointer overflow-hidden truncate px-3 py-1 text-right text-[13px] tabular-nums text-ink-2",
+    close: "overflow-hidden px-3 py-1",
     paymentDate: "overflow-hidden px-3 py-1",
   };
 
@@ -1086,11 +1250,7 @@ const OpportunityRow = memo(function OpportunityRow({
       style={{ height: ROW_HEIGHT }}
     >
       {visibleCols.map((key) => (
-        <td
-          key={key}
-          className={cellCls[key]}
-          onClick={key === "close" ? onOpen : undefined}
-        >
+        <td key={key} className={cellCls[key]}>
           {cells[key]}
         </td>
       ))}

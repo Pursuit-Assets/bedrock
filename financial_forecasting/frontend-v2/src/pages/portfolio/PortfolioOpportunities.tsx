@@ -52,7 +52,16 @@ export function PortfolioOpportunities({
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<OppFilter>("open");
+  // One-click "High priority only" toggle. Sits next to the Open/Won/
+  // Lost pill so a user can quickly narrow their portfolio to what
+  // needs attention now. Stacks AND with the other filters.
+  const [highPriorityOnly, setHighPriorityOnly] = useState(false);
   const { sort, toggle } = useSort<OppSortKey>();
+
+  const highPriorityCount = useMemo(
+    () => opps.filter((o) => (o.Priority__c ?? "") === "High").length,
+    [opps],
+  );
 
   const counts = useMemo(() => {
     let open = 0, won = 0, lost = 0;
@@ -76,6 +85,7 @@ export function PortfolioOpportunities({
       if (statusFilter === "open" && !isOpen(o)) return false;
       if (statusFilter === "won" && !isWon(o)) return false;
       if (statusFilter === "lost" && !isLost(o)) return false;
+      if (highPriorityOnly && (o.Priority__c ?? "") !== "High") return false;
       if (!q) return true;
       if (o.Name?.toLowerCase().includes(q)) return true;
       if (o.Account?.Name?.toLowerCase().includes(q)) return true;
@@ -92,7 +102,7 @@ export function PortfolioOpportunities({
         case "close": return o.CloseDate ?? "";
       }
     });
-  }, [opps, query, statusFilter, sort]);
+  }, [opps, query, statusFilter, highPriorityOnly, sort]);
 
   return (
     <SectionCard
@@ -106,21 +116,48 @@ export function PortfolioOpportunities({
             </span>
           ) : null}
           {opps.length > 0 ? (
-            <TableToolbar<OppFilter>
-              query={query}
-              onQueryChange={setQuery}
-              filter={{
-                value: statusFilter,
-                options: [
-                  { value: "all", label: "All", count: counts.all },
-                  { value: "open", label: "Open", count: counts.open },
-                  { value: "won", label: "Won", count: counts.won },
-                  { value: "lost", label: "Lost", count: counts.lost },
-                ],
-                onChange: setStatusFilter,
-              }}
-              placeholder="Search opportunities…"
-            />
+            <>
+              <button
+                type="button"
+                onClick={() => setHighPriorityOnly((v) => !v)}
+                aria-pressed={highPriorityOnly}
+                className={
+                  "inline-flex h-7 items-center gap-1.5 whitespace-nowrap rounded-md border px-2.5 text-[12px] font-medium transition-colors " +
+                  (highPriorityOnly
+                    ? "border-red bg-red-soft text-red"
+                    : "border-border-strong bg-surface text-ink-3 hover:bg-surface-2")
+                }
+                title={
+                  highPriorityOnly
+                    ? "Showing High priority only — click to clear"
+                    : "Show only opps with Priority = High"
+                }
+              >
+                <span
+                  aria-hidden
+                  className={
+                    "inline-block h-1.5 w-1.5 rounded-full " +
+                    (highPriorityOnly ? "bg-red" : "bg-ink-3/60")
+                  }
+                />
+                High priority{highPriorityCount > 0 ? ` (${highPriorityCount})` : ""}
+              </button>
+              <TableToolbar<OppFilter>
+                query={query}
+                onQueryChange={setQuery}
+                filter={{
+                  value: statusFilter,
+                  options: [
+                    { value: "all", label: "All", count: counts.all },
+                    { value: "open", label: "Open", count: counts.open },
+                    { value: "won", label: "Won", count: counts.won },
+                    { value: "lost", label: "Lost", count: counts.lost },
+                  ],
+                  onChange: setStatusFilter,
+                }}
+                placeholder="Search opportunities…"
+              />
+            </>
           ) : null}
         </div>
       }

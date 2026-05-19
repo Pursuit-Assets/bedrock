@@ -96,6 +96,10 @@ export interface SfOpportunity {
   Ask_Amount_if_different_from_actual__c?: number | null;
   Philanthropy_Type__c?: string | null;
   Manager_Probability_Override__c?: number | null;
+  /** SF picklist: "Low" | "Medium" | "High" (or null). Surfaced as a
+   *  filter facet on /pipeline + /portfolio and as an editable pill
+   *  in the Opportunity Detail header. */
+  Priority__c?: string | null;
   CloseDate?: string | null;
   LeadSource?: string | null;
   NextStep?: string | null;

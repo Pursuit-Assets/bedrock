@@ -39,7 +39,7 @@ import {
 } from "@/services/accounts";
 import { useOpportunities } from "@/services/opportunities";
 import { usePerm } from "@/services/permissions";
-import { useActiveUsers } from "@/services/users";
+import { useActiveUsers, useUsers } from "@/services/users";
 import type { SfAccount } from "@/types/salesforce";
 import { toast } from "sonner";
 
@@ -203,6 +203,9 @@ export function AccountsPage() {
   const accountsQ = useAccounts();
   const oppsQ = useOpportunities();
   const usersQ = useActiveUsers();
+  // All users (active + inactive). Used only for the chip-filter owner
+  // facet — write-side pickers stay on `usersQ` (active only).
+  const allUsersQ = useUsers();
   const updateAccount = useUpdateAccount();
   const canEdit = usePerm("edit_accounts");
 
@@ -293,38 +296,76 @@ export function AccountsPage() {
     [metricsByAccount],
   );
 
-  // Chip-filter facets — owners include inactive users so historical
-  // owners still appear; type/tier/industry/state are discovered from
-  // the accounts actually loaded.
+  // Accounts that match the toolbar filters (type pill + search). Used
+  // to populate the chip-filter owner facet so it reflects what's
+  // visible in the table, not the entire server load. Chip `rules` are
+  // intentionally excluded — if applied, the owner picker would
+  // collapse to whichever owner you'd already filtered to.
+  const accountsInView = useMemo(() => {
+    const needle = q.toLowerCase();
+    return accounts.filter((a) => {
+      if (!matchesType(a, filter)) return false;
+      if (q) {
+        const hit =
+          (a.Name ?? "").toLowerCase().includes(needle) ||
+          (a.Owner?.Name ?? "").toLowerCase().includes(needle);
+        if (!hit) return false;
+      }
+      return true;
+    });
+  }, [accounts, filter, q]);
+
+  // Chip-filter facets — owner options are the union of:
+  //   (a) every active SF user, and
+  //   (b) inactive users that own at least one row in the current view.
+  // type/tier come from the accounts visible in the current view.
   const chipFacets = useMemo(() => {
-    const activeIds = new Set((usersQ.data ?? []).map((u) => u.Id));
-    const owners = new Map<string, string>();
+    const all = allUsersQ.data ?? [];
+    const activeById = new Map(
+      all.filter((u) => u.IsActive).map((u) => [u.Id, u]),
+    );
+    const inactiveById = new Map(
+      all.filter((u) => !u.IsActive).map((u) => [u.Id, u]),
+    );
+
+    const ownersInView = new Set<string>();
+    const ownerNameFromData = new Map<string, string>();
     const types = new Set<string>();
     const tiers = new Set<string>();
-    for (const a of accounts) {
-      if (a.OwnerId && a.Owner?.Name && !owners.has(a.OwnerId)) {
-        owners.set(a.OwnerId, a.Owner.Name);
+    for (const a of accountsInView) {
+      if (a.OwnerId) {
+        ownersInView.add(a.OwnerId);
+        if (a.Owner?.Name) ownerNameFromData.set(a.OwnerId, a.Owner.Name);
       }
       if (a.Type) types.add(a.Type);
       if (a.Account_Tier__c) tiers.add(a.Account_Tier__c);
     }
+
+    type OwnerOption = { value: string; label: string };
+    const ownerOptions: OwnerOption[] = [];
+    for (const u of activeById.values()) {
+      ownerOptions.push({ value: u.Id, label: u.Name });
+    }
+    for (const id of ownersInView) {
+      if (activeById.has(id)) continue;
+      const inactive = inactiveById.get(id);
+      const name = inactive?.Name ?? ownerNameFromData.get(id) ?? id;
+      ownerOptions.push({ value: id, label: `${name} (inactive)` });
+    }
+    ownerOptions.sort((x, y) => x.label.localeCompare(y.label));
+
     const yesNo = [
       { value: "Yes", label: "Yes" },
       { value: "No", label: "No" },
     ];
     return {
-      owner: Array.from(owners.entries())
-        .map(([id, name]) => ({
-          value: id,
-          label: activeIds.has(id) ? name : `${name} (inactive)`,
-        }))
-        .sort((x, y) => x.label.localeCompare(y.label)),
+      owner: ownerOptions,
       type: Array.from(types).sort().map((v) => ({ value: v, label: v })),
       tier: Array.from(tiers).sort().map((v) => ({ value: v, label: v })),
       philanthropy: yesNo,
       active: yesNo,
     };
-  }, [accounts, usersQ.data]);
+  }, [accountsInView, allUsersQ.data]);
 
   const ownerLabelLookup = useMemo(() => {
     const m = new Map<string, string>();

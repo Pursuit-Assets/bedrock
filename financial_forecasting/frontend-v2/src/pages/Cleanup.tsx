@@ -46,7 +46,7 @@ import {
 } from "@/services/opportunities";
 import { useAccountsEnrichment } from "@/services/accounts";
 import { usePerm } from "@/services/permissions";
-import { useActiveUsers } from "@/services/users";
+import { useActiveUsers, useUsers } from "@/services/users";
 import type { SfOpportunity } from "@/types/salesforce";
 
 // ── Filter model ──────────────────────────────────────────────────────────
@@ -351,6 +351,7 @@ function OpportunitiesCleanupTab() {
   const canEdit = usePerm("edit_all_opportunities");
   const { data: oppsData, isLoading } = useOpportunities();
   const usersQ = useActiveUsers();
+  const allUsersQ = useUsers();
 
   // Cleanup is for fixing in-flight pipeline data — closed opps are
   // historical and shouldn't be re-touched here.
@@ -398,36 +399,66 @@ function OpportunitiesCleanupTab() {
     [usersQ.data],
   );
 
-  // Stage / record-type / owner filter options — pulled from the actual
-  // opportunity data so users can filter by every value that appears,
-  // including owners who are no longer active SF users.
+  // Opps that match the toolbar-level filter (search box only; chip
+  // `rules` excluded to avoid the picker collapsing once an owner
+  // filter is applied). Used to seed the chip-filter facets so the
+  // owner picker reflects what's actually visible in the table.
+  const oppsInView = useMemo(() => {
+    if (!q) return opps;
+    const needle = q.toLowerCase();
+    return opps.filter((o) => {
+      const hay =
+        (o.Name ?? "") + " " + (o.Account?.Name ?? "") + " " + (o.Owner?.Name ?? "");
+      return hay.toLowerCase().includes(needle);
+    });
+  }, [opps, q]);
+
+  // Stage / record-type / owner filter options.
+  // Owner picker = every active SF user + inactive users with rows in
+  // the current view.
   const facets = useMemo(() => {
+    const all = allUsersQ.data ?? [];
+    const activeById = new Map(
+      all.filter((u) => u.IsActive).map((u) => [u.Id, u]),
+    );
+    const inactiveById = new Map(
+      all.filter((u) => !u.IsActive).map((u) => [u.Id, u]),
+    );
+
     const stages = new Set<string>();
     const recordTypes = new Set<string>();
-    const ownerNames = new Map<string, string>();
-    const activeIds = new Set((usersQ.data ?? []).map((u) => u.Id));
-    for (const o of opps) {
+    const ownersInView = new Set<string>();
+    const ownerNameFromData = new Map<string, string>();
+    for (const o of oppsInView) {
       if (o.StageName) stages.add(o.StageName);
       if (o.RecordType?.Name) recordTypes.add(o.RecordType.Name);
       if (o.OwnerId) {
-        // Prefer active-user name; fall back to whatever SOQL gave us
-        // on the Opportunity record.
-        const existing = ownerNames.get(o.OwnerId);
-        if (!existing && o.Owner?.Name) ownerNames.set(o.OwnerId, o.Owner.Name);
+        ownersInView.add(o.OwnerId);
+        if (o.Owner?.Name && !ownerNameFromData.has(o.OwnerId)) {
+          ownerNameFromData.set(o.OwnerId, o.Owner.Name);
+        }
       }
     }
-    const owners = Array.from(ownerNames.entries())
-      .map(([id, name]) => ({
-        value: id,
-        label: activeIds.has(id) ? name : `${name} (inactive)`,
-      }))
-      .sort((a, b) => a.label.localeCompare(b.label));
+
+    type OwnerOption = { value: string; label: string };
+    const owners: OwnerOption[] = [];
+    for (const u of activeById.values()) {
+      owners.push({ value: u.Id, label: u.Name });
+    }
+    for (const id of ownersInView) {
+      if (activeById.has(id)) continue;
+      const inactive = inactiveById.get(id);
+      const name = inactive?.Name ?? ownerNameFromData.get(id) ?? id;
+      owners.push({ value: id, label: `${name} (inactive)` });
+    }
+    owners.sort((a, b) => a.label.localeCompare(b.label));
+
     return {
       stages: Array.from(stages).sort().map((v) => ({ value: v, label: v })),
       recordTypes: Array.from(recordTypes).sort().map((v) => ({ value: v, label: v })),
       owners,
     };
-  }, [opps, usersQ.data]);
+  }, [oppsInView, allUsersQ.data]);
 
   const ownerLabel = useMemo(() => {
     const m = new Map<string, string>();
