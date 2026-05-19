@@ -1838,7 +1838,13 @@ async def get_my_tasks(
 
         salesforce = client.salesforce
 
-        where_clauses = ["IsClosed = false"]
+        # Filter to real Tasks — exclude Email / Call / ListEmail / etc.
+        # subtypes which clutter the view with auto-captured email
+        # activity that has Subject = "true" or other garbage.
+        where_clauses = [
+            "IsClosed = false",
+            "(TaskSubtype = 'Task' OR TaskSubtype = null)",
+        ]
         if start:
             where_clauses.append(f"ActivityDate >= {start}")
         if end:
@@ -1912,6 +1918,8 @@ async def get_opportunity_tasks(
     validate_salesforce_id(opportunity_id, "opportunity_id")
     try:
         salesforce = client.salesforce
+        # TaskSubtype filter — drop Email / Call / ListEmail subtypes
+        # that get auto-captured by integrations with Subject = "true".
         query = f"""
         SELECT Id, Subject, Status, Priority, ActivityDate, Description,
                IsClosed, OwnerId, Owner.Name, WhoId, Who.Name, WhatId,
@@ -1919,6 +1927,7 @@ async def get_opportunity_tasks(
                CreatedById, CreatedBy.Name, CreatedDate, LastModifiedDate
         FROM Task
         WHERE WhatId = '{opportunity_id}'
+          AND (TaskSubtype = 'Task' OR TaskSubtype = null)
         ORDER BY ActivityDate DESC NULLS LAST
         """
         if limit is not None:
@@ -2050,6 +2059,7 @@ async def get_account_tasks(
                CreatedById, CreatedBy.Name, CreatedDate, LastModifiedDate
         FROM Task
         WHERE WhatId IN ({whatid_list})
+          AND (TaskSubtype = 'Task' OR TaskSubtype = null)
         ORDER BY ActivityDate DESC NULLS LAST
         """
         if limit is not None:
@@ -2120,6 +2130,7 @@ async def get_user_tasks(
                CreatedById, CreatedBy.Name, CreatedDate, LastModifiedDate
         FROM Task
         WHERE OwnerId = '{owner_id}' AND IsClosed = false
+          AND (TaskSubtype = 'Task' OR TaskSubtype = null)
         ORDER BY ActivityDate ASC NULLS LAST
         """
         if limit is not None:
@@ -2190,6 +2201,7 @@ async def get_contact_tasks(
                CreatedById, CreatedBy.Name, CreatedDate, LastModifiedDate
         FROM Task
         WHERE WhoId = '{contact_id}'
+          AND (TaskSubtype = 'Task' OR TaskSubtype = null)
         ORDER BY ActivityDate DESC NULLS LAST
         """
         if limit is not None:
