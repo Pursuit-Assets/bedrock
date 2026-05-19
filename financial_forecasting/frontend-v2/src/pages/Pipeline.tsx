@@ -186,38 +186,12 @@ export function PipelinePage() {
   // Stage card click on the funnel strip → narrow the table to one stage.
   const [stageFilter, setStageFilter] = useState<string | null>(null);
 
-  // Drill-throughs from elsewhere (home stats, GoalTracker, dashboard
-  // numbers) can pass `?scope=open&stage=Discovery&closing=week` to land
-  // here with filters pre-applied. Read once on mount.
+  // URL-driven drill-throughs are applied AFTER the state + queries
+  // below are declared (see the two `useEffect`s further down).
   const [searchParams] = useSearchParams();
-  useEffect(() => {
-    const s = searchParams.get("scope");
-    if (s === "open" || s === "won" || s === "lost" || s === "all") {
-      setScope(s);
-    }
-    const st = searchParams.get("stage");
-    if (st) setStageFilter(st);
-    // `?closing=week` is a convenience flag for the home "Closing this
-    // week" chip — translates to a CloseDate-before-(today+8) rule
-    // (which the chip semantics define as "≤ +7 days"; the rule engine
-    // uses strict `before`, so we shift the boundary by one day).
-    if (searchParams.get("closing") === "week") {
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-      const wk = new Date(today);
-      wk.setDate(wk.getDate() + 8);
-      setRules((r) => [
-        ...r,
-        {
-          id: `closing-week-${today.getTime()}`,
-          field: "closeDate" as PipelineField,
-          op: "before",
-          values: [wk.toISOString().slice(0, 10)],
-        },
-      ]);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  const urlAppliedRef = useRef(false);
+  const accountAppliedRef = useRef<string | null>(null);
+
   // Chip-based filter rules (parity with Cleanup). Persisted into
   // saved views alongside scope/recordType.
   const [rules, setRules] = useState<FilterRule<PipelineField>[]>([]);
@@ -242,6 +216,58 @@ export function PipelinePage() {
   const usersQ = useActiveUsers();
   const updateOpp = useUpdateOpportunity();
   const updateStage = useUpdateOpportunityStage();
+
+  // Drill-throughs from elsewhere (home stats, GoalTracker, ActiveAccounts,
+  // dashboard numbers) can pass `?scope=open&stage=Discovery&closing=week`
+  // or `?account=:id` to land here with filters pre-applied. Split into
+  // two effects: the first runs once on mount for stateless params; the
+  // second waits for the accounts cache so `:id` can resolve to a name.
+  useEffect(() => {
+    if (urlAppliedRef.current) return;
+    urlAppliedRef.current = true;
+    const s = searchParams.get("scope");
+    if (s === "open" || s === "won" || s === "lost" || s === "all") {
+      setScope(s);
+    }
+    const st = searchParams.get("stage");
+    if (st) setStageFilter(st);
+    if (searchParams.get("closing") === "week") {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const wk = new Date(today);
+      wk.setDate(wk.getDate() + 8);
+      setRules((r) => [
+        ...r,
+        {
+          id: `closing-week-${today.getTime()}`,
+          field: "closeDate" as PipelineField,
+          op: "before",
+          values: [wk.toISOString().slice(0, 10)],
+        },
+      ]);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    const acctId = searchParams.get("account");
+    if (!acctId) return;
+    if (accountAppliedRef.current === acctId) return;
+    const list = accountsQ.data ?? [];
+    if (list.length === 0) return;
+    const acct = list.find((a) => a.Id === acctId);
+    const needle = acct?.Name ?? acctId;
+    accountAppliedRef.current = acctId;
+    setRules((r) => [
+      ...r.filter((rule) => !rule.id.startsWith("account-")),
+      {
+        id: `account-${acctId}`,
+        field: "account" as PipelineField,
+        op: "equals",
+        values: [needle],
+      },
+    ]);
+  }, [accountsQ.data, searchParams]);
 
   const opps = data ?? [];
 

@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { Building2, ChevronDown } from "lucide-react";
 
 import { AccountAvatar } from "@/components/AccountAvatar";
@@ -253,7 +254,14 @@ function AccountRowView({
         </div>
       </td>
       <td className="mono px-3 py-1.5 text-right tabular-nums text-ink">
-        {row.openOppCount}
+        <Link
+          to={`/pipeline?scope=open&account=${encodeURIComponent(row.accountId)}`}
+          onClick={(e) => e.stopPropagation()}
+          className="inline-block rounded px-1.5 py-px hover:bg-accent-soft hover:text-accent-ink"
+          title={`Open ${row.openOppCount} opportunit${row.openOppCount === 1 ? "y" : "ies"} on this account in Pipeline`}
+        >
+          {row.openOppCount}
+        </Link>
       </td>
       <td className="mono px-3 py-1.5 text-right font-semibold tabular-nums text-ink">
         {fmtMoneyFull(row.weightedPipeline)}
