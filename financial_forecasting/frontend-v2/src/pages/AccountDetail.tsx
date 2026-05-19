@@ -20,6 +20,7 @@ import { cn } from "@/lib/utils";
 import { useAccountEnrichment, useAccounts, useUpdateAccount } from "@/services/accounts";
 import { useAccountFullActivities } from "@/services/activities";
 import { useContacts, useCreateContact, useUpdateContact } from "@/services/contacts";
+import { usePerm } from "@/services/permissions";
 import { useAwards, type Award, type AwardStatus } from "@/services/awards";
 import { useCreateOpportunity, useOppRecordTypes, useOpportunities, useOpportunityPriorStages, type PriorStage } from "@/services/opportunities";
 import { useActiveUsers } from "@/services/users";
@@ -43,6 +44,7 @@ export function AccountDetailPage() {
   const { data: activities = [] } = useAccountFullActivities(id, 150);
   const usersQ = useActiveUsers();
   const updateAccount = useUpdateAccount();
+  const canEdit = usePerm("edit_accounts");
 
   const ownerOptions = useMemo(
     () => (usersQ.data ?? []).map((u) => ({ value: u.Id, label: u.Name })),
@@ -64,10 +66,25 @@ export function AccountDetailPage() {
     );
   }
 
-  const patch = (field: string, val: unknown) =>
-    updateAccount.mutateAsync({ id: account.Id, patch: { [field]: val } }).then(() => undefined);
+  // All inline-edit mutations are gated by `edit_accounts`. We still
+  // expose `patch` / `saveOwner` to the JSX below, but each Inline*
+  // wrapper renders a read-only fallback when `canEdit` is false; these
+  // closures simply won't be called in that path.
+  const patch = (field: string, val: unknown) => {
+    if (!canEdit) {
+      toast.error("You don't have permission to edit accounts");
+      return Promise.resolve();
+    }
+    return updateAccount
+      .mutateAsync({ id: account.Id, patch: { [field]: val } })
+      .then(() => undefined);
+  };
 
   const saveOwner = async (ownerId: string) => {
+    if (!canEdit) {
+      toast.error("You don't have permission to edit accounts");
+      return;
+    }
     const ownerName = (usersQ.data ?? []).find((u) => u.Id === ownerId)?.Name ?? null;
     await updateAccount.mutateAsync({
       id: account.Id,
@@ -160,11 +177,17 @@ export function AccountDetailPage() {
           size={48}
         />
         <div className="flex-1 min-w-0">
-          <InlineText
-            value={account.Name}
-            onSave={(v) => patch("Name", v)}
-            className="text-[24px] font-bold leading-tight tracking-tight text-ink py-0"
-          />
+          {canEdit ? (
+            <InlineText
+              value={account.Name}
+              onSave={(v) => patch("Name", v)}
+              className="text-[24px] font-bold leading-tight tracking-tight text-ink py-0"
+            />
+          ) : (
+            <h1 className="text-[24px] font-bold leading-tight tracking-tight text-ink">
+              {account.Name}
+            </h1>
+          )}
           <div className="mt-1 flex flex-wrap items-center gap-2 text-[12.5px] text-ink-3">
             {account.Type ? <Tag>{account.Type}</Tag> : null}
           </div>
@@ -203,16 +226,22 @@ export function AccountDetailPage() {
         <SectionCard title="Details" collapsible={false}>
           <div className="flex flex-col gap-2 px-5 py-3">
             <DetailRow label="Account owner">
-              <InlineSelect
-                value={account.OwnerId ?? null}
-                options={ownerOptions}
-                onSave={saveOwner}
-                renderValue={() => (
-                  <span className="text-[13px] text-ink-2">
-                    {account.Owner?.Name ?? ownerOptions.find((o) => o.value === account.OwnerId)?.label ?? "—"}
-                  </span>
-                )}
-              />
+              {canEdit ? (
+                <InlineSelect
+                  value={account.OwnerId ?? null}
+                  options={ownerOptions}
+                  onSave={saveOwner}
+                  renderValue={() => (
+                    <span className="text-[13px] text-ink-2">
+                      {account.Owner?.Name ?? ownerOptions.find((o) => o.value === account.OwnerId)?.label ?? "—"}
+                    </span>
+                  )}
+                />
+              ) : (
+                <span className="text-[13px] text-ink-2">
+                  {account.Owner?.Name ?? ownerOptions.find((o) => o.value === account.OwnerId)?.label ?? "—"}
+                </span>
+              )}
             </DetailRow>
             <DetailRow label="Engagement types">
               {engagementTypes.length === 0 ? (

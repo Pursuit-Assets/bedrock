@@ -9,7 +9,7 @@ import { fmtDate, fmtMoney, initials } from "@/lib/format";
 import { isOpen, stageStatus } from "@/lib/stages";
 import { useActivities } from "@/services/activities";
 import { useContacts } from "@/services/contacts";
-import { useOpportunities } from "@/services/opportunities";
+import { useContactTasks, useOpportunities } from "@/services/opportunities";
 import type { SfContact } from "@/types/salesforce";
 
 export function ContactDrawer({
@@ -62,6 +62,9 @@ function ContactDrawerBody({ contact }: { contact: SfContact }) {
     contactId: contact.Id,
     limit: 30,
   });
+  const { data: contactTasks = [], isLoading: tasksLoading } = useContactTasks(
+    contact.Id,
+  );
 
   // Account count: union of AccountId + Primary Affiliation across all
   // contact rows for this person (deduped). For one human across multiple
@@ -216,26 +219,59 @@ function ContactDrawerBody({ contact }: { contact: SfContact }) {
         )}
       </Section>
 
-      {/* Tasks — placeholder. No backend endpoint exists for per-contact
-          SF tasks (WhoId-keyed). The Account drawer queries tasks per opp,
-          which won't include unrelated tasks logged directly against this
-          person. Surfaced explicitly so we don't quietly under-report. */}
-      <Section title="Tasks">
-        <div className="px-4 py-4 text-[12px] text-ink-3">
-          <div className="font-medium text-ink-2">
-            Per-contact tasks: backend endpoint{" "}
-            <code className="rounded bg-surface-2 px-1 py-px text-[11px]">
-              /api/salesforce/contacts/{"{id}"}/tasks
-            </code>{" "}
-            doesn't exist yet.
-          </div>
-          <div className="mt-1 text-ink-3">
-            TODO: add a server route that returns SF tasks where{" "}
-            <code className="text-[11px]">WhoId</code> = the contact id, then
-            wire it here. For now, opp-scoped tasks live on the Account
-            drawer.
-          </div>
-        </div>
+      {/* Tasks where SF Task.WhoId = this contact id. Backed by
+          `GET /api/salesforce/contacts/:id/tasks` and cached server-side
+          for 60s. Rows link out to the parent opp/account so users can
+          jump from the contact card to whatever the task is about. */}
+      <Section title={`Tasks (${contactTasks.length})`}>
+        {tasksLoading ? (
+          <div className="px-4 py-3 text-[12px] text-ink-3">Loading tasks…</div>
+        ) : contactTasks.length === 0 ? (
+          <Empty>No tasks logged against this contact.</Empty>
+        ) : (
+          <ul className="flex flex-col">
+            {contactTasks.slice(0, 30).map((t) => {
+              const done = t.Status === "Completed" || !!t.IsClosed;
+              const parentHref = t.WhatId
+                ? t.WhatId.startsWith("001")
+                  ? `/accounts/${t.WhatId}`
+                  : `/opportunities/${t.WhatId}`
+                : null;
+              return (
+                <li
+                  key={t.Id}
+                  className="flex items-center gap-2 border-b border-border-strong px-4 py-2 last:border-b-0"
+                >
+                  <Tag variant={done ? "default" : "amber"}>
+                    {t.Status ?? "Open"}
+                  </Tag>
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-[13px] text-ink">
+                      {t.Subject ?? "(no subject)"}
+                    </div>
+                    {t.WhatName ? (
+                      parentHref ? (
+                        <Link
+                          to={parentHref}
+                          className="block truncate text-[11.5px] text-accent-ink hover:underline"
+                        >
+                          {t.WhatName}
+                        </Link>
+                      ) : (
+                        <div className="truncate text-[11.5px] text-ink-3">
+                          {t.WhatName}
+                        </div>
+                      )
+                    ) : null}
+                  </div>
+                  <span className="mono w-24 flex-shrink-0 text-right text-[11px] text-ink-3">
+                    {fmtDate(t.ActivityDate)}
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+        )}
       </Section>
 
       {/* Activity timeline */}

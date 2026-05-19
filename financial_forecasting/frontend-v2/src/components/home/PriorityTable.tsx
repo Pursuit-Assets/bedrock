@@ -108,6 +108,10 @@ export interface PriorityTableProps {
   currentUserId?: string | null;
   /** Click an opportunity name → caller opens OpportunityDrawer. */
   onOpportunityClick?: (opp: SfOpportunity) => void;
+  /** Click a task row inside the expanded opportunity → caller opens
+   *  TaskDrawer. Receives an `SfTask` shape since the priority hook's
+   *  tasks come from the opportunity-tasks join, not `useMyTasks`. */
+  onTaskClick?: (task: SfTask) => void;
   className?: string;
 }
 
@@ -126,6 +130,7 @@ export interface PriorityTableProps {
 export function PriorityTable({
   currentUserId,
   onOpportunityClick,
+  onTaskClick,
   className,
 }: PriorityTableProps) {
   const oppsQ = useOpportunities();
@@ -387,6 +392,7 @@ export function PriorityTable({
                       setExpandedId(expandedId === opp.Id ? null : opp.Id)
                     }
                     onClick={() => onOpportunityClick?.(opp)}
+                    onTaskClick={onTaskClick}
                     onSaveStage={(s) => saveStage(opp.Id, s)}
                     onSaveAmount={(s) => saveAmount(opp.Id, s)}
                     onSaveProbability={(s) => saveProbability(opp.Id, s)}
@@ -418,6 +424,7 @@ interface PriorityRowProps {
   isExpanded: boolean;
   onToggleExpand: () => void;
   onClick: () => void;
+  onTaskClick?: (t: SfTask) => void;
   onSaveStage: (next: string) => Promise<void>;
   onSaveAmount: (raw: string) => Promise<void>;
   onSaveProbability: (raw: string) => Promise<void>;
@@ -432,6 +439,7 @@ function PriorityRow({
   isExpanded,
   onToggleExpand,
   onClick,
+  onTaskClick,
   onSaveStage,
   onSaveAmount,
   onSaveProbability,
@@ -583,7 +591,11 @@ function PriorityRow({
             colSpan={COLUMN_ORDER.length}
             className="border-b border-border-strong bg-surface-2/40 px-3 py-2"
           >
-            <ExpandedTasks opportunityId={opp.Id} tasks={tasks} />
+            <ExpandedTasks
+              opportunityId={opp.Id}
+              tasks={tasks}
+              onTaskClick={onTaskClick}
+            />
           </td>
         </tr>
       ) : null}
@@ -657,9 +669,11 @@ function AlertChips({
 function ExpandedTasks({
   opportunityId,
   tasks,
+  onTaskClick,
 }: {
   opportunityId: string;
   tasks: SfTask[];
+  onTaskClick?: (t: SfTask) => void;
 }) {
   const open = tasks.filter((t) => t.Status !== "Completed" && !t.IsClosed);
   const closed = tasks.filter((t) => t.Status === "Completed" || t.IsClosed);
@@ -673,7 +687,7 @@ function ExpandedTasks({
       {open.length > 0 ? (
         <ul className="flex flex-col">
           {open.map((t) => (
-            <SubTaskRow key={t.Id} t={t} />
+            <SubTaskRow key={t.Id} t={t} onClick={onTaskClick} />
           ))}
         </ul>
       ) : null}
@@ -685,7 +699,7 @@ function ExpandedTasks({
           </summary>
           <ul className="mt-1 flex flex-col">
             {closed.slice(0, 10).map((t) => (
-              <SubTaskRow key={t.Id} t={t} />
+              <SubTaskRow key={t.Id} t={t} onClick={onTaskClick} />
             ))}
           </ul>
         </details>
@@ -749,9 +763,16 @@ function QuickCreateTask({ opportunityId }: { opportunityId: string }) {
   );
 }
 
-function SubTaskRow({ t }: { t: SfTask }) {
-  return (
-    <li className="flex items-center gap-2 py-0.5">
+function SubTaskRow({
+  t,
+  onClick,
+}: {
+  t: SfTask;
+  onClick?: (t: SfTask) => void;
+}) {
+  const interactive = !!onClick;
+  const content = (
+    <>
       <span
         className={cn(
           "inline-flex w-20 flex-shrink-0 items-center justify-center rounded px-1 py-px text-[10px] font-medium",
@@ -762,12 +783,27 @@ function SubTaskRow({ t }: { t: SfTask }) {
       >
         {t.Status ?? "Open"}
       </span>
-      <span className="min-w-0 flex-1 truncate text-ink">
+      <span className="min-w-0 flex-1 truncate text-left text-ink">
         {t.Subject ?? "(no subject)"}
       </span>
       <span className="mono w-20 flex-shrink-0 text-right text-[10.5px] tabular-nums text-ink-3">
         {fmtDate(t.ActivityDate)}
       </span>
+    </>
+  );
+  if (!interactive) {
+    return <li className="flex items-center gap-2 py-0.5">{content}</li>;
+  }
+  return (
+    <li>
+      <button
+        type="button"
+        onClick={() => onClick?.(t)}
+        title={t.Subject ?? "(no subject)"}
+        className="flex w-full items-center gap-2 rounded px-0.5 py-0.5 text-left hover:bg-surface-2 focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent"
+      >
+        {content}
+      </button>
     </li>
   );
 }

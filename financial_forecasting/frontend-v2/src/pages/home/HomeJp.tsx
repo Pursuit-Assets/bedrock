@@ -25,7 +25,7 @@ import { HomeStatsStrip } from "@/components/home/HomeStatsStrip";
 import { Scratchpad } from "@/components/home/Scratchpad";
 import { useSalesforceStatus } from "@/services/auth";
 import { usePermissions } from "@/services/permissions";
-import type { SfAccount, SfOpportunity } from "@/types/salesforce";
+import type { SfAccount, SfOpportunity, SfTask } from "@/types/salesforce";
 
 /**
  * Identity gate — hard-coded while this page is in solo dogfood. Anyone
@@ -190,6 +190,7 @@ export function HomeJp() {
           <PriorityTable
             currentUserId={currentUserId}
             onOpportunityClick={setDrawerOpp}
+            onTaskClick={(t) => setDrawerTask(sfTaskToFlat(t))}
           />
         </Suspense>
       </HomeErrorBoundary>
@@ -263,6 +264,27 @@ function PaneSkeleton({ heightClass }: { heightClass: string }) {
       aria-busy
     />
   );
+}
+
+/** Convert a raw `SfTask` (from the opportunity-tasks join) into the
+ *  `FlatTask` shape `TaskDrawer` expects. Mirrors `toFlatTask` in
+ *  `TaskInbox.tsx`; kept inline here so PriorityTable's subtask rows can
+ *  open the same drawer the inbox uses. */
+function sfTaskToFlat(t: SfTask): FlatTask {
+  return {
+    source: "crm",
+    id: t.Id,
+    title: t.Subject ?? "(no subject)",
+    status: t.Status ?? "Not Started",
+    priority: t.Priority ?? null,
+    owner: t.OwnerName ?? null,
+    ownerId: t.OwnerId ?? null,
+    deadline: t.ActivityDate ?? null,
+    description: t.Description ?? null,
+    parentLabel: t.WhatName ?? null,
+    parentLink: t.WhatId ? `/opportunities/${t.WhatId}` : null,
+    type: t.Type ?? null,
+  };
 }
 
 // Default export kept for compatibility with the previous stub; the
