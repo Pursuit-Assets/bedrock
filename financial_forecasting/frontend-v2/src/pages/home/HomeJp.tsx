@@ -16,6 +16,7 @@ import { useIsFetching, useQueryClient } from "@tanstack/react-query";
 import { Navigate } from "react-router-dom";
 import { AlertTriangle, RefreshCw } from "lucide-react";
 
+import { AccountDrawer } from "@/components/AccountDrawer";
 import { PageHeader } from "@/components/PageHeader";
 import { OpportunityDrawer } from "@/components/OpportunityDrawer";
 import { TaskDrawer, type FlatTask } from "@/components/TaskDrawer";
@@ -24,7 +25,7 @@ import { HomeStatsStrip } from "@/components/home/HomeStatsStrip";
 import { Scratchpad } from "@/components/home/Scratchpad";
 import { useSalesforceStatus } from "@/services/auth";
 import { usePermissions } from "@/services/permissions";
-import type { SfOpportunity } from "@/types/salesforce";
+import type { SfAccount, SfOpportunity } from "@/types/salesforce";
 
 /**
  * Identity gate — hard-coded while this page is in solo dogfood. Anyone
@@ -56,6 +57,11 @@ const PriorityTable = lazy(() =>
     default: m.PriorityTable,
   })),
 );
+const ActiveAccounts = lazy(() =>
+  import("@/components/home/ActiveAccounts").then((m) => ({
+    default: m.ActiveAccounts,
+  })),
+);
 
 export function HomeJp() {
   const { data: permissions, isLoading } = usePermissions();
@@ -77,12 +83,14 @@ export function HomeJp() {
 
   const [drawerTask, setDrawerTask] = useState<FlatTask | null>(null);
   const [drawerOpp, setDrawerOpp] = useState<SfOpportunity | null>(null);
+  const [drawerAccount, setDrawerAccount] = useState<SfAccount | null>(null);
 
   const refreshAll = useCallback(() => {
     void qc.invalidateQueries({ queryKey: ["my-tasks"] });
     void qc.invalidateQueries({ queryKey: ["opportunities"] });
     void qc.invalidateQueries({ queryKey: ["owner-goals"] });
     void qc.invalidateQueries({ queryKey: ["calendar-my-events"] });
+    void qc.invalidateQueries({ queryKey: ["accounts"] });
   }, [qc]);
 
   // Keyboard shortcut: `R` (no modifier, no input focused) refreshes all data.
@@ -150,16 +158,11 @@ export function HomeJp() {
       <SalesforceBanner />
 
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-[360px_1fr]">
-        <div className="flex flex-col gap-4">
-          <HomeErrorBoundary section="Goal tracker">
-            <Suspense fallback={<PaneSkeleton heightClass="h-[200px]" />}>
-              <GoalTracker filterUserId={currentUserId} />
-            </Suspense>
-          </HomeErrorBoundary>
-          <HomeErrorBoundary section="Scratchpad">
-            <Scratchpad />
-          </HomeErrorBoundary>
-        </div>
+        <HomeErrorBoundary section="Goal tracker">
+          <Suspense fallback={<PaneSkeleton heightClass="h-[200px]" />}>
+            <GoalTracker filterUserId={currentUserId} />
+          </Suspense>
+        </HomeErrorBoundary>
         <HomeErrorBoundary section="Calendar + Inbox">
           <Suspense fallback={<PaneSkeleton heightClass="h-[420px]" />}>
             <CalendarInboxSplit
@@ -173,6 +176,15 @@ export function HomeJp() {
         </HomeErrorBoundary>
       </div>
 
+      <HomeErrorBoundary section="Active accounts">
+        <Suspense fallback={<PaneSkeleton heightClass="h-[280px]" />}>
+          <ActiveAccounts
+            currentUserId={currentUserId}
+            onAccountClick={setDrawerAccount}
+          />
+        </Suspense>
+      </HomeErrorBoundary>
+
       <HomeErrorBoundary section="Priority table">
         <Suspense fallback={<PaneSkeleton heightClass="h-[400px]" />}>
           <PriorityTable
@@ -182,10 +194,18 @@ export function HomeJp() {
         </Suspense>
       </HomeErrorBoundary>
 
+      <HomeErrorBoundary section="Scratchpad">
+        <Scratchpad />
+      </HomeErrorBoundary>
+
       <TaskDrawer task={drawerTask} onClose={() => setDrawerTask(null)} />
       <OpportunityDrawer
         opportunity={drawerOpp}
         onClose={() => setDrawerOpp(null)}
+      />
+      <AccountDrawer
+        account={drawerAccount}
+        onClose={() => setDrawerAccount(null)}
       />
     </div>
   );
