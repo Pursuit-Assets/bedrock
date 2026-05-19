@@ -1,4 +1,5 @@
 import { Fragment, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { ChevronDown, ChevronRight, Info } from "lucide-react";
 
 import { OwnerExpandPanel, OWNER_PANEL_HEIGHT } from "@/components/OwnerExpandPanel";
@@ -556,16 +557,37 @@ function IndividualGoals({
                         )}
                       </td>
                       <td className="px-3 py-2 align-middle font-medium">
-                        {r.name}
+                        <Link
+                          to={`/pipeline?scope=open&owner=${encodeURIComponent(r.ownerId)}`}
+                          onClick={(e) => e.stopPropagation()}
+                          className="hover:text-accent-ink hover:underline"
+                          title={`Open ${r.name}'s open pipeline`}
+                        >
+                          {r.name}
+                        </Link>
                       </td>
                       <td className="mono px-3 py-2 text-right tabular-nums">
                         {r.goalAmount != null ? fmtMoney(r.goalAmount) : "—"}
                       </td>
                       <td className="mono px-3 py-2 text-right font-semibold tabular-nums">
-                        {fmtMoney(r.closedWon)}
+                        <Link
+                          to={`/pipeline?scope=won&owner=${encodeURIComponent(r.ownerId)}`}
+                          onClick={(e) => e.stopPropagation()}
+                          className="inline-block rounded px-1 hover:bg-green-soft hover:text-green"
+                          title={`Open ${r.name}'s closed-won opportunities`}
+                        >
+                          {fmtMoney(r.closedWon)}
+                        </Link>
                       </td>
                       <td className="mono px-3 py-2 text-right tabular-nums">
-                        {fmtMoney(r.openPipeline)}
+                        <Link
+                          to={`/pipeline?scope=open&owner=${encodeURIComponent(r.ownerId)}`}
+                          onClick={(e) => e.stopPropagation()}
+                          className="inline-block rounded px-1 hover:bg-accent-soft hover:text-accent-ink"
+                          title={`Open ${r.name}'s open pipeline`}
+                        >
+                          {fmtMoney(r.openPipeline)}
+                        </Link>
                       </td>
                       <td className="mono px-3 py-2 text-right tabular-nums text-ink-2">
                         {fmtMoney(r.weightedPipeline)}

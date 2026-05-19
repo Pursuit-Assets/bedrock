@@ -231,6 +231,20 @@ export function PipelinePage() {
     }
     const st = searchParams.get("stage");
     if (st) setStageFilter(st);
+    // `?owner=<userId>` injects an `owner equals <id>` rule. The rule
+    // engine matches on the raw OwnerId per PIPELINE_FILTERABLE.owner.
+    const ownerId = searchParams.get("owner");
+    if (ownerId) {
+      setRules((r) => [
+        ...r,
+        {
+          id: `owner-${ownerId}`,
+          field: "owner" as PipelineField,
+          op: "equals",
+          values: [ownerId],
+        },
+      ]);
+    }
     if (searchParams.get("closing") === "week") {
       const today = new Date();
       today.setHours(0, 0, 0, 0);
