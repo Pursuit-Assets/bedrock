@@ -112,9 +112,14 @@ export function NotificationBell() {
 
   function handleRowClick(n: BedrockNotification) {
     if (!n.read_at) markRead.mutate(n.id);
-    const url = n.payload?.target_url;
+    const url = resolveTargetUrl(n);
     if (url) {
-      navigate(url);
+      // navigate(absolute URLs as full reload, in-app paths via SPA router)
+      if (/^https?:\/\//.test(url)) {
+        window.location.href = url;
+      } else {
+        navigate(url);
+      }
       setOpen(false);
     }
   }
@@ -247,6 +252,19 @@ function NotificationRow({
       </button>
     </li>
   );
+}
+
+/** Defensive URL resolution. Older notifications were enqueued before
+ *  the backend started populating `target_url`; fall back to building
+ *  a sensible deep-link from whatever IDs are on the payload. */
+function resolveTargetUrl(n: BedrockNotification): string | null {
+  const p = n.payload ?? {};
+  if (p.target_url) return p.target_url;
+  const projectId = p.project_id ?? null;
+  const taskId = p.task_id ?? p.entity_id ?? null;
+  if (projectId && taskId) return `/projects/${projectId}?task=${taskId}`;
+  if (projectId) return `/projects/${projectId}`;
+  return null;
 }
 
 function typeIcon(t: NotificationType): string {
