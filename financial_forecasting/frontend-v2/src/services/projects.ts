@@ -2,12 +2,25 @@ import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/rea
 
 import { api } from "@/lib/api";
 
+export type ProjectStatus = "Upcoming" | "Active" | "Done";
+
+/** Three-bucket lifecycle on bedrock.project.status. Defaults to
+ *  "Active" on the server. */
+export const PROJECT_STATUS_OPTIONS: { value: ProjectStatus; label: string }[] = [
+  { value: "Upcoming", label: "Upcoming" },
+  { value: "Active", label: "Active" },
+  { value: "Done", label: "Done" },
+];
+
 export interface BedrockProject {
   id: string;
   name: string;
   description: string;
   owner_email: string | null;
   opportunity_id: string | null;
+  /** Lifecycle status. Field may be absent on rows persisted before the
+   *  2026-05-19 migration; treat undefined as "Active". */
+  status?: ProjectStatus | null;
   created_at: string;
   updated_at: string;
 }
@@ -352,8 +365,44 @@ export function useUpdateWorkstream(projectId: string) {
 export function useUpdateProject(projectId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async (patch: { name?: string; description?: string; opportunity_id?: string }) => {
+    mutationFn: async (patch: {
+      name?: string;
+      description?: string;
+      opportunity_id?: string;
+      status?: ProjectStatus;
+    }) => {
       await api.put(`/api/projects/${projectId}`, patch);
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["project-detail", projectId] });
+      qc.invalidateQueries({ queryKey: ["projects"] });
+    },
+  });
+}
+
+/** Soft-delete a project (cascades to workstreams/milestones/tasks).
+ *  Owner or admin only — server enforces. */
+export function useDeleteProject() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (projectId: string) => {
+      await api.delete(`/api/projects/${projectId}`);
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["projects"] });
+    },
+  });
+}
+
+/** Transfer project ownership to a different user. Owner or admin only;
+ *  old owner is demoted to editor automatically by the backend. */
+export function useTransferProjectOwner(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (newOwnerEmail: string) => {
+      await api.put(`/api/projects/${projectId}/owner`, {
+        new_owner_email: newOwnerEmail,
+      });
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["project-detail", projectId] });

@@ -130,16 +130,21 @@ class ProjectTaskUpdate(BaseModel):
     sort_order: Optional[int] = None
 
 
+PROJECT_STATUS_VALUES = {"Upcoming", "Active", "Done"}
+
+
 class ProjectCreate(BaseModel):
     name: str
     description: str = ""
     opportunity_id: Optional[str] = None
+    status: Optional[str] = None  # validated in handler
 
 
 class ProjectUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
     opportunity_id: Optional[str] = None
+    status: Optional[str] = None  # validated in handler
 
 
 class ContributorAdd(BaseModel):
@@ -241,7 +246,7 @@ async def list_projects(user=Depends(check_permission("view_projects")), conn=De
     page can group projects without an N+1 fetch)."""
     rows = await conn.fetch(
         "SELECT id, name, description, owner_email, opportunity_id, "
-        "created_at, updated_at "
+        "status, created_at, updated_at "
         "FROM bedrock.project WHERE deleted_at IS NULL ORDER BY created_at"
     )
     return {"success": True, "data": [dict(r) for r in rows]}
@@ -396,6 +401,7 @@ async def get_project(project_id: str, user=Depends(check_permission("view_proje
         "name": project["name"],
         "description": project["description"],
         "owner_email": project["owner_email"],
+        "status": project["status"] if "status" in project else "Active",
         "created_by": project["created_by"],
         "contributors": [
             {"user_email": c["user_email"], "role": c["role"],
@@ -418,11 +424,17 @@ async def create_project(body: ProjectCreate, user=Depends(check_permission("edi
     creator_email = user.get("email", "")
     if body.opportunity_id is not None:
         validate_salesforce_id(body.opportunity_id, "opportunity_id")
+    status = body.status or "Active"
+    if status not in PROJECT_STATUS_VALUES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid status. Must be one of: {sorted(PROJECT_STATUS_VALUES)}",
+        )
     row = await conn.fetchrow(
-        "INSERT INTO bedrock.project (name, description, owner_email, created_by, opportunity_id) "
-        "VALUES ($1, $2, $3, $3, $4) "
-        "RETURNING id, name, description, owner_email, created_by, opportunity_id, created_at",
-        body.name, body.description, creator_email, body.opportunity_id,
+        "INSERT INTO bedrock.project (name, description, owner_email, created_by, opportunity_id, status) "
+        "VALUES ($1, $2, $3, $3, $4, $5) "
+        "RETURNING id, name, description, owner_email, created_by, opportunity_id, status, created_at",
+        body.name, body.description, creator_email, body.opportunity_id, status,
     )
     return {"success": True, "data": {
         "id": str(row["id"]),
@@ -431,19 +443,25 @@ async def create_project(body: ProjectCreate, user=Depends(check_permission("edi
         "owner_email": row["owner_email"],
         "created_by": row["created_by"],
         "opportunity_id": row["opportunity_id"],
+        "status": row["status"],
         "created_at": row["created_at"].isoformat() if row["created_at"] else None,
     }}
 
 
 @router.put("/projects/{project_id}")
 async def update_project(project_id: str, body: ProjectUpdate, user=Depends(check_permission("edit_projects")), conn=Depends(get_db)):
-    """Update a project (name/description/opportunity_id)."""
+    """Update a project (name/description/opportunity_id/status)."""
     pid = uuid.UUID(project_id)
     fields = body.model_dump(exclude_none=True)
     if not fields:
         raise HTTPException(status_code=400, detail="No fields to update")
     if "opportunity_id" in fields:
         validate_salesforce_id(fields["opportunity_id"], "opportunity_id")
+    if "status" in fields and fields["status"] not in PROJECT_STATUS_VALUES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid status. Must be one of: {sorted(PROJECT_STATUS_VALUES)}",
+        )
     sets = ", ".join(f"{k} = ${i+2}" for i, k in enumerate(fields))
     vals = [pid] + list(fields.values())
     await conn.execute(f"UPDATE bedrock.project SET {sets} WHERE id = $1 AND deleted_at IS NULL", *vals)

@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   ChevronDown,
   ChevronRight,
@@ -38,20 +38,24 @@ import { useContacts } from "@/services/contacts";
 import { useAwards } from "@/services/awards";
 import { usePerm } from "@/services/permissions";
 import {
+  PROJECT_STATUS_OPTIONS,
   useActiveUsers,
   useCreateMilestone,
   useCreateTask,
   useCreateWorkstream,
   useDeleteMilestone,
+  useDeleteProject,
   useDeleteTask,
   useDeleteWorkstream,
   useProjectDetail,
+  useTransferProjectOwner,
   useUpdateMilestone,
   useUpdateProject,
   useUpdateTask,
   useUpdateWorkstream,
   type ActiveUser,
   type ProjectMilestone,
+  type ProjectStatus,
   type ProjectTask,
   type ProjectWorkstream,
 } from "@/services/projects";
@@ -1952,6 +1956,170 @@ function ProjectListView({
   );
 }
 
+function projectStatusBadgeClasses(value: ProjectStatus | string | null | undefined): string {
+  switch (value) {
+    case "Upcoming":
+      return "border-blue-200 bg-blue-50 text-blue-700";
+    case "Done":
+      return "border-border-strong bg-surface-2 text-ink-3";
+    case "Active":
+    default:
+      return "border-amber bg-amber-soft text-amber";
+  }
+}
+
+function ProjectStatusEditor({
+  projectId,
+  value,
+  canEdit,
+}: {
+  projectId: string;
+  value: ProjectStatus;
+  canEdit: boolean;
+}) {
+  const updateProject = useUpdateProject(projectId);
+  const tone = projectStatusBadgeClasses(value);
+  if (!canEdit) {
+    return (
+      <span
+        className={cn(
+          "inline-flex items-center rounded border px-2 py-0.5 text-[11.5px] font-medium",
+          tone,
+        )}
+      >
+        {value}
+      </span>
+    );
+  }
+  return (
+    <select
+      value={value}
+      disabled={updateProject.isPending}
+      onChange={(e) => {
+        const next = e.target.value as ProjectStatus;
+        if (next !== value) updateProject.mutate({ status: next });
+      }}
+      className={cn(
+        "h-6 rounded border px-2 text-[11.5px] font-medium outline-none focus:border-accent",
+        tone,
+      )}
+      title="Project status"
+    >
+      {PROJECT_STATUS_OPTIONS.map((o) => (
+        <option key={o.value} value={o.value}>
+          {o.label}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+function ProjectOwnerEditor({
+  projectId,
+  currentEmail,
+  canEdit,
+  activeUsers,
+}: {
+  projectId: string;
+  currentEmail: string | null;
+  canEdit: boolean;
+  activeUsers: ActiveUser[];
+}) {
+  const transferOwner = useTransferProjectOwner(projectId);
+  const sorted = useMemo(
+    () =>
+      [...activeUsers].sort((a, b) =>
+        (a.display_name ?? a.email).localeCompare(b.display_name ?? b.email),
+      ),
+    [activeUsers],
+  );
+  const current = sorted.find((u) => u.email === currentEmail);
+  const label = current?.display_name ?? currentEmail ?? "—";
+
+  if (!canEdit) {
+    return <span>Owner: {label}</span>;
+  }
+  return (
+    <span className="inline-flex items-center gap-1">
+      Owner:
+      <select
+        value={currentEmail ?? ""}
+        disabled={transferOwner.isPending}
+        onChange={(e) => {
+          const next = e.target.value;
+          if (next && next !== currentEmail) transferOwner.mutate(next);
+        }}
+        className="h-6 rounded border border-border-strong bg-surface px-2 text-[11.5px] text-ink-2 outline-none focus:border-accent"
+        title="Transfer project owner"
+      >
+        {!currentEmail ? <option value="">—</option> : null}
+        {sorted.map((u) => (
+          <option key={u.id} value={u.email}>
+            {u.display_name ?? u.email}
+          </option>
+        ))}
+      </select>
+    </span>
+  );
+}
+
+function DeleteProjectButton({
+  projectId,
+  projectName,
+}: {
+  projectId: string;
+  projectName: string;
+}) {
+  const navigate = useNavigate();
+  const deleteProject = useDeleteProject();
+  const [confirming, setConfirming] = useState(false);
+
+  if (!confirming) {
+    return (
+      <button
+        type="button"
+        onClick={() => setConfirming(true)}
+        className="inline-flex h-7 items-center gap-1.5 rounded border border-border-strong bg-surface px-2.5 text-[11.5px] font-medium text-ink-3 hover:border-red hover:text-red"
+        title="Delete this project"
+      >
+        <Trash2 size={12} aria-hidden /> Delete
+      </button>
+    );
+  }
+  return (
+    <div className="inline-flex items-center gap-2 rounded border border-red bg-red-soft px-2.5 py-1 text-[11.5px] text-red">
+      <span>
+        Delete <strong>{projectName}</strong>? Soft-deletes the project and its
+        workstreams/milestones/tasks (recoverable from the trash view).
+      </span>
+      <button
+        type="button"
+        onClick={() => setConfirming(false)}
+        disabled={deleteProject.isPending}
+        className="rounded border border-border-strong bg-surface px-2 py-0.5 text-ink-2 hover:bg-surface-2"
+      >
+        Cancel
+      </button>
+      <button
+        type="button"
+        disabled={deleteProject.isPending}
+        onClick={async () => {
+          try {
+            await deleteProject.mutateAsync(projectId);
+            navigate("/projects");
+          } catch (e) {
+            // Surface the error inline; leave confirm open so user can retry.
+            console.error("Failed to delete project", e);
+          }
+        }}
+        className="rounded border border-red bg-red px-2 py-0.5 font-semibold text-white hover:opacity-90 disabled:opacity-60"
+      >
+        {deleteProject.isPending ? "Deleting…" : "Confirm delete"}
+      </button>
+    </div>
+  );
+}
+
 export function ProjectDetailPage() {
   const { id = "" } = useParams<{ id: string }>();
   const detailQ = useProjectDetail(id);
@@ -2004,13 +2172,8 @@ export function ProjectDetailPage() {
     );
   }
 
-  const subtitle = [
-    detail.owner_email ?? null,
-    detail.created_at ? `Created ${fmtDate(detail.created_at)}` : null,
-    detail.updated_at ? `Updated ${fmtDate(detail.updated_at)}` : null,
-  ]
-    .filter(Boolean)
-    .join(" · ");
+  const createdLabel = detail.created_at ? `Created ${fmtDate(detail.created_at)}` : null;
+  const updatedLabel = detail.updated_at ? `Updated ${fmtDate(detail.updated_at)}` : null;
 
   return (
     <div className="mx-auto max-w-[1320px] px-7 py-6 pb-20">
@@ -2018,10 +2181,29 @@ export function ProjectDetailPage() {
 
       {/* Header */}
       <div className="mt-4">
-        <EditableProjectName name={detail.name} projectId={id} canEdit={canEdit} />
-        {subtitle ? (
-          <p className="mt-1 text-[12.5px] text-ink-3">{subtitle}</p>
-        ) : null}
+        <div className="flex items-start gap-3">
+          <div className="min-w-0 flex-1">
+            <EditableProjectName name={detail.name} projectId={id} canEdit={canEdit} />
+          </div>
+          {canEdit ? (
+            <DeleteProjectButton projectId={id} projectName={detail.name} />
+          ) : null}
+        </div>
+        <div className="mt-2 flex flex-wrap items-center gap-2 text-[12.5px] text-ink-3">
+          <ProjectStatusEditor
+            projectId={id}
+            value={(detail.status as ProjectStatus | null | undefined) ?? "Active"}
+            canEdit={canEdit}
+          />
+          <ProjectOwnerEditor
+            projectId={id}
+            currentEmail={detail.owner_email}
+            canEdit={canEdit}
+            activeUsers={activeUsers}
+          />
+          {createdLabel ? <span>· {createdLabel}</span> : null}
+          {updatedLabel ? <span>· {updatedLabel}</span> : null}
+        </div>
         <EditableProjectDescription
           description={detail.description}
           projectId={id}

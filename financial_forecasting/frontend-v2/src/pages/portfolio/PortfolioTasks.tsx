@@ -201,10 +201,15 @@ export function PortfolioTasks({
     return out;
   }, [sfTasksQ.data, projectTasksQs, projects]);
 
-  // Done filter applies first, then scope. "Show done" only makes sense
-  // in the "All" view (no point in seeing a completed task during focus).
+  // Done filter applies first, then scope. When "Show done" is on we
+  // treat the request as "widen the view" — the focus filter would
+  // otherwise reject every done task (isInFocusWindow returns false
+  // when `done` is true), making the toggle a no-op in Focus scope.
+  // Forcing scope behavior to "all" while showDone is on keeps the
+  // toggle's effect visible regardless of which pill is selected.
   const openTasks = showDone ? unifiedTasks : unifiedTasks.filter((t) => !t.done);
-  const filtered = scope === "focus"
+  const effectiveScope = showDone ? "all" : scope;
+  const filtered = effectiveScope === "focus"
     ? openTasks.filter((t) => isInFocusWindow(t.deadline, t.done))
     : openTasks;
 
