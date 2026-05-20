@@ -7,7 +7,6 @@ import {
   Trophy,
   FolderOpen,
   Users,
-  Search,
   Sparkles,
   Settings as SettingsIcon,
   ChevronLeft,
@@ -18,8 +17,8 @@ import {
   MessageSquarePlus,
 } from "lucide-react";
 
-import { GlobalSearch } from "@/components/GlobalSearch";
 import { NotificationBell } from "@/components/NotificationBell";
+import { TopBarSearch } from "@/components/TopBarSearch";
 import { cn } from "@/lib/utils";
 import { recordNavigation, saveScroll, restoreScroll } from "@/lib/navHistory";
 import { useCurrentUser, useSalesforceStatus, startSalesforceConnect } from "@/services/auth";
@@ -75,7 +74,6 @@ function useSidebarCollapsed() {
 
 export function AppShell() {
   const { collapsed, toggle } = useSidebarCollapsed();
-  const [searchOpen, setSearchOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const { pathname } = useLocation();
   const sf = useSalesforceStatus();
@@ -125,16 +123,9 @@ export function AppShell() {
     recordNavigation();
   }, [pathname, navType]);
 
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
-        e.preventDefault();
-        setSearchOpen(true);
-      }
-    };
-    document.addEventListener("keydown", handler);
-    return () => document.removeEventListener("keydown", handler);
-  }, []);
+  // ⌘K is now handled by TopBarSearch (focuses the inline input
+  // instead of opening a modal). Keeping the keydown effect a no-op
+  // here would just shadow that handler — drop it.
 
   return (
     <div
@@ -143,26 +134,14 @@ export function AppShell() {
         gridTemplateColumns: `${collapsed ? NAV_COLLAPSED_W : NAV_EXPANDED_W}px 1fr`,
       }}
     >
-      <GlobalSearch open={searchOpen} onClose={() => setSearchOpen(false)} />
-      <Sidebar collapsed={collapsed} onToggle={toggle} onSearchOpen={() => setSearchOpen(true)} />
+      <Sidebar collapsed={collapsed} onToggle={toggle} />
       <main className="flex flex-col overflow-hidden">
-        {/* Top bar — page title (left), compact search trigger (center
-            -right), notification bell (right). 36px tall so it doesn't
-            steal vertical room from page content. */}
-        <header className="flex h-9 flex-shrink-0 items-center gap-3 border-b border-border bg-surface px-4">
-          <PageTitle pathname={pathname} />
-          <button
-            type="button"
-            onClick={() => setSearchOpen(true)}
-            className="ml-auto flex h-7 w-64 items-center gap-2 rounded-md border border-border-strong bg-surface-2/60 px-2.5 text-left text-ink-3 hover:border-ink-3 hover:bg-surface-2"
-            title="Search (⌘K)"
-          >
-            <Search size={12} className="flex-shrink-0" />
-            <span className="min-w-0 flex-1 text-[12px] text-ink-4">Search…</span>
-            <kbd className="rounded border border-border-strong bg-surface px-1 py-px text-[10px] text-ink-3">
-              ⌘K
-            </kbd>
-          </button>
+        {/* Top bar — inline search (left/center) + notification bell
+            (right). Page title removed: the active sidebar item is the
+            canonical "you are here" indicator, and a duplicate label
+            in the top bar was costing vertical space for no signal. */}
+        <header className="flex h-9 flex-shrink-0 items-center justify-between gap-3 border-b border-border bg-surface px-4">
+          <TopBarSearch />
           <NotificationBell />
         </header>
         {sfNotConnected && !sfOptional ? (
@@ -175,37 +154,6 @@ export function AppShell() {
       </main>
     </div>
   );
-}
-
-// Top-level route prefix → page title. Order matters: longer / more
-// specific prefixes first so /portfolio/<id> still resolves to "Home".
-// Routes not listed render the path's first segment, capitalized.
-const ROUTE_TITLES: { prefix: string; label: string }[] = [
-  { prefix: "/portfolio", label: "Home" },
-  { prefix: "/dashboard", label: "Dashboard" },
-  { prefix: "/cashflow", label: "Cash Flow" },
-  { prefix: "/accounts", label: "Accounts" },
-  { prefix: "/contacts", label: "Contacts" },
-  { prefix: "/pipeline", label: "Pipeline" },
-  { prefix: "/opportunities", label: "Pipeline" },
-  { prefix: "/awards", label: "Awards" },
-  { prefix: "/projects", label: "Projects" },
-  { prefix: "/cleanup", label: "Cleanup" },
-  { prefix: "/jobs", label: "Jobs" },
-  { prefix: "/tasks", label: "Tasks" },
-  { prefix: "/settings", label: "Settings" },
-  { prefix: "/feedback", label: "Feedback" },
-];
-
-function PageTitle({ pathname }: { pathname: string }) {
-  const match = ROUTE_TITLES.find((r) => pathname.startsWith(r.prefix));
-  const label =
-    match?.label ??
-    (() => {
-      const seg = pathname.split("/").filter(Boolean)[0];
-      return seg ? seg.charAt(0).toUpperCase() + seg.slice(1) : "Bedrock";
-    })();
-  return <span className="text-[13.5px] font-semibold text-ink">{label}</span>;
 }
 
 function SalesforceGate() {

@@ -1884,53 +1884,43 @@ function ProjectListView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
 
-  // Two reliable bell-click handoffs into the task drawer:
+  // Bell-click → task-drawer handoffs:
   //
   //   (a) sessionStorage — bell writes "bedrock:pending-task-open"
-  //       before navigate(). When ProjectDetail mounts (whether from a
-  //       different page or the same one re-rendered), we check the
-  //       storage AND the workstream tree on every render until both
-  //       converge. Once the task is found, pop the drawer and clear.
-  //   (b) CustomEvent — for same-page clicks where react-router
-  //       silently no-ops and the page doesn't re-mount.
+  //       before navigate(). ProjectDetail reads it on mount + every
+  //       render until consumed; the drawer's openTaskCtx selector
+  //       picks the task up as soon as workstreams resolves.
+  //   (b) CustomEvent — fallback for same-page clicks (react-router
+  //       no-ops on identical URLs).
   //
-  // The pending storage value is cleared as soon as it resolves, so a
-  // refresh / back-button after the user closed the drawer won't
-  // re-pop it.
+  // Always set openTaskId optimistically — don't gate on workstreams.
+  // The drawer's openTaskCtx returns null until the task is present
+  // in the tree, then renders. Clears the storage immediately so a
+  // refresh / back-nav doesn't re-pop the same task.
   useEffect(() => {
-    function tryPopFromStorage() {
-      let pending: string | null = null;
-      try {
-        pending = sessionStorage.getItem("bedrock:pending-task-open");
-      } catch {
-        return;
-      }
-      if (!pending) return;
-      const found = workstreams.some((w) =>
-        w.milestones.some((m) => m.tasks.some((t) => t.id === pending)),
-      );
-      if (found) {
-        setOpenTaskId(pending);
-        try { sessionStorage.removeItem("bedrock:pending-task-open"); } catch {}
-      }
+    let pending: string | null = null;
+    try {
+      pending = sessionStorage.getItem("bedrock:pending-task-open");
+    } catch {
+      /* storage unavailable */
     }
-    tryPopFromStorage();
+    if (pending) {
+      setOpenTaskId(pending);
+      try { sessionStorage.removeItem("bedrock:pending-task-open"); } catch {}
+    }
 
     function onOpenTaskEvent(e: Event) {
       const detail = (e as CustomEvent).detail || {};
       const taskId = detail.taskId;
-      if (!taskId) return;
-      const found = workstreams.some((w) =>
-        w.milestones.some((m) => m.tasks.some((t) => t.id === taskId)),
-      );
-      if (found) {
-        setOpenTaskId(taskId);
-        try { sessionStorage.removeItem("bedrock:pending-task-open"); } catch {}
-      }
+      if (taskId) setOpenTaskId(String(taskId));
     }
     window.addEventListener("bedrock:open-task", onOpenTaskEvent as EventListener);
     return () => window.removeEventListener("bedrock:open-task", onOpenTaskEvent as EventListener);
-  }, [workstreams]);
+    // No `workstreams` dep — set the id once on mount; the drawer
+    // selector recomputes on workstreams changes via React's normal
+    // render cycle. Re-running this effect on workstreams changes
+    // would cause spurious re-opens after the user closed the drawer.
+  }, []);
 
   // Resolve the latest object from the workstream tree each render so
   // the drawer reflects up-to-date data (e.g. after an inline edit).

@@ -36,8 +36,13 @@ export function NotificationBell() {
   const markRead = useMarkNotificationRead();
   const markAllRead = useMarkAllNotificationsRead();
 
-  const unread = countQ.data ?? 0;
+  // Prefer the list-derived unread count over the lightweight badge
+  // query — the panel and the action button should stay in sync with
+  // what the user is looking at. The badge query is still used as the
+  // initial seed before the list loads.
   const items = listQ.data ?? [];
+  const listUnread = items.reduce((n, x) => n + (x.read_at ? 0 : 1), 0);
+  const unread = items.length > 0 ? listUnread : countQ.data ?? 0;
 
   // Position the panel anchored to the trigger. Bell sits in the
   // sidebar's bottom row, so we open the panel UPWARD by default —
