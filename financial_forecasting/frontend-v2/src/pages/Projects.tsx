@@ -13,11 +13,14 @@ import { fmtDate } from "@/lib/format";
 import { sortBy, useSort } from "@/lib/sort";
 import { useCurrentUser } from "@/services/auth";
 import {
+  PROJECT_STATUS_OPTIONS,
   useProjects,
   useCreateProject,
+  useUpdateProject,
   type BedrockProject,
   type ProjectStatus,
 } from "@/services/projects";
+import { usePerm } from "@/services/permissions";
 import { toast } from "sonner";
 
 type OwnerFilter = "all" | "mine";
@@ -75,19 +78,19 @@ function extractProject(p: BedrockProject, key: ColKey): unknown {
   }
 }
 
+function statusPillClasses(value: string): string {
+  if (value === "Upcoming") return "border-blue-200 bg-blue-50 text-blue-700";
+  if (value === "Done") return "border-border-strong bg-surface-2 text-ink-3";
+  return "border-amber bg-amber-soft text-amber"; // Active / default
+}
+
 function ProjectStatusPill({ value }: { value: ProjectStatus | string | null | undefined }) {
   const v = value ?? "Active";
-  const cls =
-    v === "Upcoming"
-      ? "border-blue-200 bg-blue-50 text-blue-700"
-      : v === "Done"
-      ? "border-border-strong bg-surface-2 text-ink-3"
-      : "border-amber bg-amber-soft text-amber";
   return (
     <span
       className={cn(
         "inline-flex items-center rounded border px-1.5 py-0.5 text-[11px] font-medium",
-        cls,
+        statusPillClasses(v),
       )}
     >
       {v}
@@ -95,9 +98,51 @@ function ProjectStatusPill({ value }: { value: ProjectStatus | string | null | u
   );
 }
 
+/** Inline-editable status pill for the /projects list row. Renders as a
+ *  colored <select> so clicking opens the picker without a separate
+ *  "edit" affordance. Uses the same write path (useUpdateProject) as
+ *  the detail-page editor. Disabled while a mutation is pending so the
+ *  user can't pile up writes; React Query handles cache invalidation. */
+function ProjectStatusCell({
+  project,
+  canEdit,
+}: {
+  project: BedrockProject;
+  canEdit: boolean;
+}) {
+  const updateProject = useUpdateProject(project.id);
+  const value: string = project.status ?? "Active";
+  if (!canEdit) {
+    return <ProjectStatusPill value={value} />;
+  }
+  return (
+    <select
+      value={value}
+      disabled={updateProject.isPending}
+      onClick={(e) => e.stopPropagation()}
+      onChange={(e) => {
+        const next = e.target.value as ProjectStatus;
+        if (next !== value) updateProject.mutate({ status: next });
+      }}
+      className={cn(
+        "h-6 cursor-pointer rounded border px-1.5 text-[11px] font-medium outline-none focus:border-accent",
+        statusPillClasses(value),
+      )}
+      title="Project status"
+    >
+      {PROJECT_STATUS_OPTIONS.map((o) => (
+        <option key={o.value} value={o.value}>
+          {o.label}
+        </option>
+      ))}
+    </select>
+  );
+}
+
 export function ProjectsPage() {
   const { data, isLoading, isError, error } = useProjects();
   const { data: me } = useCurrentUser();
+  const canEdit = usePerm("edit_projects");
   const [q, setQ] = useState("");
   const [ownerFilter, setOwnerFilter] = useState<OwnerFilter>("all");
   const [activityFilter, setActivityFilter] = useState<ActivityFilter>("all");
@@ -349,6 +394,7 @@ export function ProjectsPage() {
                       key={p.id}
                       p={p}
                       onOpen={() => navigate(`/projects/${p.id}`, { state: PROJECTS_REFERRER })}
+                      canEdit={canEdit}
                     />
                   );
                 })}
@@ -370,9 +416,10 @@ export function ProjectsPage() {
 interface RowProps {
   p: BedrockProject;
   onOpen: () => void;
+  canEdit: boolean;
 }
 
-const ProjectRow = memo(function ProjectRow({ p, onOpen }: RowProps) {
+const ProjectRow = memo(function ProjectRow({ p, onOpen, canEdit }: RowProps) {
   return (
     <tr
       className="group/row cursor-pointer border-b border-border-strong hover:bg-surface-2"
@@ -396,7 +443,7 @@ const ProjectRow = memo(function ProjectRow({ p, onOpen }: RowProps) {
         ) : null}
       </td>
       <td className="overflow-hidden px-3 py-1">
-        <ProjectStatusPill value={p.status} />
+        <ProjectStatusCell project={p} canEdit={canEdit} />
       </td>
       <td className="overflow-hidden truncate px-3 py-1 text-[12.5px] text-ink-2">
         {p.owner_email ?? <span className="text-ink-4">—</span>}
