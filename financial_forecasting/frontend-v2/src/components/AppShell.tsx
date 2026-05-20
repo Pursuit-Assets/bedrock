@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   LayoutDashboard,
   Building2,
+  Briefcase,
   GitBranch,
   Trophy,
   FolderOpen,
@@ -48,6 +49,12 @@ const NAV_GROUPS = [
       // re-add `{ to: "/tasks", label: "Tasks", icon: CheckSquare }` and
       // re-import CheckSquare from lucide-react. Route at App.tsx is
       // still wired so direct URLs continue to work.
+    ],
+  },
+  {
+    label: "Jobs",
+    items: [
+      { to: "/jobs", label: "Jobs", icon: Briefcase },
     ],
   },
 ] as const;

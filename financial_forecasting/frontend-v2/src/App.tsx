@@ -21,6 +21,7 @@ import { SettingsPage } from "./pages/Settings";
 import { CashFlowPage } from "./pages/CashFlow";
 import { PlatformIntakePage } from "./pages/PlatformIntake";
 import { PortfolioPage } from "./pages/Portfolio";
+import { JobsPage } from "./pages/Jobs";
 import { HomePage, HomeIndexPage } from "./pages/home";
 
 export default function App() {
@@ -56,6 +57,7 @@ export default function App() {
         <Route path="/cashflow" element={<CashFlowPage />} />
         <Route path="/portfolio" element={<PortfolioPage />} />
         <Route path="/portfolio/:identifier" element={<PortfolioPage />} />
+        <Route path="/jobs" element={<JobsPage />} />
         <Route path="/feedback" element={<PlatformIntakePage />} />
         <Route path="/home" element={<HomeIndexPage />} />
         <Route path="/home/:slug" element={<HomePage />} />
