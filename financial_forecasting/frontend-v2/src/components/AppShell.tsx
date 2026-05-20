@@ -80,9 +80,20 @@ export function AppShell() {
   const sf = useSalesforceStatus();
 
   // Pages that don't fundamentally need Salesforce — Settings (so the user
-  // can connect SF), Projects (planning lives in Bedrock's own DB), and
-  // Feedback (intake form). Anything else 503s the SF gate when SF is off.
-  const SF_OPTIONAL_PREFIXES = ["/settings", "/projects", "/feedback"];
+  // can connect SF), Projects (planning lives in Bedrock's own DB),
+  // Feedback (intake form), and individual Award detail pages (status /
+  // reports / dates live in bedrock; the SF-derived header is
+  // server-enriched via the service-account client). Anything else
+  // 503s the SF gate when SF is off.
+  // Award LIST (`/awards`) still depends on a client-side join with
+  // useOpportunities(), so it's intentionally NOT in this list — we
+  // exempt only the `/awards/:id` detail route via the trailing slash.
+  const SF_OPTIONAL_PREFIXES = [
+    "/settings",
+    "/projects",
+    "/feedback",
+    "/awards/",
+  ];
   const sfOptional = SF_OPTIONAL_PREFIXES.some((p) => pathname.startsWith(p));
   const sfNotConnected = !sf.isLoading && sf.data?.connected === false;
 

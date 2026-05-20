@@ -28,7 +28,7 @@ import {
   useUpdateContact,
 } from "@/services/contacts";
 import { usePerm } from "@/services/permissions";
-import { useActiveUsers } from "@/services/users";
+import { useActiveUsers, useUsers } from "@/services/users";
 import type { SfContact } from "@/types/salesforce";
 
 import {
@@ -153,33 +153,75 @@ export function CleanupContactsTab() {
   const canEdit = usePerm("edit_contacts");
   const { data: contactsData, isLoading } = useContacts();
   const usersQ = useActiveUsers();
+  const allUsersQ = useUsers();
   const updateContact = useUpdateContact();
   const deleteContact = useDeleteContact();
 
   const contacts = useMemo(() => contactsData ?? [], [contactsData]);
 
+  // Local toolbar state — declared early so `facets` can constrain the
+  // owner picker to rows visible in the table.
+  const [q, setQ] = useState("");
+  const [rules, setRules] = useState<FilterRule<ContactField>[]>([]);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+
+  // Contacts that pass the toolbar-level search (chip `rules` excluded
+  // so the picker stays usable when an owner rule is active).
+  const contactsInView = useMemo(() => {
+    if (!q) return contacts;
+    const needle = q.toLowerCase();
+    return contacts.filter((c) => {
+      const hay = [
+        contactName(c), c.Email, c.Phone, c.MobilePhone, c.Title,
+        c.Department, c.Owner?.Name,
+      ].filter(Boolean).join(" ").toLowerCase();
+      return hay.includes(needle);
+    });
+  }, [contacts, q]);
+
+  // Owner picker = every active SF user + inactive users with rows in
+  // the current view.
   const facets = useMemo(() => {
-    const activeIds = new Set((usersQ.data ?? []).map((u) => u.Id));
-    const ownerNames = new Map<string, string>();
+    const all = allUsersQ.data ?? [];
+    const activeById = new Map(
+      all.filter((u) => u.IsActive).map((u) => [u.Id, u]),
+    );
+    const inactiveById = new Map(
+      all.filter((u) => !u.IsActive).map((u) => [u.Id, u]),
+    );
+
+    const ownersInView = new Set<string>();
+    const ownerNameFromData = new Map<string, string>();
     const departments = new Set<string>();
     const recordTypes = new Set<string>();
     const leadSources = new Set<string>();
     const boardStatuses = new Set<string>();
-    for (const c of contacts) {
-      if (c.OwnerId && c.Owner?.Name && !ownerNames.has(c.OwnerId)) {
-        ownerNames.set(c.OwnerId, c.Owner.Name);
+    for (const c of contactsInView) {
+      if (c.OwnerId) {
+        ownersInView.add(c.OwnerId);
+        if (c.Owner?.Name && !ownerNameFromData.has(c.OwnerId)) {
+          ownerNameFromData.set(c.OwnerId, c.Owner.Name);
+        }
       }
       if (c.Department) departments.add(c.Department);
       if (c.RecordType?.Name) recordTypes.add(c.RecordType.Name);
       if (c.LeadSource) leadSources.add(c.LeadSource);
       if (c.Board_Status__c) boardStatuses.add(c.Board_Status__c);
     }
-    const owners = Array.from(ownerNames.entries())
-      .map(([id, name]) => ({
-        value: id,
-        label: activeIds.has(id) ? name : `${name} (inactive)`,
-      }))
-      .sort((a, b) => a.label.localeCompare(b.label));
+
+    type OwnerOption = { value: string; label: string };
+    const owners: OwnerOption[] = [];
+    for (const u of activeById.values()) {
+      owners.push({ value: u.Id, label: u.Name });
+    }
+    for (const id of ownersInView) {
+      if (activeById.has(id)) continue;
+      const inactive = inactiveById.get(id);
+      const name = inactive?.Name ?? ownerNameFromData.get(id) ?? id;
+      owners.push({ value: id, label: `${name} (inactive)` });
+    }
+    owners.sort((a, b) => a.label.localeCompare(b.label));
+
     const sortedOpts = (s: Set<string>) =>
       Array.from(s).sort().map((v) => ({ value: v, label: v }));
     return {
@@ -193,7 +235,7 @@ export function CleanupContactsTab() {
         { value: "No", label: "No" },
       ],
     };
-  }, [contacts, usersQ.data]);
+  }, [contactsInView, allUsersQ.data]);
 
   const ownerBulkOptions = useMemo(
     () => (usersQ.data ?? []).map((u) => ({ value: u.Id, label: u.Name })),
@@ -210,10 +252,6 @@ export function CleanupContactsTab() {
     }
     return (id: string) => m.get(id) ?? id;
   }, [usersQ.data, contacts]);
-
-  const [q, setQ] = useState("");
-  const [rules, setRules] = useState<FilterRule<ContactField>[]>([]);
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
   const filtered = useMemo(() => {
     return contacts.filter((c) => {

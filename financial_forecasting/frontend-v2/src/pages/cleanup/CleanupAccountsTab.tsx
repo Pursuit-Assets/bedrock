@@ -36,7 +36,7 @@ import {
 } from "@/services/accounts";
 import { useOpportunities } from "@/services/opportunities";
 import { usePerm } from "@/services/permissions";
-import { useActiveUsers } from "@/services/users";
+import { useActiveUsers, useUsers } from "@/services/users";
 import type { SfAccount } from "@/types/salesforce";
 
 import {
@@ -240,8 +240,15 @@ export function CleanupAccountsTab() {
   const { data: accountsData, isLoading } = useAccounts();
   const { data: opps = [] } = useOpportunities();
   const usersQ = useActiveUsers();
+  const allUsersQ = useUsers();
   const updateAccount = useUpdateAccount();
   const deleteAccount = useDeleteAccount();
+
+  // Local toolbar state — declared early so `facets` (below) can depend
+  // on `q` to constrain owner options to rows visible in the table.
+  const [q, setQ] = useState("");
+  const [rules, setRules] = useState<FilterRule<AccountField>[]>([]);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
   // Per-account roll-ups (open pipeline / lifetime won / received /
   // outstanding) — same source as the Accounts page table so both
@@ -258,30 +265,63 @@ export function CleanupAccountsTab() {
   const accountIds = useMemo(() => accounts.map((a) => a.Id), [accounts]);
   const enrichmentQ = useAccountsEnrichment(accountIds);
 
-  // Facets for select-typed filter fields. Owners include inactive users
-  // (orphaned-account hunting); active users only feed the bulk picker.
+  // Accounts that pass the toolbar-level search (chip `rules` excluded
+  // so the picker stays usable when an owner rule is active).
+  const accountsInView = useMemo(() => {
+    if (!q) return accounts;
+    const needle = q.toLowerCase();
+    return accounts.filter((a) => {
+      const hay = [
+        a.Name, a.Owner?.Name, a.BillingCity, a.BillingState,
+        a.Website, a.Type, a.Industry,
+      ].filter(Boolean).join(" ").toLowerCase();
+      return hay.includes(needle);
+    });
+  }, [accounts, q]);
+
+  // Facets for select-typed filter fields. Owner picker = every active
+  // SF user + inactive users with rows in the current view.
   const facets = useMemo(() => {
-    const activeIds = new Set((usersQ.data ?? []).map((u) => u.Id));
-    const ownerNames = new Map<string, string>();
+    const all = allUsersQ.data ?? [];
+    const activeById = new Map(
+      all.filter((u) => u.IsActive).map((u) => [u.Id, u]),
+    );
+    const inactiveById = new Map(
+      all.filter((u) => !u.IsActive).map((u) => [u.Id, u]),
+    );
+
+    const ownersInView = new Set<string>();
+    const ownerNameFromData = new Map<string, string>();
     const types = new Set<string>();
     const industries = new Set<string>();
     const recordTypes = new Set<string>();
     const states = new Set<string>();
-    for (const a of accounts) {
-      if (a.OwnerId && a.Owner?.Name && !ownerNames.has(a.OwnerId)) {
-        ownerNames.set(a.OwnerId, a.Owner.Name);
+    for (const a of accountsInView) {
+      if (a.OwnerId) {
+        ownersInView.add(a.OwnerId);
+        if (a.Owner?.Name && !ownerNameFromData.has(a.OwnerId)) {
+          ownerNameFromData.set(a.OwnerId, a.Owner.Name);
+        }
       }
       if (a.Type) types.add(a.Type);
       if (a.Industry) industries.add(a.Industry);
       if (a.RecordType?.Name) recordTypes.add(a.RecordType.Name);
       if (a.BillingState) states.add(a.BillingState);
     }
-    const owners = Array.from(ownerNames.entries())
-      .map(([id, name]) => ({
-        value: id,
-        label: activeIds.has(id) ? name : `${name} (inactive)`,
-      }))
-      .sort((a, b) => a.label.localeCompare(b.label));
+
+    type OwnerOption = { value: string; label: string };
+    const owners: OwnerOption[] = [];
+    for (const u of activeById.values()) {
+      owners.push({ value: u.Id, label: u.Name });
+    }
+    for (const id of ownersInView) {
+      if (activeById.has(id)) continue;
+      const inactive = inactiveById.get(id);
+      const name = inactive?.Name ?? ownerNameFromData.get(id) ?? id;
+      owners.push({ value: id, label: `${name} (inactive)` });
+    }
+    owners.sort((a, b) => a.label.localeCompare(b.label));
+
     const sortedOpts = (s: Set<string>) =>
       Array.from(s).sort().map((v) => ({ value: v, label: v }));
     return {
@@ -291,7 +331,7 @@ export function CleanupAccountsTab() {
       recordType: sortedOpts(recordTypes),
       billingState: sortedOpts(states),
     };
-  }, [accounts, usersQ.data]);
+  }, [accountsInView, allUsersQ.data]);
 
   // Active users only for the bulk-assign picker — don't let users hand
   // accounts off to deactivated SF users.
@@ -310,10 +350,6 @@ export function CleanupAccountsTab() {
     }
     return (id: string) => m.get(id) ?? id;
   }, [usersQ.data, accounts]);
-
-  const [q, setQ] = useState("");
-  const [rules, setRules] = useState<FilterRule<AccountField>[]>([]);
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
   const filtered = useMemo(() => {
     return accounts.filter((a) => {
