@@ -4,7 +4,13 @@ import os
 import asyncio
 import calendar
 from dotenv import load_dotenv
-load_dotenv(override=False)
+# override=True so .env is the single source of truth for the backend.
+# Without this, exported shell env vars (e.g. SLACK_BOT_TOKEN in
+# ~/.zshrc) silently shadow .env, which previously caused a Slack-bot
+# swap to be a no-op for hours of debugging — see 2026-05-20 commit
+# notes. Operators who need to override .env from the shell can
+# still do so per-process via `KEY=value ./main.py`.
+load_dotenv(override=True)
 from typing import Any, Dict, List, Optional
 from datetime import datetime, date, timedelta
 from decimal import Decimal

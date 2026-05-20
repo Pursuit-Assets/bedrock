@@ -299,10 +299,21 @@ async def resolve_mentions(conn, body: str) -> List[Dict[str, Any]]:
     org_users row. Returns a list of {email, display_name, sf_user_id}
     deduplicated by email.
 
-    Matching strategy (in order, first hit wins per @-token):
-      1. Exact email match on org_users.email.
-      2. Case-insensitive display_name == token.
-      3. Case-insensitive display_name starts-with token (last-resort).
+    The mention regex captures up to 3 word-segments after ``@`` so
+    multi-part display names like "John Paul Smith" work. Because the
+    capture is greedy, an input like ``@Jacqueline Reverand again`` will
+    match ``"Jacqueline Reverand again"``. To recover, we try the full
+    captured token, then progressively drop the trailing word until we
+    either find an org_users match or run out of words.
+
+    Matching strategy (per candidate prefix, first hit wins):
+      1. Exact email match on org_users.email (only if token looks
+         like an email).
+      2. Case-insensitive display_name == candidate.
+      3. Case-insensitive display_name starts-with candidate (only
+         when the candidate is the single-word leftmost token — using
+         starts-with on a partial multi-word string would let
+         "John " match "John Paul Smith" in unintuitive ways).
     """
     if not body:
         return []
@@ -315,26 +326,7 @@ async def resolve_mentions(conn, body: str) -> List[Dict[str, Any]]:
         norm = tok.strip()
         if not norm:
             continue
-        row = None
-        if "@" in norm and "." in norm:
-            row = await conn.fetchrow(
-                "SELECT id, email, display_name, sf_user_id FROM public.org_users "
-                "WHERE LOWER(email) = LOWER($1) LIMIT 1",
-                norm,
-            )
-        if not row:
-            row = await conn.fetchrow(
-                "SELECT id, email, display_name, sf_user_id FROM public.org_users "
-                "WHERE LOWER(display_name) = LOWER($1) LIMIT 1",
-                norm,
-            )
-        if not row:
-            row = await conn.fetchrow(
-                "SELECT id, email, display_name, sf_user_id FROM public.org_users "
-                "WHERE LOWER(display_name) LIKE LOWER($1 || '%') "
-                "ORDER BY display_name LIMIT 1",
-                norm,
-            )
+        row = await _resolve_one_mention(conn, norm)
         if row and row["email"]:
             email = row["email"]
             if email not in out:
@@ -344,6 +336,48 @@ async def resolve_mentions(conn, body: str) -> List[Dict[str, Any]]:
                     "sf_user_id": row["sf_user_id"],
                 }
     return list(out.values())
+
+
+async def _resolve_one_mention(conn, token: str):
+    """Try resolving the captured @-token, progressively dropping the
+    last whitespace-separated word until either a match is found or
+    only the first word remains. Returns the org_users row or None."""
+    candidate = token.strip()
+    while candidate:
+        # 1. Email-shaped → exact email match.
+        if "@" in candidate and "." in candidate:
+            row = await conn.fetchrow(
+                "SELECT id, email, display_name, sf_user_id FROM public.org_users "
+                "WHERE LOWER(email) = LOWER($1) LIMIT 1",
+                candidate,
+            )
+            if row:
+                return row
+        # 2. Exact display_name match.
+        row = await conn.fetchrow(
+            "SELECT id, email, display_name, sf_user_id FROM public.org_users "
+            "WHERE LOWER(display_name) = LOWER($1) LIMIT 1",
+            candidate,
+        )
+        if row:
+            return row
+        # 3. Single-word candidate → fall back to display_name starts-with.
+        #    Only do this when we've narrowed to one token so we don't
+        #    overmatch on partial multi-word strings.
+        if " " not in candidate:
+            row = await conn.fetchrow(
+                "SELECT id, email, display_name, sf_user_id FROM public.org_users "
+                "WHERE LOWER(display_name) LIKE LOWER($1 || ' %') "
+                "   OR LOWER(display_name) = LOWER($1) "
+                "ORDER BY display_name LIMIT 1",
+                candidate,
+            )
+            if row:
+                return row
+            return None  # nothing left to try
+        # Drop the trailing word and try again.
+        candidate = candidate.rsplit(" ", 1)[0].strip()
+    return None
 
 
 def _json_default(o):
