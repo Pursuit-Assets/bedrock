@@ -272,7 +272,7 @@ async def get_accounts_with_fellows(
     schema = await _resolve_schema(client)
     salesforce = client.salesforce
 
-    fellow_account_ids: set[str] = set()
+    fellow_counts: Dict[str, int] = {}
     if schema is not None:
         # When the schema was resolved via Account.childRelationships, the
         # account_field is fellow-specific by design (Pursuit's case:
@@ -283,17 +283,29 @@ async def get_accounts_with_fellows(
         if not schema.via_child_relationship and schema.role_field:
             clauses.append(f"{schema.role_field} LIKE '%Fellow%'")
         soql = (
-            f"SELECT {schema.account_field} FROM {schema.object_name} "
+            f"SELECT {schema.account_field}, {schema.contact_field} "
+            f"FROM {schema.object_name} "
             f"WHERE {' AND '.join(clauses)}"
         )
         try:
             result = await salesforce.query(soql)
+            # Deduplicate by contact so a promoted fellow (multiple affiliation
+            # records at the same account) counts as one person, not two jobs.
+            seen: Dict[str, set] = {}  # account_id → set of contact_ids
             for r in result.get("records", []):
                 aid = r.get(schema.account_field)
+                cid = r.get(schema.contact_field)
                 if aid:
-                    fellow_account_ids.add(aid)
+                    seen.setdefault(aid, set())
+                    if cid:
+                        seen[aid].add(cid)
+                    else:
+                        # No contact FK — still counts as a row, use sentinel
+                        seen[aid].add(r.get("Id", object()))
+            fellow_counts = {aid: len(contacts) for aid, contacts in seen.items()}
         except Exception as exc:
             logger.warning("affiliations: SOQL on %s failed: %s", schema.object_name, exc)
+    fellow_account_ids = set(fellow_counts.keys())
 
     # Won PBC opps — using the standard set of won stages we use elsewhere.
     won_stages = (
@@ -318,6 +330,7 @@ async def get_accounts_with_fellows(
     return {
         "fellow_account_ids": sorted(fellow_account_ids),
         "pbc_account_ids": sorted(pbc_account_ids),
+        "fellow_counts": fellow_counts,
         "affiliation_available": schema is not None,
     }
 
