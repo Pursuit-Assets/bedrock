@@ -1,0 +1,324 @@
+"""Notification dispatch — writes bedrock.notification rows and best-effort
+DMs the recipient via Slack.
+
+Design notes:
+
+- Every notification trigger calls :func:`enqueue_notification` from inside
+  the request handler. The DB insert runs inside the request so the in-app
+  bell sees the new row immediately on the next ``GET /api/notifications``;
+  the Slack DM is dispatched with ``asyncio.create_task`` so the route
+  returns without waiting on Slack's response.
+
+- Slack delivery is best-effort. Failures are recorded on the row
+  (``slack_status`` = ``failed``/``skipped``) but never surface to the
+  request — the user's in-app notification still appears. Slack outages
+  shouldn't break task assignment.
+
+- ``users.lookupByEmail`` is rate-limited by Slack (Tier 4: ~100/min).
+  We cache the resolved id on ``public.org_users.slack_user_id`` so the
+  second notification to the same person skips the lookup.
+
+- Recipient email comparison is case-insensitive (Slack normalizes to
+  lowercase; SF Owner.Email may not). Always lower() before lookup.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+from datetime import datetime, timezone
+from typing import Any, Dict, Iterable, List, Optional
+from uuid import UUID
+
+from dependencies import _services
+
+logger = logging.getLogger(__name__)
+
+# Notification types — keep in sync with the CHECK constraint on
+# bedrock.notification.type and the frontend NotificationType union.
+TYPE_PROJECT_TASK_ASSIGNED = "project_task_assigned"
+TYPE_COMMENT_MENTION = "comment_mention"
+TYPE_SF_TASK_ASSIGNED = "sf_task_assigned"
+TYPE_SF_OPP_OWNER_CHANGED = "sf_opp_owner_changed"
+
+ALL_TYPES = {
+    TYPE_PROJECT_TASK_ASSIGNED,
+    TYPE_COMMENT_MENTION,
+    TYPE_SF_TASK_ASSIGNED,
+    TYPE_SF_OPP_OWNER_CHANGED,
+}
+
+
+def _slack_service():
+    """Pull the SlackMCPService instance (or None if Slack isn't connected)."""
+    client = _services.get("mcp_client")
+    if not client:
+        return None
+    return client.services.get("slack")
+
+
+async def enqueue_notification(
+    conn,
+    *,
+    recipient_email: str,
+    type: str,
+    payload: Dict[str, Any],
+    actor_email: Optional[str] = None,
+) -> Optional[str]:
+    """Insert a notification row and fire-and-forget the Slack DM.
+
+    Returns the inserted row's id (UUID as str), or None when the insert
+    was skipped (recipient missing). Never raises on Slack failure — the
+    Slack worker logs and updates ``slack_status`` on the row.
+    """
+    if not recipient_email:
+        logger.debug("enqueue_notification: skip (no recipient_email)")
+        return None
+    if type not in ALL_TYPES:
+        raise ValueError(f"Unknown notification type: {type}")
+
+    recipient_norm = recipient_email.strip().lower()
+    payload_json = json.dumps(payload, default=_json_default)
+
+    row = await conn.fetchrow(
+        """
+        INSERT INTO bedrock.notification
+          (recipient_email, type, payload, actor_email)
+        VALUES ($1, $2, $3::jsonb, $4)
+        RETURNING id
+        """,
+        recipient_norm, type, payload_json, actor_email,
+    )
+    notif_id: str = str(row["id"])
+
+    # Fire Slack dispatch without blocking the request.
+    asyncio.create_task(
+        _dispatch_slack(notif_id, recipient_norm, type, payload, actor_email)
+    )
+
+    return notif_id
+
+
+async def _dispatch_slack(
+    notif_id: str,
+    recipient_email: str,
+    type: str,
+    payload: Dict[str, Any],
+    actor_email: Optional[str],
+) -> None:
+    """Background task: resolve the recipient's Slack id and post a DM."""
+    pool = _services.get("db_pool")
+    if not pool:
+        logger.warning("Slack dispatch: no db pool, skipping notif %s", notif_id)
+        return
+
+    try:
+        async with pool.acquire() as conn:
+            slack_id = await _resolve_slack_id(conn, recipient_email)
+            if not slack_id:
+                await _mark_slack(conn, notif_id, "skipped", note="no_slack_id")
+                return
+
+            message = _format_slack_message(type, payload, actor_email)
+            slack = _slack_service()
+            if not slack:
+                await _mark_slack(conn, notif_id, "skipped", note="no_slack_service")
+                return
+
+            try:
+                await slack.slack_client.chat_postMessage(
+                    channel=slack_id,
+                    text=message["text"],
+                    blocks=message.get("blocks"),
+                    unfurl_links=False,
+                    unfurl_media=False,
+                )
+                await _mark_slack(conn, notif_id, "sent")
+            except Exception as e:
+                logger.warning("Slack DM failed for notif %s: %s", notif_id, e)
+                await _mark_slack(conn, notif_id, "failed", note=str(e)[:200])
+    except Exception as e:
+        # Defensive: never propagate from the background task.
+        logger.exception("Slack dispatch crashed for notif %s: %s", notif_id, e)
+
+
+async def _resolve_slack_id(conn, email: str) -> Optional[str]:
+    """Email → Slack user id with persistent cache in bedrock.slack_user_cache.
+
+    Lazy population: on cache miss, hit Slack's ``users.lookupByEmail``
+    (Tier 4 rate-limited) and persist the result on success. Entries are
+    indefinite — Slack ids are stable for the workspace's lifetime, and
+    if a user leaves Slack their id stays the same anyway (DMs to a
+    departed user just bounce silently)."""
+    if not email:
+        return None
+    email_norm = email.strip().lower()
+    cached = await conn.fetchval(
+        "SELECT slack_user_id FROM bedrock.slack_user_cache WHERE email = $1",
+        email_norm,
+    )
+    if cached:
+        return cached
+
+    slack = _slack_service()
+    if not slack:
+        return None
+    try:
+        resp = await slack.slack_client.users_lookupByEmail(email=email_norm)
+        user = resp.get("user") or {}
+        slack_id = user.get("id")
+        if not slack_id:
+            return None
+        await conn.execute(
+            "INSERT INTO bedrock.slack_user_cache (email, slack_user_id) "
+            "VALUES ($1, $2) "
+            "ON CONFLICT (email) DO UPDATE SET slack_user_id = EXCLUDED.slack_user_id, "
+            "looked_up_at = now()",
+            email_norm, slack_id,
+        )
+        return slack_id
+    except Exception as e:
+        logger.info("users.lookupByEmail miss for %s: %s", email, e)
+        return None
+
+
+async def _mark_slack(conn, notif_id: str, status: str, *, note: str = "") -> None:
+    sent_at = datetime.now(timezone.utc) if status == "sent" else None
+    if note:
+        await conn.execute(
+            "UPDATE bedrock.notification SET slack_status = $2, slack_sent_at = $3, "
+            "payload = payload || jsonb_build_object('slack_note', $4::text) "
+            "WHERE id = $1",
+            UUID(notif_id), status, sent_at, note,
+        )
+    else:
+        await conn.execute(
+            "UPDATE bedrock.notification SET slack_status = $2, slack_sent_at = $3 "
+            "WHERE id = $1",
+            UUID(notif_id), status, sent_at,
+        )
+
+
+def _format_slack_message(
+    type: str, payload: Dict[str, Any], actor_email: Optional[str]
+) -> Dict[str, Any]:
+    """Render a Slack message from the notification payload. Returns
+    {text, blocks} — text is the fallback used in notification previews."""
+    title = payload.get("title") or "Bedrock notification"
+    subtitle = payload.get("subtitle") or ""
+    target_url = payload.get("target_url")
+    actor = actor_email or "Someone"
+
+    if type == TYPE_PROJECT_TASK_ASSIGNED:
+        text = f":clipboard: {actor} assigned you a task: *{subtitle}*"
+    elif type == TYPE_COMMENT_MENTION:
+        text = f":speech_balloon: {actor} mentioned you in a comment: _{subtitle}_"
+    elif type == TYPE_SF_TASK_ASSIGNED:
+        text = f":bell: New Salesforce task: *{subtitle}*"
+    elif type == TYPE_SF_OPP_OWNER_CHANGED:
+        text = f":handshake: Opportunity ownership changed: *{subtitle}*"
+    else:
+        text = f"{title}: {subtitle}"
+
+    blocks: List[Dict[str, Any]] = [
+        {"type": "section", "text": {"type": "mrkdwn", "text": text}},
+    ]
+    if target_url:
+        blocks.append(
+            {
+                "type": "actions",
+                "elements": [
+                    {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": "Open in Bedrock"},
+                        "url": target_url,
+                    }
+                ],
+            }
+        )
+
+    return {"text": text, "blocks": blocks}
+
+
+# ── Mention parsing ─────────────────────────────────────────────────────────
+
+_MENTION_RE = None
+
+
+def _mention_re():
+    """Lazy-compiled regex for @-mentions in comment bodies.
+
+    Matches `@displayname`, `@email@domain.tld`, or `@first-last`. We
+    intentionally accept dots, hyphens, underscores, and spaces (limited
+    to one) so "@Jacqueline Reverand" matches a display_name. The match
+    is greedy across word characters; ambiguities are resolved by the
+    org_users lookup downstream (first case-insensitive match wins).
+    """
+    global _MENTION_RE
+    if _MENTION_RE is None:
+        import re
+        _MENTION_RE = re.compile(
+            r"@([A-Za-z0-9._\-]+(?:[ ][A-Za-z0-9._\-]+){0,2})"
+        )
+    return _MENTION_RE
+
+
+async def resolve_mentions(conn, body: str) -> List[Dict[str, Any]]:
+    """Parse @-mentions out of a comment body and resolve each to an
+    org_users row. Returns a list of {email, display_name, sf_user_id}
+    deduplicated by email.
+
+    Matching strategy (in order, first hit wins per @-token):
+      1. Exact email match on org_users.email.
+      2. Case-insensitive display_name == token.
+      3. Case-insensitive display_name starts-with token (last-resort).
+    """
+    if not body:
+        return []
+    tokens = list(dict.fromkeys(_mention_re().findall(body)))
+    if not tokens:
+        return []
+
+    out: Dict[str, Dict[str, Any]] = {}
+    for tok in tokens:
+        norm = tok.strip()
+        if not norm:
+            continue
+        row = None
+        if "@" in norm and "." in norm:
+            row = await conn.fetchrow(
+                "SELECT id, email, display_name, sf_user_id FROM public.org_users "
+                "WHERE LOWER(email) = LOWER($1) LIMIT 1",
+                norm,
+            )
+        if not row:
+            row = await conn.fetchrow(
+                "SELECT id, email, display_name, sf_user_id FROM public.org_users "
+                "WHERE LOWER(display_name) = LOWER($1) LIMIT 1",
+                norm,
+            )
+        if not row:
+            row = await conn.fetchrow(
+                "SELECT id, email, display_name, sf_user_id FROM public.org_users "
+                "WHERE LOWER(display_name) LIKE LOWER($1 || '%') "
+                "ORDER BY display_name LIMIT 1",
+                norm,
+            )
+        if row and row["email"]:
+            email = row["email"]
+            if email not in out:
+                out[email] = {
+                    "email": email,
+                    "display_name": row["display_name"],
+                    "sf_user_id": row["sf_user_id"],
+                }
+    return list(out.values())
+
+
+def _json_default(o):
+    if isinstance(o, (datetime,)):
+        return o.isoformat()
+    if isinstance(o, UUID):
+        return str(o)
+    raise TypeError(f"Object of type {type(o).__name__} is not JSON serializable")

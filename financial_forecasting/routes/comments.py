@@ -15,6 +15,11 @@ from pydantic import BaseModel
 
 from db import get_db
 from routes.permissions import check_permission
+from services.notifications import (
+    TYPE_COMMENT_MENTION,
+    enqueue_notification,
+    resolve_mentions,
+)
 
 router = APIRouter(prefix="/api/comments", tags=["comments"])
 
@@ -114,8 +119,52 @@ async def create_comment(
         """,
         entity_type, eid, author_id, content,
     )
+
+    # Fan-out @-mention notifications. Parser is conservative: only
+    # tokens that resolve to an org_users row trigger a notification,
+    # so a stray `@everyone` or `@here` is silently ignored. The author
+    # never notifies themselves even if they @-mention their own name.
+    actor_email = (user.get("email") or "").strip()
+    mentioned = await resolve_mentions(conn, content)
+    if mentioned:
+        snippet = content if len(content) <= 140 else content[:137] + "…"
+        target_url = _build_comment_target_url(entity_type, str(eid))
+        for m in mentioned:
+            email = (m.get("email") or "").strip()
+            if not email or email.lower() == actor_email.lower():
+                continue
+            await enqueue_notification(
+                conn,
+                recipient_email=email,
+                type=TYPE_COMMENT_MENTION,
+                payload={
+                    "title": "You were mentioned in a comment",
+                    "subtitle": snippet,
+                    "entity_type": entity_type,
+                    "entity_id": str(eid),
+                    "comment_id": str(new_id),
+                    "target_url": target_url,
+                },
+                actor_email=actor_email or None,
+            )
+
     row = await conn.fetchrow(_AUTHOR_JOIN_SQL + " WHERE c.id = $1", new_id)
     return {"success": True, "data": _serialize_comment(row)}
+
+
+def _build_comment_target_url(entity_type: str, entity_id: str) -> str | None:
+    """Map an entity to the page that displays its comments. Today only
+    project_task is supported — the task detail lives inside a project,
+    and clicking the notification should route to the parent project's
+    detail page where the task drawer can open via task_id state."""
+    if entity_type == "project_task":
+        # Comments on tasks open at /projects/<project_id>?task=<id>;
+        # we don't know the project id here without an extra lookup, so
+        # the frontend resolves it from comment_id in the payload. The
+        # target_url stays generic; the bell handler decides where to
+        # navigate.
+        return None
+    return None
 
 
 @router.put("/{comment_id}")

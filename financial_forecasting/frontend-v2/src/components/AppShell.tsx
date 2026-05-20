@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 
 import { GlobalSearch } from "@/components/GlobalSearch";
+import { NotificationBell } from "@/components/NotificationBell";
 import { cn } from "@/lib/utils";
 import { recordNavigation, saveScroll, restoreScroll } from "@/lib/navHistory";
 import { useCurrentUser, useSalesforceStatus, startSalesforceConnect } from "@/services/auth";
@@ -336,12 +337,14 @@ function Sidebar({
           )}
         </NavLink>
 
-        {/* User avatar */}
+        {/* User avatar — bell sits inline with the user info when the
+            sidebar is expanded, or stacked above when collapsed so the
+            badge stays visible. */}
         {user && (
           <div
             className={cn(
               "mt-2 flex items-center rounded-md px-1 py-2",
-              collapsed ? "justify-center" : "gap-2 px-2.5",
+              collapsed ? "flex-col justify-center gap-1" : "gap-2 px-2.5",
             )}
           >
             {user.picture ? (
@@ -361,6 +364,7 @@ function Sidebar({
                 <span className="truncate text-[11px] text-ink-4">{user.email}</span>
               </div>
             )}
+            <NotificationBell />
           </div>
         )}
       </div>

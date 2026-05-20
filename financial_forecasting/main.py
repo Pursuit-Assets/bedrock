@@ -38,6 +38,7 @@ from data_sync import DataSyncService
 from db import init_db, close_db, get_db, get_db_status
 from routes.projects import router as projects_router
 from routes.comments import router as comments_router
+from routes.notifications import router as notifications_router
 from routes.auth import router as auth_router, get_google_credentials, PBD_CALENDAR_ID
 from routes.sf_dependencies import router as sf_deps_router
 from routes.permissions import router as permissions_router, opp_router as opp_lock_router, check_permission, check_permission_or_internal, resolve_task_lock
@@ -116,6 +117,7 @@ app.add_middleware(
 # Routers
 app.include_router(projects_router)
 app.include_router(comments_router)
+app.include_router(notifications_router)
 app.include_router(auth_router)
 app.include_router(sf_deps_router)
 app.include_router(permissions_router)
@@ -194,6 +196,15 @@ async def startup_event():
             _services["data_sync_service"] = DataSyncService(client)
         asyncio.create_task(background_sync_task())
         asyncio.create_task(background_award_reconciler_task())
+
+    # Cache the db pool on _services so background tasks (notification
+    # Slack dispatcher) can acquire connections without going through
+    # FastAPI's request-scoped get_db dependency.
+    try:
+        from db import get_pool
+        _services["db_pool"] = get_pool()
+    except Exception as e:
+        logger.warning(f"db_pool not registered on _services: {e}")
 
     logger.info(f"API started — connected services: {client.connected_services or ['none']}")
 
