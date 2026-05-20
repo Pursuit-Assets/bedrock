@@ -122,8 +122,9 @@ async def create_comment(
 
     # Fan-out @-mention notifications. Parser is conservative: only
     # tokens that resolve to an org_users row trigger a notification,
-    # so a stray `@everyone` or `@here` is silently ignored. The author
-    # never notifies themselves even if they @-mention their own name.
+    # so a stray `@everyone` or `@here` is silently ignored. Self-
+    # mentions are allowed (useful as a note-to-self and necessary for
+    # solo testing of the pipeline).
     actor_email = (user.get("email") or "").strip()
     mentioned = await resolve_mentions(conn, content)
     if mentioned:
@@ -131,7 +132,7 @@ async def create_comment(
         target_url = _build_comment_target_url(entity_type, str(eid))
         for m in mentioned:
             email = (m.get("email") or "").strip()
-            if not email or email.lower() == actor_email.lower():
+            if not email:
                 continue
             await enqueue_notification(
                 conn,

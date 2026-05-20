@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
 import { Bell, MailCheck } from "lucide-react";
 
@@ -12,6 +13,9 @@ import {
   type NotificationType,
 } from "@/services/notifications";
 
+const PANEL_WIDTH = 360;
+const PANEL_MARGIN = 8;
+
 /** In-app notification bell rendered in the AppShell. Polls
  *  /api/notifications + /api/notifications/unread-count every 30s
  *  (more often on focus). Click → dropdown of the 50 most-recent
@@ -20,7 +24,12 @@ import {
 export function NotificationBell() {
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);
-  const wrapperRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  // Panel coords are computed against the trigger's viewport rect and
+  // applied as fixed positioning. We portal to document.body so the
+  // sidebar's overflow-hidden can't clip the dropdown.
+  const [coords, setCoords] = useState<{ top: number; left: number } | null>(null);
 
   const countQ = useUnreadNotificationCount();
   const listQ = useNotifications();
@@ -30,16 +39,75 @@ export function NotificationBell() {
   const unread = countQ.data ?? 0;
   const items = listQ.data ?? [];
 
-  // Close-on-outside-click
+  // Position the panel anchored to the trigger. Bell sits in the
+  // sidebar's bottom row, so we open the panel UPWARD by default —
+  // anchored to the trigger's top edge, extending toward the right
+  // (clamped to viewport).
+  useLayoutEffect(() => {
+    if (!open) return;
+    function place() {
+      const trigger = triggerRef.current;
+      const panel = panelRef.current;
+      if (!trigger) return;
+      const rect = trigger.getBoundingClientRect();
+      const vh = window.innerHeight;
+      const vw = window.innerWidth;
+      const panelHeight = panel?.offsetHeight ?? 420;
+      // Prefer opening above the bell when there's not enough space
+      // below (the common case — bell lives at the bottom of the
+      // sidebar). Falls back to below otherwise.
+      const spaceBelow = vh - rect.bottom - PANEL_MARGIN;
+      let top: number;
+      if (spaceBelow < panelHeight && rect.top > panelHeight + PANEL_MARGIN) {
+        top = rect.top - panelHeight - PANEL_MARGIN;
+      } else {
+        top = rect.bottom + PANEL_MARGIN;
+      }
+      // Open toward the right of the bell (escapes the sidebar).
+      let left = rect.right + PANEL_MARGIN;
+      if (left + PANEL_WIDTH > vw - PANEL_MARGIN) {
+        // Not enough horizontal room — anchor under/over the trigger
+        // and clamp to the viewport's right edge.
+        left = Math.max(PANEL_MARGIN, vw - PANEL_WIDTH - PANEL_MARGIN);
+      }
+      top = Math.max(PANEL_MARGIN, Math.min(vh - panelHeight - PANEL_MARGIN, top));
+      setCoords({ top, left });
+    }
+    place();
+    window.addEventListener("scroll", place, true);
+    window.addEventListener("resize", place);
+    return () => {
+      window.removeEventListener("scroll", place, true);
+      window.removeEventListener("resize", place);
+    };
+  }, [open, items.length]);
+
+  // Close-on-outside-click — checks both the trigger and the panel
+  // since the panel is portaled outside the trigger's DOM subtree.
   useEffect(() => {
     if (!open) return;
     function onClick(e: MouseEvent) {
-      if (wrapperRef.current && !wrapperRef.current.contains(e.target as Node)) {
-        setOpen(false);
+      const t = e.target as Node;
+      if (
+        triggerRef.current?.contains(t) ||
+        panelRef.current?.contains(t)
+      ) {
+        return;
       }
+      setOpen(false);
     }
     document.addEventListener("mousedown", onClick);
     return () => document.removeEventListener("mousedown", onClick);
+  }, [open]);
+
+  // Close on Esc
+  useEffect(() => {
+    if (!open) return;
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") setOpen(false);
+    }
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
   }, [open]);
 
   function handleRowClick(n: BedrockNotification) {
@@ -51,9 +119,57 @@ export function NotificationBell() {
     }
   }
 
+  const panel = open ? (
+    <div
+      ref={panelRef}
+      role="menu"
+      className="fixed z-50 w-[360px] rounded-lg border border-border-strong bg-surface shadow-xl"
+      style={{
+        top: coords?.top ?? -9999,
+        left: coords?.left ?? -9999,
+        visibility: coords ? "visible" : "hidden",
+      }}
+    >
+      <div className="flex items-center justify-between gap-2 border-b border-border-strong px-3 py-2">
+        <span className="text-[12.5px] font-semibold text-ink">Notifications</span>
+        {unread > 0 ? (
+          <button
+            type="button"
+            onClick={() => markAllRead.mutate()}
+            disabled={markAllRead.isPending}
+            className="inline-flex items-center gap-1 text-[11px] font-medium text-ink-3 hover:text-accent disabled:opacity-60"
+            title="Mark all as read"
+          >
+            <MailCheck size={11} aria-hidden /> Mark all read
+          </button>
+        ) : null}
+      </div>
+      <div className="max-h-[60vh] overflow-y-auto">
+        {listQ.isLoading ? (
+          <div className="px-3 py-6 text-center text-[12px] text-ink-3">Loading…</div>
+        ) : items.length === 0 ? (
+          <div className="px-3 py-6 text-center text-[12px] text-ink-3">
+            You're all caught up.
+          </div>
+        ) : (
+          <ul className="divide-y divide-border-strong">
+            {items.map((n) => (
+              <NotificationRow
+                key={n.id}
+                n={n}
+                onClick={() => handleRowClick(n)}
+              />
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
+  ) : null;
+
   return (
-    <div ref={wrapperRef} className="relative">
+    <>
       <button
+        ref={triggerRef}
         type="button"
         onClick={() => setOpen((v) => !v)}
         className="relative inline-flex h-8 w-8 items-center justify-center rounded-md text-ink-3 hover:bg-surface-2 hover:text-ink"
@@ -72,48 +188,8 @@ export function NotificationBell() {
           </span>
         ) : null}
       </button>
-
-      {open ? (
-        <div
-          role="menu"
-          className="absolute right-0 z-40 mt-2 w-[360px] rounded-lg border border-border-strong bg-surface shadow-xl"
-        >
-          <div className="flex items-center justify-between gap-2 border-b border-border-strong px-3 py-2">
-            <span className="text-[12.5px] font-semibold text-ink">Notifications</span>
-            {unread > 0 ? (
-              <button
-                type="button"
-                onClick={() => markAllRead.mutate()}
-                disabled={markAllRead.isPending}
-                className="inline-flex items-center gap-1 text-[11px] font-medium text-ink-3 hover:text-accent disabled:opacity-60"
-                title="Mark all as read"
-              >
-                <MailCheck size={11} aria-hidden /> Mark all read
-              </button>
-            ) : null}
-          </div>
-          <div className="max-h-[60vh] overflow-y-auto">
-            {listQ.isLoading ? (
-              <div className="px-3 py-6 text-center text-[12px] text-ink-3">Loading…</div>
-            ) : items.length === 0 ? (
-              <div className="px-3 py-6 text-center text-[12px] text-ink-3">
-                You're all caught up.
-              </div>
-            ) : (
-              <ul className="divide-y divide-border-strong">
-                {items.map((n) => (
-                  <NotificationRow
-                    key={n.id}
-                    n={n}
-                    onClick={() => handleRowClick(n)}
-                  />
-                ))}
-              </ul>
-            )}
-          </div>
-        </div>
-      ) : null}
-    </div>
+      {panel ? createPortal(panel, document.body) : null}
+    </>
   );
 }
 

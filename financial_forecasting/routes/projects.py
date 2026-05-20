@@ -1161,7 +1161,12 @@ async def _notify_task_owners(
         "WHERE id = ANY($1::uuid[])",
         new_owner_ids,
     )
-    actor_lower = (actor_email or "").strip().lower()
+    # We intentionally do NOT skip the actor here — assigning a task to
+    # yourself should still fire a notification (useful as a TODO ping,
+    # and required so a solo user can test the pipeline against their
+    # own account). If we ever want to suppress the self-ping in
+    # production, gate it via a per-user preference, not a hardcoded
+    # actor==recipient skip.
     # Look up the parent project for the link target.
     parent = await conn.fetchrow(
         """SELECT p.id AS project_id, p.name AS project_name
@@ -1177,8 +1182,6 @@ async def _notify_task_owners(
     for r in rows:
         email = (r["email"] or "").strip()
         if not email:
-            continue
-        if email.lower() == actor_lower:
             continue
         await enqueue_notification(
             conn,
