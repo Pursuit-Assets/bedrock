@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Link, useParams } from "react-router-dom";
+import { Link, useParams, useSearchParams } from "react-router-dom";
 import {
   ChevronDown,
   ChevronRight,
@@ -1863,6 +1863,26 @@ function ProjectListView({
   const [openWsId, setOpenWsId] = useState<string | null>(null);
   const [openMsId, setOpenMsId] = useState<string | null>(null);
   const [openTaskId, setOpenTaskId] = useState<string | null>(null);
+
+  // Deep-link from a notification: /projects/<id>?task=<task_id>
+  // opens the task drawer on load. Strip the param after consumption
+  // so navigating away/back doesn't re-pop the drawer unexpectedly.
+  const [searchParams, setSearchParams] = useSearchParams();
+  useEffect(() => {
+    const t = searchParams.get("task");
+    if (t && t !== openTaskId) {
+      setOpenTaskId(t);
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          next.delete("task");
+          return next;
+        },
+        { replace: true },
+      );
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]);
 
   // Resolve the latest object from the workstream tree each render so
   // the drawer reflects up-to-date data (e.g. after an inline edit).

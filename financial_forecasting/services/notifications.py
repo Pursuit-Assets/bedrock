@@ -27,11 +27,35 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional
 from uuid import UUID
 
 from dependencies import _services
+
+
+def _frontend_base_url() -> str:
+    """Public base URL for the frontend, used to build absolute links in
+    Slack messages (Slack action buttons require absolute URLs). Reads
+    FRONTEND_URL from env; falls back to localhost for dev. Strips
+    trailing slashes so caller can safely concatenate ``f"{base}{path}"``.
+    """
+    url = (os.environ.get("FRONTEND_URL") or "http://localhost:4200").rstrip("/")
+    return url
+
+
+def _absolutize(target_url: Optional[str]) -> Optional[str]:
+    """Promote a relative app path (``/projects/abc``) to an absolute URL
+    so Slack's actions block accepts it. Pass-through if already absolute
+    or empty."""
+    if not target_url:
+        return None
+    if target_url.startswith(("http://", "https://")):
+        return target_url
+    if not target_url.startswith("/"):
+        target_url = "/" + target_url
+    return f"{_frontend_base_url()}{target_url}"
 
 logger = logging.getLogger(__name__)
 
@@ -221,10 +245,11 @@ def _format_slack_message(
     else:
         text = f"{title}: {subtitle}"
 
+    abs_url = _absolutize(target_url)
     blocks: List[Dict[str, Any]] = [
         {"type": "section", "text": {"type": "mrkdwn", "text": text}},
     ]
-    if target_url:
+    if abs_url:
         blocks.append(
             {
                 "type": "actions",
@@ -232,11 +257,16 @@ def _format_slack_message(
                     {
                         "type": "button",
                         "text": {"type": "plain_text", "text": "Open in Bedrock"},
-                        "url": target_url,
+                        "url": abs_url,
                     }
                 ],
             }
         )
+        # Also surface the URL in the message text — Slack's notification
+        # preview (lock-screen, badge title) only shows the `text` field,
+        # never blocks. Plain URL makes the link clickable from mobile
+        # notifications too.
+        text = f"{text}\n{abs_url}"
 
     return {"text": text, "blocks": blocks}
 

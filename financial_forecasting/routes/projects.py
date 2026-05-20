@@ -1183,6 +1183,11 @@ async def _notify_task_owners(
         email = (r["email"] or "").strip()
         if not email:
             continue
+        # target_url deep-links to the task drawer so the recipient lands
+        # directly on the task they were assigned, not the project root.
+        target_url = (
+            f"/projects/{project_id}?task={task_id}" if project_id else None
+        )
         await enqueue_notification(
             conn,
             recipient_email=email,
@@ -1193,7 +1198,7 @@ async def _notify_task_owners(
                 "task_id": task_id,
                 "project_id": project_id,
                 "project_name": project_name,
-                "target_url": f"/projects/{project_id}" if project_id else None,
+                "target_url": target_url,
             },
             actor_email=actor_email,
         )

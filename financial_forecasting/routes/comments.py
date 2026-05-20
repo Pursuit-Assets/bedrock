@@ -129,7 +129,7 @@ async def create_comment(
     mentioned = await resolve_mentions(conn, content)
     if mentioned:
         snippet = content if len(content) <= 140 else content[:137] + "…"
-        target_url = _build_comment_target_url(entity_type, str(eid))
+        target_url, project_id = await _resolve_comment_target(conn, entity_type, eid)
         for m in mentioned:
             email = (m.get("email") or "").strip()
             if not email:
@@ -144,6 +144,7 @@ async def create_comment(
                     "entity_type": entity_type,
                     "entity_id": str(eid),
                     "comment_id": str(new_id),
+                    "project_id": str(project_id) if project_id else None,
                     "target_url": target_url,
                 },
                 actor_email=actor_email or None,
@@ -153,19 +154,30 @@ async def create_comment(
     return {"success": True, "data": _serialize_comment(row)}
 
 
-def _build_comment_target_url(entity_type: str, entity_id: str) -> str | None:
-    """Map an entity to the page that displays its comments. Today only
-    project_task is supported — the task detail lives inside a project,
-    and clicking the notification should route to the parent project's
-    detail page where the task drawer can open via task_id state."""
+async def _resolve_comment_target(conn, entity_type: str, entity_id):
+    """Return (target_url, project_id) for navigating from a comment.
+
+    For a project_task, we look up the parent project so the
+    notification routes to ``/projects/<project_id>?task=<task_id>``
+    and ProjectDetail's URL-param handler pops the task drawer
+    automatically.
+
+    Returns (None, None) for unknown entity types — caller treats that
+    as "no in-app navigation available".
+    """
     if entity_type == "project_task":
-        # Comments on tasks open at /projects/<project_id>?task=<id>;
-        # we don't know the project id here without an extra lookup, so
-        # the frontend resolves it from comment_id in the payload. The
-        # target_url stays generic; the bell handler decides where to
-        # navigate.
-        return None
-    return None
+        row = await conn.fetchrow(
+            """SELECT w.project_id
+               FROM bedrock.project_task t
+               JOIN bedrock.milestone m ON m.id = t.milestone_id
+               JOIN bedrock.workstream w ON w.id = m.workstream_id
+               WHERE t.id = $1""",
+            entity_id,
+        )
+        if row and row["project_id"]:
+            pid = row["project_id"]
+            return f"/projects/{pid}?task={entity_id}", pid
+    return None, None
 
 
 @router.put("/{comment_id}")
