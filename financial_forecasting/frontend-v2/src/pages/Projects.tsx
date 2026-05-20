@@ -1,5 +1,5 @@
 import { memo, useMemo, useRef, useState } from "react";
-import { Plus, Search, X } from "lucide-react";
+import { Plus, RotateCcw, Search, Trash2, X } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { useVirtualizer } from "@tanstack/react-virtual";
 
@@ -14,10 +14,13 @@ import { sortBy, useSort } from "@/lib/sort";
 import { useCurrentUser } from "@/services/auth";
 import {
   PROJECT_STATUS_OPTIONS,
+  useDeletedProjects,
   useProjects,
   useCreateProject,
+  useRestoreProject,
   useUpdateProject,
   type BedrockProject,
+  type DeletedProject,
   type ProjectStatus,
 } from "@/services/projects";
 import { usePerm } from "@/services/permissions";
@@ -159,6 +162,7 @@ export function ProjectsPage() {
 
   const createProject = useCreateProject();
   const [showCreate, setShowCreate] = useState(false);
+  const [showTrash, setShowTrash] = useState(false);
   const [newName, setNewName] = useState("");
 
   const handleCreate = async () => {
@@ -240,15 +244,31 @@ export function ProjectsPage() {
             : `${projects.length.toLocaleString()} projects`
         }
         actions={
-          <button
-            type="button"
-            onClick={() => setShowCreate(true)}
-            className="inline-flex items-center gap-1.5 rounded-md bg-ink px-3 py-1.5 text-[12.5px] font-medium text-surface hover:opacity-90"
-          >
-            <Plus size={14} /> New project
-          </button>
+          <>
+            {canEdit ? (
+              <button
+                type="button"
+                onClick={() => setShowTrash(true)}
+                className="inline-flex items-center gap-1.5 rounded-md border border-border-strong bg-surface px-3 py-1.5 text-[12.5px] font-medium text-ink-2 hover:bg-surface-2"
+                title="View deleted projects"
+              >
+                <Trash2 size={14} /> Trash
+              </button>
+            ) : null}
+            <button
+              type="button"
+              onClick={() => setShowCreate(true)}
+              className="inline-flex items-center gap-1.5 rounded-md bg-ink px-3 py-1.5 text-[12.5px] font-medium text-surface hover:opacity-90"
+            >
+              <Plus size={14} /> New project
+            </button>
+          </>
         }
       />
+
+      {showTrash ? (
+        <ProjectTrashModal onClose={() => setShowTrash(false)} />
+      ) : null}
 
       {showCreate && (
         <div className="mb-4 flex items-center gap-2 rounded-md border border-border-strong bg-surface-2 px-4 py-3">
@@ -522,5 +542,102 @@ function SkeletonRows() {
         </tr>
       ))}
     </>
+  );
+}
+
+function ProjectTrashModal({ onClose }: { onClose: () => void }) {
+  const trashQ = useDeletedProjects(true);
+  const restore = useRestoreProject();
+  const [errorByRow, setErrorByRow] = useState<Record<string, string>>({});
+
+  function extractError(err: unknown): string {
+    const e = err as { response?: { status?: number; data?: { detail?: string } } };
+    if (e?.response?.status === 403) {
+      return "Only the project owner or an admin can restore this project.";
+    }
+    if (e?.response?.status === 404) return "Project not found.";
+    return e?.response?.data?.detail ?? "Restore failed.";
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div className="w-full max-w-2xl rounded-lg border border-border-strong bg-surface shadow-xl">
+        <div className="flex items-center justify-between border-b border-border-strong px-5 py-3">
+          <div>
+            <h2 className="text-[14px] font-semibold text-ink">Deleted projects</h2>
+            <p className="mt-0.5 text-[11.5px] text-ink-3">
+              Soft-deleted projects retained for restore. Restoring brings back
+              the project and its workstreams/milestones/tasks.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-ink-3 hover:text-ink"
+            aria-label="Close"
+          >
+            <X size={16} />
+          </button>
+        </div>
+        <div className="max-h-[60vh] overflow-y-auto px-5 py-4">
+          {trashQ.isLoading ? (
+            <div className="text-[12.5px] text-ink-3">Loading…</div>
+          ) : trashQ.isError ? (
+            <div className="text-[12.5px] text-red">Failed to load deleted projects.</div>
+          ) : (trashQ.data ?? []).length === 0 ? (
+            <div className="text-[12.5px] text-ink-3">Trash is empty.</div>
+          ) : (
+            <ul className="flex flex-col divide-y divide-border-strong">
+              {(trashQ.data ?? []).map((p: DeletedProject) => {
+                const rowError = errorByRow[p.id];
+                const pending = restore.isPending && restore.variables === p.id;
+                return (
+                  <li key={p.id} className="flex flex-col gap-1 py-2.5">
+                    <div className="flex items-start gap-3">
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-[13px] font-medium text-ink">
+                          {p.name}
+                        </div>
+                        <div className="text-[11.5px] text-ink-3">
+                          {p.deleted_at ? `Deleted ${fmtDate(p.deleted_at)}` : "Deleted"}
+                          {p.deleted_by ? ` by ${p.deleted_by}` : ""}
+                          {p.owner_email ? ` · owner ${p.owner_email}` : ""}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        disabled={pending}
+                        onClick={async () => {
+                          setErrorByRow((prev) => {
+                            const next = { ...prev };
+                            delete next[p.id];
+                            return next;
+                          });
+                          try {
+                            await restore.mutateAsync(p.id);
+                          } catch (e) {
+                            setErrorByRow((prev) => ({ ...prev, [p.id]: extractError(e) }));
+                          }
+                        }}
+                        className="inline-flex h-7 items-center gap-1.5 rounded border border-border-strong bg-surface px-2.5 text-[11.5px] font-medium text-ink-2 hover:border-accent hover:text-accent disabled:opacity-60"
+                      >
+                        <RotateCcw size={11} aria-hidden />
+                        {pending ? "Restoring…" : "Restore"}
+                      </button>
+                    </div>
+                    {rowError ? (
+                      <p className="text-[11px] font-medium text-red">{rowError}</p>
+                    ) : null}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }

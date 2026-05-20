@@ -404,6 +404,47 @@ export function useDeleteProject() {
   });
 }
 
+export interface DeletedProject {
+  id: string;
+  name: string;
+  description: string;
+  owner_email: string | null;
+  deleted_at: string | null;
+  deleted_by: string | null;
+}
+
+/** Soft-deleted projects (trash view). Backend filters to
+ *  deleted_at IS NOT NULL ordered by deleted_at DESC. */
+export function useDeletedProjects(enabled = true) {
+  return useQuery({
+    queryKey: ["projects-trash"],
+    queryFn: async () => {
+      const { data } = await api.get<{ data: DeletedProject[] }>(
+        "/api/projects/trash",
+      );
+      return data.data ?? [];
+    },
+    enabled,
+    staleTime: 30_000,
+  });
+}
+
+/** Restore a soft-deleted project (cascades to its children that were
+ *  deleted in the same operation). Owner or admin only. */
+export function useRestoreProject() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (projectId: string) => {
+      await api.post(`/api/projects/${projectId}/restore`);
+      return projectId;
+    },
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: ["projects"] });
+      await qc.invalidateQueries({ queryKey: ["projects-trash"] });
+    },
+  });
+}
+
 /** Transfer project ownership to a different user. Owner or admin only;
  *  old owner is demoted to editor automatically by the backend. */
 export function useTransferProjectOwner(projectId: string) {

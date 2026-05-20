@@ -1,6 +1,6 @@
 import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { ChevronDown, ChevronRight, Plus, Search, Sparkles, X } from "lucide-react";
+import { ChevronDown, ChevronRight, Plus, Search, X } from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 
 import { AccountExpandPanel, ACCOUNT_PANEL_HEIGHT } from "@/components/AccountExpandPanel";
@@ -477,17 +477,12 @@ export function AccountsPage() {
             : `${accounts.length.toLocaleString()} funder organizations · ${fmtMoney(totals.openPipeline)} open pipeline · ${fmtMoney(totals.amountWon)} won`
         }
         actions={
-          <>
-            <button className="inline-flex h-[30px] items-center gap-1.5 rounded border border-border-strong bg-surface px-3 text-[13px] font-medium text-ink hover:bg-surface-2">
-              <Sparkles size={14} /> Enrich with Donor Atlas
-            </button>
-            <button
-              onClick={() => setShowCreate(true)}
-              className="inline-flex h-[30px] items-center gap-1.5 rounded border border-ink bg-ink px-3 text-[13px] font-medium text-surface hover:opacity-90"
-            >
-              <Plus size={14} /> New account
-            </button>
-          </>
+          <button
+            onClick={() => setShowCreate(true)}
+            className="inline-flex h-[30px] items-center gap-1.5 rounded border border-ink bg-ink px-3 text-[13px] font-medium text-surface hover:opacity-90"
+          >
+            <Plus size={14} /> New account
+          </button>
         }
       />
 
