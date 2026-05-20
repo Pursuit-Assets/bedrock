@@ -5,6 +5,7 @@ import { api } from "@/lib/api";
 export interface AccountsWithFellowsResponse {
   fellow_account_ids: string[];
   pbc_account_ids: string[];
+  fellow_counts: Record<string, number>;
   affiliation_available: boolean;
 }
 

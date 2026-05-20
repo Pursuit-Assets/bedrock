@@ -24,7 +24,7 @@ import { useAccountsWithFellows } from "@/services/affiliations";
 import { TableToolbar } from "../portfolio/TableToolbar";
 
 type Filter = "all" | "pbc" | "fellows" | "both";
-type SortKey = "name" | "type" | "city";
+type SortKey = "name" | "type" | "city" | "fellows";
 
 export function JobsAccounts() {
   const accountsQ = useAccounts();
@@ -42,6 +42,7 @@ export function JobsAccounts() {
     () => new Set(fellowsMetaQ.data?.pbc_account_ids ?? []),
     [fellowsMetaQ.data],
   );
+  const fellowCounts = fellowsMetaQ.data?.fellow_counts ?? {};
 
   // Universe = union of (PBC wins) ∪ (Fellow affiliations) — the only
   // accounts that have any reason to live on this page.
@@ -83,6 +84,7 @@ export function JobsAccounts() {
         case "name": return a.Name;
         case "type": return a.Type ?? "";
         case "city": return a.BillingCity ?? "";
+        case "fellows": return fellowCounts[a.Id] ?? 0;
       }
     });
   }, [eligible, query, filter, sort, pbcSet, fellowSet]);
@@ -141,6 +143,9 @@ export function JobsAccounts() {
               <th className="w-[150px] px-3 py-1.5 text-left font-semibold">
                 <SortableHeader label="City" sortKey="city" sort={sort} onToggle={toggle} />
               </th>
+              <th className="w-[80px] px-3 py-1.5 text-left font-semibold">
+                <SortableHeader label="Fellows" sortKey="fellows" sort={sort} onToggle={toggle} />
+              </th>
               <th className="w-[120px] px-3 py-1.5 text-left font-semibold">Signals</th>
               <th className="w-[40px] px-3 py-1.5"></th>
             </tr>
@@ -187,6 +192,9 @@ export function JobsAccounts() {
                     <td className="px-3 py-1.5 align-middle text-[12px] text-ink-2">
                       {a.BillingCity ?? "—"}
                     </td>
+                    <td className="px-3 py-1.5 align-middle text-[12px] text-ink-2">
+                      {hasFellows ? (fellowCounts[a.Id] ?? "—") : "—"}
+                    </td>
                     <td className="px-3 py-1.5 align-middle">
                       <div className="flex flex-wrap gap-1">
                         {hasFellows ? <SignalTag color="green">Fellows</SignalTag> : null}
@@ -197,7 +205,7 @@ export function JobsAccounts() {
                   </tr>
                   {isExpanded ? (
                     <tr>
-                      <td colSpan={6} className="p-0">
+                      <td colSpan={7} className="p-0">
                         <JobsAccountExpandPanel accountId={a.Id} />
                       </td>
                     </tr>
