@@ -203,26 +203,35 @@ function PortfolioBody({ user, isSelf }: { user: ResolvedUser; isSelf: boolean }
         projectsLoading={projectsQ.isLoading}
       />
 
-      <PortfolioOpportunities
-        opps={myOpps}
-        loading={oppsQ.isLoading}
-        sfReady={Boolean(user.sfUserId)}
-        canEdit={canEditOpps}
-      />
+      {/* SF-backed sections only render when the viewed user has an SF
+          identity. Non-SF teammates see just their project tasks above,
+          keeping the home page useful for the engineering/PM side of
+          the org. The Tasks section above already mixes SF + project
+          tasks gracefully when sfUserId is null. */}
+      {user.sfUserId ? (
+        <>
+          <PortfolioOpportunities
+            opps={myOpps}
+            loading={oppsQ.isLoading}
+            sfReady={Boolean(user.sfUserId)}
+            canEdit={canEditOpps}
+          />
 
-      <PortfolioAwards
-        awards={myAwards}
-        oppsById={oppsById}
-        loading={awardsQ.isLoading}
-        canEdit={canEditAwards}
-      />
+          <PortfolioAwards
+            awards={myAwards}
+            oppsById={oppsById}
+            loading={awardsQ.isLoading}
+            canEdit={canEditAwards}
+          />
 
-      <PortfolioAccounts
-        accounts={myAccounts}
-        loading={accountsQ.isLoading}
-        sfReady={Boolean(user.sfUserId)}
-        canEdit={canEditAccounts}
-      />
+          <PortfolioAccounts
+            accounts={myAccounts}
+            loading={accountsQ.isLoading}
+            sfReady={Boolean(user.sfUserId)}
+            canEdit={canEditAccounts}
+          />
+        </>
+      ) : null}
     </div>
   );
 }

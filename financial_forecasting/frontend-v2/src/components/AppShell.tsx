@@ -93,6 +93,12 @@ export function AppShell() {
     "/projects",
     "/feedback",
     "/awards/",
+    // Portfolio (home page) is the landing surface for everyone in the
+    // org. Users without a personal SF session still need to see their
+    // project tasks. The SF-backed sections (Opportunities/Awards/
+    // Accounts) self-hide when sfReady=false inside Portfolio.tsx, so
+    // the page renders cleanly without a Salesforce session.
+    "/portfolio",
   ];
   const sfOptional = SF_OPTIONAL_PREFIXES.some((p) => pathname.startsWith(p));
   const sfNotConnected = !sf.isLoading && sf.data?.connected === false;
