@@ -1884,23 +1884,49 @@ function ProjectListView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
 
-  // Same-page bell clicks (e.g. /projects/abc → /projects/abc?task=xyz
-  // when the user is already on /projects/abc) don't fire useSearchParams
-  // because react-router no-ops on identical-URL navigations. The bell
-  // emits a CustomEvent in that case; we listen here and pop the drawer
-  // directly. Tasks not on this project's tree are ignored.
+  // Two reliable bell-click handoffs into the task drawer:
+  //
+  //   (a) sessionStorage — bell writes "bedrock:pending-task-open"
+  //       before navigate(). When ProjectDetail mounts (whether from a
+  //       different page or the same one re-rendered), we check the
+  //       storage AND the workstream tree on every render until both
+  //       converge. Once the task is found, pop the drawer and clear.
+  //   (b) CustomEvent — for same-page clicks where react-router
+  //       silently no-ops and the page doesn't re-mount.
+  //
+  // The pending storage value is cleared as soon as it resolves, so a
+  // refresh / back-button after the user closed the drawer won't
+  // re-pop it.
   useEffect(() => {
+    function tryPopFromStorage() {
+      let pending: string | null = null;
+      try {
+        pending = sessionStorage.getItem("bedrock:pending-task-open");
+      } catch {
+        return;
+      }
+      if (!pending) return;
+      const found = workstreams.some((w) =>
+        w.milestones.some((m) => m.tasks.some((t) => t.id === pending)),
+      );
+      if (found) {
+        setOpenTaskId(pending);
+        try { sessionStorage.removeItem("bedrock:pending-task-open"); } catch {}
+      }
+    }
+    tryPopFromStorage();
+
     function onOpenTaskEvent(e: Event) {
       const detail = (e as CustomEvent).detail || {};
       const taskId = detail.taskId;
       if (!taskId) return;
-      // Confirm the task belongs to this project before popping. Avoids
-      // spurious opens when the user is on /projects/A but the bell
-      // resolved a notification targeting /projects/B.
       const found = workstreams.some((w) =>
         w.milestones.some((m) => m.tasks.some((t) => t.id === taskId)),
       );
-      if (found) setOpenTaskId(taskId);
+      if (found) {
+        setOpenTaskId(taskId);
+        try { sessionStorage.removeItem("bedrock:pending-task-open"); } catch {}
+      }
     }
     window.addEventListener("bedrock:open-task", onOpenTaskEvent as EventListener);
     return () => window.removeEventListener("bedrock:open-task", onOpenTaskEvent as EventListener);

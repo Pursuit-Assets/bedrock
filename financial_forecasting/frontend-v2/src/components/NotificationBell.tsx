@@ -117,13 +117,23 @@ export function NotificationBell() {
       window.location.href = url;
       return;
     }
-    // Always dispatch the notification's intent as a CustomEvent so
-    // ProjectDetail (or any future detail page) can react even when
-    // the user is already on the target route — react-router's
-    // navigate() silently no-ops on identical URLs, which was why the
-    // bell looked broken when you were already on /projects/<id>.
+    // Two-phase handoff so the click reliably opens the task drawer
+    // regardless of where the user starts:
+    //
+    //   (a) sessionStorage — survives a route change. ProjectDetail
+    //       reads + clears it on mount, so navigating from /portfolio
+    //       to /projects/<id> still pops the drawer.
+    //   (b) CustomEvent     — handles the same-page case where
+    //       react-router no-ops on identical URLs. ProjectDetail's
+    //       listener pops the drawer directly if the task belongs to
+    //       this project.
     const taskId = n.payload?.task_id ?? n.payload?.entity_id ?? null;
     if (taskId) {
+      try {
+        sessionStorage.setItem("bedrock:pending-task-open", String(taskId));
+      } catch {
+        /* private-mode safari — fall through to the event */
+      }
       window.dispatchEvent(
         new CustomEvent("bedrock:open-task", { detail: { taskId } }),
       );
@@ -144,17 +154,15 @@ export function NotificationBell() {
     >
       <div className="flex items-center justify-between gap-2 border-b border-border-strong px-3 py-2">
         <span className="text-[12.5px] font-semibold text-ink">Notifications</span>
-        {unread > 0 ? (
-          <button
-            type="button"
-            onClick={() => markAllRead.mutate()}
-            disabled={markAllRead.isPending}
-            className="inline-flex items-center gap-1 text-[11px] font-medium text-ink-3 hover:text-accent disabled:opacity-60"
-            title="Mark all as read"
-          >
-            <MailCheck size={11} aria-hidden /> Mark all read
-          </button>
-        ) : null}
+        <button
+          type="button"
+          onClick={() => unread > 0 && markAllRead.mutate()}
+          disabled={markAllRead.isPending || unread === 0}
+          className="inline-flex items-center gap-1 text-[11px] font-medium text-ink-3 hover:text-accent disabled:cursor-not-allowed disabled:text-ink-4 disabled:hover:text-ink-4"
+          title={unread > 0 ? "Mark all as read" : "Nothing to mark — you're caught up"}
+        >
+          <MailCheck size={11} aria-hidden /> Mark all read
+        </button>
       </div>
       <div className="max-h-[60vh] overflow-y-auto">
         {listQ.isLoading ? (

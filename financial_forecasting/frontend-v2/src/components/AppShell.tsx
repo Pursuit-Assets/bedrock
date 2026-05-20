@@ -146,10 +146,23 @@ export function AppShell() {
       <GlobalSearch open={searchOpen} onClose={() => setSearchOpen(false)} />
       <Sidebar collapsed={collapsed} onToggle={toggle} onSearchOpen={() => setSearchOpen(true)} />
       <main className="flex flex-col overflow-hidden">
-        {/* Slim top bar — right-aligned action area for the notification
-            bell. Sits above the scroll container so the bell remains
-            fixed while page content scrolls underneath. */}
-        <header className="flex h-10 flex-shrink-0 items-center justify-end gap-2 border-b border-border bg-surface px-4">
+        {/* Top bar — page title (left), compact search trigger (center
+            -right), notification bell (right). 36px tall so it doesn't
+            steal vertical room from page content. */}
+        <header className="flex h-9 flex-shrink-0 items-center gap-3 border-b border-border bg-surface px-4">
+          <PageTitle pathname={pathname} />
+          <button
+            type="button"
+            onClick={() => setSearchOpen(true)}
+            className="ml-auto flex h-7 w-64 items-center gap-2 rounded-md border border-border-strong bg-surface-2/60 px-2.5 text-left text-ink-3 hover:border-ink-3 hover:bg-surface-2"
+            title="Search (⌘K)"
+          >
+            <Search size={12} className="flex-shrink-0" />
+            <span className="min-w-0 flex-1 text-[12px] text-ink-4">Search…</span>
+            <kbd className="rounded border border-border-strong bg-surface px-1 py-px text-[10px] text-ink-3">
+              ⌘K
+            </kbd>
+          </button>
           <NotificationBell />
         </header>
         {sfNotConnected && !sfOptional ? (
@@ -162,6 +175,37 @@ export function AppShell() {
       </main>
     </div>
   );
+}
+
+// Top-level route prefix → page title. Order matters: longer / more
+// specific prefixes first so /portfolio/<id> still resolves to "Home".
+// Routes not listed render the path's first segment, capitalized.
+const ROUTE_TITLES: { prefix: string; label: string }[] = [
+  { prefix: "/portfolio", label: "Home" },
+  { prefix: "/dashboard", label: "Dashboard" },
+  { prefix: "/cashflow", label: "Cash Flow" },
+  { prefix: "/accounts", label: "Accounts" },
+  { prefix: "/contacts", label: "Contacts" },
+  { prefix: "/pipeline", label: "Pipeline" },
+  { prefix: "/opportunities", label: "Pipeline" },
+  { prefix: "/awards", label: "Awards" },
+  { prefix: "/projects", label: "Projects" },
+  { prefix: "/cleanup", label: "Cleanup" },
+  { prefix: "/jobs", label: "Jobs" },
+  { prefix: "/tasks", label: "Tasks" },
+  { prefix: "/settings", label: "Settings" },
+  { prefix: "/feedback", label: "Feedback" },
+];
+
+function PageTitle({ pathname }: { pathname: string }) {
+  const match = ROUTE_TITLES.find((r) => pathname.startsWith(r.prefix));
+  const label =
+    match?.label ??
+    (() => {
+      const seg = pathname.split("/").filter(Boolean)[0];
+      return seg ? seg.charAt(0).toUpperCase() + seg.slice(1) : "Bedrock";
+    })();
+  return <span className="text-[13.5px] font-semibold text-ink">{label}</span>;
 }
 
 function SalesforceGate() {
@@ -196,11 +240,12 @@ function SalesforceGate() {
 function Sidebar({
   collapsed,
   onToggle,
-  onSearchOpen,
 }: {
   collapsed: boolean;
   onToggle: () => void;
-  onSearchOpen: () => void;
+  /** Kept in the prop type for callers that still pass it (top-bar
+   *  search trigger replaced the sidebar one as of 2026-05-20). */
+  onSearchOpen?: () => void;
 }) {
   const { data: user } = useCurrentUser();
   const sf = useSalesforceStatus();
@@ -243,22 +288,7 @@ function Sidebar({
         </button>
       </div>
 
-      {/* Search trigger — hidden when collapsed */}
-      {!collapsed && (
-        <button
-          type="button"
-          onClick={onSearchOpen}
-          className="mb-2 mt-1 flex h-[30px] w-full items-center gap-2 rounded-md border border-border-strong bg-surface px-3 text-left text-ink-3 hover:border-ink-3 hover:bg-surface-2"
-        >
-          <Search size={13} className="flex-shrink-0" />
-          <span className="min-w-0 flex-1 text-[12.5px] text-ink-4">
-            Search…
-          </span>
-          <kbd className="rounded border border-border-strong px-1.5 py-px text-[10px] text-ink-3">
-            ⌘K
-          </kbd>
-        </button>
-      )}
+      {/* Search trigger moved to the top bar (2026-05-20). */}
 
       <nav className="flex flex-col">
         {NAV_GROUPS.map((group) => (
