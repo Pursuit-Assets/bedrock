@@ -146,6 +146,12 @@ export function AppShell() {
       <GlobalSearch open={searchOpen} onClose={() => setSearchOpen(false)} />
       <Sidebar collapsed={collapsed} onToggle={toggle} onSearchOpen={() => setSearchOpen(true)} />
       <main className="flex flex-col overflow-hidden">
+        {/* Slim top bar — right-aligned action area for the notification
+            bell. Sits above the scroll container so the bell remains
+            fixed while page content scrolls underneath. */}
+        <header className="flex h-10 flex-shrink-0 items-center justify-end gap-2 border-b border-border bg-surface px-4">
+          <NotificationBell />
+        </header>
         {sfNotConnected && !sfOptional ? (
           <SalesforceGate />
         ) : (
@@ -337,14 +343,12 @@ function Sidebar({
           )}
         </NavLink>
 
-        {/* User avatar — bell sits inline with the user info when the
-            sidebar is expanded, or stacked above when collapsed so the
-            badge stays visible. */}
+        {/* User avatar (bell moved to the top-bar 2026-05-20). */}
         {user && (
           <div
             className={cn(
               "mt-2 flex items-center rounded-md px-1 py-2",
-              collapsed ? "flex-col justify-center gap-1" : "gap-2 px-2.5",
+              collapsed ? "justify-center" : "gap-2 px-2.5",
             )}
           >
             {user.picture ? (
@@ -364,7 +368,6 @@ function Sidebar({
                 <span className="truncate text-[11px] text-ink-4">{user.email}</span>
               </div>
             )}
-            <NotificationBell />
           </div>
         )}
       </div>

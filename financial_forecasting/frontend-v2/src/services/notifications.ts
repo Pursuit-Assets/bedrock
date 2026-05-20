@@ -102,13 +102,40 @@ export function useUnreadNotificationCount() {
   });
 }
 
+/** Optimistic mark-read: flips the row's read_at in the local cache + drops the
+ *  unread badge count BEFORE the server request resolves, so the UI feels
+ *  instantaneous. Rolls back if the request errors. */
 export function useMarkNotificationRead() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async (id: string) => {
       await api.post(`/api/notifications/${id}/read`);
     },
-    onSuccess: () => {
+    onMutate: async (id: string) => {
+      await qc.cancelQueries({ queryKey: ["notifications"] });
+      const nowIso = new Date().toISOString();
+      const prevList = qc.getQueryData<BedrockNotification[]>(["notifications", false]);
+      const prevUnread = qc.getQueryData<BedrockNotification[]>(["notifications", true]);
+      const prevCount = qc.getQueryData<number>(["notifications", "unread-count"]);
+      // Patch every cached list flavor (unread-only + all).
+      for (const key of [["notifications", false], ["notifications", true]] as const) {
+        qc.setQueryData<BedrockNotification[]>(key, (rows) =>
+          (rows ?? []).map((r) => (r.id === id && !r.read_at ? { ...r, read_at: nowIso } : r)),
+        );
+      }
+      qc.setQueryData<number>(["notifications", "unread-count"], (c) =>
+        typeof c === "number" ? Math.max(0, c - 1) : c,
+      );
+      return { prevList, prevUnread, prevCount };
+    },
+    onError: (_err, _id, ctx) => {
+      // Roll back on failure so the row doesn't look read when it isn't.
+      if (!ctx) return;
+      if (ctx.prevList !== undefined) qc.setQueryData(["notifications", false], ctx.prevList);
+      if (ctx.prevUnread !== undefined) qc.setQueryData(["notifications", true], ctx.prevUnread);
+      if (ctx.prevCount !== undefined) qc.setQueryData(["notifications", "unread-count"], ctx.prevCount);
+    },
+    onSettled: () => {
       qc.invalidateQueries({ queryKey: ["notifications"] });
     },
   });
@@ -120,7 +147,27 @@ export function useMarkAllNotificationsRead() {
     mutationFn: async () => {
       await api.post("/api/notifications/read-all");
     },
-    onSuccess: () => {
+    onMutate: async () => {
+      await qc.cancelQueries({ queryKey: ["notifications"] });
+      const nowIso = new Date().toISOString();
+      const prevList = qc.getQueryData<BedrockNotification[]>(["notifications", false]);
+      const prevUnread = qc.getQueryData<BedrockNotification[]>(["notifications", true]);
+      const prevCount = qc.getQueryData<number>(["notifications", "unread-count"]);
+      for (const key of [["notifications", false], ["notifications", true]] as const) {
+        qc.setQueryData<BedrockNotification[]>(key, (rows) =>
+          (rows ?? []).map((r) => (r.read_at ? r : { ...r, read_at: nowIso })),
+        );
+      }
+      qc.setQueryData<number>(["notifications", "unread-count"], 0);
+      return { prevList, prevUnread, prevCount };
+    },
+    onError: (_err, _v, ctx) => {
+      if (!ctx) return;
+      if (ctx.prevList !== undefined) qc.setQueryData(["notifications", false], ctx.prevList);
+      if (ctx.prevUnread !== undefined) qc.setQueryData(["notifications", true], ctx.prevUnread);
+      if (ctx.prevCount !== undefined) qc.setQueryData(["notifications", "unread-count"], ctx.prevCount);
+    },
+    onSettled: () => {
       qc.invalidateQueries({ queryKey: ["notifications"] });
     },
   });

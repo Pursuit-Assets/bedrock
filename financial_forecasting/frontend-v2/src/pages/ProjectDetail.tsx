@@ -1884,6 +1884,28 @@ function ProjectListView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
 
+  // Same-page bell clicks (e.g. /projects/abc → /projects/abc?task=xyz
+  // when the user is already on /projects/abc) don't fire useSearchParams
+  // because react-router no-ops on identical-URL navigations. The bell
+  // emits a CustomEvent in that case; we listen here and pop the drawer
+  // directly. Tasks not on this project's tree are ignored.
+  useEffect(() => {
+    function onOpenTaskEvent(e: Event) {
+      const detail = (e as CustomEvent).detail || {};
+      const taskId = detail.taskId;
+      if (!taskId) return;
+      // Confirm the task belongs to this project before popping. Avoids
+      // spurious opens when the user is on /projects/A but the bell
+      // resolved a notification targeting /projects/B.
+      const found = workstreams.some((w) =>
+        w.milestones.some((m) => m.tasks.some((t) => t.id === taskId)),
+      );
+      if (found) setOpenTaskId(taskId);
+    }
+    window.addEventListener("bedrock:open-task", onOpenTaskEvent as EventListener);
+    return () => window.removeEventListener("bedrock:open-task", onOpenTaskEvent as EventListener);
+  }, [workstreams]);
+
   // Resolve the latest object from the workstream tree each render so
   // the drawer reflects up-to-date data (e.g. after an inline edit).
   const openWs = openWsId

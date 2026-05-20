@@ -53,23 +53,21 @@ export function NotificationBell() {
       const vh = window.innerHeight;
       const vw = window.innerWidth;
       const panelHeight = panel?.offsetHeight ?? 420;
-      // Prefer opening above the bell when there's not enough space
-      // below (the common case — bell lives at the bottom of the
-      // sidebar). Falls back to below otherwise.
+      // Bell now lives in the top bar — prefer opening DOWNWARD (the
+      // common case). Falls back to above only if the panel would
+      // overflow below the viewport.
       const spaceBelow = vh - rect.bottom - PANEL_MARGIN;
       let top: number;
-      if (spaceBelow < panelHeight && rect.top > panelHeight + PANEL_MARGIN) {
-        top = rect.top - panelHeight - PANEL_MARGIN;
-      } else {
+      if (spaceBelow >= panelHeight || rect.top < panelHeight + PANEL_MARGIN) {
         top = rect.bottom + PANEL_MARGIN;
+      } else {
+        top = rect.top - panelHeight - PANEL_MARGIN;
       }
-      // Open toward the right of the bell (escapes the sidebar).
-      let left = rect.right + PANEL_MARGIN;
-      if (left + PANEL_WIDTH > vw - PANEL_MARGIN) {
-        // Not enough horizontal room — anchor under/over the trigger
-        // and clamp to the viewport's right edge.
-        left = Math.max(PANEL_MARGIN, vw - PANEL_WIDTH - PANEL_MARGIN);
-      }
+      // Right-align the panel to the trigger so the dropdown extends
+      // leftward (avoids overflowing the right edge of the viewport
+      // since the bell sits in the top-right corner).
+      let left = rect.right - PANEL_WIDTH;
+      left = Math.max(PANEL_MARGIN, Math.min(vw - PANEL_WIDTH - PANEL_MARGIN, left));
       top = Math.max(PANEL_MARGIN, Math.min(vh - panelHeight - PANEL_MARGIN, top));
       setCoords({ top, left });
     }
@@ -112,16 +110,25 @@ export function NotificationBell() {
 
   function handleRowClick(n: BedrockNotification) {
     if (!n.read_at) markRead.mutate(n.id);
+    setOpen(false);
     const url = resolveTargetUrl(n);
-    if (url) {
-      // navigate(absolute URLs as full reload, in-app paths via SPA router)
-      if (/^https?:\/\//.test(url)) {
-        window.location.href = url;
-      } else {
-        navigate(url);
-      }
-      setOpen(false);
+    if (!url) return;
+    if (/^https?:\/\//.test(url)) {
+      window.location.href = url;
+      return;
     }
+    // Always dispatch the notification's intent as a CustomEvent so
+    // ProjectDetail (or any future detail page) can react even when
+    // the user is already on the target route — react-router's
+    // navigate() silently no-ops on identical URLs, which was why the
+    // bell looked broken when you were already on /projects/<id>.
+    const taskId = n.payload?.task_id ?? n.payload?.entity_id ?? null;
+    if (taskId) {
+      window.dispatchEvent(
+        new CustomEvent("bedrock:open-task", { detail: { taskId } }),
+      );
+    }
+    navigate(url);
   }
 
   const panel = open ? (
