@@ -2174,32 +2174,34 @@ async def get_account_tasks(
 async def get_user_tasks(
     owner_id: str,
     limit: Optional[int] = Query(None, le=2000),
+    include_closed: bool = Query(False),
     client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user=Depends(require_auth),
 ):
     """Tasks owned by this Salesforce user (Task.OwnerId = owner_id).
 
-    Mirrors the per-account / per-opp / per-contact endpoints' shape so
-    the frontend's TaskListTab consumes it without an adapter. Cached
-    server-side (60s); existing task-mutation invalidations cover the
-    `user-tasks:` prefix.
+    Open-only by default; `include_closed=true` returns completed/cancelled
+    tasks too (used by the homebase "Show done" toggle). Cached server-side
+    (60s) keyed on the include_closed flag so the two variants don't
+    collide.
     """
     validate_salesforce_id(owner_id, "owner_id")
     try:
         salesforce = client.salesforce
 
-        cache_key = f"user-tasks:{owner_id}:{limit or 'all'}"
+        cache_key = f"user-tasks:{owner_id}:{limit or 'all'}:closed={include_closed}"
         cached = cache.get(cache_key)
         if cached is not None:
             return cached
 
+        closed_clause = "" if include_closed else "AND IsClosed = false"
         query = f"""
         SELECT Id, Subject, Status, Priority, ActivityDate, Description,
                IsClosed, OwnerId, Owner.Name, WhoId, Who.Name, WhatId, What.Name,
                Type, TaskSubtype,
                CreatedById, CreatedBy.Name, CreatedDate, LastModifiedDate
         FROM Task
-        WHERE OwnerId = '{owner_id}' AND IsClosed = false
+        WHERE OwnerId = '{owner_id}' {closed_clause}
           AND (TaskSubtype = 'Task' OR TaskSubtype = null)
         ORDER BY ActivityDate ASC NULLS LAST
         """

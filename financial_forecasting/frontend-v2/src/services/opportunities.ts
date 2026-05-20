@@ -496,18 +496,21 @@ export function useContactTasks(contactId: string | undefined) {
   });
 }
 
-async function fetchUserTasks(ownerId: string): Promise<SfTask[]> {
+async function fetchUserTasks(ownerId: string, includeClosed: boolean): Promise<SfTask[]> {
+  const qs = includeClosed ? "?include_closed=true" : "";
   const { data } = await api.get<TasksResponse>(
-    `/api/salesforce/users/${encodeURIComponent(ownerId)}/tasks`,
+    `/api/salesforce/users/${encodeURIComponent(ownerId)}/tasks${qs}`,
   );
   return data.data ?? [];
 }
 
-/** Open tasks owned by a Salesforce user (Task.OwnerId). */
-export function useUserTasks(ownerId: string | undefined) {
+/** Tasks owned by a Salesforce user (Task.OwnerId).
+ *  By default returns only open tasks; pass `includeClosed` to fetch
+ *  all (used by the homebase "Show done" toggle). */
+export function useUserTasks(ownerId: string | undefined, includeClosed = false) {
   return useQuery({
-    queryKey: ["user-tasks", ownerId],
-    queryFn: () => fetchUserTasks(ownerId!),
+    queryKey: ["user-tasks", ownerId, includeClosed],
+    queryFn: () => fetchUserTasks(ownerId!, includeClosed),
     staleTime: 60_000,
     enabled: !!ownerId,
   });
