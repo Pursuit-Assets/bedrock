@@ -20,10 +20,48 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
-import { Search, X } from "lucide-react";
+import { Clock, Search, X } from "lucide-react";
 
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
+
+// ── Recent searches ─────────────────────────────────────────────────────────
+// Persist the user's last N clicked search results in localStorage so the
+// empty-input dropdown can surface them — standard enterprise-search UX
+// (Notion / Linear / Asana). We store ResultItem-shaped entries so a
+// click on a recent navigates directly to the record; no re-query needed.
+
+const RECENTS_KEY = "bedrock:topbar-search-recents";
+const MAX_RECENTS = 8;
+
+function readRecents(): ResultItem[] {
+  try {
+    const raw = localStorage.getItem(RECENTS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (x): x is ResultItem =>
+        x && typeof x === "object" && typeof x.label === "string" && typeof x.href === "string",
+    ).slice(0, MAX_RECENTS);
+  } catch {
+    return [];
+  }
+}
+
+function writeRecents(items: ResultItem[]) {
+  try {
+    localStorage.setItem(RECENTS_KEY, JSON.stringify(items.slice(0, MAX_RECENTS)));
+  } catch {
+    /* private mode — drop silently */
+  }
+}
+
+function pushRecent(prev: ResultItem[], item: ResultItem): ResultItem[] {
+  // Dedupe by href (clicking the same record twice promotes it, doesn't dup).
+  const filtered = prev.filter((p) => p.href !== item.href);
+  return [item, ...filtered].slice(0, MAX_RECENTS);
+}
 
 interface SfRecord {
   Id: string;
@@ -85,6 +123,7 @@ export function TopBarSearch() {
   const [loading, setLoading] = useState(false);
   const [open, setOpen] = useState(false);
   const [activeIdx, setActiveIdx] = useState(0);
+  const [recents, setRecents] = useState<ResultItem[]>(() => readRecents());
 
   const inputRef = useRef<HTMLInputElement>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -171,12 +210,26 @@ export function TopBarSearch() {
     };
   }, [query]);
 
-  function go(href: string) {
-    navigate(href);
+  function go(item: ResultItem | string) {
+    // Accept either a ResultItem (so we can persist the recent) or a
+    // raw href string (for legacy callers).
+    if (typeof item === "object") {
+      const next = pushRecent(recents, item);
+      setRecents(next);
+      writeRecents(next);
+      navigate(item.href);
+    } else {
+      navigate(item);
+    }
     setOpen(false);
     setQuery("");
     setItems([]);
     inputRef.current?.blur();
+  }
+
+  function clearRecents() {
+    setRecents([]);
+    writeRecents([]);
   }
 
   function onKeyDown(e: React.KeyboardEvent) {
@@ -196,7 +249,7 @@ export function TopBarSearch() {
       setActiveIdx((i) => Math.max(i - 1, 0));
     } else if (e.key === "Enter" && items[activeIdx]) {
       e.preventDefault();
-      go(items[activeIdx].href);
+      go(items[activeIdx]);
     }
   }
 
@@ -221,8 +274,11 @@ export function TopBarSearch() {
     return out;
   }, [items]);
 
-  const showDropdown =
-    open && (query.trim().length >= 2 || items.length > 0 || loading);
+  const showRecents = open && query.trim().length === 0 && recents.length > 0;
+  const showResults = open && (query.trim().length >= 2 || items.length > 0 || loading);
+  const showEmptyHint =
+    open && query.trim().length === 0 && recents.length === 0;
+  const showDropdown = showRecents || showResults || showEmptyHint;
 
   return (
     <div ref={wrapperRef} className="relative">
@@ -275,7 +331,47 @@ export function TopBarSearch() {
               style={{ top: coords.top, left: coords.left, width: Math.max(coords.width, PANEL_WIDTH) }}
             >
               <div className="max-h-[440px] overflow-y-auto overscroll-contain">
-                {loading ? (
+                {showRecents ? (
+                  <div className="py-1">
+                    <div className="flex items-center justify-between px-3 pt-1 pb-0.5 text-[10px] font-semibold uppercase tracking-wider text-ink-3">
+                      <span className="inline-flex items-center gap-1">
+                        <Clock size={10} aria-hidden /> Recent
+                      </span>
+                      <button
+                        type="button"
+                        onClick={clearRecents}
+                        className="text-[10px] font-medium normal-case tracking-normal text-ink-4 hover:text-accent"
+                      >
+                        Clear
+                      </button>
+                    </div>
+                    <ul>
+                      {recents.map((item, i) => (
+                        <li key={`recent-${item.href}-${i}`}>
+                          <button
+                            type="button"
+                            onClick={() => go(item)}
+                            className="flex w-full flex-col items-start gap-0.5 px-3 py-1.5 text-left text-[12.5px] hover:bg-surface-2/60"
+                          >
+                            <span className="flex w-full min-w-0 items-center gap-2">
+                              <span className="truncate font-medium text-ink">{item.label}</span>
+                              <span className="ml-auto flex-shrink-0 text-[10.5px] uppercase tracking-wider text-ink-4">
+                                {item.group}
+                              </span>
+                            </span>
+                            {item.sub ? (
+                              <span className="truncate text-[11px] text-ink-3">{item.sub}</span>
+                            ) : null}
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : showEmptyHint ? (
+                  <div className="px-4 py-3 text-center text-[12px] text-ink-4">
+                    Start typing to search accounts, contacts, opportunities…
+                  </div>
+                ) : loading ? (
                   <div className="px-4 py-3 text-center text-[12px] text-ink-3">Searching…</div>
                 ) : query.trim().length < 2 ? (
                   <div className="px-4 py-3 text-center text-[12px] text-ink-4">
@@ -300,7 +396,7 @@ export function TopBarSearch() {
                               <button
                                 type="button"
                                 onMouseEnter={() => setActiveIdx(flatIdx)}
-                                onClick={() => go(item.href)}
+                                onClick={() => go(item)}
                                 className={cn(
                                   "flex w-full flex-col items-start gap-0.5 px-3 py-1.5 text-left text-[12.5px]",
                                   isActive ? "bg-surface-2" : "hover:bg-surface-2/60",

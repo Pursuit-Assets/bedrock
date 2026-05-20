@@ -1862,7 +1862,23 @@ function ProjectListView({
   // reachable via the `⋯` menu's "Rename" item.
   const [openWsId, setOpenWsId] = useState<string | null>(null);
   const [openMsId, setOpenMsId] = useState<string | null>(null);
-  const [openTaskId, setOpenTaskId] = useState<string | null>(null);
+  // Read any pending notification-deep-link taskId synchronously during
+  // useState initialization (before render + before any effects). This
+  // is the most reliable handoff from the bell click — it can't lose a
+  // race against React Query loading workstreams. Clear storage in the
+  // same init so a future remount / back-nav doesn't re-pop.
+  const [openTaskId, setOpenTaskId] = useState<string | null>(() => {
+    try {
+      const pending = sessionStorage.getItem("bedrock:pending-task-open");
+      if (pending) {
+        sessionStorage.removeItem("bedrock:pending-task-open");
+        return pending;
+      }
+    } catch {
+      /* storage unavailable — fall through */
+    }
+    return null;
+  });
 
   // Deep-link from a notification: /projects/<id>?task=<task_id>
   // opens the task drawer on load. Strip the param after consumption
@@ -1884,31 +1900,11 @@ function ProjectListView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
 
-  // Bell-click → task-drawer handoffs:
-  //
-  //   (a) sessionStorage — bell writes "bedrock:pending-task-open"
-  //       before navigate(). ProjectDetail reads it on mount + every
-  //       render until consumed; the drawer's openTaskCtx selector
-  //       picks the task up as soon as workstreams resolves.
-  //   (b) CustomEvent — fallback for same-page clicks (react-router
-  //       no-ops on identical URLs).
-  //
-  // Always set openTaskId optimistically — don't gate on workstreams.
-  // The drawer's openTaskCtx returns null until the task is present
-  // in the tree, then renders. Clears the storage immediately so a
-  // refresh / back-nav doesn't re-pop the same task.
+  // Same-page bell click handoff. sessionStorage handoff is already
+  // consumed in useState init above (covers the cross-page case); this
+  // listener handles the case where the user is already on this
+  // ProjectDetail and react-router no-ops the navigation.
   useEffect(() => {
-    let pending: string | null = null;
-    try {
-      pending = sessionStorage.getItem("bedrock:pending-task-open");
-    } catch {
-      /* storage unavailable */
-    }
-    if (pending) {
-      setOpenTaskId(pending);
-      try { sessionStorage.removeItem("bedrock:pending-task-open"); } catch {}
-    }
-
     function onOpenTaskEvent(e: Event) {
       const detail = (e as CustomEvent).detail || {};
       const taskId = detail.taskId;
@@ -1916,10 +1912,6 @@ function ProjectListView({
     }
     window.addEventListener("bedrock:open-task", onOpenTaskEvent as EventListener);
     return () => window.removeEventListener("bedrock:open-task", onOpenTaskEvent as EventListener);
-    // No `workstreams` dep — set the id once on mount; the drawer
-    // selector recomputes on workstreams changes via React's normal
-    // render cycle. Re-running this effect on workstreams changes
-    // would cause spurious re-opens after the user closed the drawer.
   }, []);
 
   // Resolve the latest object from the workstream tree each render so
