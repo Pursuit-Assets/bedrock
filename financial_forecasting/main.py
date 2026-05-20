@@ -212,6 +212,18 @@ async def startup_event():
     except Exception as e:
         logger.warning(f"db_pool not registered on _services: {e}")
 
+    # SF-side notification poller — watches for new SF Tasks and
+    # OpportunityFieldHistory rows and fans out notifications. Only
+    # meaningful when SF is connected; the loop self-checks and no-ops
+    # otherwise.
+    if "salesforce" in client.connected_services:
+        try:
+            from services.sf_notification_poller import run_forever as _sf_notif_loop
+            asyncio.create_task(_sf_notif_loop())
+            logger.info("sf_notification_poller started")
+        except Exception as e:
+            logger.warning(f"sf_notification_poller failed to start: {e}")
+
     logger.info(f"API started — connected services: {client.connected_services or ['none']}")
 
 
