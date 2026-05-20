@@ -153,6 +153,11 @@ async def _poll_sf_tasks(pool, sf) -> int:
                 creator_email = (creator.get("Email") or "").strip() or None
                 creator_name = creator.get("Name") or creator_email or "Salesforce"
 
+                # Suppress self-action pings — if you created a Task and
+                # set yourself as the owner in SF, you already know.
+                if creator_email and creator_email.lower() == owner_email.lower():
+                    continue
+
                 what_id = r.get("WhatId")
                 what_name = (r.get("What") or {}).get("Name")
                 target_url = _build_what_target_url(what_id)
@@ -258,13 +263,18 @@ async def _poll_opp_owner_changes(pool, sf) -> int:
                 actor = r.get("CreatedBy") or {}
                 actor_email = (actor.get("Email") or "").strip() or None
                 actor_name = actor.get("Name") or actor_email or "Salesforce"
+                actor_lower = (actor_email or "").lower()
 
                 target_url = f"/opportunities/{opp_id}" if opp_id else None
 
-                # Notify the gainer.
+                # Notify the gainer — unless they're the one who made the
+                # change. Self-actions don't fire (product rule per
+                # 2026-05-20).
                 if new_id and new_id in user_lookup:
                     em = (user_lookup[new_id].get("Email") or "").strip()
-                    org = await _find_org_user(conn, em)
+                    if actor_lower and em.lower() == actor_lower:
+                        em = ""  # short-circuit the dispatch below
+                    org = await _find_org_user(conn, em) if em else None
                     if org:
                         await enqueue_notification(
                             conn,
@@ -285,10 +295,13 @@ async def _poll_opp_owner_changes(pool, sf) -> int:
 
                 # Notify the prior owner. Skip if the prior owner is the
                 # same person as the new owner (no-op transitions exist
-                # in some workflows, e.g. when SF normalizes a value).
+                # in some workflows). Also skip if the prior owner is
+                # the actor — they did the reassign themselves.
                 if old_id and old_id != new_id and old_id in user_lookup:
                     em = (user_lookup[old_id].get("Email") or "").strip()
-                    org = await _find_org_user(conn, em)
+                    if actor_lower and em.lower() == actor_lower:
+                        em = ""
+                    org = await _find_org_user(conn, em) if em else None
                     if org:
                         new_name = (user_lookup.get(new_id) or {}).get("Name") or "another owner"
                         await enqueue_notification(

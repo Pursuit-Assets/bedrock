@@ -1181,10 +1181,15 @@ async def _notify_task_owners(
     # Resolve actor display_name once so the notification can say
     # "Jacqueline Reverand assigned you a task" instead of "jac@pursuit.org…".
     actor_display = await _lookup_display_name(conn, actor_email)
+    actor_lower = (actor_email or "").strip().lower()
 
     for r in rows:
         email = (r["email"] or "").strip()
         if not email:
+            continue
+        # Suppress self-action pings: if you assigned a task to yourself,
+        # you already know — don't notify. (Product rule per 2026-05-20.)
+        if actor_lower and email.lower() == actor_lower:
             continue
         # target_url deep-links to the task drawer so the recipient lands
         # directly on the task they were assigned, not the project root.
