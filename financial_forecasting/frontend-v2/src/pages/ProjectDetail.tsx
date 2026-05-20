@@ -2073,12 +2073,30 @@ function DeleteProjectButton({
   const navigate = useNavigate();
   const deleteProject = useDeleteProject();
   const [confirming, setConfirming] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  function extractErrorMessage(err: unknown): string {
+    // axios-style error object → response.data.detail (FastAPI)
+    const e = err as { response?: { status?: number; data?: { detail?: string } }; message?: string };
+    if (e?.response) {
+      const status = e.response.status;
+      const detail = e.response.data?.detail;
+      if (status === 403) return "Forbidden — only the project owner or an admin can delete this project.";
+      if (status === 404) return "Project not found — it may already be deleted. Refresh the list.";
+      if (detail) return `${detail} (HTTP ${status ?? "?"})`;
+      return `Delete failed (HTTP ${status ?? "?"})`;
+    }
+    return e?.message ?? "Delete failed.";
+  }
 
   if (!confirming) {
     return (
       <button
         type="button"
-        onClick={() => setConfirming(true)}
+        onClick={() => {
+          setConfirming(true);
+          setErrorMsg(null);
+        }}
         className="inline-flex h-7 items-center gap-1.5 rounded border border-border-strong bg-surface px-2.5 text-[11.5px] font-medium text-ink-3 hover:border-red hover:text-red"
         title="Delete this project"
       >
@@ -2087,35 +2105,43 @@ function DeleteProjectButton({
     );
   }
   return (
-    <div className="inline-flex items-center gap-2 rounded border border-red bg-red-soft px-2.5 py-1 text-[11.5px] text-red">
-      <span>
-        Delete <strong>{projectName}</strong>? Soft-deletes the project and its
-        workstreams/milestones/tasks (recoverable from the trash view).
-      </span>
-      <button
-        type="button"
-        onClick={() => setConfirming(false)}
-        disabled={deleteProject.isPending}
-        className="rounded border border-border-strong bg-surface px-2 py-0.5 text-ink-2 hover:bg-surface-2"
-      >
-        Cancel
-      </button>
-      <button
-        type="button"
-        disabled={deleteProject.isPending}
-        onClick={async () => {
-          try {
-            await deleteProject.mutateAsync(projectId);
-            navigate("/projects");
-          } catch (e) {
-            // Surface the error inline; leave confirm open so user can retry.
-            console.error("Failed to delete project", e);
-          }
-        }}
-        className="rounded border border-red bg-red px-2 py-0.5 font-semibold text-white hover:opacity-90 disabled:opacity-60"
-      >
-        {deleteProject.isPending ? "Deleting…" : "Confirm delete"}
-      </button>
+    <div className="flex flex-col items-end gap-1">
+      <div className="inline-flex items-center gap-2 rounded border border-red bg-red-soft px-2.5 py-1 text-[11.5px] text-red">
+        <span>
+          Delete <strong>{projectName}</strong>? Soft-deletes the project and its
+          workstreams/milestones/tasks (recoverable from the trash view).
+        </span>
+        <button
+          type="button"
+          onClick={() => {
+            setConfirming(false);
+            setErrorMsg(null);
+          }}
+          disabled={deleteProject.isPending}
+          className="rounded border border-border-strong bg-surface px-2 py-0.5 text-ink-2 hover:bg-surface-2"
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          disabled={deleteProject.isPending}
+          onClick={async () => {
+            setErrorMsg(null);
+            try {
+              await deleteProject.mutateAsync(projectId);
+              navigate("/projects");
+            } catch (e) {
+              setErrorMsg(extractErrorMessage(e));
+            }
+          }}
+          className="rounded border border-red bg-red px-2 py-0.5 font-semibold text-white hover:opacity-90 disabled:opacity-60"
+        >
+          {deleteProject.isPending ? "Deleting…" : "Confirm delete"}
+        </button>
+      </div>
+      {errorMsg ? (
+        <p className="text-[11px] font-medium text-red">{errorMsg}</p>
+      ) : null}
     </div>
   );
 }

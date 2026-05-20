@@ -12,19 +12,25 @@ import { cn } from "@/lib/utils";
 import { fmtDate } from "@/lib/format";
 import { sortBy, useSort } from "@/lib/sort";
 import { useCurrentUser } from "@/services/auth";
-import { useProjects, useCreateProject, type BedrockProject } from "@/services/projects";
+import {
+  useProjects,
+  useCreateProject,
+  type BedrockProject,
+  type ProjectStatus,
+} from "@/services/projects";
 import { toast } from "sonner";
 
 type OwnerFilter = "all" | "mine";
 type ActivityFilter = "all" | "recent";
 const RECENT_DAYS = 30;
 
-type ColKey = "name" | "owner" | "created" | "updated";
+type ColKey = "name" | "status" | "owner" | "created" | "updated";
 
-const COLUMN_ORDER: ColKey[] = ["name", "owner", "created", "updated"];
+const COLUMN_ORDER: ColKey[] = ["name", "status", "owner", "created", "updated"];
 
 const DEFAULT_WIDTHS: Record<ColKey, number> = {
-  name: 360,
+  name: 320,
+  status: 100,
   owner: 200,
   created: 130,
   updated: 130,
@@ -32,9 +38,18 @@ const DEFAULT_WIDTHS: Record<ColKey, number> = {
 
 const COL_LABELS: Record<ColKey, string> = {
   name: "Project",
+  status: "Status",
   owner: "Owner",
   created: "Created",
   updated: "Updated",
+};
+
+// Sort rank for the status column — keeps the funnel order (active
+// projects above upcoming, upcoming above done) regardless of alpha.
+const STATUS_RANK: Record<string, number> = {
+  Active: 3,
+  Upcoming: 2,
+  Done: 1,
 };
 
 const ROW_HEIGHT = 44; // px — must match the row's actual rendered height
@@ -49,6 +64,8 @@ function extractProject(p: BedrockProject, key: ColKey): unknown {
   switch (key) {
     case "name":
       return p.name;
+    case "status":
+      return STATUS_RANK[p.status ?? "Active"] ?? 0;
     case "owner":
       return p.owner_email;
     case "created":
@@ -56,6 +73,26 @@ function extractProject(p: BedrockProject, key: ColKey): unknown {
     case "updated":
       return p.updated_at;
   }
+}
+
+function ProjectStatusPill({ value }: { value: ProjectStatus | string | null | undefined }) {
+  const v = value ?? "Active";
+  const cls =
+    v === "Upcoming"
+      ? "border-blue-200 bg-blue-50 text-blue-700"
+      : v === "Done"
+      ? "border-border-strong bg-surface-2 text-ink-3"
+      : "border-amber bg-amber-soft text-amber";
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center rounded border px-1.5 py-0.5 text-[11px] font-medium",
+        cls,
+      )}
+    >
+      {v}
+    </span>
+  );
 }
 
 export function ProjectsPage() {
@@ -357,6 +394,9 @@ const ProjectRow = memo(function ProjectRow({ p, onOpen }: RowProps) {
             {p.description}
           </span>
         ) : null}
+      </td>
+      <td className="overflow-hidden px-3 py-1">
+        <ProjectStatusPill value={p.status} />
       </td>
       <td className="overflow-hidden truncate px-3 py-1 text-[12.5px] text-ink-2">
         {p.owner_email ?? <span className="text-ink-4">—</span>}

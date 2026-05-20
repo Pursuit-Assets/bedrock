@@ -381,15 +381,25 @@ export function useUpdateProject(projectId: string) {
 }
 
 /** Soft-delete a project (cascades to workstreams/milestones/tasks).
- *  Owner or admin only — server enforces. */
+ *  Owner or admin only — server enforces (403 otherwise).
+ *
+ *  Caller should surface errors (the previous version of this hook
+ *  swallowed them in DeleteProjectButton, which made a 403 look like
+ *  a successful delete — see PR #208 notes). On success we also drop
+ *  the per-project detail cache so navigating back doesn't reuse a
+ *  stale "Project found" payload, and we await the projects refetch
+ *  via invalidateQueries so the caller's navigate() lands on a fresh
+ *  list. */
 export function useDeleteProject() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async (projectId: string) => {
       await api.delete(`/api/projects/${projectId}`);
+      return projectId;
     },
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["projects"] });
+    onSuccess: async (projectId) => {
+      qc.removeQueries({ queryKey: ["project-detail", projectId] });
+      await qc.invalidateQueries({ queryKey: ["projects"] });
     },
   });
 }
