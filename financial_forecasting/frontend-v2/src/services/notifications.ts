@@ -22,7 +22,14 @@ export interface NotificationPayload {
   /** Source identifiers for routing — see backend services/notifications.py. */
   project_id?: string | null;
   project_name?: string | null;
+  workstream_name?: string | null;
+  milestone_title?: string | null;
   task_id?: string | null;
+  task_title?: string | null;
+  /** For comment_mention: full body (already trimmed to 280 chars). */
+  comment_body?: string | null;
+  /** Resolved display name of the user that triggered the notification. */
+  actor_display_name?: string | null;
   entity_type?: string | null;
   entity_id?: string | null;
   comment_id?: string | null;

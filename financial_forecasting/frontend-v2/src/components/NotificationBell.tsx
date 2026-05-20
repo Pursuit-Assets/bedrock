@@ -208,6 +208,30 @@ function NotificationRow({
   const isUnread = !n.read_at;
   const icon = typeIcon(n.type);
   const time = useRelativeTime(n.created_at);
+  const p = n.payload ?? {};
+  const actor = p.actor_display_name || n.actor_email || "Someone";
+
+  // Headline + structured detail rows mirror the Slack message layout.
+  let headline = "";
+  let details: { label: string; value: string; bold?: boolean }[] = [];
+  if (n.type === "project_task_assigned") {
+    headline = `${actor} assigned you a task`;
+    if (p.project_name) details.push({ label: "Project", value: p.project_name });
+    if (p.workstream_name) details.push({ label: "Workstream", value: p.workstream_name });
+    if (p.milestone_title) details.push({ label: "Milestone", value: p.milestone_title });
+    if (p.task_title || p.subtitle) {
+      details.push({ label: "Task", value: p.task_title || p.subtitle || "", bold: true });
+    }
+  } else if (n.type === "comment_mention") {
+    headline = `${actor} mentioned you in a comment`;
+    if (p.project_name) details.push({ label: "Project", value: p.project_name });
+    if (p.task_title) details.push({ label: "Task", value: p.task_title });
+    const body = p.comment_body || p.subtitle || "";
+    if (body) details.push({ label: "Comment", value: body, bold: true });
+  } else {
+    headline = p.title || prettyType(n.type);
+    if (p.subtitle) details.push({ label: "", value: p.subtitle });
+  }
 
   return (
     <li>
@@ -228,19 +252,22 @@ function NotificationRow({
               "truncate text-[12.5px]",
               isUnread ? "font-semibold text-ink" : "font-medium text-ink-2",
             )}>
-              {n.payload.title || prettyType(n.type)}
+              {headline}
             </span>
             {time ? (
               <span className="ml-auto flex-shrink-0 text-[10.5px] text-ink-3">{time}</span>
             ) : null}
           </div>
-          {n.payload.subtitle ? (
-            <div className="mt-0.5 line-clamp-2 text-[11.5px] text-ink-3">
-              {n.payload.subtitle}
-            </div>
-          ) : null}
-          {n.actor_email ? (
-            <div className="mt-0.5 text-[10.5px] text-ink-4">{n.actor_email}</div>
+          {details.length > 0 ? (
+            <ul className="mt-1 flex flex-col gap-0.5">
+              {details.map((d, i) => (
+                <li key={i} className="text-[11.5px] text-ink-3 line-clamp-2">
+                  {d.label ? <span className="font-semibold text-ink-2">{d.label}:</span> : null}
+                  {d.label ? " " : ""}
+                  <span className={cn(d.bold && "font-semibold text-ink-2")}>{d.value}</span>
+                </li>
+              ))}
+            </ul>
           ) : null}
         </div>
         {isUnread ? (

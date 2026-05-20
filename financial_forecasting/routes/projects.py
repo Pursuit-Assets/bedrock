@@ -1161,23 +1161,26 @@ async def _notify_task_owners(
         "WHERE id = ANY($1::uuid[])",
         new_owner_ids,
     )
-    # We intentionally do NOT skip the actor here — assigning a task to
-    # yourself should still fire a notification (useful as a TODO ping,
-    # and required so a solo user can test the pipeline against their
-    # own account). If we ever want to suppress the self-ping in
-    # production, gate it via a per-user preference, not a hardcoded
-    # actor==recipient skip.
-    # Look up the parent project for the link target.
+    # Hierarchy lookup: project / workstream / milestone names for the
+    # rich notification body.
     parent = await conn.fetchrow(
-        """SELECT p.id AS project_id, p.name AS project_name
+        """SELECT p.id   AS project_id,    p.name  AS project_name,
+                  w.id   AS workstream_id, w.name  AS workstream_name,
+                  m.id   AS milestone_id,  m.title AS milestone_title
            FROM bedrock.milestone m
            JOIN bedrock.workstream w ON w.id = m.workstream_id
-           JOIN bedrock.project p ON p.id = w.project_id
+           JOIN bedrock.project   p ON p.id = w.project_id
            WHERE m.id = $1""",
         uuid.UUID(milestone_id),
     )
     project_id = str(parent["project_id"]) if parent else None
     project_name = parent["project_name"] if parent else None
+    workstream_name = parent["workstream_name"] if parent else None
+    milestone_title = parent["milestone_title"] if parent else None
+
+    # Resolve actor display_name once so the notification can say
+    # "Jacqueline Reverand assigned you a task" instead of "jac@pursuit.org…".
+    actor_display = await _lookup_display_name(conn, actor_email)
 
     for r in rows:
         email = (r["email"] or "").strip()
@@ -1196,12 +1199,32 @@ async def _notify_task_owners(
                 "title": f"Task assigned: {title}",
                 "subtitle": title,
                 "task_id": task_id,
+                "task_title": title,
                 "project_id": project_id,
                 "project_name": project_name,
+                "workstream_name": workstream_name,
+                "milestone_title": milestone_title,
+                "actor_display_name": actor_display,
                 "target_url": target_url,
             },
             actor_email=actor_email,
         )
+
+
+async def _lookup_display_name(conn, email: Optional[str]) -> Optional[str]:
+    """Resolve email -> display_name from public.org_users. Falls back
+    to the email itself when no row exists (gives the formatter
+    *something* sensible to use). Returns None for empty input."""
+    if not email:
+        return None
+    norm = email.strip().lower()
+    if not norm:
+        return None
+    row = await conn.fetchval(
+        "SELECT display_name FROM public.org_users WHERE LOWER(email) = LOWER($1) LIMIT 1",
+        norm,
+    )
+    return row or email
 
 
 @router.delete("/project-tasks/{task_id}")

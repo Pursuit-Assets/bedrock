@@ -228,27 +228,81 @@ def _format_slack_message(
     type: str, payload: Dict[str, Any], actor_email: Optional[str]
 ) -> Dict[str, Any]:
     """Render a Slack message from the notification payload. Returns
-    {text, blocks} — text is the fallback used in notification previews."""
-    title = payload.get("title") or "Bedrock notification"
-    subtitle = payload.get("subtitle") or ""
+    {text, blocks}. `text` is used as the fallback for lock-screen /
+    mobile previews; blocks are used in the in-Slack rendering.
+
+    Layout per type:
+
+      project_task_assigned:
+          {actor} assigned you a task
+          *Project*: {name}
+          *Workstream*: {name}
+          *Milestone*: {name}
+          *Task*: *{name}*       ← bolded
+
+      comment_mention:
+          {actor} mentioned you in a comment:
+          *Project*: {name}
+          *Task*: {name}
+          *Comment*: *{body}*    ← bolded
+    """
+    actor = (
+        payload.get("actor_display_name")
+        or actor_email
+        or "Someone"
+    )
     target_url = payload.get("target_url")
-    actor = actor_email or "Someone"
+    abs_url = _absolutize(target_url)
+
+    section_lines: List[str] = []
 
     if type == TYPE_PROJECT_TASK_ASSIGNED:
-        text = f":clipboard: {actor} assigned you a task: *{subtitle}*"
+        headline = f":clipboard: *{actor}* assigned you a task"
+        if payload.get("project_name"):
+            section_lines.append(f"*Project:* {payload['project_name']}")
+        if payload.get("workstream_name"):
+            section_lines.append(f"*Workstream:* {payload['workstream_name']}")
+        if payload.get("milestone_title"):
+            section_lines.append(f"*Milestone:* {payload['milestone_title']}")
+        if payload.get("task_title") or payload.get("subtitle"):
+            task = payload.get("task_title") or payload.get("subtitle")
+            section_lines.append(f"*Task:* *{task}*")
     elif type == TYPE_COMMENT_MENTION:
-        text = f":speech_balloon: {actor} mentioned you in a comment: _{subtitle}_"
+        headline = f":speech_balloon: *{actor}* mentioned you in a comment"
+        if payload.get("project_name"):
+            section_lines.append(f"*Project:* {payload['project_name']}")
+        if payload.get("task_title"):
+            section_lines.append(f"*Task:* {payload['task_title']}")
+        # Prefer the full body (already capped at 280 chars at enqueue) so
+        # the Slack reader sees the actual comment, not a truncated subtitle.
+        body = payload.get("comment_body") or payload.get("subtitle") or ""
+        if body:
+            section_lines.append(f"*Comment:* *{body}*")
     elif type == TYPE_SF_TASK_ASSIGNED:
-        text = f":bell: New Salesforce task: *{subtitle}*"
+        headline = f":bell: *New Salesforce task*"
+        sub = payload.get("subtitle") or ""
+        if sub:
+            section_lines.append(f"*{sub}*")
     elif type == TYPE_SF_OPP_OWNER_CHANGED:
-        text = f":handshake: Opportunity ownership changed: *{subtitle}*"
+        headline = f":handshake: *Opportunity ownership changed*"
+        sub = payload.get("subtitle") or ""
+        if sub:
+            section_lines.append(f"*{sub}*")
     else:
-        text = f"{title}: {subtitle}"
+        headline = payload.get("title") or "Bedrock notification"
+        sub = payload.get("subtitle") or ""
+        if sub:
+            section_lines.append(sub)
 
-    abs_url = _absolutize(target_url)
+    section_text = headline + ("\n" + "\n".join(section_lines) if section_lines else "")
+
     blocks: List[Dict[str, Any]] = [
-        {"type": "section", "text": {"type": "mrkdwn", "text": text}},
+        {"type": "section", "text": {"type": "mrkdwn", "text": section_text}},
     ]
+    # Plain-text fallback — Slack's lock-screen / mobile preview only
+    # reads the top-level `text` field, never blocks. Strip mrkdwn so
+    # the preview reads cleanly.
+    text = section_text.replace("*", "")
     if abs_url:
         blocks.append(
             {
@@ -262,10 +316,7 @@ def _format_slack_message(
                 ],
             }
         )
-        # Also surface the URL in the message text — Slack's notification
-        # preview (lock-screen, badge title) only shows the `text` field,
-        # never blocks. Plain URL makes the link clickable from mobile
-        # notifications too.
+        # Keep the URL in the text field too so it's tappable from mobile.
         text = f"{text}\n{abs_url}"
 
     return {"text": text, "blocks": blocks}
