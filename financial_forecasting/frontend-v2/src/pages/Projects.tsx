@@ -250,9 +250,9 @@ export function ProjectsPage() {
                 type="button"
                 onClick={() => setShowTrash(true)}
                 className="inline-flex items-center gap-1.5 rounded-md border border-border-strong bg-surface px-3 py-1.5 text-[12.5px] font-medium text-ink-2 hover:bg-surface-2"
-                title="View deleted projects"
+                title="View recently deleted projects"
               >
-                <Trash2 size={14} /> Trash
+                <Trash2 size={14} /> Recently deleted
               </button>
             ) : null}
             <button
@@ -567,7 +567,7 @@ function ProjectTrashModal({ onClose }: { onClose: () => void }) {
       <div className="w-full max-w-2xl rounded-lg border border-border-strong bg-surface shadow-xl">
         <div className="flex items-center justify-between border-b border-border-strong px-5 py-3">
           <div>
-            <h2 className="text-[14px] font-semibold text-ink">Deleted projects</h2>
+            <h2 className="text-[14px] font-semibold text-ink">Recently deleted projects</h2>
             <p className="mt-0.5 text-[11.5px] text-ink-3">
               Soft-deleted projects retained for restore. Restoring brings back
               the project and its workstreams/milestones/tasks.
@@ -588,7 +588,7 @@ function ProjectTrashModal({ onClose }: { onClose: () => void }) {
           ) : trashQ.isError ? (
             <div className="text-[12.5px] text-red">Failed to load deleted projects.</div>
           ) : (trashQ.data ?? []).length === 0 ? (
-            <div className="text-[12.5px] text-ink-3">Trash is empty.</div>
+            <div className="text-[12.5px] text-ink-3">No recently deleted projects.</div>
           ) : (
             <ul className="flex flex-col divide-y divide-border-strong">
               {(trashQ.data ?? []).map((p: DeletedProject) => {
