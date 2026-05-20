@@ -228,6 +228,26 @@ function NotificationRow({
     if (p.task_title) details.push({ label: "Task", value: p.task_title });
     const body = p.comment_body || p.subtitle || "";
     if (body) details.push({ label: "Comment", value: body, bold: true });
+  } else if (n.type === "sf_task_assigned") {
+    headline = `${actor} assigned you a Salesforce task`;
+    if (p.what_name) details.push({ label: "Related", value: p.what_name });
+    if (p.activity_date) details.push({ label: "Due", value: p.activity_date });
+    const task = p.task_title || p.subtitle || "";
+    if (task) details.push({ label: "Task", value: task, bold: true });
+  } else if (n.type === "sf_opp_owner_changed") {
+    const role = p.role;
+    const oppName = p.opp_name || p.subtitle || "";
+    if (role === "gained") {
+      headline = `${actor} made you the owner`;
+      if (oppName) details.push({ label: "Opportunity", value: oppName, bold: true });
+    } else if (role === "lost") {
+      headline = `${actor} reassigned an opportunity`;
+      if (oppName) details.push({ label: "Opportunity", value: oppName });
+      if (p.new_owner_name) details.push({ label: "Now owned by", value: p.new_owner_name });
+    } else {
+      headline = "Opportunity ownership changed";
+      if (oppName) details.push({ label: "", value: oppName });
+    }
   } else {
     headline = p.title || prettyType(n.type);
     if (p.subtitle) details.push({ label: "", value: p.subtitle });

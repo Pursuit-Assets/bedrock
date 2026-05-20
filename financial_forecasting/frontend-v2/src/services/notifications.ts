@@ -35,6 +35,16 @@ export interface NotificationPayload {
   comment_id?: string | null;
   sf_task_id?: string | null;
   opp_id?: string | null;
+
+  // SF Task fields surfaced by the poller.
+  what_name?: string | null;
+  activity_date?: string | null;
+
+  // SF Opp owner-change fields.
+  /** "gained" = recipient is the new owner; "lost" = recipient was the prior owner. */
+  role?: "gained" | "lost" | string | null;
+  opp_name?: string | null;
+  new_owner_name?: string | null;
 }
 
 export interface BedrockNotification {

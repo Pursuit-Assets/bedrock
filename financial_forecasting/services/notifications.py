@@ -279,15 +279,32 @@ def _format_slack_message(
         if body:
             section_lines.append(f"*Comment:* *{body}*")
     elif type == TYPE_SF_TASK_ASSIGNED:
-        headline = f":bell: *New Salesforce task*"
-        sub = payload.get("subtitle") or ""
-        if sub:
-            section_lines.append(f"*{sub}*")
+        headline = f":bell: *{actor}* assigned you a Salesforce task"
+        if payload.get("what_name"):
+            section_lines.append(f"*Related:* {payload['what_name']}")
+        if payload.get("activity_date"):
+            section_lines.append(f"*Due:* {payload['activity_date']}")
+        task = payload.get("task_title") or payload.get("subtitle")
+        if task:
+            section_lines.append(f"*Task:* *{task}*")
     elif type == TYPE_SF_OPP_OWNER_CHANGED:
-        headline = f":handshake: *Opportunity ownership changed*"
-        sub = payload.get("subtitle") or ""
-        if sub:
-            section_lines.append(f"*{sub}*")
+        role = payload.get("role")
+        opp_name = payload.get("opp_name") or payload.get("subtitle") or ""
+        if role == "gained":
+            headline = f":handshake: *{actor}* made you the owner"
+            if opp_name:
+                section_lines.append(f"*Opportunity:* *{opp_name}*")
+        elif role == "lost":
+            headline = f":handshake: *{actor}* reassigned an opportunity"
+            if opp_name:
+                section_lines.append(f"*Opportunity:* {opp_name}")
+            if payload.get("new_owner_name"):
+                section_lines.append(f"*Now owned by:* {payload['new_owner_name']}")
+        else:
+            # Defensive fallback if role isn't set on a legacy row.
+            headline = ":handshake: *Opportunity ownership changed*"
+            if opp_name:
+                section_lines.append(f"*{opp_name}*")
     else:
         headline = payload.get("title") or "Bedrock notification"
         sub = payload.get("subtitle") or ""
