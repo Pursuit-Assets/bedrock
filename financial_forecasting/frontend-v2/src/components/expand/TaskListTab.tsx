@@ -168,19 +168,8 @@ export function TaskListTab({
 
       {isLoading ? (
         <div className="text-[12px] text-ink-3">Loading tasks…</div>
-      ) : visible.length === 0 ? (
-        <>
-          <div className="rounded border border-dashed border-border-strong px-3 py-4 text-center text-[12px] text-ink-3">
-            {overdueOnly ? "No overdue tasks." : emptyMessage}
-          </div>
-          {onCreate && !overdueOnly ? (
-            <div className="mt-2 inline-block max-w-full overflow-hidden rounded border border-border-strong bg-surface align-top">
-              <NewTaskRow placeholder={placeholder} onCreate={onCreate} ownerOptions={ownerOptions} />
-            </div>
-          ) : null}
-        </>
       ) : (
-        <div className="inline-block max-w-full overflow-hidden rounded border border-border-strong bg-surface">
+        <div className="inline-block max-w-full overflow-hidden rounded border border-border-strong bg-surface align-top">
           <table className="table-fixed text-[12px]">
             <colgroup>
               <col style={{ width: 24 }} />
@@ -209,20 +198,31 @@ export function TaskListTab({
               </tr>
             </thead>
             <tbody>
-              {visible.map((t) => (
-                <TaskRow
-                  key={t.Id}
-                  t={t}
-                  ownerOptions={ownerOptions ?? []}
-                  contextLabel={contextResolver?.(t) ?? null}
-                  onToggleComplete={() => toggleComplete(t)}
-                  onSaveSubject={(s) => saveSubject(t.Id, s)}
-                  onSaveStatus={(s) => saveStatus(t.Id, s)}
-                  onSaveDate={(d) => saveDate(t.Id, d)}
-                  onSaveOwner={(o) => saveOwner(t.Id, o)}
-                  onDelete={() => removeTask(t)}
-                />
-              ))}
+              {visible.length === 0 ? (
+                <tr>
+                  <td
+                    colSpan={6}
+                    className="px-4 py-5 text-center text-[12px] italic text-ink-3"
+                  >
+                    {overdueOnly ? "No overdue tasks." : emptyMessage}
+                  </td>
+                </tr>
+              ) : (
+                visible.map((t) => (
+                  <TaskRow
+                    key={t.Id}
+                    t={t}
+                    ownerOptions={ownerOptions ?? []}
+                    contextLabel={contextResolver?.(t) ?? null}
+                    onToggleComplete={() => toggleComplete(t)}
+                    onSaveSubject={(s) => saveSubject(t.Id, s)}
+                    onSaveStatus={(s) => saveStatus(t.Id, s)}
+                    onSaveDate={(d) => saveDate(t.Id, d)}
+                    onSaveOwner={(o) => saveOwner(t.Id, o)}
+                    onDelete={() => removeTask(t)}
+                  />
+                ))
+              )}
             </tbody>
           </table>
           {onCreate && !overdueOnly ? (
