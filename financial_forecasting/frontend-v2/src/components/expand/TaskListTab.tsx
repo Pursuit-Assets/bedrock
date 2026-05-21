@@ -42,19 +42,35 @@ function isOverdue(t: SfTask): boolean {
  * shown as a subtitle line under the subject — used by the Account
  * panel for tasks rolled up from child opps.
  */
+/** Payload from the inline new-task row. Subject is required;
+ *  assignee + due date are optional and only sent to the backend
+ *  when set by the user. */
+export interface NewTaskInput {
+  subject: string;
+  ownerId?: string | null;
+  activityDate?: string | null;
+}
+
 export function TaskListTab({
   tasks,
   isLoading,
   emptyMessage = "No open tasks.",
   placeholder = "Add a task — press Enter to create",
   onCreate,
+  ownerOptions,
   contextResolver,
 }: {
   tasks: SfTask[];
   isLoading: boolean;
   emptyMessage?: string;
   placeholder?: string;
-  onCreate?: (subject: string) => Promise<void>;
+  /** Receives the full new-task input. Subject is always present;
+   *  ownerId and activityDate are present only when the user filled
+   *  the corresponding inline control. */
+  onCreate?: (input: NewTaskInput) => Promise<void>;
+  /** Active users to surface in the assignee picker. When omitted,
+   *  the picker is hidden and the row only accepts subject + date. */
+  ownerOptions?: { value: string; label: string }[];
   contextResolver?: (t: SfTask) => string | null;
 }) {
   const updateTask = useUpdateTask();
@@ -146,7 +162,7 @@ export function TaskListTab({
           </div>
           {onCreate && !overdueOnly ? (
             <div className="mt-2 overflow-hidden rounded border border-border-strong bg-surface">
-              <NewTaskRow placeholder={placeholder} onCreate={onCreate} />
+              <NewTaskRow placeholder={placeholder} onCreate={onCreate} ownerOptions={ownerOptions} />
             </div>
           ) : null}
         </>
@@ -181,7 +197,7 @@ export function TaskListTab({
             </tbody>
           </table>
           {onCreate && !overdueOnly ? (
-            <NewTaskRow placeholder={placeholder} onCreate={onCreate} />
+            <NewTaskRow placeholder={placeholder} onCreate={onCreate} ownerOptions={ownerOptions} />
           ) : null}
         </div>
       )}
@@ -266,11 +282,15 @@ function TaskRow({
 function NewTaskRow({
   onCreate,
   placeholder,
+  ownerOptions,
 }: {
-  onCreate: (subject: string) => Promise<void>;
+  onCreate: (input: NewTaskInput) => Promise<void>;
   placeholder: string;
+  ownerOptions?: { value: string; label: string }[];
 }) {
   const [subject, setSubject] = useState("");
+  const [ownerId, setOwnerId] = useState("");
+  const [dueDate, setDueDate] = useState("");
   const [busy, setBusy] = useState(false);
 
   const submit = async () => {
@@ -278,15 +298,21 @@ function NewTaskRow({
     if (!trimmed || busy) return;
     setBusy(true);
     try {
-      await onCreate(trimmed);
+      await onCreate({
+        subject: trimmed,
+        ownerId: ownerId || null,
+        activityDate: dueDate || null,
+      });
       setSubject("");
+      setOwnerId("");
+      setDueDate("");
     } finally {
       setBusy(false);
     }
   };
 
   return (
-    <div className="flex items-center gap-2 border-t border-border-strong bg-surface-2/40 px-4 py-1.5">
+    <div className="flex flex-wrap items-center gap-2 border-t border-border-strong bg-surface-2/40 px-4 py-1.5">
       <Plus size={13} className="flex-shrink-0 text-ink-3" />
       <input
         value={subject}
@@ -299,7 +325,29 @@ function NewTaskRow({
         }}
         placeholder={placeholder}
         disabled={busy}
-        className="min-w-0 flex-1 border-0 bg-transparent text-[12.5px] text-ink outline-none placeholder:text-ink-4 disabled:opacity-50"
+        className="min-w-[180px] flex-1 border-0 bg-transparent text-[12.5px] text-ink outline-none placeholder:text-ink-4 disabled:opacity-50"
+      />
+      {ownerOptions && ownerOptions.length > 0 ? (
+        <select
+          value={ownerId}
+          onChange={(e) => setOwnerId(e.target.value)}
+          disabled={busy}
+          title="Assignee"
+          className="h-6 max-w-[140px] flex-shrink-0 rounded border border-border-strong bg-surface px-1.5 text-[11.5px] text-ink outline-none focus:border-accent disabled:opacity-50"
+        >
+          <option value="">Assignee…</option>
+          {ownerOptions.map((o) => (
+            <option key={o.value} value={o.value}>{o.label}</option>
+          ))}
+        </select>
+      ) : null}
+      <input
+        type="date"
+        value={dueDate}
+        onChange={(e) => setDueDate(e.target.value)}
+        disabled={busy}
+        title="Due date"
+        className="h-6 flex-shrink-0 rounded border border-border-strong bg-surface px-1.5 text-[11.5px] text-ink outline-none focus:border-accent disabled:opacity-50"
       />
       {subject.trim() ? (
         <button
