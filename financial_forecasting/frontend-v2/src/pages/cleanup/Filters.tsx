@@ -18,6 +18,7 @@ export type FieldType = "select" | "text" | "number" | "date";
 
 export type Operator =
   | "equals"
+  | "not_equals"
   | "is_empty"
   | "is_not_empty"
   | "contains"
@@ -44,17 +45,20 @@ export interface FilterRule<F extends string = string> {
 export const OPS_BY_TYPE: Record<FieldType, { value: Operator; label: string }[]> = {
   select: [
     { value: "equals", label: "is" },
+    { value: "not_equals", label: "is not" },
     { value: "is_empty", label: "is empty" },
     { value: "is_not_empty", label: "has any value" },
   ],
   text: [
     { value: "contains", label: "contains" },
     { value: "equals", label: "is" },
+    { value: "not_equals", label: "is not" },
     { value: "is_empty", label: "is empty" },
     { value: "is_not_empty", label: "has any value" },
   ],
   number: [
     { value: "equals", label: "=" },
+    { value: "not_equals", label: "≠" },
     { value: "gt", label: ">" },
     { value: "lt", label: "<" },
     { value: "is_empty", label: "is empty" },
@@ -63,6 +67,7 @@ export const OPS_BY_TYPE: Record<FieldType, { value: Operator; label: string }[]
     { value: "before", label: "before" },
     { value: "after", label: "after" },
     { value: "equals", label: "is" },
+    { value: "not_equals", label: "is not" },
     { value: "is_empty", label: "is empty" },
   ],
 };
@@ -84,16 +89,19 @@ export function ruleApplies<T, F extends string>(
   const first = r.values[0] ?? "";
 
   if (meta.type === "select") {
-    if (r.op === "equals") {
+    if (r.op === "equals" || r.op === "not_equals") {
       if (r.values.length === 0) return true;
-      return r.values.includes(String(v ?? ""));
+      const inSet = r.values.includes(String(v ?? ""));
+      return r.op === "equals" ? inSet : !inSet;
     }
   }
 
   if (meta.type === "text") {
     const s = String(v ?? "").toLowerCase();
-    if (r.op === "contains") return s.includes(first.toLowerCase());
-    if (r.op === "equals") return s === first.toLowerCase();
+    const f = first.toLowerCase();
+    if (r.op === "contains") return s.includes(f);
+    if (r.op === "equals") return s === f;
+    if (r.op === "not_equals") return s !== f;
   }
 
   if (meta.type === "number") {
@@ -104,6 +112,7 @@ export function ruleApplies<T, F extends string>(
     if (r.op === "gt") return n > target;
     if (r.op === "lt") return n < target;
     if (r.op === "equals") return n === target;
+    if (r.op === "not_equals") return n !== target;
   }
 
   if (meta.type === "date") {
@@ -114,6 +123,7 @@ export function ruleApplies<T, F extends string>(
     if (r.op === "before") return ms < target;
     if (r.op === "after") return ms > target;
     if (r.op === "equals") return String(v).slice(0, 10) === first;
+    if (r.op === "not_equals") return String(v).slice(0, 10) !== first;
   }
 
   return true;
@@ -131,7 +141,14 @@ export function describeRule<T, F extends string>(
   if (r.op === "is_not_empty") return `${meta.label} has any value`;
   const opLabel =
     OPS_BY_TYPE[meta.type].find((o) => o.value === r.op)?.label ?? r.op;
-  const render = (v: string) => (renderValue ? renderValue(r.field, v) : v);
+  // Empty-string values come from the "(empty)" sentinel in the
+  // multi-select picker — display them as "(empty)" so the chip
+  // reads as e.g. "Philanthropy type is not (empty)" instead of a
+  // trailing blank.
+  const render = (v: string) => {
+    const raw = renderValue ? renderValue(r.field, v) : v;
+    return raw === "" ? "(empty)" : raw;
+  };
   let valLabel: string;
   if (r.values.length <= 1) {
     valLabel = render(r.values[0] ?? "");
@@ -197,8 +214,21 @@ export function AddFilterButton<F extends string>({
   const [pickerQ, setPickerQ] = useState("");
 
   const needsValue = op !== "is_empty" && op !== "is_not_empty";
-  const isMultiSelect = meta.type === "select" && op === "equals";
-  const valueOptions = selectOptions[field] ?? null;
+  // Both "is" and "is not" use the multi-select picker so users can
+  // pick any combination of values (or exclude a combination).
+  const isMultiSelect =
+    meta.type === "select" && (op === "equals" || op === "not_equals");
+  const rawValueOptions = selectOptions[field] ?? null;
+
+  // Inject an explicit "(empty)" sentinel at the top of every
+  // select multi-select so the user can include / exclude rows where
+  // the field is null/empty alongside concrete values. ruleApplies()
+  // already normalizes null → "" so this just needs the empty-string
+  // option in the value list.
+  const valueOptions = useMemo(() => {
+    if (!rawValueOptions) return null;
+    return [{ value: "", label: "(empty)" }, ...rawValueOptions];
+  }, [rawValueOptions]);
 
   const filteredOptions = useMemo(() => {
     if (!valueOptions) return null;
