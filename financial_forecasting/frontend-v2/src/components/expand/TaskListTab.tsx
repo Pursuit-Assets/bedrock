@@ -163,13 +163,13 @@ export function TaskListTab({
             {overdueOnly ? "No overdue tasks." : emptyMessage}
           </div>
           {onCreate && !overdueOnly ? (
-            <div className="mt-2 overflow-hidden rounded border border-border-strong bg-surface">
+            <div className="mt-2 max-w-[640px] overflow-hidden rounded border border-border-strong bg-surface">
               <NewTaskRow placeholder={placeholder} onCreate={onCreate} ownerOptions={ownerOptions} />
             </div>
           ) : null}
         </>
       ) : (
-        <div className="overflow-hidden rounded border border-border-strong bg-surface">
+        <div className="max-w-[640px] overflow-hidden rounded border border-border-strong bg-surface">
           <table className="w-full table-fixed text-[12px]">
             <colgroup>
               <col style={{ width: 24 }} />
@@ -327,24 +327,23 @@ function NewTaskRow({
   const [subject, setSubject] = useState("");
   const [ownerId, setOwnerId] = useState("");
   const [dueDate, setDueDate] = useState("");
-  const [busy, setBusy] = useState(false);
 
-  const submit = async () => {
+  // Reset the row the instant Enter is pressed so the user can keep
+  // typing more tasks without waiting for the server. The mutation
+  // runs in the background; React Query's optimistic insert on
+  // useCreateTask makes the new row appear in the list immediately.
+  const submit = () => {
     const trimmed = subject.trim();
-    if (!trimmed || busy) return;
-    setBusy(true);
-    try {
-      await onCreate({
-        subject: trimmed,
-        ownerId: ownerId || null,
-        activityDate: dueDate || null,
-      });
-      setSubject("");
-      setOwnerId("");
-      setDueDate("");
-    } finally {
-      setBusy(false);
-    }
+    if (!trimmed) return;
+    const payload = {
+      subject: trimmed,
+      ownerId: ownerId || null,
+      activityDate: dueDate || null,
+    };
+    setSubject("");
+    setOwnerId("");
+    setDueDate("");
+    void onCreate(payload);
   };
 
   return (
@@ -360,16 +359,14 @@ function NewTaskRow({
           }
         }}
         placeholder={placeholder}
-        disabled={busy}
-        className="min-w-[180px] flex-1 border-0 bg-transparent text-[12.5px] text-ink outline-none placeholder:text-ink-4 disabled:opacity-50"
+        className="min-w-[180px] flex-1 border-0 bg-transparent text-[12.5px] text-ink outline-none placeholder:text-ink-4"
       />
       {ownerOptions && ownerOptions.length > 0 ? (
         <select
           value={ownerId}
           onChange={(e) => setOwnerId(e.target.value)}
-          disabled={busy}
           title="Assignee"
-          className="h-6 max-w-[140px] flex-shrink-0 rounded border border-border-strong bg-surface px-1.5 text-[11.5px] text-ink outline-none focus:border-accent disabled:opacity-50"
+          className="h-6 max-w-[140px] flex-shrink-0 rounded border border-border-strong bg-surface px-1.5 text-[11.5px] text-ink outline-none focus:border-accent"
         >
           <option value="">Assignee…</option>
           {ownerOptions.map((o) => (
@@ -381,16 +378,14 @@ function NewTaskRow({
         type="date"
         value={dueDate}
         onChange={(e) => setDueDate(e.target.value)}
-        disabled={busy}
         title="Due date"
-        className="h-6 flex-shrink-0 rounded border border-border-strong bg-surface px-1.5 text-[11.5px] text-ink outline-none focus:border-accent disabled:opacity-50"
+        className="h-6 flex-shrink-0 rounded border border-border-strong bg-surface px-1.5 text-[11.5px] text-ink outline-none focus:border-accent"
       />
       {subject.trim() ? (
         <button
           type="button"
           onClick={submit}
-          disabled={busy}
-          className="rounded border border-ink bg-ink px-2 py-0.5 text-[11px] font-medium text-surface hover:opacity-90 disabled:opacity-50"
+          className="rounded border border-ink bg-ink px-2 py-0.5 text-[11px] font-medium text-surface hover:opacity-90"
         >
           Create
         </button>

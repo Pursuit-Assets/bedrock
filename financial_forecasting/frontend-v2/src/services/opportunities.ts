@@ -326,12 +326,46 @@ export function useCreateTask() {
       );
       return data;
     },
-    onSuccess: (_data, vars) => {
+    // Optimistic insert so the new row shows up the instant the user
+    // hits Enter — without waiting for the SF roundtrip. The temp Id
+    // is replaced when the cache refetches onSuccess.
+    onMutate: async ({ opportunityId, body }) => {
+      const key = ["opportunity-tasks", opportunityId] as const;
+      await qc.cancelQueries({ queryKey: key });
+      const prev = qc.getQueryData<SfTask[]>(key);
+      const optimistic = buildOptimisticTask(body, opportunityId);
+      qc.setQueryData<SfTask[]>(key, (old) => [optimistic, ...(old ?? [])]);
+      return { key, prev };
+    },
+    onError: (_err, _vars, ctx) => {
+      if (ctx?.prev !== undefined && ctx.key) {
+        qc.setQueryData(ctx.key, ctx.prev);
+      }
+    },
+    onSettled: (_data, _err, vars) => {
       qc.invalidateQueries({
         queryKey: ["opportunity-tasks", vars.opportunityId],
       });
     },
   });
+}
+
+/** Build a synthetic SfTask for optimistic list insertion. The temp Id
+ *  is replaced when the real task lands via the refetch in onSettled. */
+function buildOptimisticTask(body: TaskCreateBody, whatId: string): SfTask {
+  return {
+    Id: `__tmp__${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    Subject: body.Subject ?? null,
+    Status: body.Status ?? "Not Started",
+    Priority: body.Priority ?? null,
+    ActivityDate: body.ActivityDate ?? null,
+    Description: body.Description ?? null,
+    IsClosed: false,
+    OwnerId: body.OwnerId ?? null,
+    OwnerName: null,
+    WhatId: whatId,
+    WhatName: null,
+  };
 }
 
 /** Cache-key prefixes that may hold a task list — used by useUpdateTask
@@ -536,7 +570,20 @@ export function useCreateAccountTask() {
       );
       return data;
     },
-    onSuccess: (_data, vars) => {
+    onMutate: async ({ accountId, body }) => {
+      const key = ["account-tasks", accountId] as const;
+      await qc.cancelQueries({ queryKey: key });
+      const prev = qc.getQueryData<SfTask[]>(key);
+      const optimistic = buildOptimisticTask(body, accountId);
+      qc.setQueryData<SfTask[]>(key, (old) => [optimistic, ...(old ?? [])]);
+      return { key, prev };
+    },
+    onError: (_err, _vars, ctx) => {
+      if (ctx?.prev !== undefined && ctx.key) {
+        qc.setQueryData(ctx.key, ctx.prev);
+      }
+    },
+    onSettled: (_data, _err, vars) => {
       qc.invalidateQueries({ queryKey: ["account-tasks", vars.accountId] });
     },
   });
