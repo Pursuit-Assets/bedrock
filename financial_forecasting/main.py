@@ -849,6 +849,7 @@ PAYMENT_SOQL_FIELDS = """
     npe01__Opportunity__r.CloseDate,
     npe01__Opportunity__r.RecordType.Name,
     npe01__Opportunity__r.Active_Opportunity__c,
+    npe01__Opportunity__r.Philanthropy_Type__c,
     npe01__Payment_Amount__c, npe01__Scheduled_Date__c,
     npe01__Payment_Date__c, npe01__Paid__c,
     npe01__Payment_Method__c, npe01__Check_Reference_Number__c,

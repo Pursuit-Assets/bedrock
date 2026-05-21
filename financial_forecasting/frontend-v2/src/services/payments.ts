@@ -41,6 +41,7 @@ export interface SfPayment {
     CloseDate?: string | null;
     RecordType?: { Name?: string };
     Active_Opportunity__c?: boolean | null;
+    Philanthropy_Type__c?: string | null;
   };
 }
 

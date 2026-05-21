@@ -133,6 +133,7 @@ const PAYMENT_FILTERABLE = {
   oppOwner: { label: "Opp owner", type: "select", getValue: (p: SfPayment) => p.npe01__Opportunity__r?.OwnerId ?? "" },
   stage: { label: "Stage", type: "select", getValue: (p: SfPayment) => p.npe01__Opportunity__r?.StageName ?? "" },
   recordType: { label: "Record type", type: "select", getValue: (p: SfPayment) => p.npe01__Opportunity__r?.RecordType?.Name ?? "" },
+  philanthropyType: { label: "Philanthropy type", type: "select", getValue: (p: SfPayment) => p.npe01__Opportunity__r?.Philanthropy_Type__c ?? "" },
   active: { label: "Active opportunity", type: "select", getValue: (p: SfPayment) => (p.npe01__Opportunity__r?.Active_Opportunity__c ? "Yes" : "No") },
   oppAmount: { label: "Opp amount", type: "number", getValue: (p: SfPayment) => p.npe01__Opportunity__r?.Amount ?? null },
   mgrProb: { label: "Mgr probability", type: "number", getValue: (p: SfPayment) => p.npe01__Opportunity__r?.Manager_Probability_Override__c ?? p.npe01__Opportunity__r?.Probability ?? null },
@@ -402,6 +403,7 @@ export function PaymentsPage() {
     const gls = new Set<string>();
     const stages = new Set<string>();
     const recordTypes = new Set<string>();
+    const philanthropyTypes = new Set<string>();
     const owners = new Map<string, string>();
     for (const p of payments) {
       const o = p.npe01__Opportunity__r;
@@ -412,6 +414,7 @@ export function PaymentsPage() {
       if (p.GL_Account__c) gls.add(p.GL_Account__c);
       if (o?.StageName) stages.add(o.StageName);
       if (o?.RecordType?.Name) recordTypes.add(o.RecordType.Name);
+      if (o?.Philanthropy_Type__c) philanthropyTypes.add(o.Philanthropy_Type__c);
       if (o?.OwnerId && o.Owner?.Name && !owners.has(o.OwnerId)) {
         owners.set(o.OwnerId, o.Owner.Name);
       }
@@ -431,6 +434,7 @@ export function PaymentsPage() {
       glAccount: toOpt(gls),
       stage: toOpt(stages),
       recordType: toOpt(recordTypes),
+      philanthropyType: toOpt(philanthropyTypes),
       oppOwner: Array.from(owners.entries())
         .map(([id, name]) => ({ value: id, label: name }))
         .sort((a, b) => a.label.localeCompare(b.label)),
@@ -559,6 +563,7 @@ export function PaymentsPage() {
             glAccount: chipFacets.glAccount,
             stage: chipFacets.stage,
             recordType: chipFacets.recordType,
+            philanthropyType: chipFacets.philanthropyType,
             oppOwner: chipFacets.oppOwner,
           }}
           onAdd={(r) => setRules((prev) => [...prev, r])}
