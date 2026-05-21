@@ -254,29 +254,33 @@ const COL_LABELS: Record<ColKey, string> = {
   createdDate: "Created",
 };
 
+// Tightened defaults so the priority column set fits on a ~1100 px
+// content area (sidebar collapsed: ~1380, expanded: ~1100 on a 1440
+// viewport). Users can still resize either direction; the per-page
+// localStorage map captures any deviations.
 const DEFAULT_WIDTHS: Record<ColKey, number> = {
-  paymentNumber: 110,
-  opportunity: 260,
-  oppOwner: 140,
-  stage: 140,
-  recordType: 140,
-  active: 80,
-  oppAmount: 120,
-  mgrProb: 90,
-  riskAdjusted: 120,
-  closeDate: 110,
-  amount: 120,
-  scheduledDate: 110,
-  paymentDate: 110,
-  paid: 70,
-  method: 120,
-  status: 130,
-  department: 200,
-  glAccount: 220,
-  amountReceived: 110,
-  reconciled: 100,
-  writtenOff: 100,
-  createdDate: 110,
+  paymentNumber: 90,
+  opportunity: 200,
+  oppOwner: 100,
+  stage: 110,
+  recordType: 120,
+  active: 60,
+  oppAmount: 90,
+  mgrProb: 60,
+  riskAdjusted: 90,
+  closeDate: 80,
+  amount: 90,
+  scheduledDate: 80,
+  paymentDate: 80,
+  paid: 55,
+  method: 100,
+  status: 110,
+  department: 160,
+  glAccount: 180,
+  amountReceived: 90,
+  reconciled: 80,
+  writtenOff: 80,
+  createdDate: 90,
 };
 
 const ROW_HEIGHT = 44;
@@ -391,8 +395,11 @@ export function PaymentsPage() {
   const { visible: visibleCols, toggle: toggleCol, replaceAll: replaceVisibleCols } =
     useColumnVisibility<ColKey>("bedrock-v2:vis:payments:v2", COLUMN_ORDER, DEFAULT_VISIBLE_COLS);
   const { widths, startResize, replaceAll: replaceWidths } = useColumnWidths<ColKey>(
-    "bedrock-v2:cols:payments:v2",
+    // Bumped to v3 to invalidate the wider v2 defaults — users get the
+    // tighter widths on next reload, then can still resize freely.
+    "bedrock-v2:cols:payments:v3",
     DEFAULT_WIDTHS,
+    { min: 44 },
   );
 
   // Discovered values for select-filter dropdowns.
@@ -983,7 +990,7 @@ const PaymentRow = memo(function PaymentRow({
   return (
     <tr className="border-b border-border-strong hover:bg-surface-2/50" style={{ height: ROW_HEIGHT }}>
       {visibleCols.map((key) => (
-        <td key={key} className="overflow-hidden px-3 py-1.5">
+        <td key={key} className="overflow-hidden px-2 py-1.5">
           {cells[key]}
         </td>
       ))}
