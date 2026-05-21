@@ -1,10 +1,10 @@
 import { useMemo, useState } from "react";
-import { Plus, Search, X } from "lucide-react";
+import { Plus, Search, Trash2, X } from "lucide-react";
 
-import { InlineDate, InlineSelect } from "@/components/ui/InlineEdit";
+import { InlineDate, InlineSelect, InlineText } from "@/components/ui/InlineEdit";
 import { SortableHeader } from "@/components/ui/SortableHeader";
 import { sortBy, useSort } from "@/lib/sort";
-import { useUpdateTask } from "@/services/opportunities";
+import { useDeleteTask, useUpdateTask } from "@/services/opportunities";
 import { cn } from "@/lib/utils";
 import type { SfTask } from "@/types/salesforce";
 
@@ -74,6 +74,7 @@ export function TaskListTab({
   contextResolver?: (t: SfTask) => string | null;
 }) {
   const updateTask = useUpdateTask();
+  const deleteTask = useDeleteTask();
   // Tap the overdue counter to filter the list. State is local to the
   // panel so different parent records (per-account, per-owner) each
   // keep their own toggle.
@@ -115,6 +116,16 @@ export function TaskListTab({
     updateTask.mutateAsync({ id, patch: { ActivityDate: date } }).then(() => undefined);
   const saveOwner = (id: string, ownerId: string) =>
     updateTask.mutateAsync({ id, patch: { OwnerId: ownerId } }).then(() => undefined);
+  const saveSubject = (id: string, subject: string) =>
+    updateTask.mutateAsync({ id, patch: { Subject: subject } }).then(() => undefined);
+  const removeTask = (t: SfTask) => {
+    if (t.Id.startsWith("__tmp__")) return; // optimistic row, not yet on the server
+    const confirmed = window.confirm(
+      `Delete task "${t.Subject ?? "(no subject)"}"? This can't be undone.`,
+    );
+    if (!confirmed) return;
+    void deleteTask.mutateAsync(t.Id);
+  };
   const toggleComplete = (t: SfTask) =>
     void updateTask.mutateAsync({
       id: t.Id,
@@ -177,6 +188,7 @@ export function TaskListTab({
               <col style={{ width: 100 }} />
               <col style={{ width: 100 }} />
               <col style={{ width: 80 }} />
+              <col style={{ width: 28 }} />
             </colgroup>
             <thead className="bg-surface-2 text-[10.5px] uppercase tracking-wider text-ink-3">
               <tr>
@@ -193,6 +205,7 @@ export function TaskListTab({
                 <th className="px-2 py-1.5 text-right font-semibold">
                   <SortableHeader label="Due" sortKey="due" sort={sort} onToggle={toggle} align="right" />
                 </th>
+                <th className="px-2 py-1.5"></th>
               </tr>
             </thead>
             <tbody>
@@ -203,9 +216,11 @@ export function TaskListTab({
                   ownerOptions={ownerOptions ?? []}
                   contextLabel={contextResolver?.(t) ?? null}
                   onToggleComplete={() => toggleComplete(t)}
+                  onSaveSubject={(s) => saveSubject(t.Id, s)}
                   onSaveStatus={(s) => saveStatus(t.Id, s)}
                   onSaveDate={(d) => saveDate(t.Id, d)}
                   onSaveOwner={(o) => saveOwner(t.Id, o)}
+                  onDelete={() => removeTask(t)}
                 />
               ))}
             </tbody>
@@ -224,24 +239,29 @@ function TaskRow({
   ownerOptions,
   contextLabel,
   onToggleComplete,
+  onSaveSubject,
   onSaveStatus,
   onSaveDate,
   onSaveOwner,
+  onDelete,
 }: {
   t: SfTask;
   ownerOptions: { value: string; label: string }[];
   contextLabel: string | null;
   onToggleComplete: () => void;
+  onSaveSubject: (next: string) => Promise<void>;
   onSaveStatus: (next: string) => Promise<void>;
   onSaveDate: (next: string | null) => Promise<void>;
   onSaveOwner: (next: string) => Promise<void>;
+  onDelete: () => void;
 }) {
   const closed = isTaskClosed(t);
   const overdue = isOverdue(t);
+  const isOptimistic = t.Id.startsWith("__tmp__");
   return (
     <tr
       className={cn(
-        "border-t border-border-strong",
+        "group border-t border-border-strong",
         closed && "text-ink-3",
       )}
     >
@@ -255,15 +275,12 @@ function TaskRow({
         />
       </td>
       <td className="px-2 py-1.5 align-middle">
-        <span
-          className={cn(
-            "block truncate text-[12.5px]",
-            closed && "line-through",
-          )}
-          title={t.Subject ?? ""}
-        >
-          {t.Subject ?? "(no subject)"}
-        </span>
+        <InlineText
+          value={t.Subject ?? ""}
+          onSave={onSaveSubject}
+          placeholder="(no subject)"
+          className={cn("text-[12.5px]", closed && "line-through")}
+        />
         {contextLabel ? (
           <span
             className="block truncate text-[10.5px] text-ink-3"
@@ -310,6 +327,18 @@ function TaskRow({
           align="right"
           placeholder="—"
         />
+      </td>
+      <td className="px-1 py-1.5 align-middle text-right">
+        <button
+          type="button"
+          onClick={onDelete}
+          disabled={isOptimistic}
+          aria-label="Delete task"
+          title={isOptimistic ? "Saving…" : "Delete task"}
+          className="opacity-0 transition-opacity group-hover:opacity-100 focus:opacity-100 disabled:cursor-not-allowed disabled:opacity-0"
+        >
+          <Trash2 size={13} className="text-ink-3 hover:text-red" />
+        </button>
       </td>
     </tr>
   );
