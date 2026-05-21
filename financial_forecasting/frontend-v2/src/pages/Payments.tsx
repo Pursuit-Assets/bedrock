@@ -34,12 +34,15 @@ import { InlineDate, InlineSelect, InlineText } from "@/components/ui/InlineEdit
 import { ColGroup, ResizableTh } from "@/components/ui/ResizableTable";
 import { SavedViewsPicker } from "@/components/ui/SavedViewsPicker";
 import { SortableHeader } from "@/components/ui/SortableHeader";
+import { StageChip } from "@/components/ui/StageChip";
 import { ButtonGroup, Toolbar } from "@/components/ui/Toolbar";
 import type { CsvColumn } from "@/lib/csv";
 import { useColumnVisibility } from "@/lib/columnVisibility";
 import { totalWidth, useColumnWidths } from "@/lib/columnWidths";
 import { fmtDate, fmtMoney, fmtMoneyFull } from "@/lib/format";
 import { sortBy, useSort } from "@/lib/sort";
+import { SF_STAGE_OPTIONS, stageStatus } from "@/lib/stages";
+import { useUpdateOpportunity, useUpdateOpportunityStage } from "@/services/opportunities";
 import {
   AddFilterButton,
   FilterChip,
@@ -366,6 +369,12 @@ export function PaymentsPage() {
   const navigate = useNavigate();
   const { data, isLoading, isError, error } = usePayments();
   const updatePayment = useUpdateAnyPayment();
+  // Stage + Manager Probability live on the parent Opportunity, not the
+  // Payment row, so they go through opportunity-side mutations.
+  // useUpdateOpportunityStage handles the SF validate + award
+  // auto-create handshake; useUpdateOpportunity is generic.
+  const updateOpp = useUpdateOpportunity();
+  const updateStage = useUpdateOpportunityStage();
   const canEdit = usePerm("edit_all_opportunities");
 
   const payments = data ?? [];
@@ -466,6 +475,28 @@ export function PaymentsPage() {
       await updatePayment.mutateAsync({ id, patch });
     },
     [updatePayment],
+  );
+
+  const saveOppStage = useCallback(
+    async (oppId: string, nextStage: string) => {
+      await updateStage.mutateAsync({ id: oppId, newStage: nextStage });
+    },
+    [updateStage],
+  );
+
+  const saveOppMgrProb = useCallback(
+    async (oppId: string, raw: string) => {
+      // Empty input clears the override (null) so SF falls back to the
+      // stage-derived Probability. Otherwise coerce to a number; the
+      // backend's PUT accepts any number, no client-side range clamp.
+      const trimmed = raw.trim();
+      const next = trimmed === "" ? null : Number(trimmed.replace(/[^0-9.-]/g, ""));
+      await updateOpp.mutateAsync({
+        id: oppId,
+        patch: { Manager_Probability_Override__c: next },
+      });
+    },
+    [updateOpp],
   );
 
   // ── Virtualization ─────────────────────────────────────────────────
@@ -651,6 +682,8 @@ export function PaymentsPage() {
                       visibleCols={visibleCols}
                       canEdit={canEdit}
                       onSave={savePatch}
+                      onSaveOppStage={saveOppStage}
+                      onSaveOppMgrProb={saveOppMgrProb}
                       onOpenOpp={(oppId) =>
                         navigate(`/opportunities/${oppId}`, { state: PAYMENTS_REFERRER })
                       }
@@ -678,6 +711,8 @@ interface RowProps {
   visibleCols: ColKey[];
   canEdit: boolean;
   onSave: (id: string, patch: PaymentPatch) => Promise<void>;
+  onSaveOppStage: (oppId: string, nextStage: string) => Promise<void>;
+  onSaveOppMgrProb: (oppId: string, raw: string) => Promise<void>;
   onOpenOpp: (oppId: string) => void;
 }
 
@@ -706,14 +741,29 @@ function moneyDisplay(raw: string): string {
   return Number.isFinite(n) ? fmtMoneyFull(n) : raw;
 }
 
+// Stage dropdown — uses the same curated 7-stage funnel + Closed Lost
+// + Withdrawn that Pipeline.tsx surfaces (see lib/stages.ts). If the
+// current opp is in a legacy stage that isn't in the curated list, we
+// prepend it as a (legacy) entry so the resting value renders without
+// the dropdown forcing a change. */
+function stageOptionsFor(currentStage: string | null | undefined) {
+  const out = SF_STAGE_OPTIONS.map((s) => ({ value: s.value, label: s.label }));
+  if (currentStage && !SF_STAGE_OPTIONS.some((s) => s.value === currentStage)) {
+    out.unshift({ value: currentStage, label: `${currentStage} (legacy)` });
+  }
+  return out;
+}
+
 const PaymentRow = memo(function PaymentRow({
-  p, visibleCols, canEdit, onSave, onOpenOpp,
+  p, visibleCols, canEdit, onSave, onSaveOppStage, onSaveOppMgrProb, onOpenOpp,
 }: RowProps) {
   const opp = p.npe01__Opportunity__r;
+  const oppId = p.npe01__Opportunity__c ?? null;
   const accountName = opp?.Account?.Name ?? "—";
   const probDisplay =
     opp?.Manager_Probability_Override__c ?? opp?.Probability ?? null;
   const ra = riskAdjusted(p);
+  const stageOpts = useMemo(() => stageOptionsFor(opp?.StageName), [opp?.StageName]);
 
   const cells: Partial<Record<ColKey, React.ReactNode>> = {
     paymentNumber: <span className="truncate font-mono text-[11.5px] text-ink-3">{p.Name ?? "—"}</span>,
@@ -734,7 +784,22 @@ const PaymentRow = memo(function PaymentRow({
       </div>
     ),
     oppOwner: <span className="truncate text-ink-2">{opp?.Owner?.Name ?? "—"}</span>,
-    stage: <span className="truncate text-ink-2">{opp?.StageName ?? "—"}</span>,
+    stage: canEdit && oppId ? (
+      <InlineSelect
+        value={opp?.StageName ?? ""}
+        options={stageOpts}
+        onSave={(v) => onSaveOppStage(oppId, v)}
+        renderValue={(v) =>
+          v
+            ? <StageChip stage={v} status={stageStatus({ StageName: v, IsClosed: false })} />
+            : <span className="text-ink-4">—</span>
+        }
+      />
+    ) : opp?.StageName ? (
+      <StageChip stage={opp.StageName} status={stageStatus({ StageName: opp.StageName, IsClosed: false })} />
+    ) : (
+      <span className="text-ink-4">—</span>
+    ),
     recordType: <span className="truncate text-ink-2">{opp?.RecordType?.Name ?? "—"}</span>,
     active: (
       <span className="text-ink-2">{opp?.Active_Opportunity__c ? "Yes" : "—"}</span>
@@ -744,7 +809,24 @@ const PaymentRow = memo(function PaymentRow({
         {opp?.Amount != null ? fmtMoney(opp.Amount) : "—"}
       </span>
     ),
-    mgrProb: (
+    mgrProb: canEdit && oppId ? (
+      <InlineText
+        value={
+          opp?.Manager_Probability_Override__c != null
+            ? String(opp.Manager_Probability_Override__c)
+            : opp?.Probability != null
+              ? String(opp.Probability)
+              : ""
+        }
+        onSave={(v) => onSaveOppMgrProb(oppId, v)}
+        formatDisplay={(raw) => {
+          const n = Number(raw);
+          return Number.isFinite(n) ? `${n}%` : raw;
+        }}
+        placeholder="—"
+        className="justify-end text-right"
+      />
+    ) : (
       <span className="block text-right tabular-nums text-ink-2">
         {probDisplay != null ? `${probDisplay}%` : "—"}
       </span>
