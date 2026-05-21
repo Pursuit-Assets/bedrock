@@ -163,17 +163,17 @@ export function TaskListTab({
             {overdueOnly ? "No overdue tasks." : emptyMessage}
           </div>
           {onCreate && !overdueOnly ? (
-            <div className="mt-2 max-w-[1280px] overflow-hidden rounded border border-border-strong bg-surface">
+            <div className="mt-2 inline-block max-w-full overflow-hidden rounded border border-border-strong bg-surface align-top">
               <NewTaskRow placeholder={placeholder} onCreate={onCreate} ownerOptions={ownerOptions} />
             </div>
           ) : null}
         </>
       ) : (
-        <div className="max-w-[1280px] overflow-hidden rounded border border-border-strong bg-surface">
-          <table className="w-full table-fixed text-[12px]">
+        <div className="inline-block max-w-full overflow-hidden rounded border border-border-strong bg-surface">
+          <table className="table-fixed text-[12px]">
             <colgroup>
               <col style={{ width: 24 }} />
-              <col />
+              <col style={{ width: 320 }} />
               <col style={{ width: 100 }} />
               <col style={{ width: 100 }} />
               <col style={{ width: 80 }} />
