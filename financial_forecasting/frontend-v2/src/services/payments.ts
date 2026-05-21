@@ -30,7 +30,17 @@ export interface SfPayment {
   LastModifiedDate?: string | null;
   npe01__Opportunity__r?: {
     Name?: string;
+    AccountId?: string | null;
     Account?: { Name?: string };
+    OwnerId?: string | null;
+    Owner?: { Name?: string };
+    StageName?: string | null;
+    Amount?: number | null;
+    Probability?: number | null;
+    Manager_Probability_Override__c?: number | null;
+    CloseDate?: string | null;
+    RecordType?: { Name?: string };
+    Active_Opportunity__c?: boolean | null;
   };
 }
 

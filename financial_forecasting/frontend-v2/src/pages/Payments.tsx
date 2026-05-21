@@ -2,25 +2,31 @@
  * Payments page (/payments).
  *
  * Mirror of the Pipeline page but for npe01__OppPayment__c records:
- *   - virtualized table, resizable + sortable columns
+ *   - virtualized table, resizable + sortable + drag-to-reorder columns
  *   - chip-style filter rig (same `pages/cleanup/Filters` rig used by
  *     Pipeline / Cleanup tabs)
  *   - inline edits on every editable column (amount, scheduled date,
  *     payment date, paid flag, method, written off, department, GL,
- *     batch, check #, write-off note, reconciled flag)
+ *     reconciled flag)
  *   - SavedViewsPicker (scopeKey="payments") so users can persist
  *     custom views — e.g. "scheduled after current quarter" to mirror
  *     Angie's SF report
  *   - CSV export of the currently-filtered set
  *
- * Read path: useExistsing usePayments() hook → /api/salesforce/payments.
+ * Read path: usePayments() → /api/salesforce/payments.
  * Write path: useUpdateAnyPayment() → PUT /api/salesforce/payments/{id}.
+ *
+ * Opp-side fields (owner, stage, opp amount, manager probability,
+ * close date, record type, active flag) are SELECTed via the
+ * npe01__Opportunity__r relationship — no extra round-trips. See
+ * PAYMENT_SOQL_FIELDS in main.py.
  */
 import { memo, useCallback, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Search } from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 
+import { AccountAvatar } from "@/components/AccountAvatar";
 import { ExportCsvButton } from "@/components/ui/ExportCsvButton";
 import { PageHeader } from "@/components/PageHeader";
 import { ColumnChooser } from "@/components/ui/ColumnChooser";
@@ -51,18 +57,31 @@ import {
   type SfPayment,
 } from "@/services/payments";
 
+// ── Helpers ────────────────────────────────────────────────────────────────
+
+/** Risk-adjusted value = Opp Amount × (manager-probability-override
+ *  ?? Probability) / 100. Returns null when amount or probability is
+ *  missing — keeps the value column comparable to SF's own
+ *  "Expected Revenue" calculation. */
+function riskAdjusted(p: SfPayment): number | null {
+  const opp = p.npe01__Opportunity__r;
+  if (!opp) return null;
+  const amt = opp.Amount;
+  if (amt == null) return null;
+  const prob =
+    opp.Manager_Probability_Override__c ?? opp.Probability ?? null;
+  if (prob == null) return null;
+  return amt * (prob / 100);
+}
+
 // ── Scope pills ─────────────────────────────────────────────────────────────
-//
-// "Scope" is a high-level filter for paid / unpaid / written off /
-// delinquent state. Mutually exclusive with the chip rules (chips
-// AND on top), and persisted on saved views.
 
 const SCOPES = [
   { value: "all", label: "All" },
-  { value: "scheduled", label: "Scheduled" }, // Paid=false AND WrittenOff=false
-  { value: "paid", label: "Paid" },           // Paid=true
+  { value: "scheduled", label: "Scheduled" },
+  { value: "paid", label: "Paid" },
   { value: "writtenOff", label: "Written off" },
-  { value: "delinquent", label: "Delinquent" }, // Delinquent__c
+  { value: "delinquent", label: "Delinquent" },
 ] as const;
 type Scope = (typeof SCOPES)[number]["value"];
 
@@ -108,7 +127,15 @@ const PAYMENT_FILTERABLE = {
   paymentNumber: { label: "Payment #", type: "text", getValue: (p: SfPayment) => p.Name ?? "" },
   opportunity: { label: "Opportunity", type: "text", getValue: (p: SfPayment) => p.npe01__Opportunity__r?.Name ?? "" },
   account: { label: "Account", type: "text", getValue: (p: SfPayment) => p.npe01__Opportunity__r?.Account?.Name ?? "" },
-  amount: { label: "Amount", type: "number", getValue: (p: SfPayment) => p.npe01__Payment_Amount__c ?? null },
+  oppOwner: { label: "Opp owner", type: "select", getValue: (p: SfPayment) => p.npe01__Opportunity__r?.OwnerId ?? "" },
+  stage: { label: "Stage", type: "select", getValue: (p: SfPayment) => p.npe01__Opportunity__r?.StageName ?? "" },
+  recordType: { label: "Record type", type: "select", getValue: (p: SfPayment) => p.npe01__Opportunity__r?.RecordType?.Name ?? "" },
+  active: { label: "Active opportunity", type: "select", getValue: (p: SfPayment) => (p.npe01__Opportunity__r?.Active_Opportunity__c ? "Yes" : "No") },
+  oppAmount: { label: "Opp amount", type: "number", getValue: (p: SfPayment) => p.npe01__Opportunity__r?.Amount ?? null },
+  mgrProb: { label: "Mgr probability", type: "number", getValue: (p: SfPayment) => p.npe01__Opportunity__r?.Manager_Probability_Override__c ?? p.npe01__Opportunity__r?.Probability ?? null },
+  riskAdjusted: { label: "Risk-adjusted value", type: "number", getValue: (p: SfPayment) => riskAdjusted(p) },
+  closeDate: { label: "Close date", type: "date", getValue: (p: SfPayment) => p.npe01__Opportunity__r?.CloseDate ?? null },
+  amount: { label: "Payment amount", type: "number", getValue: (p: SfPayment) => p.npe01__Payment_Amount__c ?? null },
   scheduledDate: { label: "Scheduled date", type: "date", getValue: (p: SfPayment) => p.npe01__Scheduled_Date__c ?? null },
   paymentDate: { label: "Payment date", type: "date", getValue: (p: SfPayment) => p.npe01__Payment_Date__c ?? null },
   paid: { label: "Paid", type: "select", getValue: (p: SfPayment) => (p.npe01__Paid__c ? "Yes" : "No") },
@@ -118,7 +145,7 @@ const PAYMENT_FILTERABLE = {
   delinquent: { label: "Delinquent", type: "select", getValue: (p: SfPayment) => (p.Delinquent__c ? "Yes" : "No") },
   department: { label: "Department", type: "select", getValue: (p: SfPayment) => p.Department__c ?? "" },
   glAccount: { label: "GL account", type: "select", getValue: (p: SfPayment) => p.GL_Account__c ?? "" },
-  reconciled: { label: "Reconciled", type: "select", getValue: (p: SfPayment) => (p.Reconciled_with_Finance__c ? "Yes" : "No") },
+  reconciled: { label: "Reconciled with finance", type: "select", getValue: (p: SfPayment) => (p.Reconciled_with_Finance__c ? "Yes" : "No") },
   amountReceived: { label: "Amount received", type: "number", getValue: (p: SfPayment) => p.Amount_Received__c ?? null },
   amountMinusReceived: { label: "Amount minus received", type: "number", getValue: (p: SfPayment) => p.Amount_Minus_Received__c ?? null },
   createdDate: { label: "Created", type: "date", getValue: (p: SfPayment) => p.CreatedDate ?? null },
@@ -127,11 +154,22 @@ const PAYMENT_FILTERABLE = {
 type PaymentField = keyof typeof PAYMENT_FILTERABLE;
 
 // ── Columns ─────────────────────────────────────────────────────────────────
+//
+// "opportunity" is a composite cell showing opp name + account name on
+// two lines (account is no longer a standalone column — same UX as
+// Pipeline).
 
 type ColKey =
   | "paymentNumber"
   | "opportunity"
-  | "account"
+  | "oppOwner"
+  | "stage"
+  | "recordType"
+  | "active"
+  | "oppAmount"
+  | "mgrProb"
+  | "riskAdjusted"
+  | "closeDate"
   | "amount"
   | "scheduledDate"
   | "paymentDate"
@@ -148,7 +186,14 @@ type ColKey =
 const COLUMN_ORDER: ColKey[] = [
   "paymentNumber",
   "opportunity",
-  "account",
+  "oppOwner",
+  "stage",
+  "recordType",
+  "active",
+  "oppAmount",
+  "mgrProb",
+  "riskAdjusted",
+  "closeDate",
   "amount",
   "scheduledDate",
   "paymentDate",
@@ -163,22 +208,35 @@ const COLUMN_ORDER: ColKey[] = [
   "createdDate",
 ];
 
+// Default visible set covers the top-priority columns Jac asked for:
+// Opp Owner, Stage, Amount (opp), Manager Probability, Risk-Adjusted
+// Value, Scheduled Date, Payment Amount, Close Date — plus the always-
+// useful Opportunity (with account beneath) and Paid status.
 const DEFAULT_VISIBLE_COLS: ColKey[] = [
   "opportunity",
-  "account",
-  "amount",
+  "oppOwner",
+  "stage",
+  "oppAmount",
+  "mgrProb",
+  "riskAdjusted",
   "scheduledDate",
-  "paymentDate",
+  "amount",
+  "closeDate",
   "paid",
-  "method",
-  "status",
 ];
 
 const COL_LABELS: Record<ColKey, string> = {
   paymentNumber: "Payment #",
   opportunity: "Opportunity",
-  account: "Account",
-  amount: "Amount",
+  oppOwner: "Opp owner",
+  stage: "Stage",
+  recordType: "Record type",
+  active: "Active",
+  oppAmount: "Opp amount",
+  mgrProb: "Mgr prob.",
+  riskAdjusted: "Risk-adj",
+  closeDate: "Close",
+  amount: "Pmt amount",
   scheduledDate: "Scheduled",
   paymentDate: "Paid date",
   paid: "Paid",
@@ -195,22 +253,29 @@ const COL_LABELS: Record<ColKey, string> = {
 const DEFAULT_WIDTHS: Record<ColKey, number> = {
   paymentNumber: 110,
   opportunity: 260,
-  account: 200,
-  amount: 110,
+  oppOwner: 140,
+  stage: 140,
+  recordType: 140,
+  active: 80,
+  oppAmount: 120,
+  mgrProb: 90,
+  riskAdjusted: 120,
+  closeDate: 110,
+  amount: 120,
   scheduledDate: 110,
   paymentDate: 110,
-  paid: 60,
+  paid: 70,
   method: 120,
   status: 130,
   department: 200,
   glAccount: 220,
   amountReceived: 110,
-  reconciled: 90,
+  reconciled: 100,
   writtenOff: 100,
   createdDate: 110,
 };
 
-const ROW_HEIGHT = 40;
+const ROW_HEIGHT = 44;
 
 const PAYMENTS_REFERRER = {
   from: { pathname: "/payments", label: "Payments" },
@@ -219,6 +284,7 @@ const PAYMENTS_REFERRER = {
 interface PaymentsSavedView {
   scope?: Scope;
   rules?: FilterRule<PaymentField>[];
+  /** Visible column keys, in display order (drag-reorder persists here). */
   visibleCols?: ColKey[];
   widths?: Partial<Record<ColKey, number>>;
 }
@@ -227,7 +293,14 @@ function extractPayment(p: SfPayment, key: ColKey): unknown {
   switch (key) {
     case "paymentNumber": return p.Name ?? "";
     case "opportunity": return p.npe01__Opportunity__r?.Name ?? "";
-    case "account": return p.npe01__Opportunity__r?.Account?.Name ?? "";
+    case "oppOwner": return p.npe01__Opportunity__r?.Owner?.Name ?? "";
+    case "stage": return p.npe01__Opportunity__r?.StageName ?? "";
+    case "recordType": return p.npe01__Opportunity__r?.RecordType?.Name ?? "";
+    case "active": return p.npe01__Opportunity__r?.Active_Opportunity__c ? 1 : 0;
+    case "oppAmount": return p.npe01__Opportunity__r?.Amount ?? 0;
+    case "mgrProb": return p.npe01__Opportunity__r?.Manager_Probability_Override__c ?? p.npe01__Opportunity__r?.Probability ?? 0;
+    case "riskAdjusted": return riskAdjusted(p) ?? 0;
+    case "closeDate": return p.npe01__Opportunity__r?.CloseDate ?? "";
     case "amount": return p.npe01__Payment_Amount__c ?? 0;
     case "scheduledDate": return p.npe01__Scheduled_Date__c ?? "";
     case "paymentDate": return p.npe01__Payment_Date__c ?? "";
@@ -243,13 +316,27 @@ function extractPayment(p: SfPayment, key: ColKey): unknown {
   }
 }
 
+const NUMERIC_COLS: Set<ColKey> = new Set([
+  "oppAmount", "mgrProb", "riskAdjusted", "amount", "amountReceived",
+  "scheduledDate", "paymentDate", "closeDate", "createdDate",
+]);
+
 const PAYMENT_CSV_COLUMNS: CsvColumn<SfPayment>[] = [
   { label: "SF Id", getValue: (p) => p.Id },
   { label: "Payment #", getValue: (p) => p.Name },
   { label: "Opportunity Id", getValue: (p) => p.npe01__Opportunity__c },
   { label: "Opportunity", getValue: (p) => p.npe01__Opportunity__r?.Name },
   { label: "Account", getValue: (p) => p.npe01__Opportunity__r?.Account?.Name },
-  { label: "Amount", getValue: (p) => p.npe01__Payment_Amount__c ?? "" },
+  { label: "Opp Owner", getValue: (p) => p.npe01__Opportunity__r?.Owner?.Name },
+  { label: "Stage", getValue: (p) => p.npe01__Opportunity__r?.StageName },
+  { label: "Record Type", getValue: (p) => p.npe01__Opportunity__r?.RecordType?.Name },
+  { label: "Active Opp", getValue: (p) => (p.npe01__Opportunity__r?.Active_Opportunity__c ? "Yes" : "No") },
+  { label: "Opp Amount", getValue: (p) => p.npe01__Opportunity__r?.Amount ?? "" },
+  { label: "Mgr Probability Override", getValue: (p) => p.npe01__Opportunity__r?.Manager_Probability_Override__c ?? "" },
+  { label: "Probability", getValue: (p) => p.npe01__Opportunity__r?.Probability ?? "" },
+  { label: "Risk-Adjusted Value", getValue: (p) => riskAdjusted(p) ?? "" },
+  { label: "Close Date", getValue: (p) => isoDate(p.npe01__Opportunity__r?.CloseDate) },
+  { label: "Payment Amount", getValue: (p) => p.npe01__Payment_Amount__c ?? "" },
   { label: "Scheduled Date", getValue: (p) => isoDate(p.npe01__Scheduled_Date__c) },
   { label: "Payment Date", getValue: (p) => isoDate(p.npe01__Payment_Date__c) },
   { label: "Paid", getValue: (p) => (p.npe01__Paid__c ? "Yes" : "No") },
@@ -298,19 +385,27 @@ export function PaymentsPage() {
     DEFAULT_WIDTHS,
   );
 
-  // Discovered values for select-filter dropdowns. Pure functions of
-  // the loaded data; the AddFilterButton popup reads these.
+  // Discovered values for select-filter dropdowns.
   const chipFacets = useMemo(() => {
     const methods = new Set<string>();
     const statuses = new Set<string>();
     const depts = new Set<string>();
     const gls = new Set<string>();
+    const stages = new Set<string>();
+    const recordTypes = new Set<string>();
+    const owners = new Map<string, string>();
     for (const p of payments) {
+      const o = p.npe01__Opportunity__r;
       if (p.npe01__Payment_Method__c) methods.add(p.npe01__Payment_Method__c);
       const st = p.Paid_Status__c ?? p.Payment_Status__c;
       if (st) statuses.add(st);
       if (p.Department__c) depts.add(p.Department__c);
       if (p.GL_Account__c) gls.add(p.GL_Account__c);
+      if (o?.StageName) stages.add(o.StageName);
+      if (o?.RecordType?.Name) recordTypes.add(o.RecordType.Name);
+      if (o?.OwnerId && o.Owner?.Name && !owners.has(o.OwnerId)) {
+        owners.set(o.OwnerId, o.Owner.Name);
+      }
     }
     const yesNo = [{ value: "Yes", label: "Yes" }, { value: "No", label: "No" }];
     const toOpt = (s: Set<string>) =>
@@ -320,10 +415,16 @@ export function PaymentsPage() {
       writtenOff: yesNo,
       delinquent: yesNo,
       reconciled: yesNo,
+      active: yesNo,
       method: toOpt(methods),
       status: toOpt(statuses),
       department: toOpt(depts),
       glAccount: toOpt(gls),
+      stage: toOpt(stages),
+      recordType: toOpt(recordTypes),
+      oppOwner: Array.from(owners.entries())
+        .map(([id, name]) => ({ value: id, label: name }))
+        .sort((a, b) => a.label.localeCompare(b.label)),
     };
   }, [payments]);
 
@@ -332,10 +433,11 @@ export function PaymentsPage() {
     const filt = payments.filter((p) => {
       if (!inScope(p, scope)) return false;
       if (needle) {
+        const o = p.npe01__Opportunity__r;
         const hay =
           (p.Name ?? "") + " " +
-          (p.npe01__Opportunity__r?.Name ?? "") + " " +
-          (p.npe01__Opportunity__r?.Account?.Name ?? "") + " " +
+          (o?.Name ?? "") + " " +
+          (o?.Account?.Name ?? "") + " " +
           (p.Batch_Name__c ?? "") + " " +
           (p.npe01__Check_Reference_Number__c ?? "");
         if (!hay.toLowerCase().includes(needle)) return false;
@@ -349,17 +451,16 @@ export function PaymentsPage() {
   }, [payments, scope, q, rules, sort]);
 
   const totals = useMemo(() => {
-    let amount = 0, received = 0;
+    let amount = 0, received = 0, riskAdj = 0;
     for (const p of filtered) {
       amount += p.npe01__Payment_Amount__c ?? 0;
       received += p.Amount_Received__c ?? 0;
+      const ra = riskAdjusted(p);
+      if (ra != null) riskAdj += ra;
     }
-    return { amount, received };
+    return { amount, received, riskAdj };
   }, [filtered]);
 
-  // Inline-edit handlers — all hit the same PUT and refresh the
-  // ["payments"] cache. Wrapped in useCallback so the memoized row
-  // doesn't re-render on every parent update.
   const savePatch = useCallback(
     async (id: string, patch: PaymentPatch) => {
       await updatePayment.mutateAsync({ id, patch });
@@ -389,11 +490,11 @@ export function PaymentsPage() {
         subtitle={
           isLoading
             ? "Loading…"
-            : `${filtered.length.toLocaleString()} of ${payments.length.toLocaleString()} payments · ${fmtMoney(totals.amount)} scheduled · ${fmtMoney(totals.received)} received`
+            : `${filtered.length.toLocaleString()} of ${payments.length.toLocaleString()} · ${fmtMoney(totals.amount)} scheduled · ${fmtMoney(totals.riskAdj)} risk-adj · ${fmtMoney(totals.received)} received`
         }
       />
 
-      {/* Toolbar row 1 */}
+      {/* Toolbar */}
       <Toolbar className="mt-4">
         <ButtonGroup
           value={scope}
@@ -420,10 +521,14 @@ export function PaymentsPage() {
             writtenOff: chipFacets.writtenOff,
             delinquent: chipFacets.delinquent,
             reconciled: chipFacets.reconciled,
+            active: chipFacets.active,
             method: chipFacets.method,
             status: chipFacets.status,
             department: chipFacets.department,
             glAccount: chipFacets.glAccount,
+            stage: chipFacets.stage,
+            recordType: chipFacets.recordType,
+            oppOwner: chipFacets.oppOwner,
           }}
           onAdd={(r) => setRules((prev) => [...prev, r])}
           buttonLabel="Filter"
@@ -491,7 +596,7 @@ export function PaymentsPage() {
                   key={key}
                   width={widths[key]}
                   onStartResize={(e) => startResize(key, e)}
-                  align={isNumericCol(key) ? "right" : "left"}
+                  align={NUMERIC_COLS.has(key) ? "right" : "left"}
                   isLast={idx === visibleCols.length - 1}
                 >
                   <SortableHeader
@@ -562,10 +667,6 @@ export function PaymentsPage() {
   );
 }
 
-function isNumericCol(k: ColKey): boolean {
-  return k === "amount" || k === "amountReceived";
-}
-
 // ── Row ─────────────────────────────────────────────────────────────────────
 
 interface RowProps {
@@ -604,20 +705,53 @@ function moneyDisplay(raw: string): string {
 const PaymentRow = memo(function PaymentRow({
   p, visibleCols, canEdit, onSave, onOpenOpp,
 }: RowProps) {
+  const opp = p.npe01__Opportunity__r;
+  const accountName = opp?.Account?.Name ?? "—";
+  const probDisplay =
+    opp?.Manager_Probability_Override__c ?? opp?.Probability ?? null;
+  const ra = riskAdjusted(p);
+
   const cells: Partial<Record<ColKey, React.ReactNode>> = {
     paymentNumber: <span className="truncate font-mono text-[11.5px] text-ink-3">{p.Name ?? "—"}</span>,
     opportunity: (
-      <button
-        type="button"
-        onClick={() => p.npe01__Opportunity__c && onOpenOpp(p.npe01__Opportunity__c)}
-        className="block w-full truncate text-left font-medium text-ink hover:underline"
-        title={p.npe01__Opportunity__r?.Name ?? ""}
-      >
-        {p.npe01__Opportunity__r?.Name ?? p.npe01__Opportunity__c ?? "—"}
-      </button>
+      <div className="flex min-w-0 items-center gap-1.5">
+        <AccountAvatar name={accountName} logoUrl={null} size={18} />
+        <div className="flex min-w-0 flex-1 flex-col leading-tight">
+          <button
+            type="button"
+            onClick={() => p.npe01__Opportunity__c && onOpenOpp(p.npe01__Opportunity__c)}
+            className="truncate text-left font-medium text-ink hover:underline"
+            title={opp?.Name ?? ""}
+          >
+            {opp?.Name ?? p.npe01__Opportunity__c ?? "—"}
+          </button>
+          <span className="truncate text-[11px] text-ink-3" title={accountName}>{accountName}</span>
+        </div>
+      </div>
     ),
-    account: (
-      <span className="truncate text-ink-2">{p.npe01__Opportunity__r?.Account?.Name ?? "—"}</span>
+    oppOwner: <span className="truncate text-ink-2">{opp?.Owner?.Name ?? "—"}</span>,
+    stage: <span className="truncate text-ink-2">{opp?.StageName ?? "—"}</span>,
+    recordType: <span className="truncate text-ink-2">{opp?.RecordType?.Name ?? "—"}</span>,
+    active: (
+      <span className="text-ink-2">{opp?.Active_Opportunity__c ? "Yes" : "—"}</span>
+    ),
+    oppAmount: (
+      <span className="block text-right tabular-nums text-ink-2">
+        {opp?.Amount != null ? fmtMoney(opp.Amount) : "—"}
+      </span>
+    ),
+    mgrProb: (
+      <span className="block text-right tabular-nums text-ink-2">
+        {probDisplay != null ? `${probDisplay}%` : "—"}
+      </span>
+    ),
+    riskAdjusted: (
+      <span className="block text-right tabular-nums text-ink-2">
+        {ra != null ? fmtMoney(ra) : "—"}
+      </span>
+    ),
+    closeDate: (
+      <span className="block text-right tabular-nums text-ink-2">{fmtDate(opp?.CloseDate)}</span>
     ),
     amount: canEdit ? (
       <InlineText
@@ -755,28 +889,10 @@ const PaymentRow = memo(function PaymentRow({
     ),
   };
 
-  const cellCls: Partial<Record<ColKey, string>> = {
-    paymentNumber: "px-3 py-1.5",
-    opportunity: "px-3 py-1.5",
-    account: "px-3 py-1.5",
-    amount: "px-3 py-1.5",
-    scheduledDate: "px-3 py-1.5",
-    paymentDate: "px-3 py-1.5",
-    paid: "px-3 py-1.5",
-    method: "px-3 py-1.5",
-    status: "px-3 py-1.5",
-    department: "px-3 py-1.5",
-    glAccount: "px-3 py-1.5",
-    amountReceived: "px-3 py-1.5",
-    reconciled: "px-3 py-1.5",
-    writtenOff: "px-3 py-1.5",
-    createdDate: "px-3 py-1.5",
-  };
-
   return (
     <tr className="border-b border-border-strong hover:bg-surface-2/50" style={{ height: ROW_HEIGHT }}>
       {visibleCols.map((key) => (
-        <td key={key} className={cn("overflow-hidden", cellCls[key])}>
+        <td key={key} className="overflow-hidden px-3 py-1.5">
           {cells[key]}
         </td>
       ))}
