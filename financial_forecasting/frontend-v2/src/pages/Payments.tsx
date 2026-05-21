@@ -51,7 +51,6 @@ import {
   describeRule,
   ruleApplies,
 } from "@/pages/cleanup/Filters";
-import { cn } from "@/lib/utils";
 import { usePerm } from "@/services/permissions";
 import {
   usePayments,
@@ -258,29 +257,34 @@ const COL_LABELS: Record<ColKey, string> = {
 // content area (sidebar collapsed: ~1380, expanded: ~1100 on a 1440
 // viewport). Users can still resize either direction; the per-page
 // localStorage map captures any deviations.
+// Tight defaults. The shortest columns (paid / active / written off /
+// reconciled / mgr prob) sit just above the resize floor so users can
+// nudge them down further when packing many columns in view. Long-text
+// columns (opp, dept, GL) stay wider because truncation hurts at sub-
+// 100 px.
 const DEFAULT_WIDTHS: Record<ColKey, number> = {
-  paymentNumber: 90,
+  paymentNumber: 80,
   opportunity: 200,
   oppOwner: 100,
-  stage: 110,
-  recordType: 120,
-  active: 60,
-  oppAmount: 90,
-  mgrProb: 60,
-  riskAdjusted: 90,
-  closeDate: 80,
-  amount: 90,
-  scheduledDate: 80,
-  paymentDate: 80,
-  paid: 55,
-  method: 100,
-  status: 110,
-  department: 160,
-  glAccount: 180,
-  amountReceived: 90,
-  reconciled: 80,
-  writtenOff: 80,
-  createdDate: 90,
+  stage: 60,
+  recordType: 100,
+  active: 32,
+  oppAmount: 80,
+  mgrProb: 40,
+  riskAdjusted: 80,
+  closeDate: 70,
+  amount: 80,
+  scheduledDate: 70,
+  paymentDate: 70,
+  paid: 32,
+  method: 90,
+  status: 100,
+  department: 140,
+  glAccount: 160,
+  amountReceived: 80,
+  reconciled: 32,
+  writtenOff: 32,
+  createdDate: 80,
 };
 
 const ROW_HEIGHT = 44;
@@ -395,11 +399,11 @@ export function PaymentsPage() {
   const { visible: visibleCols, toggle: toggleCol, replaceAll: replaceVisibleCols } =
     useColumnVisibility<ColKey>("bedrock-v2:vis:payments:v2", COLUMN_ORDER, DEFAULT_VISIBLE_COLS);
   const { widths, startResize, replaceAll: replaceWidths } = useColumnWidths<ColKey>(
-    // Bumped to v3 to invalidate the wider v2 defaults — users get the
-    // tighter widths on next reload, then can still resize freely.
-    "bedrock-v2:cols:payments:v3",
+    // Bumped to v4 so each iteration of the tighter defaults takes
+    // effect on next reload (saved widths shadow defaults).
+    "bedrock-v2:cols:payments:v4",
     DEFAULT_WIDTHS,
-    { min: 44 },
+    { min: 24 },
   );
 
   // Discovered values for select-filter dropdowns.
@@ -813,8 +817,14 @@ const PaymentRow = memo(function PaymentRow({
       <span className="text-ink-4">—</span>
     ),
     recordType: <span className="truncate text-ink-2">{opp?.RecordType?.Name ?? "—"}</span>,
-    active: (
-      <span className="text-ink-2">{opp?.Active_Opportunity__c ? "Yes" : "—"}</span>
+    active: opp?.Active_Opportunity__c ? (
+      <span
+        className="block h-2 w-2 rounded-full bg-green"
+        title="Active opportunity"
+        aria-label="Active"
+      />
+    ) : (
+      <span className="text-ink-4" aria-label="Not active">—</span>
     ),
     oppAmount: (
       <span className="block text-right tabular-nums text-ink-2">
@@ -889,23 +899,18 @@ const PaymentRow = memo(function PaymentRow({
         value={p.npe01__Paid__c ? "true" : "false"}
         options={YESNO_OPTIONS}
         onSave={(v) => onSave(p.Id, { npe01__Paid__c: v === "true" })}
-        renderValue={(v) => (
-          <span className={cn(
-            "inline-flex items-center rounded border px-1.5 py-0.5 text-[10.5px] font-medium",
-            v === "true"
-              ? "border-green bg-green-soft text-green"
-              : "border-border-strong bg-surface-2 text-ink-3",
-          )}>
-            {v === "true" ? "Paid" : "—"}
-          </span>
-        )}
+        renderValue={(v) =>
+          v === "true" ? (
+            <span className="block h-2 w-2 rounded-full bg-green" title="Paid" aria-label="Paid" />
+          ) : (
+            <span className="text-ink-4" aria-label="Unpaid">—</span>
+          )
+        }
       />
     ) : p.npe01__Paid__c ? (
-      <span className="inline-flex items-center rounded border border-green bg-green-soft px-1.5 py-0.5 text-[10.5px] font-medium text-green">
-        Paid
-      </span>
+      <span className="block h-2 w-2 rounded-full bg-green" title="Paid" aria-label="Paid" />
     ) : (
-      <span className="text-ink-4">—</span>
+      <span className="text-ink-4" aria-label="Unpaid">—</span>
     ),
     method: canEdit ? (
       <InlineSelect
@@ -952,35 +957,36 @@ const PaymentRow = memo(function PaymentRow({
         value={p.Reconciled_with_Finance__c ? "true" : "false"}
         options={YESNO_OPTIONS}
         onSave={(v) => onSave(p.Id, { Reconciled_with_Finance__c: v === "true" })}
-        renderValue={(v) => (
-          <span className="text-ink-2">{v === "true" ? "Yes" : "—"}</span>
-        )}
+        renderValue={(v) =>
+          v === "true" ? (
+            <span className="block h-2 w-2 rounded-full bg-green" title="Reconciled" aria-label="Reconciled" />
+          ) : (
+            <span className="text-ink-4" aria-label="Not reconciled">—</span>
+          )
+        }
       />
+    ) : p.Reconciled_with_Finance__c ? (
+      <span className="block h-2 w-2 rounded-full bg-green" title="Reconciled" aria-label="Reconciled" />
     ) : (
-      <span className="text-ink-2">{p.Reconciled_with_Finance__c ? "Yes" : "—"}</span>
+      <span className="text-ink-4" aria-label="Not reconciled">—</span>
     ),
     writtenOff: canEdit ? (
       <InlineSelect
         value={p.npe01__Written_Off__c ? "true" : "false"}
         options={YESNO_OPTIONS}
         onSave={(v) => onSave(p.Id, { npe01__Written_Off__c: v === "true" })}
-        renderValue={(v) => (
-          <span className={cn(
-            "inline-flex items-center rounded border px-1.5 py-0.5 text-[10.5px] font-medium",
-            v === "true"
-              ? "border-amber bg-amber-soft text-amber"
-              : "border-border-strong bg-surface-2 text-ink-3",
-          )}>
-            {v === "true" ? "Written off" : "—"}
-          </span>
-        )}
+        renderValue={(v) =>
+          v === "true" ? (
+            <span className="block h-2 w-2 rounded-full bg-amber" title="Written off" aria-label="Written off" />
+          ) : (
+            <span className="text-ink-4" aria-label="Not written off">—</span>
+          )
+        }
       />
     ) : p.npe01__Written_Off__c ? (
-      <span className="inline-flex items-center rounded border border-amber bg-amber-soft px-1.5 py-0.5 text-[10.5px] font-medium text-amber">
-        Written off
-      </span>
+      <span className="block h-2 w-2 rounded-full bg-amber" title="Written off" aria-label="Written off" />
     ) : (
-      <span className="text-ink-4">—</span>
+      <span className="text-ink-4" aria-label="Not written off">—</span>
     ),
     createdDate: (
       <span className="block text-right tabular-nums text-ink-3">{fmtDate(p.CreatedDate)}</span>
