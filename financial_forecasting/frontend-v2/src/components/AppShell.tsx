@@ -17,6 +17,7 @@ import {
   Link as LinkIcon,
   Home,
   MessageSquarePlus,
+  Receipt,
 } from "lucide-react";
 
 import { GlobalSearch } from "@/components/GlobalSearch";
@@ -39,6 +40,7 @@ const NAV_GROUPS = [
       { to: "/accounts", label: "Accounts", icon: Building2 },
       { to: "/contacts", label: "Contacts", icon: Users },
       { to: "/pipeline", label: "Pipeline", icon: GitBranch },
+      { to: "/payments", label: "Payments", icon: Receipt },
       { to: "/awards",   label: "Awards",   icon: Trophy },
       { to: "/projects", label: "Projects", icon: FolderOpen },
       { to: "/cleanup",  label: "Cleanup",  icon: Sparkles },
