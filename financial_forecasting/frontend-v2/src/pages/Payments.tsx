@@ -264,29 +264,40 @@ const COL_LABELS: Record<ColKey, string> = {
 // nudge them down further when packing many columns in view. Long-text
 // columns (opp, dept, GL) stay wider because truncation hurts at sub-
 // 100 px.
+// Data-type-driven defaults. The constants below match the visual width
+// of the longest realistic value at our content font size, plus 16 px of
+// horizontal padding:
+//   • Currency (mono "$1,234,567"):  ~76 px
+//   • Short date ("Apr 8, 2026"):    ~68 px
+//   • Percent ("100%"):              ~44 px
+//   • Single short word chip:        ~80 px
+//   • Owner / multi-word name:       ~90 px (truncated)
+//   • Composite opp+account cell:    ~190 px (longest column, two lines)
+//   • Boolean colored-dot cells:      ~28 px (icon-only)
+// Users can still drag any column wider — these are floors.
 const DEFAULT_WIDTHS: Record<ColKey, number> = {
-  paymentNumber: 80,
-  opportunity: 200,
-  oppOwner: 100,
-  stage: 60,
-  recordType: 100,
-  active: 32,
-  oppAmount: 80,
-  mgrProb: 40,
-  riskAdjusted: 80,
-  closeDate: 70,
-  amount: 80,
-  scheduledDate: 70,
-  paymentDate: 70,
-  paid: 32,
-  method: 90,
-  status: 100,
-  department: 140,
-  glAccount: 160,
-  amountReceived: 80,
-  reconciled: 32,
-  writtenOff: 32,
-  createdDate: 80,
+  paymentNumber: 72,
+  opportunity: 190,
+  oppOwner: 90,
+  stage: 80,
+  recordType: 90,
+  active: 28,
+  oppAmount: 76,
+  mgrProb: 44,
+  riskAdjusted: 76,
+  closeDate: 68,
+  amount: 76,
+  scheduledDate: 68,
+  paymentDate: 68,
+  paid: 28,
+  method: 80,
+  status: 90,
+  department: 110,
+  glAccount: 120,
+  amountReceived: 76,
+  reconciled: 28,
+  writtenOff: 28,
+  createdDate: 68,
 };
 
 const ROW_HEIGHT = 44;
@@ -403,7 +414,7 @@ export function PaymentsPage() {
   const { widths, startResize, replaceAll: replaceWidths } = useColumnWidths<ColKey>(
     // Bumped to v4 so each iteration of the tighter defaults takes
     // effect on next reload (saved widths shadow defaults).
-    "bedrock-v2:cols:payments:v4",
+    "bedrock-v2:cols:payments:v5",
     DEFAULT_WIDTHS,
     { min: 16 },
   );

@@ -113,6 +113,8 @@ export function TaskListTab({
     updateTask.mutateAsync({ id, patch: { Status: status } }).then(() => undefined);
   const saveDate = (id: string, date: string | null) =>
     updateTask.mutateAsync({ id, patch: { ActivityDate: date } }).then(() => undefined);
+  const saveOwner = (id: string, ownerId: string) =>
+    updateTask.mutateAsync({ id, patch: { OwnerId: ownerId } }).then(() => undefined);
   const toggleComplete = (t: SfTask) =>
     void updateTask.mutateAsync({
       id: t.Id,
@@ -168,17 +170,27 @@ export function TaskListTab({
         </>
       ) : (
         <div className="overflow-hidden rounded border border-border-strong bg-surface">
-          <table className="w-full text-[12px]">
+          <table className="w-full table-fixed text-[12px]">
+            <colgroup>
+              <col style={{ width: 24 }} />
+              <col />
+              <col style={{ width: 100 }} />
+              <col style={{ width: 100 }} />
+              <col style={{ width: 80 }} />
+            </colgroup>
             <thead className="bg-surface-2 text-[10.5px] uppercase tracking-wider text-ink-3">
               <tr>
-                <th className="w-[28px] px-3 py-1.5"></th>
-                <th className="px-3 py-1.5 text-left font-semibold">
+                <th className="px-2 py-1.5"></th>
+                <th className="px-2 py-1.5 text-left font-semibold">
                   <SortableHeader label="Subject" sortKey="subject" sort={sort} onToggle={toggle} />
                 </th>
-                <th className="w-[130px] px-3 py-1.5 text-left font-semibold">
+                <th className="px-2 py-1.5 text-left font-semibold">
                   <SortableHeader label="Status" sortKey="status" sort={sort} onToggle={toggle} />
                 </th>
-                <th className="w-[110px] px-3 py-1.5 text-right font-semibold">
+                <th className="px-2 py-1.5 text-left font-semibold">
+                  Owner
+                </th>
+                <th className="px-2 py-1.5 text-right font-semibold">
                   <SortableHeader label="Due" sortKey="due" sort={sort} onToggle={toggle} align="right" />
                 </th>
               </tr>
@@ -188,10 +200,12 @@ export function TaskListTab({
                 <TaskRow
                   key={t.Id}
                   t={t}
+                  ownerOptions={ownerOptions ?? []}
                   contextLabel={contextResolver?.(t) ?? null}
                   onToggleComplete={() => toggleComplete(t)}
                   onSaveStatus={(s) => saveStatus(t.Id, s)}
                   onSaveDate={(d) => saveDate(t.Id, d)}
+                  onSaveOwner={(o) => saveOwner(t.Id, o)}
                 />
               ))}
             </tbody>
@@ -207,16 +221,20 @@ export function TaskListTab({
 
 function TaskRow({
   t,
+  ownerOptions,
   contextLabel,
   onToggleComplete,
   onSaveStatus,
   onSaveDate,
+  onSaveOwner,
 }: {
   t: SfTask;
+  ownerOptions: { value: string; label: string }[];
   contextLabel: string | null;
   onToggleComplete: () => void;
   onSaveStatus: (next: string) => Promise<void>;
   onSaveDate: (next: string | null) => Promise<void>;
+  onSaveOwner: (next: string) => Promise<void>;
 }) {
   const closed = isTaskClosed(t);
   const overdue = isOverdue(t);
@@ -227,7 +245,7 @@ function TaskRow({
         closed && "text-ink-3",
       )}
     >
-      <td className="px-3 py-1.5 align-middle">
+      <td className="px-2 py-1.5 align-middle">
         <input
           type="checkbox"
           checked={closed}
@@ -236,7 +254,7 @@ function TaskRow({
           aria-label={closed ? "Reopen task" : "Mark complete"}
         />
       </td>
-      <td className="px-3 py-1.5 align-middle">
+      <td className="px-2 py-1.5 align-middle">
         <span
           className={cn(
             "block truncate text-[12.5px]",
@@ -255,16 +273,34 @@ function TaskRow({
           </span>
         ) : null}
       </td>
-      <td className="px-3 py-1.5 align-middle">
+      <td className="px-2 py-1.5 align-middle">
         <InlineSelect
           value={t.Status ?? null}
           options={STATUS_OPTIONS}
           onSave={onSaveStatus}
         />
       </td>
+      <td className="px-2 py-1.5 align-middle">
+        {ownerOptions.length > 0 ? (
+          <InlineSelect
+            value={t.OwnerId ?? null}
+            options={ownerOptions}
+            onSave={onSaveOwner}
+            renderValue={() => (
+              <span className="block truncate text-[12px] text-ink-2" title={t.OwnerName ?? undefined}>
+                {t.OwnerName ?? ownerOptions.find((o) => o.value === t.OwnerId)?.label ?? "—"}
+              </span>
+            )}
+          />
+        ) : (
+          <span className="block truncate text-[12px] text-ink-3" title={t.OwnerName ?? undefined}>
+            {t.OwnerName ?? "—"}
+          </span>
+        )}
+      </td>
       <td
         className={cn(
-          "px-3 py-1.5 align-middle text-right",
+          "px-2 py-1.5 align-middle text-right",
           overdue && "text-red",
         )}
       >
