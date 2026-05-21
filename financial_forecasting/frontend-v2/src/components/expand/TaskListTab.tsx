@@ -172,12 +172,12 @@ export function TaskListTab({
         <div className="inline-block max-w-full overflow-hidden rounded border border-border-strong bg-surface align-top">
           <table className="table-fixed text-[12px]">
             <colgroup>
-              <col style={{ width: 24 }} />
-              <col style={{ width: 320 }} />
-              <col style={{ width: 100 }} />
-              <col style={{ width: 100 }} />
-              <col style={{ width: 80 }} />
-              <col style={{ width: 28 }} />
+              <col style={{ width: 36 }} />
+              <col style={{ width: 480 }} />
+              <col style={{ width: 150 }} />
+              <col style={{ width: 150 }} />
+              <col style={{ width: 120 }} />
+              <col style={{ width: 42 }} />
             </colgroup>
             <thead className="bg-surface-2 text-[10.5px] uppercase tracking-wider text-ink-3">
               <tr>
