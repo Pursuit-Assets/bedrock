@@ -55,6 +55,7 @@ from routes.salesforce_schema import router as sf_schema_router
 from routes.admin_sf_drift import router as admin_sf_drift_router
 from routes.account_enrichment import router as account_enrichment_router
 from routes.admin_company_match import router as admin_company_match_router
+from routes.admin_contact_match import router as admin_contact_match_router
 from routes.activities import router as activities_router
 from routes.platform_intake import router as platform_intake_router
 from routes.awards import router as awards_router
@@ -137,6 +138,7 @@ app.include_router(sf_search_router)
 app.include_router(sf_schema_router)
 app.include_router(admin_sf_drift_router)
 app.include_router(admin_company_match_router)
+app.include_router(admin_contact_match_router)
 app.include_router(account_enrichment_router)
 app.include_router(activities_router)
 app.include_router(platform_intake_router)
