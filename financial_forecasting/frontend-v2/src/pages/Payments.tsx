@@ -21,12 +21,13 @@
  * npe01__Opportunity__r relationship — no extra round-trips. See
  * PAYMENT_SOQL_FIELDS in main.py.
  */
-import { memo, useCallback, useMemo, useRef, useState } from "react";
+import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Search } from "lucide-react";
+import { ChevronDown, ChevronRight, Search } from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 
 import { AccountAvatar } from "@/components/AccountAvatar";
+import { OpportunityExpandPanel, OPP_PANEL_HEIGHT } from "@/components/OpportunityExpandPanel";
 import { ExportCsvButton } from "@/components/ui/ExportCsvButton";
 import { PageHeader } from "@/components/PageHeader";
 import { ColumnChooser } from "@/components/ui/ColumnChooser";
@@ -42,6 +43,7 @@ import { totalWidth, useColumnWidths } from "@/lib/columnWidths";
 import { fmtDate, fmtMoney, fmtMoneyFull } from "@/lib/format";
 import { sortBy, useSort } from "@/lib/sort";
 import { SF_STAGE_OPTIONS, stageStatus } from "@/lib/stages";
+import { useSessionState } from "@/lib/useSessionState";
 import { useUpdateOpportunity, useUpdateOpportunityStage } from "@/services/opportunities";
 import {
   AddFilterButton,
@@ -403,8 +405,14 @@ export function PaymentsPage() {
     // effect on next reload (saved widths shadow defaults).
     "bedrock-v2:cols:payments:v4",
     DEFAULT_WIDTHS,
-    { min: 24 },
+    { min: 16 },
   );
+
+  // Inline expansion — clicking the chevron next to an opportunity
+  // name pops a per-opp tasks + activity panel below the row, same
+  // pattern as Pipeline. Sticky per-session via useSessionState so
+  // tab-back-from-detail restores the prior expansion.
+  const [expandedOppId, setExpandedOppId] = useSessionState<string | null>("payments:expandedOppId", null);
 
   // Discovered values for select-filter dropdowns.
   const chipFacets = useMemo(() => {
@@ -519,9 +527,18 @@ export function PaymentsPage() {
   const virtualizer = useVirtualizer({
     count: filtered.length,
     getScrollElement: () => scrollRef.current,
-    estimateSize: () => ROW_HEIGHT,
+    estimateSize: (i) => {
+      const row = filtered[i];
+      return row?.npe01__Opportunity__c === expandedOppId
+        ? ROW_HEIGHT + OPP_PANEL_HEIGHT
+        : ROW_HEIGHT;
+    },
     overscan: 10,
   });
+  // Recompute item sizes when the expanded row changes.
+  useEffect(() => {
+    virtualizer.measure();
+  }, [expandedOppId, virtualizer]);
   const virtualItems = virtualizer.getVirtualItems();
   const totalSize = virtualizer.getTotalSize();
   const paddingTop = virtualItems[0]?.start ?? 0;
@@ -540,8 +557,11 @@ export function PaymentsPage() {
         }
       />
 
-      {/* Toolbar */}
-      <Toolbar className="mt-4">
+      {/* Toolbar — flex-wrap + gap-y so the rightmost controls drop
+          to a second row on narrow viewports instead of clipping off
+          the right edge (the original single-line toolbar was cutting
+          off the Saved Views picker at sub-1280px widths). */}
+      <Toolbar className="mt-4 flex-wrap gap-y-2">
         <ButtonGroup
           value={scope}
           onChange={(v) => setScope(v as Scope)}
@@ -691,19 +711,34 @@ export function PaymentsPage() {
                 ) : null}
                 {virtualItems.map((vi) => {
                   const p = filtered[vi.index];
+                  const oppId = p.npe01__Opportunity__c ?? null;
+                  const isExpanded = oppId != null && oppId === expandedOppId;
                   return (
-                    <PaymentRow
-                      key={p.Id}
-                      p={p}
-                      visibleCols={visibleCols}
-                      canEdit={canEdit}
-                      onSave={savePatch}
-                      onSaveOppStage={saveOppStage}
-                      onSaveOppMgrProb={saveOppMgrProb}
-                      onOpenOpp={(oppId) =>
-                        navigate(`/opportunities/${oppId}`, { state: PAYMENTS_REFERRER })
-                      }
-                    />
+                    <Fragment key={p.Id}>
+                      <PaymentRow
+                        p={p}
+                        visibleCols={visibleCols}
+                        canEdit={canEdit}
+                        isExpanded={isExpanded}
+                        onToggleExpand={() => {
+                          if (!oppId) return;
+                          setExpandedOppId(isExpanded ? null : oppId);
+                        }}
+                        onSave={savePatch}
+                        onSaveOppStage={saveOppStage}
+                        onSaveOppMgrProb={saveOppMgrProb}
+                        onOpenOpp={(id) =>
+                          navigate(`/opportunities/${id}`, { state: PAYMENTS_REFERRER })
+                        }
+                      />
+                      {isExpanded && oppId ? (
+                        <tr>
+                          <td colSpan={visibleCols.length} className="p-0">
+                            <OpportunityExpandPanel opportunityId={oppId} />
+                          </td>
+                        </tr>
+                      ) : null}
+                    </Fragment>
                   );
                 })}
                 {paddingBottom > 0 ? (
@@ -726,6 +761,8 @@ interface RowProps {
   p: SfPayment;
   visibleCols: ColKey[];
   canEdit: boolean;
+  isExpanded: boolean;
+  onToggleExpand: () => void;
   onSave: (id: string, patch: PaymentPatch) => Promise<void>;
   onSaveOppStage: (oppId: string, nextStage: string) => Promise<void>;
   onSaveOppMgrProb: (oppId: string, raw: string) => Promise<void>;
@@ -771,7 +808,8 @@ function stageOptionsFor(currentStage: string | null | undefined) {
 }
 
 const PaymentRow = memo(function PaymentRow({
-  p, visibleCols, canEdit, onSave, onSaveOppStage, onSaveOppMgrProb, onOpenOpp,
+  p, visibleCols, canEdit, isExpanded, onToggleExpand,
+  onSave, onSaveOppStage, onSaveOppMgrProb, onOpenOpp,
 }: RowProps) {
   const opp = p.npe01__Opportunity__r;
   const oppId = p.npe01__Opportunity__c ?? null;
@@ -784,7 +822,16 @@ const PaymentRow = memo(function PaymentRow({
   const cells: Partial<Record<ColKey, React.ReactNode>> = {
     paymentNumber: <span className="truncate font-mono text-[11.5px] text-ink-3">{p.Name ?? "—"}</span>,
     opportunity: (
-      <div className="flex min-w-0 items-center gap-1.5">
+      <div className="flex min-w-0 items-center gap-1">
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); onToggleExpand(); }}
+          className="flex-shrink-0 text-ink-4 hover:text-ink-2 transition-colors"
+          aria-label={isExpanded ? "Collapse tasks" : "Expand tasks"}
+          disabled={!p.npe01__Opportunity__c}
+        >
+          {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+        </button>
         <AccountAvatar name={accountName} logoUrl={null} size={18} />
         <div className="flex min-w-0 flex-1 flex-col leading-tight">
           <button
