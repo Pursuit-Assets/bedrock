@@ -379,9 +379,9 @@ export function PaymentsPage() {
     direction: "asc",
   });
   const { visible: visibleCols, toggle: toggleCol, replaceAll: replaceVisibleCols } =
-    useColumnVisibility<ColKey>("bedrock-v2:vis:payments", COLUMN_ORDER, DEFAULT_VISIBLE_COLS);
+    useColumnVisibility<ColKey>("bedrock-v2:vis:payments:v2", COLUMN_ORDER, DEFAULT_VISIBLE_COLS);
   const { widths, startResize, replaceAll: replaceWidths } = useColumnWidths<ColKey>(
-    "bedrock-v2:cols:payments",
+    "bedrock-v2:cols:payments:v2",
     DEFAULT_WIDTHS,
   );
 
@@ -585,8 +585,12 @@ export function PaymentsPage() {
         className="relative mt-0 flex-1 overflow-auto border border-border-strong bg-surface"
       >
         <table
-          className="table-fixed border-collapse text-[12.5px]"
-          style={{ minWidth: tableMinWidth }}
+          className="border-collapse"
+          style={{
+            tableLayout: "fixed",
+            width: "100%",
+            minWidth: tableMinWidth,
+          }}
         >
           <ColGroup order={visibleCols} widths={widths} />
           <thead className="sticky top-0 z-10 border-b border-border-strong bg-surface-2 text-[11px] uppercase tracking-wider text-ink-3">
