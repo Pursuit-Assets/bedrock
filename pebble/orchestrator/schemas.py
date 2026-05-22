@@ -136,6 +136,7 @@ class ToolResult(BaseModel):
     tokens_in: int = 0
     tokens_out: int = 0
     citations: tuple[str, ...] = ()         # IDs the renderer can render as <cite>
+    tool_version: Optional[str] = None      # set by Chisel runtime; picked up by Sprint-11 scratchpad
 
 
 # ---------------------------------------------------------------------------
