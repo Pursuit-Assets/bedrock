@@ -1,0 +1,14 @@
+name: request_human_review
+description: |
+  Pause execution and ask the user to confirm or choose between options.
+  Use when the input is ambiguous (multiple records match a name) or
+  the action is irreversible. The user's response resumes the
+  conversation; you'll see their choice as the next message.
+version: 1.0.0
+tags:
+  - control_flow
+requires_human: true
+cost_estimate:
+  fixed: 0.0
+output_kind: checkpoint
+scope: global
