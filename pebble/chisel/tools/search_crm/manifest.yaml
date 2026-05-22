@@ -1,0 +1,16 @@
+name: search_crm
+description: |
+  Search the CRM across Accounts, Contacts, Opportunities, Tasks,
+  Activities, Awards, Projects, and Pebble research. Returns
+  rank-ordered hits the user can see (permission-filtered). Use this
+  to find records by name, email, or any text content. Always prefer
+  this to ``get_record`` when the user gives natural-language
+  descriptors instead of explicit IDs.
+version: 1.0.0
+tags:
+  - crm_read
+requires_human: false
+cost_estimate:
+  fixed: 0.0
+output_kind: prose
+scope: global
