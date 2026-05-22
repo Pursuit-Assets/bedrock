@@ -16,6 +16,7 @@ Public entry points:
 
 from __future__ import annotations
 
+import importlib
 import importlib.util
 import sys
 from dataclasses import dataclass, field
@@ -60,6 +61,7 @@ class AutoloadReport:
 
 _SLASH_COMMANDS: dict[str, str] = {}
 _INTENT_DISPATCH: dict[str, str] = {}
+_PLAN_BUILDERS: dict[str, Any] = {}  # workflow_name → callable(**kwargs) -> Plan
 
 
 def slash_command_map() -> dict[str, str]:
@@ -69,10 +71,33 @@ def slash_command_map() -> dict[str, str]:
     return dict(_SLASH_COMMANDS)
 
 
+def slash_to_intent(slash: str) -> Optional[str]:
+    """Return the dispatch_intent registered for a slash command, or
+    None. Used by ``pebble/router.py`` to populate RouteResult.intent."""
+    workflow_name = _SLASH_COMMANDS.get(slash)
+    if workflow_name is None:
+        return None
+    for intent, name in _INTENT_DISPATCH.items():
+        if name == workflow_name:
+            return intent
+    return None
+
+
 def dispatch_workflow(intent: str) -> Optional[str]:
     """Return the workflow name registered for ``intent`` (planner
     output), or None. Replaces ``_build_workflow_plan_for_intent``."""
     return _INTENT_DISPATCH.get(intent)
+
+
+def build_workflow_plan(intent_or_name: str, **kwargs: Any) -> Optional[Any]:
+    """Look up the workflow by intent (preferred) or by name, then call
+    its registered ``build_plan(**kwargs)``. Returns the Plan, or None
+    if no workflow is registered for that intent/name."""
+    name = _INTENT_DISPATCH.get(intent_or_name, intent_or_name)
+    builder = _PLAN_BUILDERS.get(name)
+    if builder is None:
+        return None
+    return builder(**kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -106,6 +131,7 @@ def autoload(
     if reset:
         _SLASH_COMMANDS.clear()
         _INTENT_DISPATCH.clear()
+        _PLAN_BUILDERS.clear()
 
     tools_root = root / "tools"
     if tools_root.is_dir():
@@ -151,7 +177,10 @@ def _load_tool(tool_dir: Path, registry: ToolRegistry) -> None:
     if not handler_path.is_file():
         raise FileNotFoundError(f"missing handler.py in {tool_dir}")
 
-    module = _import_module(handler_path, package=f"pebble.chisel.tools.{tool_dir.name}")
+    module = _import_module(
+        handler_path,
+        package=f"pebble.chisel.tools.{tool_dir.name}.handler",
+    )
 
     input_model = _resolve_attr(module, "Input", BaseModel)
     user_run = _resolve_callable(module, "run")
@@ -191,12 +220,65 @@ def _load_workflow(wf_dir: Path) -> None:
     if manifest.dispatch_intent:
         _INTENT_DISPATCH[manifest.dispatch_intent] = manifest.name
 
+    if manifest.has_custom_plan:
+        build_plan_path = wf_dir / "build_plan.py"
+        if not build_plan_path.is_file():
+            raise FileNotFoundError(
+                f"workflow {manifest.name!r} sets has_custom_plan=true "
+                f"but {build_plan_path.name} is missing",
+            )
+        module = _import_module(
+            build_plan_path,
+            package=f"pebble.chisel.workflows.{wf_dir.name}.build_plan",
+        )
+        # The build_plan import also has to work for tmp_path-rooted
+        # tests; spec_from_file_location path handles that branch.
+        builder = _resolve_callable(module, "build_plan")
+        _PLAN_BUILDERS[manifest.name] = builder
+    else:
+        # Declarative form — synthesize a build_plan from manifest.steps.
+        _PLAN_BUILDERS[manifest.name] = _make_declarative_builder(manifest)
+
+
+def _make_declarative_builder(manifest: WorkflowManifest) -> Any:
+    """Compile a workflow's declarative ``steps[]`` into a build_plan
+    callable so the orchestrator can run it through the same code path
+    as a custom build_plan."""
+    from pebble.orchestrator.schemas import Plan, PlanStep
+
+    def builder(*, user_query: str = manifest.description, **_unused: Any) -> Plan:
+        return Plan(
+            user_query=user_query,
+            steps=tuple(
+                PlanStep(tool=s.tool, args=dict(s.args), success_criteria=s.success_criteria)
+                for s in manifest.steps
+            ),
+            rationale=f"Declarative workflow: {manifest.name}",
+            estimated_tool_calls=len(manifest.steps),
+        )
+
+    return builder
+
 
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
 
 def _import_module(path: Path, *, package: str) -> Any:
+    """Load a chisel-resident Python module. Prefers the standard import
+    machinery when the module lives under the real ``pebble.chisel.*``
+    package tree (so relative imports like ``from .compute import x``
+    resolve). Falls back to spec_from_file_location for ad-hoc paths
+    used in tests (``tmp_path`` outside the source tree)."""
+    try:
+        # Real source tree path → use the normal import system.
+        path_resolved = path.resolve()
+        chisel_root = Path(__file__).parent.resolve()
+        path_resolved.relative_to(chisel_root)
+        return importlib.import_module(package)
+    except (ValueError, ImportError):
+        pass
+
     spec = importlib.util.spec_from_file_location(package, path)
     if spec is None or spec.loader is None:
         raise ImportError(f"cannot build module spec for {path}")

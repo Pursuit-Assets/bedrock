@@ -59,13 +59,17 @@ from ..orchestrator.evaluator import Evaluator
 from ..orchestrator.planner import Planner
 from ..orchestrator.scratchpad import ScratchpadWriter
 from ..orchestrator.tools import DEFAULT_REGISTRY, ToolContext
-# Side-effect imports — these modules auto-register their tools into
-# DEFAULT_REGISTRY at import time. Without these explicit imports, an
-# import path that touches streaming.py first leaves the registry
-# missing search_crm / generate_chart / aggregate_pipeline_views and
-# the planner can't construct a valid plan.
-from ..orchestrator import builtin_tools as _builtin_tools  # noqa: F401
-from .. import workflows as _workflows  # noqa: F401
+# Chisel autoload — discovers ``pebble/chisel/{tools,workflows}/`` and
+# registers each unit on DEFAULT_REGISTRY. Replaces the legacy
+# side-effect imports of orchestrator.builtin_tools + workflows that
+# used to auto-register at module load. Errors surface in the report
+# rather than crashing — the app starts with whatever loaded.
+from .. import chisel as _chisel
+_chisel_autoload_report = _chisel.autoload()
+if not _chisel_autoload_report.ok():
+    logging.getLogger(__name__).warning(
+        "chisel.autoload had errors: %s", _chisel_autoload_report.errors,
+    )
 from ..router import RouteResult
 
 logger = logging.getLogger(__name__)
@@ -148,7 +152,6 @@ async def stream_orchestrator_events(
         AnthropicLLMClient, AnthropicLLMError, get_default_client,
     )
     from ..orchestrator.sse import encode_event  # noqa: F401 — re-exported via callers
-    from ..workflows.weekly_pipeline_review import build_weekly_pipeline_review_plan
 
     # Reuse the process-wide singleton when the caller didn't pass an
     # explicit client. Fresh AsyncAnthropic per-request would discard
@@ -248,14 +251,7 @@ async def stream_orchestrator_events(
 
 
 def _build_workflow_plan_for_intent(intent: str, user_query: str):
-    """Map ``RouteResult.intent`` → the workflow's ``build_*_plan``
-    function. New workflows get one entry here.
-
-    Returns None if the intent isn't a known workflow — caller
-    surfaces a clean error to the user.
-    """
-    from ..workflows.weekly_pipeline_review import build_weekly_pipeline_review_plan
-
-    if intent == "workflow_weekly_pipeline_review":
-        return build_weekly_pipeline_review_plan(user_query=user_query)
-    return None
+    """Look up the chisel workflow registered for ``intent`` and call
+    its build_plan. Returns None if no workflow matches — caller
+    surfaces a clean error to the user."""
+    return _chisel.build_workflow_plan(intent, user_query=user_query)

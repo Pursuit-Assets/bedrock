@@ -18,13 +18,22 @@ See ``tasks/pebble-chisel-plan.md`` for the locked phase-A spec.
 
 from __future__ import annotations
 
-from .autoload import AutoloadReport, autoload, dispatch_workflow, slash_command_map
+from .autoload import (
+    AutoloadReport,
+    autoload,
+    build_workflow_plan,
+    dispatch_workflow,
+    slash_command_map,
+    slash_to_intent,
+)
 from .reload import snapshot
 
 __all__ = [
     "AutoloadReport",
     "autoload",
+    "build_workflow_plan",
     "dispatch_workflow",
     "slash_command_map",
+    "slash_to_intent",
     "snapshot",
 ]

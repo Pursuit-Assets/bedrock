@@ -271,16 +271,91 @@ def test_autoload_isolates_malformed_from_siblings(tmp_path: Path) -> None:
     assert "bad" not in reg
 
 
-def test_autoload_workflow_populates_slash_and_intent(tmp_path: Path) -> None:
-    wf = tmp_path / "workflows" / "weekly_pipeline_review"
+def test_autoload_workflow_declarative_populates_slash_intent_and_builder(tmp_path: Path) -> None:
+    wf = tmp_path / "workflows" / "demo_wf"
     wf.mkdir(parents=True)
     (wf / "workflow.yaml").write_text(
         dedent(
             """
-            name: weekly_pipeline_review
-            description: weekly review
-            slash_command: /pipeline
-            dispatch_intent: weekly_review
+            name: demo_wf
+            description: declarative demo
+            slash_command: /demo
+            dispatch_intent: workflow_demo
+            steps:
+              - tool: aggregate_pipeline_views
+                args: {days_to_close: 30}
+                success_criteria: open_count reported
+            """
+        ).strip(),
+        encoding="utf-8",
+    )
+    reg = ToolRegistry()
+    report = autoload(registry=reg, root=tmp_path)
+    from pebble.chisel.autoload import (
+        build_workflow_plan,
+        dispatch_workflow,
+        slash_command_map,
+    )
+
+    assert "demo_wf" in report.loaded_workflows
+    assert slash_command_map().get("/demo") == "demo_wf"
+    assert dispatch_workflow("workflow_demo") == "demo_wf"
+
+    plan = build_workflow_plan("workflow_demo", user_query="hi")
+    assert plan is not None
+    assert plan.user_query == "hi"
+    assert len(plan.steps) == 1
+    assert plan.steps[0].tool == "aggregate_pipeline_views"
+
+
+def test_autoload_workflow_custom_build_plan(tmp_path: Path) -> None:
+    wf = tmp_path / "workflows" / "custom_wf"
+    wf.mkdir(parents=True)
+    (wf / "__init__.py").write_text("", encoding="utf-8")
+    (wf / "workflow.yaml").write_text(
+        dedent(
+            """
+            name: custom_wf
+            description: custom-plan demo
+            slash_command: /custom
+            dispatch_intent: workflow_custom
+            has_custom_plan: true
+            """
+        ).strip(),
+        encoding="utf-8",
+    )
+    (wf / "build_plan.py").write_text(
+        dedent(
+            """
+            from pebble.orchestrator.schemas import Plan, PlanStep
+            def build_plan(*, user_query="custom", multiplier=1, **_):
+                return Plan(
+                    user_query=user_query,
+                    steps=(PlanStep(tool="search_crm", args={"q": "x" * multiplier}),),
+                    rationale="custom",
+                )
+            """
+        ),
+        encoding="utf-8",
+    )
+    reg = ToolRegistry()
+    report = autoload(registry=reg, root=tmp_path)
+    from pebble.chisel.autoload import build_workflow_plan
+
+    assert "custom_wf" in report.loaded_workflows, report.errors
+    plan = build_workflow_plan("workflow_custom", user_query="hi", multiplier=3)
+    assert plan is not None
+    assert plan.steps[0].args == {"q": "xxx"}
+
+
+def test_autoload_workflow_missing_build_plan_reports_error(tmp_path: Path) -> None:
+    wf = tmp_path / "workflows" / "broken_wf"
+    wf.mkdir(parents=True)
+    (wf / "workflow.yaml").write_text(
+        dedent(
+            """
+            name: broken_wf
+            description: broken
             has_custom_plan: true
             """
         ).strip(),
@@ -288,11 +363,8 @@ def test_autoload_workflow_populates_slash_and_intent(tmp_path: Path) -> None:
     )
     reg = ToolRegistry()
     report = autoload(registry=reg, root=tmp_path)
-    from pebble.chisel.autoload import dispatch_workflow, slash_command_map
-
-    assert "weekly_pipeline_review" in report.loaded_workflows
-    assert slash_command_map().get("/pipeline") == "weekly_pipeline_review"
-    assert dispatch_workflow("weekly_review") == "weekly_pipeline_review"
+    assert "broken_wf" not in report.loaded_workflows
+    assert any("build_plan" in reason for _, reason in report.errors)
 
 
 def test_autoload_isolation_does_not_touch_default_registry(tmp_path: Path) -> None:

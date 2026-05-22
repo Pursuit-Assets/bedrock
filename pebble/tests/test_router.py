@@ -3,10 +3,15 @@
 import pytest
 from unittest.mock import MagicMock, AsyncMock
 
+from pebble import chisel as _chisel
 from pebble.router import (
-    _check_redirect, _check_slash_command, _SLASH_COMMANDS,
+    _check_redirect, _check_slash_command,
     RouteResult, classify_query,
 )
+
+# Slash-command routing reads from chisel's autoload-populated maps.
+# Run autoload once at module import so the slash tests see /pipeline.
+_chisel.autoload()
 
 
 class TestCheckRedirect:
@@ -184,9 +189,6 @@ class TestSlashCommand:
         assert result.level == 30
 
     def test_slash_commands_table_has_pipeline(self):
-        """Smoke test: the canonical command lookup table includes
-        the one slash command we ship."""
-        assert "/pipeline" in _SLASH_COMMANDS
-        level, intent = _SLASH_COMMANDS["/pipeline"]
-        assert level == 2
-        assert intent == "workflow_weekly_pipeline_review"
+        """Smoke test: chisel autoload registers the /pipeline slash."""
+        assert _chisel.slash_command_map().get("/pipeline") == "weekly_pipeline_review"
+        assert _chisel.slash_to_intent("/pipeline") == "workflow_weekly_pipeline_review"
