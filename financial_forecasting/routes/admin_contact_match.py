@@ -9,12 +9,13 @@
 Mirrors routes/admin_company_match.py exactly.
 """
 
+import asyncio
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel
 
-from db import get_db
+from db import get_db, get_pool
 from dependencies import get_mcp_client
 from routes.permissions import require_admin
 from services.sf_contact_matcher import (
@@ -24,6 +25,9 @@ from services.sf_contact_matcher import (
     match_all_contacts,
     upsert_manual_contact_match,
 )
+
+_scan_lock = asyncio.Lock()
+_scan_status: dict = {"running": False, "last_summary": None}
 
 logger = logging.getLogger(__name__)
 
@@ -36,27 +40,57 @@ class ManualContactMatchRequest(BaseModel):
     notes: str | None = None
 
 
+async def _run_scan_background(salesforce, limit: int, dry_run: bool):
+    """Run the full scan in the background, releasing the HTTP request immediately."""
+    async with _scan_lock:
+        _scan_status["running"] = True
+        try:
+            pool = get_pool()
+            async with pool.acquire() as conn:
+                summary = await match_all_contacts(salesforce, conn, limit=limit, dry_run=dry_run)
+            _scan_status["last_summary"] = summary
+            logger.info("contact scan complete: %s", summary)
+        except Exception as e:
+            logger.error("contact scan failed: %s", e)
+            _scan_status["last_summary"] = {"error": str(e)}
+        finally:
+            _scan_status["running"] = False
+
+
 @router.post("/scan")
 async def scan_contact_matches(
+    background_tasks: BackgroundTasks,
     dry_run: bool = Query(False, description="If true, no inserts are written"),
     limit: int = Query(2000, ge=1, le=20000),
+    background: bool = Query(False, description="If true, run async and return immediately"),
     user=Depends(require_admin),
     conn=Depends(get_db),
     client=Depends(get_mcp_client),
 ):
     """Run the batch matcher across all SF Contacts.
 
-    Returns:
-        {"total": n, "matched": n, "unmatched": n, "errors": n,
-         "by_confidence": {"email": n, "linkedin_url": n, "name_company": n}}
+    Use background=true for large scans (>2000 contacts) — returns immediately
+    and runs in the background. Poll GET /scan/status for progress.
     """
     try:
         salesforce = client.salesforce
     except RuntimeError:
         raise HTTPException(503, "Salesforce not connected")
 
+    if background:
+        if _scan_status["running"]:
+            return {"success": False, "data": {"message": "Scan already running"}}
+        background_tasks.add_task(_run_scan_background, salesforce, limit, dry_run)
+        return {"success": True, "data": {"message": "Scan started in background", "limit": limit, "dry_run": dry_run}}
+
     summary = await match_all_contacts(salesforce, conn, limit=limit, dry_run=dry_run)
     return {"success": True, "data": summary}
+
+
+@router.get("/scan/status")
+async def scan_status(user=Depends(require_admin)):
+    """Check if a background scan is running and see the last summary."""
+    return {"success": True, "data": _scan_status}
 
 
 @router.get("")

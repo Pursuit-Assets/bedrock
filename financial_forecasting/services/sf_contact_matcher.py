@@ -170,9 +170,12 @@ async def match_all_contacts(
     }
 
     # Fetch SF Contacts. LinkedIn is a custom field — skip gracefully if absent.
+    # Primary_Affiliation_Name__c is the real employer; Account.Name is the NPSP
+    # Household account ("Smith (Jane) Household") and is useless for matching.
     try:
-        result = await salesforce_client.query(
-            f"SELECT Id, FirstName, LastName, Email, Account.Name "
+        result = await salesforce_client.query_all(
+            f"SELECT Id, FirstName, LastName, Email, "
+            f"Primary_Affiliation_Name__c, Primary_Affiliation_Entity__c "
             f"FROM Contact WHERE LastName != null "
             f"ORDER BY LastName LIMIT {int(limit)}"
         )
@@ -186,8 +189,11 @@ async def match_all_contacts(
 
     for c in contacts:
         sf_id = c.get("Id")
-        account = c.get("Account") or {}
-        account_name = account.get("Name")
+        # Use Primary Affiliation for company name; skip Household-type affiliations
+        # since those are just the person's own household, not an employer.
+        affiliation_name = c.get("Primary_Affiliation_Name__c")
+        entity_type = c.get("Primary_Affiliation_Entity__c") or ""
+        account_name = affiliation_name if entity_type.lower() != "household" else None
 
         if dry_run:
             email = (c.get("Email") or "").lower()
@@ -244,8 +250,9 @@ async def match_all_contacts(
 async def get_unmatched_contacts(salesforce_client, db, limit: int = 500) -> list:
     """SF Contacts with no row in bedrock.sf_contact_link — the review queue."""
     try:
-        result = await salesforce_client.query(
-            f"SELECT Id, FirstName, LastName, Email, Account.Name "
+        result = await salesforce_client.query_all(
+            f"SELECT Id, FirstName, LastName, Email, "
+            f"Primary_Affiliation_Name__c, Primary_Affiliation_Entity__c "
             f"FROM Contact WHERE LastName != null ORDER BY LastName LIMIT {int(limit)}"
         )
         sf_contacts = result.get("records", [])
@@ -263,12 +270,13 @@ async def get_unmatched_contacts(salesforce_client, db, limit: int = 500) -> lis
     out = []
     for c in sf_contacts:
         if c["Id"] not in matched_ids:
-            acct = c.get("Account") or {}
+            entity_type = c.get("Primary_Affiliation_Entity__c") or ""
+            affiliation = c.get("Primary_Affiliation_Name__c")
             out.append({
                 "sf_contact_id": c["Id"],
                 "name": f"{c.get('FirstName', '')} {c.get('LastName', '')}".strip(),
                 "email": c.get("Email"),
-                "account_name": acct.get("Name"),
+                "account_name": affiliation if entity_type.lower() != "household" else None,
             })
     return out
 
