@@ -63,6 +63,7 @@ from routes.saved_views import router as saved_views_router
 from routes.affiliations import router as affiliations_router
 from routes.airtable_jobs import router as airtable_jobs_router
 from routes.sputnik import router as sputnik_router
+from routes.admin_interaction_sync import router as admin_interaction_sync_router
 from auth import get_current_user_dep, require_auth, IS_PRODUCTION, JWT_SECRET_KEY
 from security import validate_salesforce_id, escape_soql_string
 from services.crm_parser import refresh_opp_cache as _refresh_opp_cache
@@ -139,6 +140,7 @@ app.include_router(sf_schema_router)
 app.include_router(admin_sf_drift_router)
 app.include_router(admin_company_match_router)
 app.include_router(admin_contact_match_router)
+app.include_router(admin_interaction_sync_router)
 app.include_router(account_enrichment_router)
 app.include_router(activities_router)
 app.include_router(platform_intake_router)
@@ -202,6 +204,7 @@ async def startup_event():
             _services["data_sync_service"] = DataSyncService(client)
         asyncio.create_task(background_sync_task())
         asyncio.create_task(background_award_reconciler_task())
+        asyncio.create_task(background_interaction_sync_task())
 
     logger.info(f"API started — connected services: {client.connected_services or ['none']}")
 
@@ -266,6 +269,27 @@ async def background_award_reconciler_task():
 
         # Wait 1h before next pass
         await asyncio.sleep(3_600)
+
+
+async def background_interaction_sync_task():
+    """Sync Gmail + Calendar for all enabled sync_staff every 4 hours.
+
+    First run is delayed 2 minutes after startup to let pool + SF stabilize.
+    Skips silently if GOOGLE_SERVICE_ACCOUNT_JSON is not set.
+    """
+    await asyncio.sleep(120)
+    while True:
+        try:
+            from services.interaction_sync import run_interaction_sync
+            from db import get_pool
+            pool = get_pool()
+            if pool is not None:
+                async with pool.acquire() as conn:
+                    summary = await run_interaction_sync(conn)
+                    logger.info("interaction sync summary: %s", summary)
+        except Exception as e:
+            logger.error("interaction sync error: %s", e)
+        await asyncio.sleep(14_400)  # 4h
 
 
 # Dependency functions — get_current_user is now cookie-based (see auth.py)
