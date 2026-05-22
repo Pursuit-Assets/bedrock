@@ -1,0 +1,13 @@
+name: get_record
+description: |
+  Fetch a single record by entity_type + entity_id. Use after
+  ``search_crm`` returns a hit and the user wants more detail.
+  Returns the full record from Bedrock or Salesforce.
+version: 1.0.0
+tags:
+  - crm_read
+requires_human: false
+cost_estimate:
+  fixed: 0.0
+output_kind: prose
+scope: global
