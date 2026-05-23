@@ -87,11 +87,10 @@ def _check_redirect(query: str) -> RouteResult | None:
 
 # Slash commands resolve to Chisel-registered workflows. Adding a
 # workflow = drop a ``workflow.yaml`` under ``pebble/chisel/workflows/``
-# declaring ``slash_command:`` and ``dispatch_intent:``. ``autoload()``
-# populates ``chisel.slash_to_intent()`` so this router picks it up at
-# request time without per-workflow router changes.
+# declaring ``slash_command:``. ``chisel.lookup_slash()`` picks it up
+# at request time without per-workflow router changes.
 
-from . import chisel as _chisel  # populated by streaming.py's autoload()
+from . import chisel as _chisel  # autoload runs on import
 
 
 def _check_slash_command(query: str) -> RouteResult | None:
@@ -109,11 +108,11 @@ def _check_slash_command(query: str) -> RouteResult | None:
         return None
     head, _, rest = stripped.partition(" ")
     head_lower = head.lower()
-    intent = _chisel.slash_to_intent(head_lower)
-    if intent is None:
+    entry = _chisel.lookup_slash(head_lower)
+    if entry is None:
         return None
     return RouteResult(
-        level=2, intent=intent, confidence=1.0,
+        level=2, intent=entry.dispatch_intent, confidence=1.0,
         entities={"slash_command": head_lower, "args": rest.strip()},
     )
 

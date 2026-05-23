@@ -11,7 +11,4 @@ tags:
   - workflow
   - pipeline
 requires_human: false
-cost_estimate:
-  fixed: 0.0
-output_kind: prose
-scope: global
+cost_estimate_usd: 0.0

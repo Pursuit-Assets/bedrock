@@ -59,17 +59,11 @@ from ..orchestrator.evaluator import Evaluator
 from ..orchestrator.planner import Planner
 from ..orchestrator.scratchpad import ScratchpadWriter
 from ..orchestrator.tools import DEFAULT_REGISTRY, ToolContext
-# Chisel autoload — discovers ``pebble/chisel/{tools,workflows}/`` and
-# registers each unit on DEFAULT_REGISTRY. Replaces the legacy
-# side-effect imports of orchestrator.builtin_tools + workflows that
-# used to auto-register at module load. Errors surface in the report
-# rather than crashing — the app starts with whatever loaded.
+# Importing ``pebble.chisel`` runs ``autoload()`` once at module load,
+# registering every chisel tool/workflow on DEFAULT_REGISTRY. Errors
+# flow through the boot report and get logged; the process boots with
+# whatever loaded.
 from .. import chisel as _chisel
-_chisel_autoload_report = _chisel.autoload()
-if not _chisel_autoload_report.ok():
-    logging.getLogger(__name__).warning(
-        "chisel.autoload had errors: %s", _chisel_autoload_report.errors,
-    )
 from ..router import RouteResult
 
 logger = logging.getLogger(__name__)
@@ -254,4 +248,7 @@ def _build_workflow_plan_for_intent(intent: str, user_query: str):
     """Look up the chisel workflow registered for ``intent`` and call
     its build_plan. Returns None if no workflow matches — caller
     surfaces a clean error to the user."""
-    return _chisel.build_workflow_plan(intent, user_query=user_query)
+    entry = _chisel.lookup_intent(intent)
+    if entry is None:
+        return None
+    return entry.build_plan(user_query=user_query)
