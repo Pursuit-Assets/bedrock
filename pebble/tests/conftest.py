@@ -12,17 +12,11 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 @pytest.fixture(autouse=True)
 def _chisel_real_autoload():
-    """Ensure the chisel module-level slash / intent / plan-builder maps
-    point at the real ``pebble/chisel/`` tree at the start of every test.
-
-    Framework tests in ``test_chisel_framework.py`` call ``autoload(root=
-    tmp_path)`` which resets those maps to the temp tree's contents; that
-    leaves later tests reading from stale state. Re-running autoload
-    before each test (and after) keeps router / streaming tests reading
-    the real ``/pipeline`` workflow."""
+    """Restore the chisel workflow maps to the real ``pebble/chisel/``
+    tree before each test. Framework tests in ``test_chisel_framework.py``
+    call ``autoload(root=tmp_path)`` which resets the maps to a temp
+    tree — without this fixture, the next test reads stale state."""
     from pebble import chisel
-    chisel.autoload()
-    yield
     chisel.autoload()
 
 

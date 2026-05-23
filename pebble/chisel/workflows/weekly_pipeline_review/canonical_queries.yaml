@@ -1,0 +1,14 @@
+queries:
+  # Slash-command path bypasses the planner — build_plan.py is
+  # deterministic and unit-tested. These queries cover the NL path
+  # where the planner picks aggregate_pipeline_views directly.
+  - id: smoke_slash_pipeline
+    user_query: "/pipeline"
+    skip_reason: "slash commands bypass the planner; deterministic plan is unit-tested separately"
+    tags: [smoke, slash, deferred]
+
+  - id: smoke_nl_pipeline_review
+    user_query: "Run the weekly pipeline review for me"
+    expected_plan:
+      - tool: aggregate_pipeline_views
+    tags: [smoke]

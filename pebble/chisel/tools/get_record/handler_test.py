@@ -50,7 +50,7 @@ async def test_happy_path_returns_record_with_citation() -> None:
     assert out["entity_type"] == "sf_account"
     assert out["entity_id"] == "001ABC"
     assert out["record"]["Name"] == "Acme"
-    assert hctx.collected_citations() == ("sf_account:001ABC",)
+    assert hctx.citations == ("sf_account:001ABC",)
     client.get.assert_awaited_once_with("/api/salesforce/accounts/001ABC")
 
 

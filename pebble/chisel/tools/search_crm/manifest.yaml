@@ -10,7 +10,4 @@ version: 1.0.0
 tags:
   - crm_read
 requires_human: false
-cost_estimate:
-  fixed: 0.0
-output_kind: prose
-scope: global
+cost_estimate_usd: 0.0
