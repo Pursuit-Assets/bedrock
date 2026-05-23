@@ -1,0 +1,9 @@
+queries:
+  - id: smoke_lookup_after_search
+    user_query: "Get the full Salesforce account record for ID 001ABC"
+    expected_plan:
+      - tool: get_record
+        args_includes:
+          entity_type: sf_account
+          entity_id: "001ABC"
+    tags: [smoke]

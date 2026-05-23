@@ -1,0 +1,10 @@
+queries:
+  # request_human_review fires when the planner is uncertain — hard to
+  # provoke deterministically with a single query. Defer assertion to
+  # the gated CI run with the full pipeline.
+  - id: skipped_request_human_review_smoke
+    user_query: "Update Acme's owner — but there are two Acmes in the system"
+    skip_reason: "ambiguity-driven; deterministic provocation needs full pipeline"
+    expected_plan:
+      - tool: request_human_review
+    tags: [smoke, deferred]

@@ -86,6 +86,14 @@ def main(argv: list[str] | None = None) -> int:
     s = sub.add_parser("scaffold", help="create a new tool dir")
     s.add_argument("name", help="tool name, snake_case")
 
+    e = sub.add_parser("eval", help="run canonical_queries through the planner")
+    e.add_argument("--unit", help="restrict to one tool/workflow by name", default=None)
+    e.add_argument(
+        "--tag",
+        help="restrict to queries tagged with this label",
+        default=None,
+    )
+
     args = parser.parse_args(argv)
 
     if args.cmd == "list":
@@ -94,6 +102,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_validate(args.path)
     if args.cmd == "scaffold":
         return _cmd_scaffold(args.name)
+    if args.cmd == "eval":
+        return _cmd_eval(unit=args.unit, tag=args.tag)
     parser.error(f"unknown command {args.cmd!r}")
     return 2
 
@@ -145,6 +155,56 @@ def _cmd_scaffold(name: str) -> int:
     (base / "handler_test.py").write_text(TEST_STUB.format(name=name), encoding="utf-8")
     print(f"scaffold: created {base}")
     return 0
+
+
+def _cmd_eval(*, unit: str | None, tag: str | None) -> int:
+    """Run canonical_queries against the live planner. Requires
+    ANTHROPIC_API_KEY. Returns 0 on all-pass, 1 on any failure."""
+    import asyncio
+    import os
+
+    from pebble.chisel.eval import (
+        format_results,
+        load_canonical_queries,
+        run_plan_eval,
+    )
+    from pebble.orchestrator.planner import Planner
+    from pebble.orchestrator.tools import DEFAULT_REGISTRY, ToolContext
+
+    autoload()
+
+    queries = load_canonical_queries()
+    if unit:
+        queries = [q for q in queries if q.unit == unit]
+    if tag:
+        queries = [q for q in queries if tag in q.query.tags]
+
+    if not queries:
+        print("chisel eval: no canonical queries matched filters.")
+        return 0
+
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        print(
+            "chisel eval: ANTHROPIC_API_KEY not set. Skipping live planner "
+            "calls — schema validation passed.",
+        )
+        return 0
+
+    from pebble.llm.anthropic_client import get_default_client
+
+    client = get_default_client()
+    planner = Planner(client=client, registry=DEFAULT_REGISTRY)
+    ctx = ToolContext(user_email="eval@pursuit.org", conversation_id="chisel-eval")
+
+    async def _run_all():
+        out = []
+        for lq in queries:
+            out.append(await run_plan_eval(lq, planner=planner, ctx=ctx))
+        return out
+
+    results = asyncio.run(_run_all())
+    print(format_results(results))
+    return 0 if all(r.passed for r in results) else 1
 
 
 if __name__ == "__main__":
