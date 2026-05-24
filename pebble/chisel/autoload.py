@@ -164,6 +164,9 @@ def _load_tool(
         user_run=user_run,
     )
 
+    # unregister-then-register so a second autoload() (e.g. ``chisel
+    # reload``) replaces specs in place instead of raising on duplicate.
+    registry.unregister(manifest.name)
     registry.register(ToolSpec(
         name=manifest.name,
         description=manifest.description,

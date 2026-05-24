@@ -938,3 +938,18 @@ async def get_budget(request: Request):
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+# ---------------------------------------------------------------------------
+# Chisel API — Phase C surface for the manifest browser / GUI builder.
+# Read endpoints share the chat permission gate; write endpoints (Phase C.2)
+# will gate behind a dedicated chisel_write permission once Sprint-12 ships.
+# ---------------------------------------------------------------------------
+from .chisel.api import build_router as _build_chisel_router  # noqa: E402
+
+app.include_router(_build_chisel_router(
+    auth_dependencies=[
+        Depends(verify_api_key),
+        Depends(require_pebble_permission("use_pebble_chat")),
+    ],
+))
