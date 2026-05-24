@@ -1372,11 +1372,14 @@ async def fetch_research_data(
 
     Returns a dict of all fetched data, or None if cancelled during fetching.
     """
-    # Collect org names: organizations list, or single organization
-    org_names = list(prospect.get("organizations") or [])
-    if prospect.get("organization") and prospect["organization"] not in org_names:
-        org_names.insert(0, prospect["organization"])
-    primary_org = org_names[0] if org_names else prospect.get("organization")
+    # Collect org names: organizations list, or single organization.
+    # Defensive against upstream callers passing a bare string.
+    raw_orgs = prospect.get("organizations") or []
+    org_names = list(raw_orgs) if isinstance(raw_orgs, list) else [str(raw_orgs)]
+    single_org = prospect.get("organization")
+    if single_org and single_org not in org_names:
+        org_names.insert(0, single_org)
+    primary_org = org_names[0] if org_names else single_org
 
     ein = prospect.get("ein")
     name = f"{prospect.get('first_name', '')} {prospect.get('last_name', '')}".strip() or primary_org or ""
@@ -1462,11 +1465,14 @@ async def research_single_prospect(
     budget = ProspectBudgetTracker(prospect_id=contact_id)
     # P4 — background DB writes accumulate here and get awaited at the tail.
     background_tasks: list[asyncio.Task] = []
-    # Derive name/org early for session saving
-    org_names = list(prospect.get("organizations") or [])
-    if prospect.get("organization") and prospect["organization"] not in org_names:
-        org_names.insert(0, prospect["organization"])
-    primary_org = org_names[0] if org_names else prospect.get("organization")
+    # Derive name/org early for session saving. Defensive: organizations
+    # can arrive as None / list / single string from upstream callers.
+    raw_orgs = prospect.get("organizations") or []
+    org_names = list(raw_orgs) if isinstance(raw_orgs, list) else [str(raw_orgs)]
+    single_org = prospect.get("organization")
+    if single_org and single_org not in org_names:
+        org_names.insert(0, single_org)
+    primary_org = org_names[0] if org_names else single_org
     name = f"{prospect.get('first_name', '')} {prospect.get('last_name', '')}".strip() or primary_org or ""
 
     try:
