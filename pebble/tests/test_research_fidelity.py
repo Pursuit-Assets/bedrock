@@ -1175,6 +1175,57 @@ async def test_synthesize_profile_both_attempts_fail_returns_partial(monkeypatch
 # Claim ranking (existing behavior — sanity)
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Freshness-weighted ranking (F10)
+# ---------------------------------------------------------------------------
+
+def test_freshness_tier_recent_vs_stale():
+    from pebble.orchestrator._pipeline import _freshness_tier
+    from datetime import date
+    this_year = date.today().year
+    assert _freshness_tier({"data_as_of": f"{this_year}-01-01"}) == 0
+    assert _freshness_tier({"data_as_of": f"{this_year - 3}-01-01"}) == 1
+    assert _freshness_tier({"data_as_of": f"{this_year - 8}-01-01"}) == 2
+
+
+def test_freshness_tier_unknown_date():
+    from pebble.orchestrator._pipeline import _freshness_tier
+    assert _freshness_tier({"data_as_of": None}) == 3
+    assert _freshness_tier({"data_as_of": ""}) == 3
+    assert _freshness_tier({}) == 3
+    assert _freshness_tier({"data_as_of": "garbage"}) == 3
+
+
+def test_rank_claims_prefers_fresh_within_same_origin():
+    from pebble.orchestrator._pipeline import _rank_claims
+    from datetime import date
+    this_year = date.today().year
+    claims = [
+        _claim("old", "https://x/1", origin="template"),
+        _claim("new", "https://x/2", origin="template"),
+    ]
+    claims[0]["data_as_of"] = f"{this_year - 8}-01-01"
+    claims[1]["data_as_of"] = f"{this_year}-01-01"
+    ranked = _rank_claims(claims)
+    assert ranked[0]["text"] == "new"
+
+
+def test_rank_claims_origin_dominates_freshness():
+    """A stale forager claim still beats a fresh template claim —
+    analytical findings outweigh raw data points even when older."""
+    from pebble.orchestrator._pipeline import _rank_claims
+    from datetime import date
+    this_year = date.today().year
+    claims = [
+        _claim("recent template", "https://x/1", origin="template"),
+        _claim("old forager", "https://x/2", origin="forager"),
+    ]
+    claims[0]["data_as_of"] = f"{this_year}-01-01"
+    claims[1]["data_as_of"] = f"{this_year - 9}-01-01"
+    ranked = _rank_claims(claims)
+    assert ranked[0]["origin"] == "forager"
+
+
 def test_rank_claims_forager_over_template():
     claims = [
         _claim("FEC: $500", "https://fec.gov/a", origin="template"),

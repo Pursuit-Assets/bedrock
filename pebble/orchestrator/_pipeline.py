@@ -118,13 +118,45 @@ def dedupe_claims(claims: list[dict]) -> list[dict]:
     return [best[k] for k in order]
 
 
+def _freshness_tier(claim: dict) -> int:
+    """Lower = fresher. F10: claims with stale ``data_as_of`` rank
+    below recent ones at the same origin/confidence level.
+
+    Tiers:
+      0 — within 2 calendar years of today
+      1 — 3–5 years
+      2 — 6+ years
+      3 — missing or unparseable data_as_of (last-resort)
+    """
+    raw = claim.get("data_as_of")
+    if not raw or not isinstance(raw, str):
+        return 3
+    try:
+        year = int(raw[:4])
+    except (ValueError, TypeError):
+        return 3
+    from datetime import date
+    age = date.today().year - year
+    if age < 0:
+        return 3
+    if age <= 2:
+        return 0
+    if age <= 5:
+        return 1
+    return 2
+
+
 def _rank_claims(claims: list[dict]) -> list[dict]:
     """Rank claims so the most valuable survive truncation.
 
-    Ranking rules:
-    - Origin priority: forager (0) > llm_extracted (1) > template (2)
-    - Within same origin: high confidence > medium > low
-    - FEC template dedup: keep only the 3 largest contributions by dollar amount
+    Sort key (lower first):
+      1. Origin priority: forager (0) > llm_extracted (1) > template (2)
+      2. Confidence: high (0) > medium (1) > low (2)
+      3. Freshness (F10): recent (0) > moderate (1) > stale (2) > unknown (3)
+
+    Plus FEC template dedup: keep only the 3 largest contributions by
+    dollar amount (preserves political-giving signal while preventing a
+    bulk dump of small donations from crowding analytical claims).
     """
     fec = [c for c in claims if c.get("origin") == "template" and "contributed $" in c.get("text", "")]
     non_fec = [c for c in claims if c not in fec]
@@ -133,6 +165,7 @@ def _rank_claims(claims: list[dict]) -> list[dict]:
     combined.sort(key=lambda c: (
         _ORIGIN_RANK.get(c.get("origin", "template"), 2),
         _CONFIDENCE_RANK.get(c.get("confidence", "medium"), 1),
+        _freshness_tier(c),
     ))
     return combined
 
