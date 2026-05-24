@@ -18,6 +18,7 @@ import { ContactsPage } from "./pages/Contacts";
 import { ContactDetailPage } from "./pages/ContactDetail";
 import { LoginPage } from "./pages/Login";
 import { PebblePage } from "./pages/Pebble";
+import { ChiselPage } from "./pages/Chisel";
 import { SettingsPage } from "./pages/Settings";
 import { CashFlowPage } from "./pages/CashFlow";
 import { PlatformIntakePage } from "./pages/PlatformIntake";
@@ -54,6 +55,7 @@ export default function App() {
         <Route path="/contacts/:id" element={<ContactDetailPage />} />
         <Route path="/cashflow" element={<CashFlowPage />} />
         <Route path="/pebble" element={<PebblePage />} />
+        <Route path="/chisel" element={<ChiselPage />} />
         <Route path="/feedback" element={<PlatformIntakePage />} />
         <Route path="/settings" element={<SettingsPage />} />
 
