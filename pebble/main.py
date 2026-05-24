@@ -880,6 +880,29 @@ async def get_research_profile(contact_id: str):
     return {"profile": profile}
 
 
+@app.get(
+    "/api/v1/research/profiles/{contact_id}/quality",
+    dependencies=[
+        Depends(verify_api_key),
+        Depends(require_pebble_permission("use_pebble_chat")),
+    ],
+)
+async def get_research_profile_quality(contact_id: str):
+    """Operator-facing trust summary for a profile (F-series fidelity work).
+
+    Returns the research_quality_report aggregate: claim counts by origin,
+    verified-vs-transient URL counts, full-quorum count, conflict count,
+    deterministic confidence tier, evidence fingerprint, partial flag.
+    Powers the Phase-C GUI's per-profile trust badge.
+    """
+    from .orchestrator._pipeline import research_quality_report
+
+    profile = await get_profile(contact_id)
+    if profile is None:
+        raise HTTPException(status_code=404, detail="Profile not found")
+    return research_quality_report(profile)
+
+
 @app.post("/api/v1/research/feedback", dependencies=[Depends(verify_api_key), Depends(require_pebble_permission("use_pebble_chat"))])
 async def research_feedback(body: ResearchFeedback):
     """Store human feedback on a claim."""
