@@ -508,8 +508,28 @@ async def quorum_verify_claims(
           - 2 successful → 2 votes (full consensus)
           - 0–1 successful → every claim rejected as ``quorum_aborted``.
     """
-    if not claims or budget.exceeded():
+    if not claims:
         return claims
+    if budget.exceeded():
+        # F11: refuse to pass unverified claims forward. Returning the
+        # input pool as "verified" was the F1-class silent failure but
+        # via the budget door — same effect, same risk.
+        logger.warning(
+            "quorum_verify_claims: budget exhausted before any verifier "
+            "ran; rejecting %d claims (cannot vouch for them)",
+            len(claims),
+        )
+        await log_harness_outcome(
+            agent_name="quorum_aborted",
+            outcome="rejected",
+            error=json.dumps({
+                "reason": "budget_exhausted",
+                "claim_count": len(claims),
+            }),
+            prospect_id=prospect.get("id"),
+            user_email=user_email,
+        )
+        return []
 
     # Build numbered claim list for verifier input
     claim_lines = []
@@ -884,7 +904,16 @@ async def synthesize_profile(
     executive roles, org financials) survive over bulk template data (individual FEC donations).
     """
     if budget.exceeded():
-        return {"claims": verified_claims, "summary": "", "confidence_score": "low", "partial": True, "failed_agents": ["budget"]}
+        # F11: full-shape return so the saved profile + GUI receivers
+        # don't lose the summary_sentences key when budget is hit.
+        return {
+            "claims": verified_claims,
+            "summary": "",
+            "summary_sentences": [],
+            "confidence_score": "low",
+            "partial": True,
+            "failed_agents": ["budget"],
+        }
 
     ranked = _rank_claims(verified_claims)
     _assign_claim_ids(ranked)  # F5: stable IDs for the citation contract

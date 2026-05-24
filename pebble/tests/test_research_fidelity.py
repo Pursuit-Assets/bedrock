@@ -1176,6 +1176,56 @@ async def test_synthesize_profile_both_attempts_fail_returns_partial(monkeypatch
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
+# Budget-exhaustion contract (F11)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_quorum_budget_exhausted_rejects_all_claims(monkeypatch):
+    """Fidelity invariant: when the budget cap is hit mid-pipeline,
+    quorum_verify_claims must NOT return unverified claims as if they
+    passed. The previous behavior (return claims unchanged) silently
+    promoted unverified data to the synthesizer — exactly the failure
+    mode F1's fail-closed semantics was meant to close."""
+    from pebble.orchestrator._pipeline import (
+        quorum_verify_claims, ProspectBudgetTracker,
+    )
+
+    claims = [_claim("X", "https://x/1"), _claim("Y", "https://x/2")]
+    budget = ProspectBudgetTracker(prospect_id="p1", cap_usd=0.0)
+    budget.add(1.0)  # force exceeded
+    assert budget.exceeded()
+
+    monkeypatch.setattr(
+        "pebble.orchestrator._pipeline.log_harness_outcome",
+        AsyncMock(),
+    )
+
+    verified = await quorum_verify_claims(claims, {"id": "p1"}, MagicMock(), budget)
+    assert verified == []
+
+
+@pytest.mark.asyncio
+async def test_synthesize_profile_budget_exhausted_returns_full_shape(monkeypatch):
+    """The budget-exhausted return path must include summary_sentences
+    (even if empty) so research_single_prospect's pipeline doesn't lose
+    that key downstream."""
+    from pebble.orchestrator._pipeline import (
+        synthesize_profile, ProspectBudgetTracker,
+    )
+
+    claims = [_claim("X", "https://x/1", origin="forager")]
+    budget = ProspectBudgetTracker(prospect_id="p1", cap_usd=0.0)
+    budget.add(1.0)
+
+    out = await synthesize_profile(claims, {}, MagicMock(), budget)
+    assert out["partial"] is True
+    assert out["summary"] == ""
+    assert "summary_sentences" in out
+    assert out["summary_sentences"] == []
+    assert out["confidence_score"] in {"low", "medium"}
+
+
+# ---------------------------------------------------------------------------
 # Freshness-weighted ranking (F10)
 # ---------------------------------------------------------------------------
 
