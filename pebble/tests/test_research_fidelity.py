@@ -1652,6 +1652,37 @@ async def test_synthesize_profile_prompt_includes_conflicts(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_synthesize_profile_prompt_names_skipped_sources(monkeypatch):
+    """F14: when source_errors fed via skipped_sources, the system
+    prompt names them so the brief can caveat unreachable data."""
+    from pebble.orchestrator import _pipeline
+    import json
+
+    claims = [_claim("CEO of Acme", "https://www.fec.gov/x", origin="forager")]
+    response = json.dumps({
+        "sentences": [{"text": "Serves as CEO of Acme.", "citations": ["c0"]}],
+        "confidence_score": "high",
+    })
+    captured = {"system": None}
+
+    async def fake_to_thread(fn, prompt, system=""):
+        captured["system"] = system
+        return _synthesizer_result(response)
+
+    monkeypatch.setattr(_pipeline.asyncio, "to_thread", fake_to_thread)
+    monkeypatch.setattr(_pipeline, "log_harness_outcome", AsyncMock())
+
+    await _pipeline.synthesize_profile(
+        claims, {"first_name": "Jane", "last_name": "Smith"},
+        MagicMock(), _budget(),
+        skipped_sources=["propublica_search", "sec_company"],
+    )
+    assert "propublica_search" in (captured["system"] or "")
+    assert "sec_company" in (captured["system"] or "")
+    assert "Unavailable sources" in (captured["system"] or "")
+
+
+@pytest.mark.asyncio
 async def test_synthesize_profile_system_prompt_explains_source_tiers(monkeypatch):
     """F13: synthesis prompt teaches the LLM what source_tier means
     so it can weight authoritative claims heavier in the brief."""
