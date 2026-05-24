@@ -97,7 +97,13 @@ def _tpl_extractor(data: dict, source_urls: list[str]) -> tuple[str, str]:
         f"Use these source URLs: {', '.join(source_urls[:5])}"
     )
     system = (
-        "You extract factual claims. Every claim must have source_url. Output valid JSON only, no markdown fences. "
+        "You extract factual claims for a donor-prospect research tool used by "
+        "nonprofit development officers. EVERY claim must have a source_url "
+        "drawn from the 'Use these source URLs' list — do NOT invent URLs, "
+        "do NOT cite URLs you weren't given. If the data doesn't support a "
+        "claim, omit the claim. False positives (a hallucinated claim entering "
+        "a development officer's brief) damage trust far more than false "
+        "negatives. Output valid JSON only, no markdown fences. "
         "Distinguish current vs past roles. If a date range indicates a position ended, mark it as 'former'. "
         "Use present tense only for clearly active positions."
     )
