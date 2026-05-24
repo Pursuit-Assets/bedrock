@@ -298,8 +298,18 @@ async def stage1_enrich_prospect(
         except json.JSONDecodeError:
             logger.warning("Failed to parse LLM claims for %s", prospect["id"])
 
-    # Merge: structured claims first (higher reliability), then LLM-extracted
-    all_claims = list(structured_claims) + [c for c in llm_claims if isinstance(c, dict) and c.get("source_url")]
+    # Merge: structured claims first (higher reliability), then LLM-extracted.
+    # F12 — drop LLM claims whose source_url isn't anchored to one of the
+    # URLs we handed the extractor (ProPublica + SEC for this stage).
+    llm_with_url = [c for c in llm_claims if isinstance(c, dict) and c.get("source_url")]
+    llm_anchored = _filter_claims_to_provided_sources(llm_with_url, sources)
+    dropped = len(llm_with_url) - len(llm_anchored)
+    if dropped:
+        logger.warning(
+            "stage1 extractor emitted %d claim(s) with un-provided source URLs for %s; dropped",
+            dropped, prospect["id"],
+        )
+    all_claims = list(structured_claims) + llm_anchored
 
     failed = []
     if result.outcome not in (AgentOutcome.SUCCESS, AgentOutcome.ESCALATED):
