@@ -1042,6 +1042,28 @@ def test_claim_pool_fingerprint_ignores_non_canonical_fields():
 
 
 # ---------------------------------------------------------------------------
+# Audit-write fail-soft
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_log_result_swallows_db_errors(monkeypatch):
+    """A DB outage on the audit-log path must not propagate into the
+    research pipeline. The verified output is more valuable than the
+    log row."""
+    from pebble.orchestrator import _pipeline
+
+    async def explode(*args, **kwargs):
+        raise ConnectionError("db is on fire")
+
+    monkeypatch.setattr(_pipeline, "log_harness_outcome", explode)
+
+    result = HarnessResult(outcome=AgentOutcome.SUCCESS,
+                           data={"content": ""}, cost_usd=0.001)
+    # Must not raise.
+    await _pipeline._log_result(result, "test_agent", "p1")
+
+
+# ---------------------------------------------------------------------------
 # F14 — per-source fetch error tracking
 # ---------------------------------------------------------------------------
 

@@ -351,19 +351,27 @@ class ProspectBudgetTracker:
 
 
 async def _log_result(result, agent_name: str, prospect_id: str | None = None, user_email: str | None = None) -> None:
-    """Log harness outcome to harness_log."""
-    await log_harness_outcome(
-        agent_name=agent_name,
-        outcome=result.outcome.value,
-        cost_usd=result.cost_usd if result.outcome == AgentOutcome.SUCCESS else None,
-        tokens_input=result.tokens_used.get("input", 0),
-        tokens_output=result.tokens_used.get("output", 0),
-        attempts=result.attempts,
-        elapsed_seconds=result.elapsed_seconds,
-        error=result.error,
-        prospect_id=prospect_id,
-        user_email=user_email,
-    )
+    """Log harness outcome to harness_log. Fail-soft: a DB outage on
+    the audit-write path must NOT kill an in-flight research run —
+    the verified output is more valuable than the logging entry."""
+    try:
+        await log_harness_outcome(
+            agent_name=agent_name,
+            outcome=result.outcome.value,
+            cost_usd=result.cost_usd if result.outcome == AgentOutcome.SUCCESS else None,
+            tokens_input=result.tokens_used.get("input", 0),
+            tokens_output=result.tokens_used.get("output", 0),
+            attempts=result.attempts,
+            elapsed_seconds=result.elapsed_seconds,
+            error=result.error,
+            prospect_id=prospect_id,
+            user_email=user_email,
+        )
+    except Exception as e:  # noqa: BLE001 — audit-log is best-effort
+        logger.warning(
+            "log_harness_outcome failed for %s (prospect=%s): %s — continuing",
+            agent_name, prospect_id, e,
+        )
 
 
 async def stage1_enrich_prospect(
