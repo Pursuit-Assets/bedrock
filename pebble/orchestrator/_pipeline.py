@@ -1586,10 +1586,12 @@ async def research_single_prospect(
     # P2 + P4 — independent DB writes share the tail gather.
     # background_tasks were fired earlier and are usually already
     # complete by the time we reach here; awaiting them in the gather
-    # is a no-op in the common case.
+    # is a no-op in the common case. cost_usd now flows into
+    # save_profile so the per-prospect spend is recorded next to the
+    # output, not lost.
     session_status = "cancelled" if cancel_check() else "completed"
     await asyncio.gather(
-        save_profile(contact_id, profile),
+        save_profile(contact_id, profile, cost_usd=budget.total_cost_usd),
         _save_session_for_prospect(
             contact_id, profile, name, primary_org, budget, session_status,
         ),
