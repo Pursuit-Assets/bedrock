@@ -709,26 +709,69 @@ async def synthesize_profile(
         return {"claims": verified_claims, "summary": "", "confidence_score": "medium", "partial": False, "failed_agents": []}
 
 
-async def verify_urls(claims: list[dict], timeout: float = 5.0) -> tuple[list[dict], list[dict]]:
-    """Verify claim source_urls via HEAD request. Returns (live, dropped)."""
+async def verify_urls(
+    claims: list[dict],
+    *,
+    client: "httpx.AsyncClient | None" = None,
+    timeout: float = 5.0,
+) -> tuple[list[dict], list[dict]]:
+    """Verify claim source_urls via HEAD (falling back to GET if HEAD is
+    not allowed). Returns ``(live, dropped)``.
+
+    Fidelity rules (F3):
+      * 2xx → kept, marked ``url_verification_status="verified"``.
+      * 404 / 4xx-other → dropped. Likely-permanent dead link.
+      * 5xx or network/transport error → kept, marked
+        ``url_verification_status="transient_error"`` so synthesis can
+        caveat. Better than silently dropping a real claim because the
+        server happened to be down.
+      * Empty source_url → dropped.
+
+    Perf (F3): all claims share a single ``httpx.AsyncClient`` rather
+    than spinning up a fresh TCP+TLS per claim. Callers can pass an
+    existing client to share connection pooling further upstream;
+    omitted ⇒ a per-call client is built and closed."""
     import httpx
 
-    async def check_one(claim: dict) -> tuple[dict, bool]:
-        url = claim.get("source_url", "")
-        if not url:
-            return claim, False
-        try:
-            async with httpx.AsyncClient(follow_redirects=True) as client:
-                r = await client.head(url, timeout=timeout)
-                if r.status_code == 405:  # HEAD not allowed, try GET
-                    r = await client.get(url, timeout=timeout)
-                return claim, r.status_code != 404
-        except httpx.HTTPError:
-            return claim, True  # Network error — keep claim, let Opus decide
+    owns_client = client is None
+    if owns_client:
+        client = httpx.AsyncClient(follow_redirects=True, timeout=timeout)
 
-    results = await asyncio.gather(*[check_one(c) for c in claims])
-    live = [c for c, ok in results if ok]
-    dropped = [c for c, ok in results if not ok]
+    try:
+        async def check_one(claim: dict) -> tuple[dict, str]:
+            """Returns (claim, decision) where decision ∈
+            {'verified', 'transient_error', 'dropped'}."""
+            url = (claim.get("source_url") or "").strip()
+            if not url:
+                return claim, "dropped"
+            try:
+                r = await client.head(url, timeout=timeout)
+                if r.status_code == 405:
+                    r = await client.get(url, timeout=timeout)
+            except httpx.HTTPError:
+                return claim, "transient_error"
+
+            status = r.status_code
+            if status >= 500:
+                return claim, "transient_error"
+            if status >= 400:
+                # 4xx other than 5xx — treat as permanent dead link.
+                return claim, "dropped"
+            return claim, "verified"
+
+        results = await asyncio.gather(*[check_one(c) for c in claims])
+    finally:
+        if owns_client:
+            await client.aclose()
+
+    live: list[dict] = []
+    dropped: list[dict] = []
+    for claim, decision in results:
+        if decision == "dropped":
+            dropped.append(claim)
+        else:
+            claim["url_verification_status"] = decision
+            live.append(claim)
     return live, dropped
 
 

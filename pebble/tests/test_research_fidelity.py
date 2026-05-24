@@ -380,6 +380,139 @@ def test_dedupe_skips_claims_without_source_url():
 
 
 # ---------------------------------------------------------------------------
+# verify_urls — fail-closed semantics + shared client (F3)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_verify_urls_200_kept_and_marked_ok():
+    from pebble.orchestrator._pipeline import verify_urls
+    import httpx
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"ok")
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        live, dropped = await verify_urls(
+            [_claim("X", "https://a.org/1")], client=client,
+        )
+    assert len(live) == 1
+    assert len(dropped) == 0
+    assert live[0].get("url_verification_status") == "verified"
+
+
+@pytest.mark.asyncio
+async def test_verify_urls_404_dropped():
+    from pebble.orchestrator._pipeline import verify_urls
+    import httpx
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404)
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        live, dropped = await verify_urls(
+            [_claim("Y", "https://a.org/missing")], client=client,
+        )
+    assert live == []
+    assert len(dropped) == 1
+
+
+@pytest.mark.asyncio
+async def test_verify_urls_5xx_kept_but_marked_transient():
+    """Server errors are not the claim's fault — keep it, but tell
+    the synthesizer the URL is unverified-transient so it caveats."""
+    from pebble.orchestrator._pipeline import verify_urls
+    import httpx
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503)
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        live, dropped = await verify_urls(
+            [_claim("Z", "https://a.org/down")], client=client,
+        )
+    assert len(live) == 1
+    assert live[0]["url_verification_status"] == "transient_error"
+    assert dropped == []
+
+
+@pytest.mark.asyncio
+async def test_verify_urls_network_error_kept_but_marked_transient():
+    from pebble.orchestrator._pipeline import verify_urls
+    import httpx
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("dns dead")
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        live, dropped = await verify_urls(
+            [_claim("W", "https://nope.invalid/")], client=client,
+        )
+    assert len(live) == 1
+    assert live[0]["url_verification_status"] == "transient_error"
+
+
+@pytest.mark.asyncio
+async def test_verify_urls_4xx_other_dropped():
+    """403, 410 etc. are likely permanent — drop."""
+    from pebble.orchestrator._pipeline import verify_urls
+    import httpx
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(403)
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        live, dropped = await verify_urls(
+            [_claim("F", "https://a.org/forbidden")], client=client,
+        )
+    assert live == []
+    assert len(dropped) == 1
+
+
+@pytest.mark.asyncio
+async def test_verify_urls_shared_client_used_for_all_claims():
+    """The whole batch must use the same client — no new TCP+TLS per
+    claim. We assert this by counting requests on a single transport."""
+    from pebble.orchestrator._pipeline import verify_urls
+    import httpx
+
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(200)
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        await verify_urls(
+            [_claim(f"c{i}", f"https://a.org/{i}") for i in range(5)],
+            client=client,
+        )
+    assert len(seen) == 5
+
+
+@pytest.mark.asyncio
+async def test_verify_urls_claim_without_url_dropped():
+    from pebble.orchestrator._pipeline import verify_urls
+    import httpx
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200)
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        live, dropped = await verify_urls(
+            [_claim("urlless", "")], client=client,
+        )
+    assert live == []
+    assert len(dropped) == 1
+
+
+# ---------------------------------------------------------------------------
 # Claim ranking (existing behavior — sanity)
 # ---------------------------------------------------------------------------
 
