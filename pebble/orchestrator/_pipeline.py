@@ -1200,6 +1200,20 @@ async def synthesize_profile(
     wiki_synth = f"\n\nWikipedia context:\n{wikipedia_context[:2000]}" if wikipedia_context else ""
     name = f"{prospect.get('first_name', '')} {prospect.get('last_name', '')}".strip()
 
+    # Source-tier distribution snapshot — lets the LLM see at a glance
+    # whether the pool leans on tier-0 primary records or weaker
+    # tier-3 web sources.
+    tier_counts: dict[int, int] = {0: 0, 1: 0, 2: 0, 3: 0}
+    for c in ranked:
+        t = c.get("source_tier")
+        if not isinstance(t, int):
+            t = classify_source_tier(c.get("source_url"))
+        if t in tier_counts:
+            tier_counts[t] += 1
+    tier_summary = ", ".join(
+        f"tier-{t}: {n}" for t, n in tier_counts.items() if n
+    ) or "no claims"
+
     system = (
         "You write prospect research summaries for nonprofit development officers. "
         "Prioritize: executive roles, board seats, organizational leadership, and giving "
@@ -1232,6 +1246,7 @@ async def synthesize_profile(
         f"Focus on: current role, organizational affiliations, board service, giving capacity, "
         f"and philanthropic activity. Mention individual donations only if they reveal a "
         f"pattern (e.g., consistent max-out giving, bipartisan strategy).\n\n"
+        f"Pool source-tier distribution: {tier_summary}.\n\n"
         f"Claims (ranked by analytical value; each has a stable claim_id):\n{verified_json}{wiki_synth}\n\n"
         "Output JSON of shape:\n"
         '{\n'

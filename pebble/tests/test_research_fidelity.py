@@ -1864,6 +1864,43 @@ async def test_synthesize_profile_prompt_includes_conflicts(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_synthesize_profile_prompt_includes_tier_distribution(monkeypatch):
+    """Synthesis prompt now snapshots the source-tier distribution
+    so the LLM sees pool quality at a glance, complementing the
+    per-claim source_tier semantics it already reads."""
+    from pebble.orchestrator import _pipeline
+    import json
+
+    claims = [
+        _verified_claim("forager", votes=3, n_success=3,
+                        source_url="https://www.fec.gov/x"),
+        _verified_claim("template", votes=3, n_success=3,
+                        source_url="https://en.wikipedia.org/wiki/X"),
+    ]
+    response = json.dumps({
+        "sentences": [{"text": "X.", "citations": ["c0"]}],
+        "confidence_score": "medium",
+    })
+    captured = {"prompt": None}
+
+    async def fake_to_thread(fn, prompt, system=""):
+        captured["prompt"] = prompt
+        return _synthesizer_result(response)
+
+    monkeypatch.setattr(_pipeline.asyncio, "to_thread", fake_to_thread)
+    monkeypatch.setattr(_pipeline, "log_harness_outcome", AsyncMock())
+
+    await _pipeline.synthesize_profile(
+        claims, {"first_name": "X", "last_name": "Y"},
+        MagicMock(), _budget(),
+    )
+    prompt = captured["prompt"] or ""
+    assert "Pool source-tier distribution" in prompt
+    assert "tier-0" in prompt
+    assert "tier-2" in prompt
+
+
+@pytest.mark.asyncio
 async def test_synthesize_profile_prompt_names_skipped_sources(monkeypatch):
     """F14: when source_errors fed via skipped_sources, the system
     prompt names them so the brief can caveat unreachable data."""
