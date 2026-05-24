@@ -251,6 +251,8 @@ def research_quality_report(profile: dict) -> dict:
         "partial": bool(profile.get("partial", False)),
         "failed_agents": list(profile.get("failed_agents", []) or []),
         "has_validation_error": bool(profile.get("validation_error")),
+        "pipeline_version": profile.get("pipeline_version", ""),
+        "generated_at": profile.get("generated_at", ""),
     }
 
 

@@ -1112,6 +1112,18 @@ def test_research_quality_report_reports_source_error_count():
     assert r["claim_count"] == 0
 
 
+def test_research_quality_report_includes_pipeline_version():
+    from pebble.orchestrator._pipeline import research_quality_report
+    profile = {
+        "claims": [],
+        "pipeline_version": "fidelity-v1.14",
+        "generated_at": "2026-05-24T10:30:00+00:00",
+    }
+    r = research_quality_report(profile)
+    assert r["pipeline_version"] == "fidelity-v1.14"
+    assert r["generated_at"] == "2026-05-24T10:30:00+00:00"
+
+
 def test_research_quality_report_source_tier_breakdown():
     from pebble.orchestrator._pipeline import research_quality_report
     profile = {
