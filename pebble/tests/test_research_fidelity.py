@@ -1136,6 +1136,25 @@ def test_export_markdown_partial_status_names_failed_agents():
     assert "Partial (profile_synthesizer, budget)" in md
 
 
+def test_export_markdown_lists_unreachable_sources():
+    """F14 — unreachable sources surfaced explicitly in the brief so
+    development officers know the gap was a fetch failure, not real
+    silence from the source."""
+    from pebble.export import render_profile_markdown
+    profile = {
+        "claims": [],
+        "source_errors": {
+            "propublica_search": "TimeoutError: 30s",
+            "sec_company": "ConnectionError: dns",
+        },
+        "confidence_score": "low",
+    }
+    md = render_profile_markdown(profile, "Jane", "")
+    assert "Unreachable sources" in md
+    assert "propublica_search" in md
+    assert "TimeoutError" in md
+
+
 def test_export_markdown_backwards_compat_with_old_summary_field():
     """Old profiles without summary_sentences still render via the
     flat summary string."""

@@ -81,6 +81,20 @@ def render_profile_markdown(
             lines.append(f"- {desc} ({cids_str})")
         lines.append("")
 
+    # Source errors (F14) — distinguish "no data" from "fetch failed."
+    source_errors = profile.get("source_errors") or {}
+    if source_errors:
+        lines.append("## Unreachable sources")
+        lines.append("")
+        lines.append(
+            "_The following sources errored at fetch time. Their absence "
+            "from the claim pool does not mean no data exists._"
+        )
+        lines.append("")
+        for label, err in source_errors.items():
+            lines.append(f"- **{label}**: `{err}`")
+        lines.append("")
+
     # Claims table
     if claims:
         lines.append(f"## Claims ({len(claims)})")
