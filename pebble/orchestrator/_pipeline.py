@@ -294,18 +294,34 @@ def _filter_claims_to_provided_sources(
     Accepts both exact matches and prefix matches (a forager may cite
     a deeper page than the API root it was handed). Empty provided
     list = no filtering (workflows that don't bind to a single source).
+
+    Also rejects any claim whose source_url doesn't look like an http(s)
+    URL — catches LLM emissions like '(see https://x.com)' or 'public
+    record' that pass a truthiness check but aren't real URLs.
     """
     if not source_urls:
-        return claims
+        # Even without source-URL anchoring, enforce URL shape.
+        return [c for c in claims if _looks_like_http_url(c.get("source_url"))]
     bases = [b for b in source_urls if b]
     if not bases:
-        return claims
+        return [c for c in claims if _looks_like_http_url(c.get("source_url"))]
     out = []
     for c in claims:
         url = c.get("source_url", "") or ""
+        if not _looks_like_http_url(url):
+            continue
         if any(url == base or url.startswith(base) for base in bases):
             out.append(c)
     return out
+
+
+def _looks_like_http_url(url: object) -> bool:
+    """Conservative URL-shape check used by F12 anchoring + downstream
+    sanity. http:// or https:// only — anything else (custom schemes,
+    quoted prose, bare domains) is rejected."""
+    return isinstance(url, str) and (
+        url.startswith("https://") or url.startswith("http://")
+    )
 
 
 def _freshness_tier(claim: dict) -> int:

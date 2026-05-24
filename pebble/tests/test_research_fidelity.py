@@ -1782,14 +1782,39 @@ def test_filter_claims_drops_hallucinated_urls():
     assert {c["text"] for c in out} == {"X", "Z"}
 
 
-def test_filter_claims_empty_provided_list_keeps_all():
+def test_filter_claims_empty_provided_list_keeps_all_http_urls():
     """When the agent's source_urls list is empty (e.g., a workflow
     that doesn't bind to a single source), don't drop everything —
-    fall through to existing source_url-presence check."""
+    fall through to URL-shape check."""
     from pebble.orchestrator._pipeline import _filter_claims_to_provided_sources
     claims = [_claim("X", "https://x/1"), _claim("Y", "https://y/2")]
     out = _filter_claims_to_provided_sources(claims, [])
     assert len(out) == 2
+
+
+def test_filter_claims_drops_non_http_urls():
+    """Claims with quoted-prose 'urls' or non-http scheme fail the
+    URL-shape gate even if the URL matches anchored patterns."""
+    from pebble.orchestrator._pipeline import _filter_claims_to_provided_sources
+    claims = [
+        _claim("ok", "https://api.fec.gov/x"),
+        _claim("prose", "(see https://api.fec.gov/x)"),
+        _claim("custom", "ftp://api.fec.gov/x"),
+        _claim("empty", ""),
+    ]
+    out = _filter_claims_to_provided_sources(claims, ["https://api.fec.gov/"])
+    assert {c["text"] for c in out} == {"ok"}
+
+
+def test_filter_claims_drops_non_http_urls_when_no_anchors():
+    from pebble.orchestrator._pipeline import _filter_claims_to_provided_sources
+    claims = [
+        _claim("ok", "https://x.com/1"),
+        _claim("prose", "public record"),
+        _claim("custom", "data://internal"),
+    ]
+    out = _filter_claims_to_provided_sources(claims, [])
+    assert {c["text"] for c in out} == {"ok"}
 
 
 # ---------------------------------------------------------------------------
