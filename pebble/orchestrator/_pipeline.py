@@ -1502,8 +1502,10 @@ async def research_single_prospect(
         # Cancel checkpoint: before LLM-heavy stages
         if cancel_check():
             logger.info("Cancelled before foragers for %s", contact_id)
-            await save_profile(contact_id, {"claims": structured_claims, "summary": "", "confidence_score": "low", "partial": True, "failed_agents": ["cancelled"]})
+            await save_profile(contact_id, {"claims": structured_claims, "summary": "", "confidence_score": "low", "partial": True, "failed_agents": ["cancelled"]}, cost_usd=budget.total_cost_usd)
             await _save_session_for_prospect(contact_id, {"claims": structured_claims}, name, primary_org, budget, "cancelled")
+            if background_tasks:
+                await asyncio.gather(*background_tasks, return_exceptions=True)
             return {"contact_id": contact_id, "claims_count": len(structured_claims), "cancelled": True}
 
         # P3 — foragers and stage1 LLM extraction are both LLM-bound,
@@ -1550,8 +1552,10 @@ async def research_single_prospect(
         # Cancel checkpoint: before verification and synthesis
         if cancel_check():
             logger.info("Cancelled before verification for %s", contact_id)
-            await save_profile(contact_id, {"claims": all_claims, "summary": "", "confidence_score": "low", "partial": True, "failed_agents": ["cancelled"]})
+            await save_profile(contact_id, {"claims": all_claims, "summary": "", "confidence_score": "low", "partial": True, "failed_agents": ["cancelled"]}, cost_usd=budget.total_cost_usd)
             await _save_session_for_prospect(contact_id, {"claims": all_claims}, name, primary_org, budget, "cancelled")
+            if background_tasks:
+                await asyncio.gather(*background_tasks, return_exceptions=True)
             return {"contact_id": contact_id, "claims_count": len(all_claims), "cancelled": True}
 
         # URL pre-filter: drop claims with dead source URLs
@@ -1584,8 +1588,10 @@ async def research_single_prospect(
         # Cancel checkpoint: before synthesis (most expensive LLM call)
         if cancel_check():
             logger.info("Cancelled before synthesis for %s", contact_id)
-            await save_profile(contact_id, {"claims": verified_claims, "summary": "", "confidence_score": "medium", "partial": True, "failed_agents": ["cancelled"]})
+            await save_profile(contact_id, {"claims": verified_claims, "summary": "", "confidence_score": "medium", "partial": True, "failed_agents": ["cancelled"]}, cost_usd=budget.total_cost_usd)
             await _save_session_for_prospect(contact_id, {"claims": verified_claims}, name, primary_org, budget, "cancelled")
+            if background_tasks:
+                await asyncio.gather(*background_tasks, return_exceptions=True)
             return {"contact_id": contact_id, "claims_count": len(verified_claims), "cancelled": True}
 
         # F7 — surface 'former vs current' role conflicts to the
