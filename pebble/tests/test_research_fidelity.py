@@ -950,6 +950,23 @@ def test_confidence_high_to_medium_when_conflict_detected():
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
+# Verifier system-prompt strictness
+# ---------------------------------------------------------------------------
+
+def test_verifier_prompts_bias_toward_rejection():
+    """The verifier system prompts must explicitly bias toward
+    rejection when uncertain. Silently passing a wrong claim into a
+    development officer's brief is the loss function we minimize."""
+    from pebble.harness import PROMPT_TEMPLATES
+    for name in ("verifier_source", "verifier_consistency", "verifier_crossref"):
+        _, system = PROMPT_TEMPLATES[name]({"claims_text": ""}, [])
+        lower = system.lower()
+        assert "reject" in lower, f"{name} system prompt missing rejection language"
+        assert ("bias toward rejection" in lower
+                or "uncertain" in lower), f"{name} doesn't bias toward rejection"
+
+
+# ---------------------------------------------------------------------------
 # F9 — claim-pool fingerprint
 # ---------------------------------------------------------------------------
 

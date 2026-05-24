@@ -183,9 +183,16 @@ def _tpl_verifier_source(data: dict, source_urls: list[str]) -> tuple[str, str]:
         f'{{"approved": [0, 1, 3], "rejected": [{{"index": 2, "reason": "unverifiable source"}}]}}'
     )
     system = (
-        "You verify source credibility. Approve claims from .gov, .edu, major nonprofit, "
-        "or established institutional sources. Reject claims with unrecognizable URLs. "
-        "Output valid JSON only, no markdown fences."
+        "You verify source credibility for a donor-prospect research tool whose "
+        "users — nonprofit development officers — bet real fundraising decisions on "
+        "the output. Bias toward REJECTION when uncertain. False positives (a wrong "
+        "claim entering the brief) damage trust far more than false negatives (a "
+        "real claim being held back). "
+        "Approve only claims whose source_url points to: .gov, .edu, major nonprofit "
+        "databases (ProPublica Nonprofit Explorer, GuideStar), Wikipedia mainspace, "
+        "or other established institutional sources. Reject claims with "
+        "unrecognizable URLs, URLs that look auto-generated, or URLs you cannot "
+        "positively identify as authoritative. Output valid JSON only, no markdown fences."
     )
     return prompt, system
 
@@ -195,13 +202,19 @@ def _tpl_verifier_consistency(data: dict, source_urls: list[str]) -> tuple[str, 
     claims_text = data["claims_text"]
     prompt = (
         f"Check internal consistency of these claims.\n\n{claims_text}\n\n"
-        f"Flag any claim that contradicts another claim in the set. "
-        f"Approve claims that are internally consistent.\n\n"
+        f"Flag any claim that contradicts another claim in the set, even subtly "
+        f"(e.g., 'is CEO' vs 'former CEO' of the same company, mismatched dates, "
+        f"different dollar amounts for the same transaction). "
+        f"Approve claims only when you can affirm mutual consistency.\n\n"
         f'{{"approved": [0, 1, 3], "rejected": [{{"index": 2, "reason": "contradicts claim 0"}}]}}'
     )
     system = (
-        "You check internal consistency. Flag claims that contradict each other. "
-        "Approve claims that are mutually consistent. Output valid JSON only, no markdown fences."
+        "You check internal consistency for a donor-prospect research tool. "
+        "Bias toward REJECTION when uncertain — silently passing a contradictory "
+        "claim into a development officer's brief is worse than holding it back. "
+        "Flag any claim that contradicts another, including subtle date / amount / "
+        "current-vs-former-role mismatches. Approve only mutually consistent "
+        "claims. Output valid JSON only, no markdown fences."
     )
     return prompt, system
 
@@ -216,9 +229,14 @@ def _tpl_verifier_crossref(data: dict, source_urls: list[str]) -> tuple[str, str
         f'{{"approved": [0, 1, 3], "rejected": [{{"index": 2, "reason": "no corroboration and low confidence"}}]}}'
     )
     system = (
-        "You check cross-references. Approve claims corroborated by other claims or from "
-        "authoritative standalone sources. Reject unsupported low-confidence claims. "
-        "Output valid JSON only, no markdown fences."
+        "You check cross-references for a donor-prospect research tool. Bias "
+        "toward REJECTION when uncertain — better to drop a real claim than to "
+        "let an unsupported one through to a development officer's brief. "
+        "Approve claims that are corroborated by other claims in the set OR are "
+        "standalone factual statements from authoritative sources (.gov, .edu, "
+        "ProPublica, Wikipedia mainspace). Reject claims that are uncorroborated "
+        "AND not from an authoritative standalone source. Output valid JSON only, "
+        "no markdown fences."
     )
     return prompt, system
 
