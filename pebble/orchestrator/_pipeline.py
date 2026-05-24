@@ -1140,6 +1140,8 @@ async def research_single_prospect(
     Saves profile and session to the database (matching prior inline behavior).
     """
     budget = ProspectBudgetTracker(prospect_id=contact_id)
+    # P4 — background DB writes accumulate here and get awaited at the tail.
+    background_tasks: list[asyncio.Task] = []
     # Derive name/org early for session saving
     org_names = list(prospect.get("organizations") or [])
     if prospect.get("organization") and prospect["organization"] not in org_names:
@@ -1168,7 +1170,13 @@ async def research_single_prospect(
             propublica_data, sec_data, fec_data, edgar_data,
             usa_data, wiki_data, oc_data,
         )
-        await save_source_scores(contact_id, source_scores)
+        # P4 — score data isn't read again in this request; fire the
+        # write in the background and await it at the tail alongside
+        # save_profile + save_session. Gives the DB round-trip the
+        # entire LLM phase to complete in parallel.
+        background_tasks.append(
+            asyncio.create_task(save_source_scores(contact_id, source_scores)),
+        )
         logger.info("Source scores for %s: %s", contact_id, source_scores)
 
         # Build structured claims from templates (no LLM).
@@ -1315,15 +1323,17 @@ async def research_single_prospect(
             "failed_agents": ["pipeline_error"],
         }
 
-    # P2 — the two tail writes are independent DB operations (different
-    # tables, same source data). Gather them so per-prospect latency
-    # drops by one DB round-trip on the hot path.
+    # P2 + P4 — independent DB writes share the tail gather.
+    # background_tasks were fired earlier and are usually already
+    # complete by the time we reach here; awaiting them in the gather
+    # is a no-op in the common case.
     session_status = "cancelled" if cancel_check() else "completed"
     await asyncio.gather(
         save_profile(contact_id, profile),
         _save_session_for_prospect(
             contact_id, profile, name, primary_org, budget, session_status,
         ),
+        *background_tasks,
     )
     return {"contact_id": contact_id, "claims_count": len(profile["claims"])}
 
