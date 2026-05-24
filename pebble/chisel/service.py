@@ -1,22 +1,18 @@
-"""Read-mostly service layer for the Chisel HTTP API + GUI.
+"""Service layer for the Chisel HTTP API + GUI.
 
-The FastAPI router in ``api.py`` is a thin shell over these functions;
-unit tests exercise the service directly without spinning up FastAPI.
+Read surface (Phase C.1): inventory walk, detail view, YAML validation,
+autoload reload, eval wrapper.
 
-Responsibilities:
-  * Filesystem inventory — enumerate every ``manifest.yaml`` /
-    ``workflow.yaml`` under ``pebble/chisel/{tools,workflows}/``.
-  * Manifest + handler source reads (read-only).
-  * YAML validation without saving (the GUI's pre-save check).
-  * Trigger a registry reload via ``chisel.autoload()``.
-  * Run canonical-query eval via the existing ``eval.py`` runner.
-
-Write endpoints (save-manifest-from-GUI) are deferred to Phase C.2 —
-see ``tasks/pebble-chisel-plan.md §11.5``.
+Write surface (Phase C.3): atomic manifest saves with path containment +
+validate-first invariants. Handler code edits stay out of scope —
+``handler.py`` / ``build_plan.py`` changes land through PR review.
 """
 
 from __future__ import annotations
 
+import os
+import re
+import tempfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Optional
@@ -411,6 +407,189 @@ def _result_to_dict(r: EvalResult) -> dict[str, Any]:
         "duration_ms": r.duration_ms,
     }
 
+
+# ---------------------------------------------------------------------------
+# Save (Phase C.3) — atomic writes with validate-first + path containment
+# ---------------------------------------------------------------------------
+
+class ChiselSaveError(Exception):
+    """Raised when a save is refused. Carries an HTTP-friendly status hint
+    via ``status_code``."""
+
+    def __init__(self, message: str, *, status_code: int = 400) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
+_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
+
+
+def _safe_unit_dir(kind: str, name: str, root: Optional[Path] = None) -> Path:
+    """Resolve the on-disk directory for ``kind/name``, refusing path
+    traversal. Used by every write helper."""
+    if kind not in ("tools", "workflows"):
+        raise ChiselSaveError(f"unknown kind: {kind!r}")
+    if not _NAME_PATTERN.match(name):
+        raise ChiselSaveError(
+            f"name {name!r} must match {_NAME_PATTERN.pattern}",
+        )
+    root = (root or chisel_root()).resolve()
+    target = (root / kind / name).resolve()
+    try:
+        target.relative_to(root / kind)
+    except ValueError as e:
+        raise ChiselSaveError(f"path traversal rejected: {target}") from e
+    return target
+
+
+def _atomic_write(path: Path, text: str) -> None:
+    """Write ``text`` to ``path`` via tempfile-in-same-dir + os.replace,
+    so partial writes can't leave the manifest corrupted."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent),
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def _ensure_yaml_name_matches(yaml_text: str, expected_name: str) -> dict:
+    """Parse + assert ``name:`` field equals the URL name. Prevents a
+    rename smuggled inside the body from clobbering a sibling unit."""
+    try:
+        raw = yaml.safe_load(yaml_text) or {}
+    except yaml.YAMLError as e:
+        raise ChiselSaveError(f"yaml parse: {e}") from e
+    if not isinstance(raw, dict):
+        raise ChiselSaveError("manifest must be a YAML mapping")
+    body_name = raw.get("name")
+    if body_name != expected_name:
+        raise ChiselSaveError(
+            f"manifest name {body_name!r} does not match URL name "
+            f"{expected_name!r} (rename via PR review, not the GUI)",
+            status_code=409,
+        )
+    return raw
+
+
+def save_tool_manifest(
+    name: str,
+    yaml_text: str,
+    *,
+    root: Optional[Path] = None,
+) -> ChiselUnit:
+    """Validate + atomically write ``pebble/chisel/tools/<name>/manifest.yaml``
+    and trigger a registry reload. Refuses to create new tool dirs —
+    handler.py changes go through PR per the v1 scoping decision."""
+    unit_dir = _safe_unit_dir("tools", name, root)
+    if not unit_dir.is_dir():
+        raise ChiselSaveError(
+            f"tool {name!r} does not exist; create the handler.py via PR first",
+            status_code=404,
+        )
+
+    raw = _ensure_yaml_name_matches(yaml_text, name)
+    try:
+        ToolManifest(**raw)
+    except ValidationError as e:
+        raise ChiselSaveError(f"manifest invalid: {e.errors()}") from e
+
+    _atomic_write(unit_dir / "manifest.yaml", yaml_text)
+    _autoload_fn()  # refresh DEFAULT_REGISTRY so the next request sees the update
+
+    found = _find_unit("tool", name, root)
+    if found is None:
+        raise ChiselSaveError("saved but inventory walk lost the unit", status_code=500)
+    return found
+
+
+def save_workflow_manifest(
+    name: str,
+    yaml_text: str,
+    *,
+    root: Optional[Path] = None,
+) -> ChiselUnit:
+    """Validate + atomically write ``pebble/chisel/workflows/<name>/workflow.yaml``.
+    Refuses if the directory doesn't exist (use ``create_workflow`` for
+    declarative-form new workflows)."""
+    unit_dir = _safe_unit_dir("workflows", name, root)
+    if not unit_dir.is_dir():
+        raise ChiselSaveError(
+            f"workflow {name!r} does not exist; use create_workflow to create one",
+            status_code=404,
+        )
+
+    raw = _ensure_yaml_name_matches(yaml_text, name)
+    try:
+        manifest = WorkflowManifest(**raw)
+    except ValidationError as e:
+        raise ChiselSaveError(f"workflow invalid: {e.errors()}") from e
+
+    if manifest.has_custom_plan and not (unit_dir / "build_plan.py").is_file():
+        raise ChiselSaveError(
+            "workflow sets has_custom_plan=true but build_plan.py is "
+            "missing (add it via PR before flipping the manifest)",
+        )
+
+    _atomic_write(unit_dir / "workflow.yaml", yaml_text)
+    _autoload_fn()
+
+    found = _find_unit("workflow", name, root)
+    if found is None:
+        raise ChiselSaveError("saved but inventory walk lost the unit", status_code=500)
+    return found
+
+
+def create_workflow(
+    name: str,
+    yaml_text: str,
+    *,
+    root: Optional[Path] = None,
+) -> ChiselUnit:
+    """Create a brand-new declarative workflow from scratch. Refuses
+    ``has_custom_plan=true`` (that requires a build_plan.py which only
+    a PR can land)."""
+    unit_dir = _safe_unit_dir("workflows", name, root)
+    if unit_dir.exists():
+        raise ChiselSaveError(
+            f"workflow {name!r} already exists",
+            status_code=409,
+        )
+
+    raw = _ensure_yaml_name_matches(yaml_text, name)
+    try:
+        manifest = WorkflowManifest(**raw)
+    except ValidationError as e:
+        raise ChiselSaveError(f"workflow invalid: {e.errors()}") from e
+
+    if manifest.has_custom_plan:
+        raise ChiselSaveError(
+            "create_workflow only supports declarative workflows; "
+            "for has_custom_plan=true, land the build_plan.py through PR first",
+        )
+
+    unit_dir.mkdir(parents=True, exist_ok=False)
+    (unit_dir / "__init__.py").write_text("", encoding="utf-8")
+    _atomic_write(unit_dir / "workflow.yaml", yaml_text)
+    _autoload_fn()
+
+    found = _find_unit("workflow", name, root)
+    if found is None:
+        raise ChiselSaveError("created but inventory walk lost the unit", status_code=500)
+    return found
+
+
+# ---------------------------------------------------------------------------
+# Eval runner — wraps eval.py for the API
+# ---------------------------------------------------------------------------
 
 async def run_canonical_eval(
     *,

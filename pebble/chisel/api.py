@@ -1,18 +1,23 @@
 """``/api/chisel/*`` HTTP surface for the Phase-C GUI.
 
-Read-only for v1:
-  * GET  /api/chisel/health                — autoload status
-  * GET  /api/chisel/tools                 — list every tool
-  * GET  /api/chisel/tools/{name}          — manifest + handler source + schema
-  * GET  /api/chisel/workflows             — list every workflow
-  * GET  /api/chisel/workflows/{name}      — manifest + build_plan source
-  * POST /api/chisel/validate              — validate a manifest YAML string
-  * POST /api/chisel/reload                — re-run autoload, return health
-  * POST /api/chisel/eval                  — run canonical_queries through planner
+Read surface (C.1):
+  * GET  /api/chisel/health
+  * GET  /api/chisel/tools
+  * GET  /api/chisel/tools/{name}
+  * GET  /api/chisel/workflows
+  * GET  /api/chisel/workflows/{name}
+  * POST /api/chisel/validate
+  * POST /api/chisel/reload
+  * POST /api/chisel/eval
 
-Auth: ``verify_api_key`` + ``require_pebble_permission("use_pebble_chat")``
-(chat permission gates GUI reads; a dedicated ``chisel_write`` permission
-will gate the write endpoints when Phase C.2 lands).
+Write surface (C.3):
+  * PUT  /api/chisel/tools/{name}/manifest
+  * PUT  /api/chisel/workflows/{name}/manifest
+  * POST /api/chisel/workflows                 — create new declarative workflow
+
+Auth: reads gated by ``use_pebble_chat``; writes gated by a stricter
+permission (``use_pebble_research`` as a stand-in until Sprint-12
+ships a dedicated ``use_pebble_chisel_write``).
 """
 
 from typing import Optional
@@ -22,10 +27,6 @@ from pydantic import BaseModel
 
 from . import service as _svc
 
-
-# Body models live at module scope so FastAPI's introspection can
-# resolve their annotations at decoration time (defining them inside
-# build_router clashes with `from __future__ import annotations`).
 
 class ValidateBody(BaseModel):
     kind: str  # "tool" | "workflow"
@@ -37,43 +38,64 @@ class EvalBody(BaseModel):
     tag: Optional[str] = None
 
 
-def build_router(*, auth_dependencies: Optional[list] = None) -> APIRouter:
-    """Construct the chisel API router. ``auth_dependencies`` is a list
-    of FastAPI dependencies applied to every endpoint — production
-    wires in ``[Depends(verify_api_key), Depends(require_pebble_permission(...))]``;
-    tests pass ``[]``."""
-    deps = auth_dependencies or []
-    router = APIRouter(prefix="/api/chisel", tags=["chisel"], dependencies=deps)
+class SaveManifestBody(BaseModel):
+    manifest_yaml: str
 
-    @router.get("/health")
+
+class CreateWorkflowBody(BaseModel):
+    name: str
+    manifest_yaml: str
+
+
+def build_router(
+    *,
+    read_dependencies: Optional[list] = None,
+    write_dependencies: Optional[list] = None,
+    auth_dependencies: Optional[list] = None,
+) -> APIRouter:
+    """Build the chisel router. ``read_dependencies`` gate the GET/POST
+    inspect endpoints; ``write_dependencies`` gate manifest saves. If
+    ``write_dependencies`` is None, defaults to the read set (useful for
+    in-process tests + dev mode). ``auth_dependencies`` is a backward-
+    compat alias from C.1 that applies the same list to both."""
+    if auth_dependencies is not None:
+        read_dependencies = auth_dependencies
+        write_dependencies = auth_dependencies
+    read_deps = read_dependencies or []
+    write_deps = write_dependencies if write_dependencies is not None else read_deps
+    router = APIRouter(prefix="/api/chisel", tags=["chisel"])
+
+    # ------------------------------------------------------------------
+    # Read endpoints
+    # ------------------------------------------------------------------
+
+    @router.get("/health", dependencies=read_deps)
     def _health() -> dict:
         return _svc.current_health().to_dict()
 
-    @router.get("/tools")
+    @router.get("/tools", dependencies=read_deps)
     def _list_tools() -> dict:
-        units = [u.to_dict() for u in _svc.list_units() if u.kind == "tool"]
-        return {"tools": units}
+        return {"tools": [u.to_dict() for u in _svc.list_units() if u.kind == "tool"]}
 
-    @router.get("/tools/{name}")
+    @router.get("/tools/{name}", dependencies=read_deps)
     def _get_tool(name: str) -> dict:
         detail = _svc.get_tool_detail(name)
         if detail is None:
             raise HTTPException(status_code=404, detail=f"tool not found: {name}")
         return detail.to_dict()
 
-    @router.get("/workflows")
+    @router.get("/workflows", dependencies=read_deps)
     def _list_workflows() -> dict:
-        units = [u.to_dict() for u in _svc.list_units() if u.kind == "workflow"]
-        return {"workflows": units}
+        return {"workflows": [u.to_dict() for u in _svc.list_units() if u.kind == "workflow"]}
 
-    @router.get("/workflows/{name}")
+    @router.get("/workflows/{name}", dependencies=read_deps)
     def _get_workflow(name: str) -> dict:
         detail = _svc.get_workflow_detail(name)
         if detail is None:
             raise HTTPException(status_code=404, detail=f"workflow not found: {name}")
         return detail.to_dict()
 
-    @router.post("/validate")
+    @router.post("/validate", dependencies=read_deps)
     def _validate(body: ValidateBody) -> dict:
         if body.kind == "tool":
             issues = _svc.validate_tool_manifest_yaml(body.manifest_yaml)
@@ -84,16 +106,13 @@ def build_router(*, auth_dependencies: Optional[list] = None) -> APIRouter:
                 status_code=400,
                 detail=f"kind must be 'tool' or 'workflow', got {body.kind!r}",
             )
-        return {
-            "ok": not issues,
-            "issues": [i.to_dict() for i in issues],
-        }
+        return {"ok": not issues, "issues": [i.to_dict() for i in issues]}
 
-    @router.post("/reload")
+    @router.post("/reload", dependencies=read_deps)
     def _reload() -> dict:
         return _svc.reload_chisel().to_dict()
 
-    @router.post("/eval")
+    @router.post("/eval", dependencies=read_deps)
     async def _eval(body: EvalBody) -> dict:
         import os
         from pebble.orchestrator.planner import Planner
@@ -110,5 +129,33 @@ def build_router(*, auth_dependencies: Optional[list] = None) -> APIRouter:
             unit=body.unit, tag=body.tag, planner=planner, ctx=ctx,
         )
         return summary.to_dict()
+
+    # ------------------------------------------------------------------
+    # Write endpoints (Phase C.3)
+    # ------------------------------------------------------------------
+
+    @router.put("/tools/{name}/manifest", dependencies=write_deps)
+    def _save_tool_manifest(name: str, body: SaveManifestBody) -> dict:
+        try:
+            unit = _svc.save_tool_manifest(name, body.manifest_yaml)
+        except _svc.ChiselSaveError as e:
+            raise HTTPException(status_code=e.status_code, detail=str(e))
+        return {"ok": True, "unit": unit.to_dict()}
+
+    @router.put("/workflows/{name}/manifest", dependencies=write_deps)
+    def _save_workflow_manifest(name: str, body: SaveManifestBody) -> dict:
+        try:
+            unit = _svc.save_workflow_manifest(name, body.manifest_yaml)
+        except _svc.ChiselSaveError as e:
+            raise HTTPException(status_code=e.status_code, detail=str(e))
+        return {"ok": True, "unit": unit.to_dict()}
+
+    @router.post("/workflows", dependencies=write_deps)
+    def _create_workflow(body: CreateWorkflowBody) -> dict:
+        try:
+            unit = _svc.create_workflow(body.name, body.manifest_yaml)
+        except _svc.ChiselSaveError as e:
+            raise HTTPException(status_code=e.status_code, detail=str(e))
+        return {"ok": True, "unit": unit.to_dict()}
 
     return router

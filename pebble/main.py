@@ -942,14 +942,19 @@ async def health():
 
 # ---------------------------------------------------------------------------
 # Chisel API — Phase C surface for the manifest browser / GUI builder.
-# Read endpoints share the chat permission gate; write endpoints (Phase C.2)
-# will gate behind a dedicated chisel_write permission once Sprint-12 ships.
+# Reads gated by use_pebble_chat (matches the GUI's read-only browse).
+# Writes gated by use_pebble_research as a stand-in until Sprint-12 ships
+# a dedicated use_pebble_chisel_write permission.
 # ---------------------------------------------------------------------------
 from .chisel.api import build_router as _build_chisel_router  # noqa: E402
 
 app.include_router(_build_chisel_router(
-    auth_dependencies=[
+    read_dependencies=[
         Depends(verify_api_key),
         Depends(require_pebble_permission("use_pebble_chat")),
+    ],
+    write_dependencies=[
+        Depends(verify_api_key),
+        Depends(require_pebble_permission("use_pebble_research")),
     ],
 ))
