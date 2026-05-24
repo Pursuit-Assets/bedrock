@@ -350,6 +350,19 @@ class ProspectBudgetTracker:
         return self.total_cost_usd > self.cap_usd
 
 
+async def _safe_log(**kwargs) -> None:
+    """Fail-soft wrapper around log_harness_outcome for direct (non-
+    result) audit writes. Same rationale as _log_result: the audit row
+    is bookkeeping, and a DB hiccup can't sacrifice the research run."""
+    try:
+        await log_harness_outcome(**kwargs)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "log_harness_outcome failed for agent=%s: %s — continuing",
+            kwargs.get("agent_name"), e,
+        )
+
+
 async def _log_result(result, agent_name: str, prospect_id: str | None = None, user_email: str | None = None) -> None:
     """Log harness outcome to harness_log. Fail-soft: a DB outage on
     the audit-write path must NOT kill an in-flight research run —
@@ -696,7 +709,7 @@ async def quorum_verify_claims(
             "ran; rejecting %d claims (cannot vouch for them)",
             len(claims),
         )
-        await log_harness_outcome(
+        await _safe_log(
             agent_name="quorum_aborted",
             outcome="rejected",
             error=json.dumps({
@@ -787,7 +800,7 @@ async def quorum_verify_claims(
             "Quorum aborted: %d/%d verifiers succeeded; all %d claims rejected",
             n_success, len(verifier_names), len(claims),
         )
-        await log_harness_outcome(
+        await _safe_log(
             agent_name="quorum_aborted",
             outcome="rejected",
             error=json.dumps({
@@ -817,7 +830,7 @@ async def quorum_verify_claims(
                 "Quorum rejected claim %d (%d/%d votes, need %d): %s",
                 i, votes, n_success, required, claim.get("text", "")[:80],
             )
-            await log_harness_outcome(
+            await _safe_log(
                 agent_name="quorum_rejection",
                 outcome="rejected",
                 error=json.dumps({
@@ -838,7 +851,7 @@ async def quorum_verify_claims(
         len(verified), len(claims), n_success, required,
     )
 
-    await log_harness_outcome(
+    await _safe_log(
         agent_name="quorum_summary",
         outcome="success",
         error=json.dumps({
