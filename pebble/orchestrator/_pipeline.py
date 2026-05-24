@@ -118,6 +118,49 @@ def dedupe_claims(claims: list[dict]) -> list[dict]:
     return [best[k] for k in order]
 
 
+# F13 — source-domain credibility tiers.
+# Lower = more authoritative.
+#   0  — primary government / academic / direct regulatory filings.
+#   1  — established institutional aggregators (ProPublica Nonprofits, GuideStar).
+#   2  — secondary canonical references (Wikipedia mainspace, major encyclopedic).
+#   3  — everything else (general web).
+_TIER0_PATTERNS = (".gov/", ".gov", ".mil/", ".mil", ".edu/", ".edu")
+_TIER1_PATTERNS = (
+    "projects.propublica.org/nonprofits/",
+    "www.guidestar.org/",
+    "candid.org/",
+    "990finder.foundationcenter.org/",
+)
+_TIER2_PATTERNS = (
+    "en.wikipedia.org/wiki/",
+    "wikipedia.org/wiki/",
+)
+
+
+def classify_source_tier(url: str | None) -> int:
+    """Return the F13 source-credibility tier for a URL. Unknown /
+    empty URLs land at tier 3."""
+    if not url or not isinstance(url, str):
+        return 3
+    u = url.lower()
+    if any(p in u for p in _TIER0_PATTERNS):
+        return 0
+    if any(p in u for p in _TIER1_PATTERNS):
+        return 1
+    if any(p in u for p in _TIER2_PATTERNS):
+        return 2
+    return 3
+
+
+def apply_source_tiers(claims: list[dict]) -> list[dict]:
+    """Mutate each claim with ``source_tier`` based on its source_url.
+    Idempotent — re-applying yields the same tier."""
+    for c in claims:
+        if isinstance(c, dict):
+            c["source_tier"] = classify_source_tier(c.get("source_url"))
+    return claims
+
+
 def research_quality_report(profile: dict) -> dict:
     """Operator-facing trust summary of a research profile.
 
@@ -947,7 +990,15 @@ def compute_confidence_score(
         / max(1, len(claims))
     ) >= 0.8
 
-    if forager_full >= 2 and all_urls_verified:
+    # F13 — high tier additionally requires the pool to be drawn from
+    # authoritative sources (tier ≤ 1). A tier-3 forager pool can't
+    # earn "high" regardless of quorum strength.
+    authoritative_pool = all(
+        c.get("source_tier", classify_source_tier(c.get("source_url"))) <= 1
+        for c in claims
+    )
+
+    if forager_full >= 2 and all_urls_verified and authoritative_pool:
         tier = "high"
     elif quorum_passed >= 2 and most_urls_verified:
         tier = "medium"
@@ -1423,6 +1474,9 @@ async def research_single_prospect(
         # highest-priority origin/confidence per key. Prevents the
         # verifier from voting on three copies of the same fact.
         all_claims = dedupe_claims(all_claims)
+        # F13 — stamp source_tier on every claim so confidence + ranking
+        # can weight authoritative sources without re-classifying.
+        apply_source_tiers(all_claims)
         logger.info(
             "Claim pool for %s: %d template, %d forager, %d llm = %d pre-dedup → %d unique",
             contact_id, len(structured_claims), len(forager_claims),

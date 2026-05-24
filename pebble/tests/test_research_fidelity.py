@@ -758,12 +758,13 @@ async def test_synthesize_profile_confidence_high_with_full_pool(monkeypatch):
     from pebble.orchestrator import _pipeline
     import json
 
+    # Authoritative-source URLs so the F13 high-tier gate clears.
     claims = [
         _verified_claim("forager", votes=3, n_success=3,
-                        text="CEO of Acme", source_url="https://acme.org/x"),
+                        text="CEO of Acme", source_url="https://www.fec.gov/x"),
         _verified_claim("forager", votes=3, n_success=3,
                         text="Board chair at Beta",
-                        source_url="https://beta.org/y"),
+                        source_url="https://projects.propublica.org/nonprofits/organizations/123"),
     ]
     response = json.dumps({
         "sentences": [
@@ -836,10 +837,14 @@ def _verified_claim(origin, votes, n_success, url_status="verified", **extra):
 
 def test_confidence_high_requires_forager_full_quorum_all_urls_verified():
     from pebble.orchestrator._pipeline import compute_confidence_score
+    # Use authoritative URLs so F13's source-tier gate clears.
     claims = [
-        _verified_claim("forager", votes=3, n_success=3),
-        _verified_claim("forager", votes=3, n_success=3),
-        _verified_claim("template", votes=2, n_success=3),
+        _verified_claim("forager", votes=3, n_success=3,
+                        source_url="https://www.fec.gov/x"),
+        _verified_claim("forager", votes=3, n_success=3,
+                        source_url="https://api.usaspending.gov/y"),
+        _verified_claim("template", votes=2, n_success=3,
+                        source_url="https://www.sec.gov/z"),
     ]
     assert compute_confidence_score(claims) == "high"
 
@@ -936,9 +941,12 @@ def test_detect_conflicts_records_conflicting_claim_ids():
 def test_confidence_high_to_medium_when_conflict_detected():
     from pebble.orchestrator._pipeline import compute_confidence_score
     claims = [
-        _verified_claim("forager", votes=3, n_success=3),
-        _verified_claim("forager", votes=3, n_success=3),
-        _verified_claim("forager", votes=3, n_success=3),
+        _verified_claim("forager", votes=3, n_success=3,
+                        source_url="https://www.fec.gov/a"),
+        _verified_claim("forager", votes=3, n_success=3,
+                        source_url="https://api.usaspending.gov/b"),
+        _verified_claim("forager", votes=3, n_success=3,
+                        source_url="https://www.sec.gov/c"),
     ]
     # Conflict detected → downgrade from high to medium (the
     # synthesizer must acknowledge the discrepancy).
@@ -1014,6 +1022,70 @@ def test_claim_pool_fingerprint_ignores_non_canonical_fields():
     b[0]["verification_votes"] = 3
     b[0]["url_verification_status"] = "verified"
     assert claim_pool_fingerprint(a) == claim_pool_fingerprint(b)
+
+
+# ---------------------------------------------------------------------------
+# Source-domain credibility tiers (F13)
+# ---------------------------------------------------------------------------
+
+def test_source_tier_gov_is_highest():
+    from pebble.orchestrator._pipeline import classify_source_tier
+    assert classify_source_tier("https://www.fec.gov/data/x") == 0
+    assert classify_source_tier("https://api.usaspending.gov/") == 0
+    assert classify_source_tier("https://www.sec.gov/cgi-bin/browse-edgar") == 0
+
+
+def test_source_tier_edu_is_tier0():
+    from pebble.orchestrator._pipeline import classify_source_tier
+    assert classify_source_tier("https://stanford.edu/faculty/x") == 0
+
+
+def test_source_tier_propublica_is_tier1():
+    from pebble.orchestrator._pipeline import classify_source_tier
+    assert classify_source_tier(
+        "https://projects.propublica.org/nonprofits/organizations/123"
+    ) == 1
+
+
+def test_source_tier_wikipedia_is_tier2():
+    from pebble.orchestrator._pipeline import classify_source_tier
+    assert classify_source_tier("https://en.wikipedia.org/wiki/X") == 2
+
+
+def test_source_tier_unknown_is_tier3():
+    from pebble.orchestrator._pipeline import classify_source_tier
+    assert classify_source_tier("https://random.example.com/x") == 3
+    assert classify_source_tier("") == 3
+    assert classify_source_tier(None) == 3
+
+
+def test_apply_source_tiers_mutates_claims():
+    from pebble.orchestrator._pipeline import apply_source_tiers
+    claims = [
+        _claim("a", "https://www.fec.gov/x"),
+        _claim("b", "https://en.wikipedia.org/wiki/Y"),
+        _claim("c", "https://random.example.com/"),
+    ]
+    apply_source_tiers(claims)
+    assert claims[0]["source_tier"] == 0
+    assert claims[1]["source_tier"] == 2
+    assert claims[2]["source_tier"] == 3
+
+
+def test_confidence_high_requires_authoritative_sources():
+    """The high tier also requires the claim pool to be drawn from
+    authoritative sources (tier ≤ 1). A pool of tier-3 forager claims
+    can't earn 'high' regardless of how strong the quorum was."""
+    from pebble.orchestrator._pipeline import compute_confidence_score
+    claims = [
+        _verified_claim("forager", votes=3, n_success=3,
+                        source_url="https://random.example.com/1",
+                        source_tier=3),
+        _verified_claim("forager", votes=3, n_success=3,
+                        source_url="https://random.example.com/2",
+                        source_tier=3),
+    ]
+    assert compute_confidence_score(claims) != "high"
 
 
 # ---------------------------------------------------------------------------
