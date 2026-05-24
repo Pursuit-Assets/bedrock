@@ -291,6 +291,95 @@ async def test_quorum_records_successful_verifier_count(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Claim dedup (F2)
+# ---------------------------------------------------------------------------
+
+def test_dedupe_identical_claims():
+    from pebble.orchestrator._pipeline import dedupe_claims
+    claims = [
+        _claim("CEO of Acme", "https://acme.org/exec", origin="template"),
+        _claim("CEO of Acme", "https://acme.org/exec", origin="template"),
+    ]
+    out = dedupe_claims(claims)
+    assert len(out) == 1
+
+
+def test_dedupe_normalizes_whitespace_and_case():
+    from pebble.orchestrator._pipeline import dedupe_claims
+    claims = [
+        _claim("CEO of Acme.", "https://acme.org/exec", origin="template"),
+        _claim("ceo of acme", "https://acme.org/exec", origin="template"),
+        _claim("CEO  of  Acme", "https://acme.org/exec", origin="template"),
+    ]
+    out = dedupe_claims(claims)
+    assert len(out) == 1
+
+
+def test_dedupe_keeps_best_origin():
+    """Same canonical claim from multiple origins → keep the
+    forager-tagged version (carries the highest analytical weight)."""
+    from pebble.orchestrator._pipeline import dedupe_claims
+    claims = [
+        _claim("CEO of Acme", "https://acme.org/exec", origin="template"),
+        _claim("CEO of Acme", "https://acme.org/exec", origin="forager"),
+        _claim("CEO of Acme", "https://acme.org/exec", origin="llm_extracted"),
+    ]
+    out = dedupe_claims(claims)
+    assert len(out) == 1
+    assert out[0]["origin"] == "forager"
+
+
+def test_dedupe_keeps_best_confidence_within_origin():
+    from pebble.orchestrator._pipeline import dedupe_claims
+    claims = [
+        _claim("Donated $5000 to ActBlue", "https://fec.gov/x",
+               origin="template", confidence="low"),
+        _claim("Donated $5000 to ActBlue", "https://fec.gov/x",
+               origin="template", confidence="high"),
+    ]
+    out = dedupe_claims(claims)
+    assert len(out) == 1
+    assert out[0]["confidence"] == "high"
+
+
+def test_dedupe_different_urls_kept_separate():
+    """Same text, different sources — both kept (independent
+    corroboration is valuable signal)."""
+    from pebble.orchestrator._pipeline import dedupe_claims
+    claims = [
+        _claim("CEO of Acme", "https://acme.org/exec"),
+        _claim("CEO of Acme", "https://wikipedia.org/Acme"),
+    ]
+    out = dedupe_claims(claims)
+    assert len(out) == 2
+
+
+def test_dedupe_preserves_order_for_first_seen():
+    from pebble.orchestrator._pipeline import dedupe_claims
+    claims = [
+        _claim("A", "https://x.org/a"),
+        _claim("B", "https://x.org/b"),
+        _claim("A", "https://x.org/a"),
+    ]
+    out = dedupe_claims(claims)
+    assert [c["text"] for c in out] == ["A", "B"]
+
+
+def test_dedupe_skips_claims_without_source_url():
+    """Claims without source_url shouldn't survive anyway — but
+    dedupe must not crash on them."""
+    from pebble.orchestrator._pipeline import dedupe_claims
+    claims = [
+        _claim("X", ""),
+        _claim("X", ""),  # both lack URLs
+        _claim("X", "https://x.org/x"),
+    ]
+    out = dedupe_claims(claims)
+    # The URL-less duplicates collapse together; the URL'd one is separate.
+    assert len(out) == 2
+
+
+# ---------------------------------------------------------------------------
 # Claim ranking (existing behavior — sanity)
 # ---------------------------------------------------------------------------
 

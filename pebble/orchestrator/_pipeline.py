@@ -71,6 +71,53 @@ def _extract_dollar_amount(claim: dict) -> float:
     return float(m.group().replace("$", "").replace(",", "")) if m else 0.0
 
 
+# Canonical-claim normalization (F2 — pre-quorum dedup)
+_CLAIM_WHITESPACE_RE = re.compile(r"\s+")
+_CLAIM_PUNCT_RE = re.compile(r"[^\w\s$]")  # keep alnum + $ for dollar amounts
+
+
+def _canonical_claim_text(text: str) -> str:
+    """Lowercase, strip punctuation, collapse whitespace. Used as the
+    text portion of the dedup key."""
+    t = (text or "").lower()
+    t = _CLAIM_PUNCT_RE.sub(" ", t)
+    t = _CLAIM_WHITESPACE_RE.sub(" ", t).strip()
+    return t
+
+
+def _claim_dedup_key(claim: dict) -> tuple[str, str]:
+    """Two claims dedupe if they share both source_url and canonical text."""
+    return (claim.get("source_url", "") or "", _canonical_claim_text(claim.get("text", "")))
+
+
+def _claim_priority(claim: dict) -> tuple[int, int]:
+    """Lower = better. Compared to pick the survivor when two claims
+    collide. Origin first (forager > llm_extracted > template), then
+    confidence (high > medium > low)."""
+    origin_rank = _ORIGIN_RANK.get(claim.get("origin", "template"), 99)
+    conf_rank = _CONFIDENCE_RANK.get(claim.get("confidence", "medium"), 99)
+    return (origin_rank, conf_rank)
+
+
+def dedupe_claims(claims: list[dict]) -> list[dict]:
+    """Remove duplicate claims keyed by (source_url, canonical_text).
+    Keeps the highest-priority instance per key. Preserves the order of
+    first occurrence so logs + audit trails stay readable."""
+    best: dict[tuple[str, str], dict] = {}
+    order: list[tuple[str, str]] = []
+    for claim in claims:
+        if not isinstance(claim, dict):
+            continue
+        key = _claim_dedup_key(claim)
+        existing = best.get(key)
+        if existing is None:
+            best[key] = claim
+            order.append(key)
+        elif _claim_priority(claim) < _claim_priority(existing):
+            best[key] = claim
+    return [best[k] for k in order]
+
+
 def _rank_claims(claims: list[dict]) -> list[dict]:
     """Rank claims so the most valuable survive truncation.
 
@@ -841,10 +888,15 @@ async def research_single_prospect(
 
         # Merge all claims: template + forager + llm-extracted
         all_claims = llm_claims + forager_claims
+        pre_dedup = len(all_claims)
+        # F2 — dedup keyed by (source_url, canonical_text), keeping the
+        # highest-priority origin/confidence per key. Prevents the
+        # verifier from voting on three copies of the same fact.
+        all_claims = dedupe_claims(all_claims)
         logger.info(
-            "Claim pool for %s: %d template, %d forager, %d llm = %d total",
+            "Claim pool for %s: %d template, %d forager, %d llm = %d pre-dedup → %d unique",
             contact_id, len(structured_claims), len(forager_claims),
-            len(llm_claims) - len(structured_claims), len(all_claims),
+            len(llm_claims) - len(structured_claims), pre_dedup, len(all_claims),
         )
 
         # Cancel checkpoint: before verification and synthesis
