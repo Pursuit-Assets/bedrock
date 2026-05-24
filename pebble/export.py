@@ -40,6 +40,26 @@ def render_profile_markdown(
         lines.append(f"**Organization:** {prospect_org}")
     lines.append(f"**Generated:** {generated}")
     lines.append(f"**Confidence:** {confidence}")
+
+    # Evidence summary — origin breakdown + verification + URL status.
+    if claims:
+        origin_counts = {
+            "forager": sum(1 for c in claims if c.get("origin") == "forager"),
+            "template": sum(1 for c in claims if c.get("origin") == "template"),
+            "llm_extracted": sum(1 for c in claims if c.get("origin") == "llm_extracted"),
+        }
+        verified_urls = sum(
+            1 for c in claims if c.get("url_verification_status") == "verified"
+        )
+        origin_parts = ", ".join(
+            f"{n} {origin}" for origin, n in origin_counts.items() if n
+        )
+        lines.append(
+            f"**Evidence:** {len(claims)} claim(s)"
+            + (f" ({origin_parts})" if origin_parts else "")
+            + f" · {verified_urls}/{len(claims)} URLs verified"
+        )
+
     if profile.get("partial"):
         failed = profile.get("failed_agents") or []
         failed_str = ", ".join(failed) if failed else "some agents failed"

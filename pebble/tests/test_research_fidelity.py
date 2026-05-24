@@ -1127,6 +1127,26 @@ def test_export_markdown_renders_sentence_citations():
     assert "abc123def456"[:16] in md
 
 
+def test_export_markdown_header_includes_evidence_summary():
+    from pebble.export import render_profile_markdown
+    profile = {
+        "claims": [
+            {"text": "a", "source_url": "https://x/1", "origin": "forager",
+             "url_verification_status": "verified"},
+            {"text": "b", "source_url": "https://x/2", "origin": "forager",
+             "url_verification_status": "verified"},
+            {"text": "c", "source_url": "https://x/3", "origin": "template",
+             "url_verification_status": "transient_error"},
+        ],
+        "confidence_score": "high",
+    }
+    md = render_profile_markdown(profile, "Jane", "")
+    assert "**Evidence:** 3 claim(s)" in md
+    assert "2 forager" in md
+    assert "1 template" in md
+    assert "2/3 URLs verified" in md
+
+
 def test_export_markdown_lists_conflicts():
     from pebble.export import render_profile_markdown
     profile = {
