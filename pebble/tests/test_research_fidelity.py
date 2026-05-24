@@ -950,6 +950,147 @@ def test_confidence_high_to_medium_when_conflict_detected():
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
+# Pipeline edge-case invariants
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_pipeline_empty_claim_pool_skips_synthesis(monkeypatch):
+    """If the claim pool is empty after dedup + url-verify + quorum, the
+    pipeline must save a partial profile without calling the
+    synthesizer. Saving a confident summary about no evidence would
+    be the worst possible failure mode."""
+    from pebble.orchestrator import _pipeline
+    import json
+
+    prospect = {"id": "p-empty", "first_name": "No", "last_name": "Match"}
+
+    async def fake_fetch(_p, _c):
+        return {
+            "ein": None, "name": "No Match", "primary_org": None,
+            "ein_orgs": None, "cik_result": None,
+            "fec_data": None, "edgar_data": None, "usa_data": None,
+            "wiki_data": None, "oc_data": None,
+            "propublica_data": None, "sec_data": None,
+        }
+
+    monkeypatch.setattr(_pipeline, "fetch_research_data", fake_fetch)
+    monkeypatch.setattr(_pipeline, "save_source_scores", AsyncMock())
+    monkeypatch.setattr(_pipeline, "save_profile", AsyncMock())
+    monkeypatch.setattr(_pipeline, "save_session", AsyncMock())
+    monkeypatch.setattr(_pipeline, "log_harness_outcome", AsyncMock())
+    monkeypatch.setattr(_pipeline, "get_source_reliability",
+                        AsyncMock(return_value=1.0))
+
+    synth_calls = {"n": 0}
+
+    async def fake_to_thread(fn, *args, **kwargs):
+        if args and hasattr(args[0], "agent_name"):
+            return HarnessResult(outcome=AgentOutcome.SUCCESS,
+                                 data={"content": json.dumps({"claims": []})},
+                                 cost_usd=0.001)
+        synth_calls["n"] += 1
+        return HarnessResult(outcome=AgentOutcome.SUCCESS,
+                             data={"content": json.dumps({"sentences": [], "confidence_score": "low"})},
+                             cost_usd=0.001)
+
+    monkeypatch.setattr(_pipeline.asyncio, "to_thread", fake_to_thread)
+
+    await _pipeline.research_single_prospect(
+        prospect, "p-empty", MagicMock(), lambda: False,
+    )
+
+    assert synth_calls["n"] == 0, "synthesizer must not run on empty pool"
+    saved = _pipeline.save_profile.await_args.args[1]
+    assert saved["claims"] == []
+    assert saved["summary"] == ""
+    assert saved["confidence_score"] in {"low", "medium"}
+
+
+@pytest.mark.asyncio
+async def test_pipeline_all_transient_urls_marks_synthesis_caveat(monkeypatch):
+    """If every claim has url_verification_status=transient_error,
+    the deterministic confidence rubric must NOT return high — the
+    synth prompt should also receive the unverified-source signal."""
+    from pebble.orchestrator._pipeline import compute_confidence_score
+    claims = [
+        _verified_claim("forager", votes=3, n_success=3,
+                        url_status="transient_error"),
+        _verified_claim("forager", votes=3, n_success=3,
+                        url_status="transient_error"),
+        _verified_claim("forager", votes=3, n_success=3,
+                        url_status="transient_error"),
+    ]
+    assert compute_confidence_score(claims) != "high"
+
+
+@pytest.mark.asyncio
+async def test_pipeline_synthesis_partial_preserves_validation_error(monkeypatch):
+    """If both synth attempts fail, the saved profile must surface
+    validation_error so an operator debugging output can see WHY the
+    summary is empty rather than wondering."""
+    from pebble.orchestrator import _pipeline
+    import json
+
+    prospect = {"id": "p-partial", "first_name": "Jane", "last_name": "Smith",
+                "organization": "Acme Corp"}
+
+    async def fake_fetch(_p, _c):
+        return {
+            "ein": None, "name": "Jane Smith", "primary_org": "Acme Corp",
+            "ein_orgs": None, "cik_result": None,
+            "fec_data": [{"contributor_name": "Jane Smith",
+                          "contribution_receipt_amount": 1000,
+                          "committee_name": "x",
+                          "contribution_receipt_date": "2024-01-15"}],
+            "edgar_data": None, "usa_data": None, "wiki_data": None,
+            "oc_data": None, "propublica_data": None, "sec_data": None,
+        }
+
+    monkeypatch.setattr(_pipeline, "fetch_research_data", fake_fetch)
+    monkeypatch.setattr(_pipeline, "save_source_scores", AsyncMock())
+    monkeypatch.setattr(_pipeline, "save_profile", AsyncMock())
+    monkeypatch.setattr(_pipeline, "save_session", AsyncMock())
+    monkeypatch.setattr(_pipeline, "log_harness_outcome", AsyncMock())
+    monkeypatch.setattr(_pipeline, "get_source_reliability",
+                        AsyncMock(return_value=1.0))
+
+    async def patched_verify(claims, *, client=None, timeout=5.0):
+        for c in claims:
+            c["url_verification_status"] = "verified"
+        return claims, []
+
+    monkeypatch.setattr(_pipeline, "verify_urls", patched_verify)
+
+    bad_synth = json.dumps({
+        "sentences": [{"text": "X.", "citations": ["c999"]}],  # orphan
+        "confidence_score": "high",
+    })
+
+    async def fake_to_thread(fn, *args, **kwargs):
+        if args and hasattr(args[0], "agent_name"):
+            an = args[0].agent_name
+            if an.startswith("verifier"):
+                return _verifier_success([0])
+            return HarnessResult(outcome=AgentOutcome.SUCCESS,
+                                 data={"content": json.dumps({"claims": []})},
+                                 cost_usd=0.001)
+        return HarnessResult(outcome=AgentOutcome.SUCCESS,
+                             data={"content": bad_synth},
+                             cost_usd=0.001)
+
+    monkeypatch.setattr(_pipeline.asyncio, "to_thread", fake_to_thread)
+
+    await _pipeline.research_single_prospect(
+        prospect, "p-partial", MagicMock(), lambda: False,
+    )
+
+    saved = _pipeline.save_profile.await_args.args[1]
+    assert saved["partial"] is True
+    assert saved.get("validation_error")  # populated by F5 retry-fail path
+    assert "profile_synthesizer" in saved["failed_agents"]
+
+
+# ---------------------------------------------------------------------------
 # End-to-end pipeline contract (research_single_prospect)
 # ---------------------------------------------------------------------------
 
