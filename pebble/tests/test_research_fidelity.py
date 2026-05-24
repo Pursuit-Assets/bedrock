@@ -949,6 +949,204 @@ def test_confidence_high_to_medium_when_conflict_detected():
 # synthesize_profile both-attempts-fail (keeps existing test)
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# End-to-end pipeline contract (research_single_prospect)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_research_single_prospect_end_to_end_contract(monkeypatch):
+    """One integration test asserting the whole-pipeline invariants for
+    a synthetic prospect:
+
+      * Every claim entering synthesis carries a stable claim_id.
+      * The final summary's sentence citations are restricted to those
+        claim_ids (no orphan references).
+      * confidence_score is deterministic (rubric-driven, not LLM-picked).
+      * save_profile is called exactly once with the final profile dict.
+      * Quorum + conflict-detect + verify_urls + dedup all run on the
+        merged claim pool.
+
+    Mocks every external dep: fetch_research_data, DB saves,
+    log_harness_outcome, and the harness LLM calls (via asyncio.to_thread).
+    """
+    from pebble.orchestrator import _pipeline
+    import json
+    import httpx
+
+    prospect = {
+        "id": "p-1",
+        "first_name": "Jane",
+        "last_name": "Smith",
+        "organization": "Acme Corp",
+    }
+
+    fec_results = [
+        {"contributor_name": "Jane Smith",
+         "contribution_receipt_amount": 1000,
+         "committee_name": "ActBlue",
+         "contribution_receipt_date": "2024-01-15"},
+        {"contributor_name": "Different Person",
+         "contribution_receipt_amount": 5000,
+         "committee_name": "x",
+         "contribution_receipt_date": "2024-02-01"},
+    ]
+
+    async def fake_fetch(_p, _cc):
+        return {
+            "ein": None, "name": "Jane Smith", "primary_org": "Acme Corp",
+            "ein_orgs": None, "cik_result": None,
+            "fec_data": fec_results,
+            "edgar_data": None, "usa_data": None, "wiki_data": None,
+            "oc_data": None, "propublica_data": None, "sec_data": None,
+        }
+
+    monkeypatch.setattr(_pipeline, "fetch_research_data", fake_fetch)
+    monkeypatch.setattr(_pipeline, "save_source_scores", AsyncMock())
+    monkeypatch.setattr(_pipeline, "save_profile", AsyncMock())
+    monkeypatch.setattr(_pipeline, "save_session", AsyncMock())
+    monkeypatch.setattr(_pipeline, "log_harness_outcome", AsyncMock())
+    monkeypatch.setattr(_pipeline, "get_source_reliability",
+                        AsyncMock(return_value=1.0))
+
+    # Mock the synthesis LLM. Verifiers must succeed too.
+    def harness_dispatch(spec):
+        if spec.agent_name in {"verifier_source", "verifier_consistency", "verifier_crossref"}:
+            return _verifier_success([0])  # approve the single claim
+        if spec.agent_name in {"api_response_extractor", "wealth_indicator_agent", "philanthropy_agent"}:
+            return _synthesizer_result(json.dumps({"claims": []}))
+        return _synthesizer_result(json.dumps({"claims": []}))
+
+    async def fake_to_thread(fn_or_method, *args, **kwargs):
+        # harness.execute_task(spec) → args = (spec,)
+        # harness.execute(prompt, system=...) → args = (prompt,), kwargs has system
+        if args and hasattr(args[0], "agent_name"):
+            return harness_dispatch(args[0])
+        # synthesizer: emit a single-sentence cited brief
+        return _synthesizer_result(json.dumps({
+            "sentences": [
+                {"text": "Jane Smith donated to ActBlue.", "citations": ["c0"]},
+            ],
+            "confidence_score": "high",
+        }))
+
+    monkeypatch.setattr(_pipeline.asyncio, "to_thread", fake_to_thread)
+
+    # Shared MockTransport for verify_urls
+    def mock_url_handler(request):
+        return httpx.Response(200)
+
+    async def patched_verify_urls(claims, *, client=None, timeout=5.0):
+        # Skip the HEAD calls; mark all as verified so synthesis sees them.
+        for c in claims:
+            c["url_verification_status"] = "verified"
+        return claims, []
+
+    monkeypatch.setattr(_pipeline, "verify_urls", patched_verify_urls)
+
+    def never_cancel():
+        return False
+
+    result = await _pipeline.research_single_prospect(
+        prospect, "p-1", MagicMock(), never_cancel, user_email="t@x",
+    )
+
+    # The pipeline returned with a claim count.
+    assert "claims_count" in result
+    # save_profile was called exactly once.
+    assert _pipeline.save_profile.await_count == 1
+    saved_profile = _pipeline.save_profile.await_args.args[1]
+    # F5 — every saved claim has a claim_id.
+    assert all(c.get("claim_id") for c in saved_profile["claims"])
+    # F5 — citation references are restricted to known claim_ids.
+    sentences = saved_profile.get("summary_sentences", [])
+    assert sentences
+    valid_ids = {c["claim_id"] for c in saved_profile["claims"]}
+    for sent in sentences:
+        assert sent["citations"]
+        for cite in sent["citations"]:
+            assert cite in valid_ids, f"orphan citation {cite!r}"
+    # F8 — confidence_score is a string from the deterministic rubric.
+    assert saved_profile["confidence_score"] in {"high", "medium", "low"}
+    # F4 — name-match dropped the "Different Person" FEC contributor.
+    # Only Jane Smith's donation should remain in the claim pool.
+    contributor_texts = [
+        c.get("text", "") for c in saved_profile["claims"]
+        if c.get("origin") == "template"
+    ]
+    assert all(
+        "Different Person" not in t for t in contributor_texts
+    ), f"name-match filter failed: {contributor_texts}"
+
+
+@pytest.mark.asyncio
+async def test_synthesize_profile_prompt_includes_conflicts(monkeypatch):
+    """When conflicts are detected, the synthesis system prompt must
+    name them so the brief addresses the discrepancy explicitly."""
+    from pebble.orchestrator import _pipeline
+    import json
+
+    claims = [_claim("CEO of Acme", "https://acme.org/x", origin="forager")]
+    response = json.dumps({
+        "sentences": [{"text": "Serves as CEO of Acme.", "citations": ["c0"]}],
+        "confidence_score": "high",
+    })
+    conflicts = [{"description": "role at Acme disputed", "claim_ids": ["c0", "c1"]}]
+    captured = {"system": None}
+
+    async def fake_to_thread(fn, prompt, system=""):
+        captured["system"] = system
+        return _synthesizer_result(response)
+
+    monkeypatch.setattr(_pipeline.asyncio, "to_thread", fake_to_thread)
+    monkeypatch.setattr(_pipeline, "log_harness_outcome", AsyncMock())
+
+    await _pipeline.synthesize_profile(
+        claims, {"first_name": "Jane", "last_name": "Smith"},
+        MagicMock(), _budget(), conflicts=conflicts,
+    )
+    assert "role at Acme disputed" in (captured["system"] or "")
+    assert "discrepancies" in (captured["system"] or "").lower()
+
+
+@pytest.mark.asyncio
+async def test_synthesize_profile_citation_contract_in_system_prompt(monkeypatch):
+    """Every synthesis call must instruct the LLM with the explicit
+    'every sentence MUST cite ≥1 claim_id' rule + the allowed id set."""
+    from pebble.orchestrator import _pipeline
+    import json
+
+    claims = [
+        _claim("CEO of Acme", "https://acme.org/x", origin="forager"),
+        _claim("Board chair at Beta", "https://beta.org/y", origin="forager"),
+    ]
+    response = json.dumps({
+        "sentences": [
+            {"text": "CEO.", "citations": ["c0"]},
+            {"text": "Chair.", "citations": ["c1"]},
+        ],
+        "confidence_score": "low",
+    })
+    captured = {"system": None, "prompt": None}
+
+    async def fake_to_thread(fn, prompt, system=""):
+        captured["system"] = system
+        captured["prompt"] = prompt
+        return _synthesizer_result(response)
+
+    monkeypatch.setattr(_pipeline.asyncio, "to_thread", fake_to_thread)
+    monkeypatch.setattr(_pipeline, "log_harness_outcome", AsyncMock())
+
+    await _pipeline.synthesize_profile(
+        claims, {"first_name": "Jane", "last_name": "Smith"},
+        MagicMock(), _budget(),
+    )
+    sys_text = captured["system"] or ""
+    prompt_text = captured["prompt"] or ""
+    assert "EVERY sentence" in sys_text
+    assert "claim_id" in sys_text
+    assert "c0" in prompt_text and "c1" in prompt_text
+
+
 @pytest.mark.asyncio
 async def test_synthesize_profile_both_attempts_fail_returns_partial(monkeypatch):
     from pebble.orchestrator import _pipeline

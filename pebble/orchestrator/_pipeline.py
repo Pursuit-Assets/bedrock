@@ -1292,23 +1292,25 @@ async def research_single_prospect(
                 len(conflicts), contact_id,
             )
 
-        # Synthesis (Opus, with pre-verified origin-tagged claims)
+        # Synthesis (Opus, with pre-verified origin-tagged claims).
+        # Pass through the full synthesize_profile dict so the F5
+        # additions (summary_sentences, confidence_llm_suggested,
+        # validation_error) reach the saved profile + callers.
         if verified_claims and not budget.exceeded():
-            profile_data = await synthesize_profile(
+            profile = await synthesize_profile(
                 verified_claims, prospect, client, budget,
                 wikipedia_context=wikipedia_context, conflicts=conflicts,
             )
-            profile = {
-                "claims": profile_data.get("claims", verified_claims),
-                "summary": profile_data.get("summary", ""),
-                "confidence_score": profile_data.get("confidence_score", "medium"),
-                "partial": profile_data.get("partial", False),
-                "failed_agents": profile_data.get("failed_agents", []),
-            }
+            # Defaults for keys that may be missing on the partial path.
+            profile.setdefault("partial", False)
+            profile.setdefault("failed_agents", [])
+            if conflicts:
+                profile["conflicts"] = conflicts
         else:
             profile = {
                 "claims": verified_claims,
                 "summary": "",
+                "summary_sentences": [],
                 "confidence_score": "medium",
                 "partial": enriched.get("partial", False),
                 "failed_agents": enriched.get("failed_agents", []),
