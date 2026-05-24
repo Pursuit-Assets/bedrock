@@ -1042,6 +1042,80 @@ def test_claim_pool_fingerprint_ignores_non_canonical_fields():
 
 
 # ---------------------------------------------------------------------------
+# Markdown export
+# ---------------------------------------------------------------------------
+
+def test_export_markdown_renders_sentence_citations():
+    from pebble.export import render_profile_markdown
+    profile = {
+        "claims": [
+            {"text": "CEO of Acme", "source_url": "https://www.fec.gov/x",
+             "claim_id": "c0", "confidence": "high",
+             "verification_votes": 3, "verifiers_successful": 3,
+             "source_tier": 0, "url_verification_status": "verified"},
+        ],
+        "summary_sentences": [
+            {"text": "Jane serves as CEO of Acme.", "citations": ["c0"]},
+        ],
+        "confidence_score": "high",
+        "claim_pool_fingerprint": "abc123def456",
+    }
+    md = render_profile_markdown(profile, "Jane Smith", "Acme")
+    # Sentence rendered with bracketed citation.
+    assert "[[c0]]" in md
+    # Claim table includes the source tier label.
+    assert "primary .gov/.edu" in md
+    # Quorum cell.
+    assert "3/3" in md
+    # Fingerprint footer.
+    assert "abc123def456"[:16] in md
+
+
+def test_export_markdown_lists_conflicts():
+    from pebble.export import render_profile_markdown
+    profile = {
+        "claims": [],
+        "conflicts": [
+            {"description": "role at Acme disputed",
+             "claim_ids": ["c0", "c1"]},
+        ],
+        "confidence_score": "medium",
+    }
+    md = render_profile_markdown(profile, "Jane Smith", "Acme")
+    assert "Disputed claims" in md
+    assert "role at Acme disputed" in md
+    assert "`c0`" in md and "`c1`" in md
+    assert "**Conflicts detected:** 1" in md
+
+
+def test_export_markdown_partial_status_names_failed_agents():
+    from pebble.export import render_profile_markdown
+    profile = {
+        "claims": [],
+        "summary": "",
+        "summary_sentences": [],
+        "confidence_score": "low",
+        "partial": True,
+        "failed_agents": ["profile_synthesizer", "budget"],
+    }
+    md = render_profile_markdown(profile, "Jane", "")
+    assert "Partial (profile_synthesizer, budget)" in md
+
+
+def test_export_markdown_backwards_compat_with_old_summary_field():
+    """Old profiles without summary_sentences still render via the
+    flat summary string."""
+    from pebble.export import render_profile_markdown
+    profile = {
+        "claims": [],
+        "summary": "Pre-F5 free text brief.",
+        "confidence_score": "medium",
+    }
+    md = render_profile_markdown(profile, "X", "")
+    assert "Pre-F5 free text brief." in md
+
+
+# ---------------------------------------------------------------------------
 # Source-domain credibility tiers (F13)
 # ---------------------------------------------------------------------------
 
