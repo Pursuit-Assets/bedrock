@@ -332,12 +332,18 @@ def _rank_claims(claims: list[dict]) -> list[dict]:
 
 
 def _safe_truncate(records, max_chars: int = 2000) -> str:
-    """Serialize records individually, stop when byte limit reached."""
+    """Serialize records individually, stop when byte limit reached.
+    Fail-soft per item: a non-JSON-serializable claim is dropped from
+    the output (with a log) rather than crashing the synthesis."""
     parts = []
     total = 2  # for "[]"
     items = records if isinstance(records, list) else [records]
     for r in items:
-        s = json.dumps(r)
+        try:
+            s = json.dumps(r, default=str)
+        except (TypeError, ValueError) as e:
+            logger.warning("_safe_truncate: skipping unserializable item: %s", e)
+            continue
         if total + len(s) + 2 > max_chars:
             break
         parts.append(s)
