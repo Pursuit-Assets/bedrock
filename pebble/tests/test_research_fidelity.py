@@ -716,6 +716,10 @@ def _synthesizer_result(content: str, outcome=AgentOutcome.SUCCESS,
 
 @pytest.mark.asyncio
 async def test_synthesize_profile_happy_path(monkeypatch):
+    """Verifies the citation contract end-to-end. Confidence here is
+    'low' because the test claim pool is single-claim with no
+    verification metadata — that's the deterministic rubric working
+    as designed (audit-traceable, not LLM-picked)."""
     from pebble.orchestrator import _pipeline
     import json
 
@@ -724,7 +728,7 @@ async def test_synthesize_profile_happy_path(monkeypatch):
         "sentences": [
             {"text": "Serves as CEO of Acme.", "citations": ["c0"]},
         ],
-        "confidence_score": "high",
+        "confidence_score": "high",  # LLM-suggested; will be overridden
     })
 
     async def fake_to_thread(fn, prompt, system=""):
@@ -740,7 +744,47 @@ async def test_synthesize_profile_happy_path(monkeypatch):
     assert out["partial"] is False
     assert out["summary"] == "Serves as CEO of Acme."
     assert out["summary_sentences"][0]["citations"] == ["c0"]
+    # Deterministic rubric overrides the LLM. The LLM's suggestion is
+    # preserved for auditing the divergence.
+    assert out["confidence_score"] == "low"
+    assert out["confidence_llm_suggested"] == "high"
+
+
+@pytest.mark.asyncio
+async def test_synthesize_profile_confidence_high_with_full_pool(monkeypatch):
+    """High-confidence pool: 2 forager-origin claims, full 3-of-3
+    quorum, verified URLs. Confidence emerges as 'high' regardless of
+    what the LLM suggests."""
+    from pebble.orchestrator import _pipeline
+    import json
+
+    claims = [
+        _verified_claim("forager", votes=3, n_success=3,
+                        text="CEO of Acme", source_url="https://acme.org/x"),
+        _verified_claim("forager", votes=3, n_success=3,
+                        text="Board chair at Beta",
+                        source_url="https://beta.org/y"),
+    ]
+    response = json.dumps({
+        "sentences": [
+            {"text": "Serves as CEO of Acme.", "citations": ["c0"]},
+            {"text": "Also chairs the Beta board.", "citations": ["c1"]},
+        ],
+        "confidence_score": "low",  # LLM suggests low; deterministic upgrade
+    })
+
+    async def fake_to_thread(fn, prompt, system=""):
+        return _synthesizer_result(response)
+
+    monkeypatch.setattr(_pipeline.asyncio, "to_thread", fake_to_thread)
+    monkeypatch.setattr(_pipeline, "log_harness_outcome", AsyncMock())
+
+    out = await _pipeline.synthesize_profile(
+        claims, {"first_name": "Jane", "last_name": "Smith"},
+        MagicMock(), _budget(),
+    )
     assert out["confidence_score"] == "high"
+    assert out["confidence_llm_suggested"] == "low"
 
 
 @pytest.mark.asyncio
@@ -775,6 +819,85 @@ async def test_synthesize_profile_retries_on_invalid_then_succeeds(monkeypatch):
     assert out["partial"] is False
     assert out["summary"]
 
+
+# ---------------------------------------------------------------------------
+# Deterministic confidence rubric (F8)
+# ---------------------------------------------------------------------------
+
+def _verified_claim(origin, votes, n_success, url_status="verified", **extra):
+    c = _claim(extra.pop("text", "x"), extra.pop("source_url", "https://x/1"),
+               origin=origin, confidence=extra.pop("confidence", "high"))
+    c["verification_votes"] = votes
+    c["verifiers_successful"] = n_success
+    c["url_verification_status"] = url_status
+    c.update(extra)
+    return c
+
+
+def test_confidence_high_requires_forager_full_quorum_all_urls_verified():
+    from pebble.orchestrator._pipeline import compute_confidence_score
+    claims = [
+        _verified_claim("forager", votes=3, n_success=3),
+        _verified_claim("forager", votes=3, n_success=3),
+        _verified_claim("template", votes=2, n_success=3),
+    ]
+    assert compute_confidence_score(claims) == "high"
+
+
+def test_confidence_medium_when_only_template_claims():
+    from pebble.orchestrator._pipeline import compute_confidence_score
+    claims = [
+        _verified_claim("template", votes=2, n_success=3),
+        _verified_claim("template", votes=2, n_success=3),
+    ]
+    assert compute_confidence_score(claims) == "medium"
+
+
+def test_confidence_low_when_partial_quorum():
+    from pebble.orchestrator._pipeline import compute_confidence_score
+    claims = [
+        _verified_claim("forager", votes=2, n_success=2),
+    ]
+    # 2-of-2 is full consensus but only 2 successful verifiers; this is
+    # below the high bar (need full 3-of-3 quorum or 2-of-3 with all-3-
+    # voted), and the single-claim pool is too thin → low.
+    assert compute_confidence_score(claims) == "low"
+
+
+def test_confidence_low_when_urls_transient():
+    from pebble.orchestrator._pipeline import compute_confidence_score
+    claims = [
+        _verified_claim("forager", votes=3, n_success=3,
+                        url_status="transient_error"),
+        _verified_claim("forager", votes=3, n_success=3,
+                        url_status="transient_error"),
+        _verified_claim("forager", votes=3, n_success=3,
+                        url_status="transient_error"),
+    ]
+    # All URLs unverified → can't claim high even with full quorum.
+    assert compute_confidence_score(claims) != "high"
+
+
+def test_confidence_low_with_no_claims():
+    from pebble.orchestrator._pipeline import compute_confidence_score
+    assert compute_confidence_score([]) == "low"
+
+
+def test_confidence_high_to_medium_when_conflict_detected():
+    from pebble.orchestrator._pipeline import compute_confidence_score
+    claims = [
+        _verified_claim("forager", votes=3, n_success=3),
+        _verified_claim("forager", votes=3, n_success=3),
+        _verified_claim("forager", votes=3, n_success=3),
+    ]
+    # Conflict detected → downgrade from high to medium (the
+    # synthesizer must acknowledge the discrepancy).
+    assert compute_confidence_score(claims, conflicts=[{"d": "x"}]) == "medium"
+
+
+# ---------------------------------------------------------------------------
+# synthesize_profile both-attempts-fail (keeps existing test)
+# ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
 async def test_synthesize_profile_both_attempts_fail_returns_partial(monkeypatch):

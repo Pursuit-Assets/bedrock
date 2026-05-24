@@ -629,6 +629,65 @@ async def quorum_verify_claims(
     return verified
 
 
+def compute_confidence_score(
+    claims: list[dict],
+    *,
+    conflicts: list[dict] | None = None,
+) -> str:
+    """Deterministic confidence rubric (F8) — replaces the LLM-picked
+    label so the score is auditable.
+
+    Tiers:
+
+      * **high** — at least 2 forager-origin claims that passed full
+        quorum (3 verifiers voted, the claim got ≥2 votes), AND every
+        verified claim has ``url_verification_status="verified"``, AND
+        no conflicts were detected.
+      * **medium** — passed quorum with some forager / llm_extracted
+        signal but doesn't clear the high bar (single forager claim,
+        partial URL verification, or detected conflicts).
+      * **low** — empty pool, or only template claims, or thin/partial
+        quorum.
+
+    Conflicts always downgrade by one tier — the synthesis brief must
+    acknowledge them rather than silently picking a side.
+    """
+    if not claims:
+        return "low"
+
+    foragers = [c for c in claims if c.get("origin") == "forager"]
+
+    def _full_quorum(c: dict) -> bool:
+        return (
+            c.get("verifiers_successful", 0) == 3
+            and c.get("verification_votes", 0) >= 2
+        )
+
+    forager_full = sum(1 for c in foragers if _full_quorum(c))
+    quorum_passed = sum(1 for c in claims if c.get("verification_votes", 0) >= 2)
+    all_urls_verified = all(
+        c.get("url_verification_status", "verified") == "verified" for c in claims
+    )
+    most_urls_verified = (
+        sum(1 for c in claims if c.get("url_verification_status", "verified") == "verified")
+        / max(1, len(claims))
+    ) >= 0.8
+
+    if forager_full >= 2 and all_urls_verified:
+        tier = "high"
+    elif quorum_passed >= 2 and most_urls_verified:
+        tier = "medium"
+    else:
+        tier = "low"
+
+    if conflicts:
+        # Conflicts always downgrade — the synthesis brief must address
+        # the discrepancy rather than silently pick a side.
+        tier = {"high": "medium", "medium": "low", "low": "low"}[tier]
+
+    return tier
+
+
 def _assign_claim_ids(claims: list[dict]) -> list[dict]:
     """Mutate each claim with a stable ``claim_id`` (``c0``, ``c1``, …)
     in list order. Idempotent — re-assignment overwrites."""
@@ -809,11 +868,22 @@ async def synthesize_profile(
 
     sentences = parsed["sentences"]
     summary_text = " ".join(s["text"].strip() for s in sentences)
+    # F8: override the LLM-picked confidence with the deterministic
+    # rubric so the score is auditable. The LLM's suggestion is kept
+    # only as a sanity-check signal in logs.
+    llm_confidence = parsed.get("confidence_score", "medium")
+    deterministic_confidence = compute_confidence_score(ranked, conflicts=conflicts)
+    if llm_confidence != deterministic_confidence:
+        logger.info(
+            "Confidence override: LLM suggested %s, deterministic rubric chose %s",
+            llm_confidence, deterministic_confidence,
+        )
     return {
         "claims": ranked,
         "summary": summary_text,
         "summary_sentences": sentences,
-        "confidence_score": parsed.get("confidence_score", "medium"),
+        "confidence_score": deterministic_confidence,
+        "confidence_llm_suggested": llm_confidence,
         "partial": False,
         "failed_agents": [],
     }
