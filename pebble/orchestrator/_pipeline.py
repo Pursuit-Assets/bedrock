@@ -1195,22 +1195,29 @@ async def research_single_prospect(
             await _save_session_for_prospect(contact_id, {"claims": structured_claims}, name, primary_org, budget, "cancelled")
             return {"contact_id": contact_id, "claims_count": len(structured_claims), "cancelled": True}
 
-        # Activate specialist foragers (conditional on richness thresholds)
-        forager_claims = await activate_foragers(
-            source_scores,
-            {
-                "fec_data": fec_data,
-                "oc_data": oc_data,
-                "usa_data": usa_data,
-                "propublica_data": propublica_data,
-                "edgar_data": edgar_data,
-                "wiki_data": wiki_data,
-            },
-            prospect, client, budget,
+        # P3 — foragers and stage1 LLM extraction are both LLM-bound,
+        # depend only on the already-fetched research_data, and produce
+        # independent claim lists. Run them concurrently. Budget cap is
+        # best-effort either way; the worst case is one extra Haiku
+        # call (~$0.001) past the cap.
+        forager_claims, enriched = await asyncio.gather(
+            activate_foragers(
+                source_scores,
+                {
+                    "fec_data": fec_data,
+                    "oc_data": oc_data,
+                    "usa_data": usa_data,
+                    "propublica_data": propublica_data,
+                    "edgar_data": edgar_data,
+                    "wiki_data": wiki_data,
+                },
+                prospect, client, budget,
+            ),
+            stage1_enrich_prospect(
+                prospect, structured_claims, propublica_data, sec_data,
+                client, budget,
+            ),
         )
-
-        # Stage 1: LLM extraction for ProPublica + SEC only
-        enriched = await stage1_enrich_prospect(prospect, structured_claims, propublica_data, sec_data, client, budget)
         llm_claims = [c for c in enriched.get("claims", []) if isinstance(c, dict) and c.get("source_url")]
 
         # Merge all claims: template + forager + llm-extracted
@@ -1308,10 +1315,16 @@ async def research_single_prospect(
             "failed_agents": ["pipeline_error"],
         }
 
-    await save_profile(contact_id, profile)
-    # Save session history entry
+    # P2 — the two tail writes are independent DB operations (different
+    # tables, same source data). Gather them so per-prospect latency
+    # drops by one DB round-trip on the hot path.
     session_status = "cancelled" if cancel_check() else "completed"
-    await _save_session_for_prospect(contact_id, profile, name, primary_org, budget, session_status)
+    await asyncio.gather(
+        save_profile(contact_id, profile),
+        _save_session_for_prospect(
+            contact_id, profile, name, primary_org, budget, session_status,
+        ),
+    )
     return {"contact_id": contact_id, "claims_count": len(profile["claims"])}
 
 
