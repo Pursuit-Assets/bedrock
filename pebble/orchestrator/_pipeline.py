@@ -118,6 +118,41 @@ def dedupe_claims(claims: list[dict]) -> list[dict]:
     return [best[k] for k in order]
 
 
+def claim_pool_fingerprint(claims: list[dict]) -> str:
+    """F9 — stable content hash over the canonical claim representation.
+
+    Two runs that produce the same fingerprint had identical evidence
+    going into synthesis; their summaries should be semantically
+    equivalent. Useful for monitoring drift, deterministic test
+    fixtures, and future cache implementations.
+
+    The hash is computed over the SORTED list of
+    ``(canonical_text, source_url, origin)`` triples — bookkeeping
+    fields (claim_id, verification_votes, url_verification_status,
+    confidence assigned post-fetch) are excluded so they can change
+    across runs without breaking idempotency."""
+    import hashlib
+
+    keys = sorted(
+        (
+            _canonical_claim_text(c.get("text", "")),
+            (c.get("source_url") or ""),
+            (c.get("origin") or "template"),
+        )
+        for c in claims
+        if isinstance(c, dict)
+    )
+    h = hashlib.sha256()
+    for canonical_text, url, origin in keys:
+        h.update(b"\x00")
+        h.update(canonical_text.encode("utf-8"))
+        h.update(b"\x01")
+        h.update(url.encode("utf-8"))
+        h.update(b"\x02")
+        h.update(origin.encode("utf-8"))
+    return h.hexdigest()
+
+
 def _filter_claims_to_provided_sources(
     claims: list[dict], source_urls: list[str],
 ) -> list[dict]:
@@ -1423,6 +1458,12 @@ async def research_single_prospect(
                 "partial": enriched.get("partial", False),
                 "failed_agents": enriched.get("failed_agents", []),
             }
+        # F9 — stamp the evidence fingerprint so two runs of the same
+        # prospect can be diff'd for drift even when the LLM prose
+        # naturally varies.
+        profile["claim_pool_fingerprint"] = claim_pool_fingerprint(
+            profile.get("claims", [])
+        )
     except Exception as e:
         logger.exception("Prospect %s failed: %s", contact_id, e)
         profile = {

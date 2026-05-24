@@ -950,6 +950,56 @@ def test_confidence_high_to_medium_when_conflict_detected():
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
+# F9 — claim-pool fingerprint
+# ---------------------------------------------------------------------------
+
+def test_claim_pool_fingerprint_stable_under_reorder():
+    from pebble.orchestrator._pipeline import claim_pool_fingerprint
+    a = [
+        _claim("CEO of Acme", "https://acme.org/x", origin="forager"),
+        _claim("Donated $1k", "https://fec.gov/y", origin="template"),
+    ]
+    b = list(reversed(a))
+    assert claim_pool_fingerprint(a) == claim_pool_fingerprint(b)
+
+
+def test_claim_pool_fingerprint_changes_on_text_change():
+    from pebble.orchestrator._pipeline import claim_pool_fingerprint
+    a = [_claim("CEO of Acme", "https://acme.org/x")]
+    b = [_claim("CFO of Acme", "https://acme.org/x")]
+    assert claim_pool_fingerprint(a) != claim_pool_fingerprint(b)
+
+
+def test_claim_pool_fingerprint_changes_on_url_change():
+    from pebble.orchestrator._pipeline import claim_pool_fingerprint
+    a = [_claim("X", "https://a.org/1")]
+    b = [_claim("X", "https://b.org/1")]
+    assert claim_pool_fingerprint(a) != claim_pool_fingerprint(b)
+
+
+def test_claim_pool_fingerprint_stable_for_empty_pool():
+    from pebble.orchestrator._pipeline import claim_pool_fingerprint
+    assert claim_pool_fingerprint([]) == claim_pool_fingerprint([])
+    # Empty pool should have a non-empty distinct fingerprint string.
+    fp = claim_pool_fingerprint([])
+    assert isinstance(fp, str) and fp
+
+
+def test_claim_pool_fingerprint_ignores_non_canonical_fields():
+    """Fields that vary across runs without changing evidence content
+    (claim_id, verification_votes, url_verification_status, …) must
+    NOT change the fingerprint — the point is to detect *evidence*
+    changes, not bookkeeping ones."""
+    from pebble.orchestrator._pipeline import claim_pool_fingerprint
+    a = [_claim("X", "https://x/1", origin="forager")]
+    b = [_claim("X", "https://x/1", origin="forager")]
+    b[0]["claim_id"] = "c0"
+    b[0]["verification_votes"] = 3
+    b[0]["url_verification_status"] = "verified"
+    assert claim_pool_fingerprint(a) == claim_pool_fingerprint(b)
+
+
+# ---------------------------------------------------------------------------
 # Pipeline edge-case invariants
 # ---------------------------------------------------------------------------
 
@@ -1198,6 +1248,9 @@ async def test_research_single_prospect_end_to_end_contract(monkeypatch):
     saved_profile = _pipeline.save_profile.await_args.args[1]
     # F5 — every saved claim has a claim_id.
     assert all(c.get("claim_id") for c in saved_profile["claims"])
+    # F9 — saved profile carries the evidence fingerprint.
+    assert isinstance(saved_profile.get("claim_pool_fingerprint"), str)
+    assert saved_profile["claim_pool_fingerprint"]
     # F5 — citation references are restricted to known claim_ids.
     sentences = saved_profile.get("summary_sentences", [])
     assert sentences
