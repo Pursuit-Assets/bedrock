@@ -170,8 +170,19 @@ def claims_from_opencorporates(
     return claims
 
 
-def claims_from_edgar_search(results: list | None) -> list[dict]:
-    """EDGAR full-text search results → claims."""
+def claims_from_edgar_search(
+    results: list | None,
+    *,
+    prospect_org: str | None = None,
+    prospect_name: str | None = None,
+) -> list[dict]:
+    """EDGAR full-text search results → claims.
+
+    F4: when prospect_org or prospect_name is provided, drop rows whose
+    entity_name doesn't match. EDGAR search by company name can return
+    filings for similarly-named but unrelated entities (e.g., "Acme
+    Holdings" vs "Acme Corp") — this guards against attaching those
+    filings to the wrong prospect."""
     if not results:
         return []
     claims = []
@@ -182,6 +193,14 @@ def claims_from_edgar_search(results: list | None) -> list[dict]:
         file_url = r.get("file_url", "")
         if not entity_name or not file_type or not file_url:
             continue
+        if prospect_org or prospect_name:
+            matches = False
+            if prospect_org and validate_org_name(prospect_org, str(entity_name)):
+                matches = True
+            elif prospect_name and validate_person_name(prospect_name, str(entity_name)):
+                matches = True
+            if not matches:
+                continue
         claims.append({
             "text": f"{entity_name} filed {file_type} mentioning search term ({file_date})",
             "source_url": file_url,

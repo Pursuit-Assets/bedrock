@@ -1440,7 +1440,9 @@ async def research_single_prospect(
         structured_claims.extend(claims_from_opencorporates(
             oc_data or [], prospect_name=name,
         ))
-        structured_claims.extend(claims_from_edgar_search(edgar_data or []))
+        structured_claims.extend(claims_from_edgar_search(
+            edgar_data or [], prospect_org=primary_org, prospect_name=name,
+        ))
         structured_claims.extend(claims_from_wikipedia_infobox(wiki_data))
 
         # Cancel checkpoint: before LLM-heavy stages

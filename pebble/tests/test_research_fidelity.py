@@ -611,6 +611,23 @@ def test_claims_from_usaspending_drops_mismatched_recipient():
     assert "Acme Corp" in out[0]["text"]
 
 
+def test_claims_from_edgar_drops_mismatched_entity():
+    from pebble.claim_templates import claims_from_edgar_search
+    results = [
+        {"entity_name": "Acme Corp",
+         "file_type": "10-K",
+         "file_date": "2024-03-01",
+         "file_url": "https://www.sec.gov/x"},
+        {"entity_name": "Unrelated Industries",
+         "file_type": "10-Q",
+         "file_date": "2024-02-15",
+         "file_url": "https://www.sec.gov/y"},
+    ]
+    out = claims_from_edgar_search(results, prospect_org="Acme Corp")
+    assert len(out) == 1
+    assert "Acme" in out[0]["text"]
+
+
 def test_claims_from_fec_no_filter_when_prospect_name_omitted():
     """Backwards-compat: existing callers that don't pass prospect_name
     get the unfiltered behavior they had before F4."""
