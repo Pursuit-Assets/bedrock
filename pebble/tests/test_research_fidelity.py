@@ -1017,6 +1017,69 @@ def test_claim_pool_fingerprint_ignores_non_canonical_fields():
 
 
 # ---------------------------------------------------------------------------
+# research_quality_report — operator-facing trust summary
+# ---------------------------------------------------------------------------
+
+def test_research_quality_report_counts_match():
+    from pebble.orchestrator._pipeline import research_quality_report
+    profile = {
+        "claims": [
+            _verified_claim("forager", votes=3, n_success=3),
+            _verified_claim("forager", votes=2, n_success=3),
+            _verified_claim("template", votes=2, n_success=3),
+            _verified_claim("template", votes=2, n_success=3,
+                            url_status="transient_error"),
+            _verified_claim("llm_extracted", votes=2, n_success=3),
+        ],
+        "summary_sentences": [{"text": "X.", "citations": ["c0"]}],
+        "conflicts": [{"description": "x", "claim_ids": ["c0", "c1"]}],
+        "confidence_score": "medium",
+        "claim_pool_fingerprint": "abc123",
+        "partial": False,
+        "failed_agents": [],
+    }
+    r = research_quality_report(profile)
+    assert r["claim_count"] == 5
+    assert r["forager_count"] == 2
+    assert r["template_count"] == 2
+    assert r["llm_extracted_count"] == 1
+    assert r["verified_url_count"] == 4
+    assert r["transient_url_count"] == 1
+    # full_quorum requires n_success=3 AND votes>=2
+    assert r["full_quorum_count"] == 5
+    assert r["conflict_count"] == 1
+    assert r["summary_sentence_count"] == 1
+    assert r["confidence_score"] == "medium"
+    assert r["claim_pool_fingerprint"] == "abc123"
+    assert r["partial"] is False
+    assert r["has_validation_error"] is False
+
+
+def test_research_quality_report_empty_profile():
+    from pebble.orchestrator._pipeline import research_quality_report
+    r = research_quality_report({})
+    assert r["claim_count"] == 0
+    assert r["forager_count"] == 0
+    assert r["conflict_count"] == 0
+    assert r["summary_sentence_count"] == 0
+    assert r["confidence_score"] == "low"
+    assert r["partial"] is False
+
+
+def test_research_quality_report_partial_profile_with_validation_error():
+    from pebble.orchestrator._pipeline import research_quality_report
+    r = research_quality_report({
+        "claims": [],
+        "partial": True,
+        "failed_agents": ["profile_synthesizer"],
+        "validation_error": "uncited sentence indices: [0]",
+    })
+    assert r["partial"] is True
+    assert "profile_synthesizer" in r["failed_agents"]
+    assert r["has_validation_error"] is True
+
+
+# ---------------------------------------------------------------------------
 # Pipeline edge-case invariants
 # ---------------------------------------------------------------------------
 

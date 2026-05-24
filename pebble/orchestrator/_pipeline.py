@@ -118,6 +118,51 @@ def dedupe_claims(claims: list[dict]) -> list[dict]:
     return [best[k] for k in order]
 
 
+def research_quality_report(profile: dict) -> dict:
+    """Operator-facing trust summary of a research profile.
+
+    Aggregates the verified-evidence signals a development officer (or
+    a reviewing ops engineer) cares about: how many claims survived
+    each origin pathway, how many URLs verified, how many cleared full
+    3-of-3 quorum, whether conflicts were detected, and the deterministic
+    confidence tier. Useful in the Phase-C GUI as a per-profile badge
+    and in CI/load-test reports as a per-prospect quality vector.
+    """
+    claims = profile.get("claims", []) if isinstance(profile, dict) else []
+
+    def _origin_count(origin: str) -> int:
+        return sum(1 for c in claims if isinstance(c, dict) and c.get("origin") == origin)
+
+    def _url_status_count(status: str) -> int:
+        return sum(
+            1 for c in claims
+            if isinstance(c, dict) and c.get("url_verification_status") == status
+        )
+
+    full_quorum = sum(
+        1 for c in claims
+        if isinstance(c, dict)
+        and c.get("verifiers_successful", 0) == 3
+        and c.get("verification_votes", 0) >= 2
+    )
+    return {
+        "claim_count": len(claims),
+        "forager_count": _origin_count("forager"),
+        "template_count": _origin_count("template"),
+        "llm_extracted_count": _origin_count("llm_extracted"),
+        "verified_url_count": _url_status_count("verified"),
+        "transient_url_count": _url_status_count("transient_error"),
+        "full_quorum_count": full_quorum,
+        "conflict_count": len(profile.get("conflicts", []) or []),
+        "summary_sentence_count": len(profile.get("summary_sentences", []) or []),
+        "confidence_score": profile.get("confidence_score", "low"),
+        "claim_pool_fingerprint": profile.get("claim_pool_fingerprint", ""),
+        "partial": bool(profile.get("partial", False)),
+        "failed_agents": list(profile.get("failed_agents", []) or []),
+        "has_validation_error": bool(profile.get("validation_error")),
+    }
+
+
 def claim_pool_fingerprint(claims: list[dict]) -> str:
     """F9 — stable content hash over the canonical claim representation.
 
