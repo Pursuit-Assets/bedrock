@@ -1113,6 +1113,14 @@ async def synthesize_profile(
         "capacity indicators over individual transaction records. "
         'Claims tagged origin:"forager" are cross-referenced analytical findings — weight these heavily. '
         'Claims tagged origin:"template" are raw data points from public databases. '
+        # F13 — source-tier semantics so the LLM can weight authoritative claims.
+        "Each claim carries a source_tier (0–3): "
+        "0 = primary .gov / .edu (FEC, USA Spending, SEC); "
+        "1 = ProPublica Nonprofits / GuideStar; "
+        "2 = Wikipedia mainspace; "
+        "3 = general web. "
+        "Weight lower-tier claims more heavily in your assertions. Do not state a "
+        "fact as certain if its only support is a tier-3 source. "
         "Always distinguish current from former positions. Never state someone 'serves as' a role "
         "unless evidence shows the position is active. Use 'formerly served as' for past positions. "
         "EVERY sentence you emit MUST cite at least one claim_id from the provided claims. "

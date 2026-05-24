@@ -1455,6 +1455,36 @@ async def test_synthesize_profile_prompt_includes_conflicts(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_synthesize_profile_system_prompt_explains_source_tiers(monkeypatch):
+    """F13: synthesis prompt teaches the LLM what source_tier means
+    so it can weight authoritative claims heavier in the brief."""
+    from pebble.orchestrator import _pipeline
+    import json
+
+    claims = [_claim("CEO of Acme", "https://www.fec.gov/x", origin="forager")]
+    response = json.dumps({
+        "sentences": [{"text": "CEO of Acme.", "citations": ["c0"]}],
+        "confidence_score": "high",
+    })
+    captured = {"system": None}
+
+    async def fake_to_thread(fn, prompt, system=""):
+        captured["system"] = system
+        return _synthesizer_result(response)
+
+    monkeypatch.setattr(_pipeline.asyncio, "to_thread", fake_to_thread)
+    monkeypatch.setattr(_pipeline, "log_harness_outcome", AsyncMock())
+
+    await _pipeline.synthesize_profile(
+        claims, {"first_name": "Jane", "last_name": "Smith"},
+        MagicMock(), _budget(),
+    )
+    sys_text = captured["system"] or ""
+    assert "source_tier" in sys_text
+    assert "tier-3" in sys_text or "tier 3" in sys_text
+
+
+@pytest.mark.asyncio
 async def test_synthesize_profile_citation_contract_in_system_prompt(monkeypatch):
     """Every synthesis call must instruct the LLM with the explicit
     'every sentence MUST cite ≥1 claim_id' rule + the allowed id set."""
