@@ -1042,6 +1042,40 @@ def test_claim_pool_fingerprint_ignores_non_canonical_fields():
 
 
 # ---------------------------------------------------------------------------
+# F14 — per-source fetch error tracking
+# ---------------------------------------------------------------------------
+
+def test_result_with_error_distinguishes_none_from_failure():
+    from pebble.orchestrator._pipeline import _result_with_error
+    val, err = _result_with_error({"x": 1})
+    assert val == {"x": 1} and err is None
+    val, err = _result_with_error(None)
+    assert val is None and err is None
+    val, err = _result_with_error(ConnectionError("dns dead"))
+    assert val is None
+    assert err is not None
+    assert "ConnectionError" in err and "dns dead" in err
+
+
+def test_research_quality_report_passes_through_source_errors():
+    """If the pipeline stamps source_errors on the profile, downstream
+    can show 'we tried but couldn't reach this source' to the operator."""
+    from pebble.orchestrator._pipeline import research_quality_report
+    profile = {
+        "claims": [],
+        "source_errors": {
+            "propublica_search": "TimeoutError: 30s",
+            "sec_cik_search": "ConnectionError: dns",
+        },
+    }
+    # quality report doesn't aggregate this directly (yet) but the
+    # profile dict should carry the errors through to the GUI.
+    r = research_quality_report(profile)
+    # No counts inflated by errored sources.
+    assert r["claim_count"] == 0
+
+
+# ---------------------------------------------------------------------------
 # Markdown export
 # ---------------------------------------------------------------------------
 

@@ -1310,6 +1310,16 @@ def _safe_result(val):
     return None if isinstance(val, BaseException) else val
 
 
+def _result_with_error(val) -> tuple[object, str | None]:
+    """Like ``_safe_result`` but also returns the exception class name
+    so callers can distinguish 'fetch failed' from 'no data found'.
+    Returns ``(value, None)`` on success, ``(None, "ExcClass: detail")``
+    on exception."""
+    if isinstance(val, BaseException):
+        return None, f"{type(val).__name__}: {val}"
+    return val, None
+
+
 # ---------------------------------------------------------------------------
 # Extracted per-prospect pipeline
 # ---------------------------------------------------------------------------
@@ -1331,7 +1341,16 @@ async def fetch_research_data(
     ein = prospect.get("ein")
     name = f"{prospect.get('first_name', '')} {prospect.get('last_name', '')}".strip() or primary_org or ""
 
-    # Phase 1: All independent fetches in parallel
+    # Phase 1: All independent fetches in parallel. ``return_exceptions``
+    # converts each failure into an instance handed back via _result_with_error
+    # so the caller knows the difference between "source returned nothing" and
+    # "source failed mid-request" — the synthesizer can then caveat absent
+    # evidence rather than treating None as authoritative silence.
+    phase1_labels = [
+        "propublica_search", "sec_cik_search", "fec_contributions",
+        "edgar_filings", "usaspending_awards", "wikipedia_profile",
+        "opencorporates_officers",
+    ]
     phase1 = await asyncio.gather(
         asyncio.to_thread(search_organizations, primary_org) if primary_org and not ein else _noop(),
         asyncio.to_thread(search_cik, primary_org) if primary_org else _noop(),
@@ -1342,7 +1361,15 @@ async def fetch_research_data(
         asyncio.to_thread(search_officers, name) if name else _noop(),
         return_exceptions=True,
     )
-    ein_orgs, cik_result, fec_data, edgar_data, usa_data, wiki_data, oc_data = [_safe_result(r) for r in phase1]
+
+    source_errors: dict[str, str] = {}
+    p1_resolved: list = []
+    for label, raw in zip(phase1_labels, phase1):
+        val, err = _result_with_error(raw)
+        if err:
+            source_errors[label] = err
+        p1_resolved.append(val)
+    ein_orgs, cik_result, fec_data, edgar_data, usa_data, wiki_data, oc_data = p1_resolved
 
     # Cancel checkpoint: after data fetches, before dependent fetches
     if cancel_check():
@@ -1356,7 +1383,12 @@ async def fetch_research_data(
         asyncio.to_thread(fetch_company, cik_val) if cik_val else _noop(),
         return_exceptions=True,
     )
-    propublica_data, sec_data = [_safe_result(r) for r in phase2]
+    propublica_data, propublica_err = _result_with_error(phase2[0])
+    sec_data, sec_err = _result_with_error(phase2[1])
+    if propublica_err:
+        source_errors["propublica_organization"] = propublica_err
+    if sec_err:
+        source_errors["sec_company"] = sec_err
 
     return {
         "ein": ein,
@@ -1371,6 +1403,7 @@ async def fetch_research_data(
         "oc_data": oc_data,
         "propublica_data": propublica_data,
         "sec_data": sec_data,
+        "source_errors": source_errors,
     }
 
 
@@ -1544,6 +1577,12 @@ async def research_single_prospect(
                 len(conflicts), contact_id,
             )
 
+        # F14 — surface fetch-time source errors to the synthesizer so
+        # the brief can caveat "we couldn't reach ProPublica" rather
+        # than treating absence as silence.
+        source_errors = research_data.get("source_errors", {})
+        skipped_sources = list(source_errors.keys())
+
         # Synthesis (Opus, with pre-verified origin-tagged claims).
         # Pass through the full synthesize_profile dict so the F5
         # additions (summary_sentences, confidence_llm_suggested,
@@ -1552,6 +1591,7 @@ async def research_single_prospect(
             profile = await synthesize_profile(
                 verified_claims, prospect, client, budget,
                 wikipedia_context=wikipedia_context, conflicts=conflicts,
+                skipped_sources=skipped_sources,
             )
             # Defaults for keys that may be missing on the partial path.
             profile.setdefault("partial", False)
@@ -1573,6 +1613,11 @@ async def research_single_prospect(
         profile["claim_pool_fingerprint"] = claim_pool_fingerprint(
             profile.get("claims", [])
         )
+        # F14 — record which data sources errored at fetch time so the
+        # saved profile distinguishes "we tried and failed" from "no
+        # data". Operator-debugging surface.
+        if source_errors:
+            profile["source_errors"] = source_errors
     except Exception as e:
         logger.exception("Prospect %s failed: %s", contact_id, e)
         profile = {
