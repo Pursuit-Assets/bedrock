@@ -896,11 +896,20 @@ async def research_single_prospect(
         await save_source_scores(contact_id, source_scores)
         logger.info("Source scores for %s: %s", contact_id, source_scores)
 
-        # Build structured claims from templates (no LLM)
+        # Build structured claims from templates (no LLM).
+        # F4: thread prospect name/org through so claim builders can
+        # reject mismatched records (different "Jane Smith" donations,
+        # unrelated companies returned by a fuzzy USA Spending search,
+        # etc.). prospect_name/primary_org are derived earlier in this
+        # function from the prospect dict.
         structured_claims = []
-        structured_claims.extend(claims_from_fec(fec_data or []))
-        structured_claims.extend(claims_from_usaspending(usa_data or []))
-        structured_claims.extend(claims_from_opencorporates(oc_data or []))
+        structured_claims.extend(claims_from_fec(fec_data or [], prospect_name=name))
+        structured_claims.extend(claims_from_usaspending(
+            usa_data or [], prospect_org=primary_org, prospect_name=name,
+        ))
+        structured_claims.extend(claims_from_opencorporates(
+            oc_data or [], prospect_name=name,
+        ))
         structured_claims.extend(claims_from_edgar_search(edgar_data or []))
         structured_claims.extend(claims_from_wikipedia_infobox(wiki_data))
 

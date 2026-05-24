@@ -513,6 +513,119 @@ async def test_verify_urls_claim_without_url_dropped():
 
 
 # ---------------------------------------------------------------------------
+# Name-match validation (F4)
+# ---------------------------------------------------------------------------
+
+def test_validate_person_name_exact():
+    from pebble.name_match import validate_person_name
+    assert validate_person_name("Jane Smith", "Jane Smith")
+
+
+def test_validate_person_name_handles_comma_and_case():
+    from pebble.name_match import validate_person_name
+    assert validate_person_name("Jane Smith", "Smith, Jane")
+    assert validate_person_name("jane smith", "JANE SMITH")
+
+
+def test_validate_person_name_requires_two_token_overlap():
+    """A common first OR last name alone isn't enough — both first and
+    last must appear (in any order) for a FEC/USA record to attach."""
+    from pebble.name_match import validate_person_name
+    assert not validate_person_name("Jane Smith", "Jane Doe")
+    assert not validate_person_name("Jane Smith", "John Smith")
+
+
+def test_validate_person_name_middle_initials_ok():
+    from pebble.name_match import validate_person_name
+    assert validate_person_name("Jane Smith", "Jane M. Smith")
+    assert validate_person_name("Jane Marie Smith", "Jane Smith")
+
+
+def test_validate_person_name_strips_titles():
+    from pebble.name_match import validate_person_name
+    assert validate_person_name("Jane Smith", "Dr. Jane Smith")
+    assert validate_person_name("Jane Smith", "Jane Smith Jr.")
+
+
+def test_validate_person_name_empty_inputs_reject():
+    from pebble.name_match import validate_person_name
+    assert not validate_person_name("", "Jane Smith")
+    assert not validate_person_name("Jane Smith", "")
+    assert not validate_person_name("", "")
+
+
+def test_validate_org_name_handles_suffixes():
+    from pebble.name_match import validate_org_name
+    assert validate_org_name("Acme Corp", "Acme Corporation")
+    assert validate_org_name("Acme Inc", "Acme")
+    assert validate_org_name("The Smith Foundation", "Smith Foundation")
+
+
+def test_validate_org_name_rejects_dissimilar():
+    from pebble.name_match import validate_org_name
+    assert not validate_org_name("Acme Corp", "Beta Industries")
+
+
+def test_validate_org_name_distinct_token_single_match_ok():
+    """An org with a single distinctive token (e.g. "Anthropic") should
+    match the same name with suffixes added."""
+    from pebble.name_match import validate_org_name
+    assert validate_org_name("Anthropic", "Anthropic, PBC")
+
+
+# Pipeline integration: claims_from_fec drops mismatched contributor_name.
+
+def test_claims_from_fec_drops_mismatched_contributor():
+    from pebble.claim_templates import claims_from_fec
+    fec_results = [
+        {"contributor_name": "Jane Smith",
+         "contribution_receipt_amount": 1000,
+         "committee_name": "ActBlue",
+         "contribution_receipt_date": "2024-01-15"},
+        {"contributor_name": "John Doe",
+         "contribution_receipt_amount": 500,
+         "committee_name": "Republican PAC",
+         "contribution_receipt_date": "2024-02-01"},
+    ]
+    out = claims_from_fec(fec_results, prospect_name="Jane Smith")
+    assert len(out) == 1
+    assert "Jane Smith" in out[0]["text"]
+
+
+def test_claims_from_usaspending_drops_mismatched_recipient():
+    from pebble.claim_templates import claims_from_usaspending
+    results = [
+        {"recipient_name": "Acme Corp",
+         "award_amount": 50000,
+         "awarding_agency_name": "DOD",
+         "period_of_performance_start_date": "2024-01-01",
+         "source_url": "https://usa.gov/x"},
+        {"recipient_name": "Different Org",
+         "award_amount": 1000,
+         "awarding_agency_name": "DOE",
+         "period_of_performance_start_date": "2024-02-01",
+         "source_url": "https://usa.gov/y"},
+    ]
+    out = claims_from_usaspending(results, prospect_org="Acme Corp")
+    assert len(out) == 1
+    assert "Acme Corp" in out[0]["text"]
+
+
+def test_claims_from_fec_no_filter_when_prospect_name_omitted():
+    """Backwards-compat: existing callers that don't pass prospect_name
+    get the unfiltered behavior they had before F4."""
+    from pebble.claim_templates import claims_from_fec
+    fec_results = [
+        {"contributor_name": "John Doe",
+         "contribution_receipt_amount": 500,
+         "committee_name": "x",
+         "contribution_receipt_date": "2024-02-01"},
+    ]
+    out = claims_from_fec(fec_results)
+    assert len(out) == 1
+
+
+# ---------------------------------------------------------------------------
 # Claim ranking (existing behavior — sanity)
 # ---------------------------------------------------------------------------
 

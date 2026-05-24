@@ -2,11 +2,22 @@
 
 import urllib.parse
 
+from .name_match import validate_org_name, validate_person_name
+
 MAX_CLAIMS = 10
 
 
-def claims_from_fec(results: list | None) -> list[dict]:
-    """FEC individual contributions → claims (used by T1 for quick individual claims)."""
+def claims_from_fec(
+    results: list | None,
+    *,
+    prospect_name: str | None = None,
+) -> list[dict]:
+    """FEC individual contributions → claims (used by T1 for quick individual claims).
+
+    F4: when ``prospect_name`` is provided, drops records whose
+    ``contributor_name`` doesn't pass ``validate_person_name`` — defends
+    against attaching a different "Jane Smith"'s donations to this
+    prospect."""
     if not results:
         return []
     claims = []
@@ -16,6 +27,8 @@ def claims_from_fec(results: list | None) -> list[dict]:
         committee = r.get("committee", {}).get("name") if isinstance(r.get("committee"), dict) else r.get("committee_name", "")
         date = r.get("contribution_receipt_date", "")
         if not name or amount is None:
+            continue
+        if prospect_name and not validate_person_name(prospect_name, str(name)):
             continue
         encoded_name = urllib.parse.quote(str(name))
         claims.append({
@@ -82,8 +95,17 @@ def claims_from_fec_summary(results: list | None) -> list[dict]:
     return claims
 
 
-def claims_from_usaspending(results: list | None) -> list[dict]:
-    """USAspending awards → claims."""
+def claims_from_usaspending(
+    results: list | None,
+    *,
+    prospect_org: str | None = None,
+    prospect_name: str | None = None,
+) -> list[dict]:
+    """USAspending awards → claims.
+
+    F4: when ``prospect_org`` or ``prospect_name`` is provided, drops
+    records whose ``recipient_name`` doesn't match. Org match is tried
+    first; falls through to person match if the org check fails."""
     if not results:
         return []
     claims = []
@@ -95,6 +117,14 @@ def claims_from_usaspending(results: list | None) -> list[dict]:
         source_url = r.get("source_url", "")
         if not recipient or amount is None or not source_url:
             continue
+        if prospect_org or prospect_name:
+            matches = False
+            if prospect_org and validate_org_name(prospect_org, str(recipient)):
+                matches = True
+            elif prospect_name and validate_person_name(prospect_name, str(recipient)):
+                matches = True
+            if not matches:
+                continue
         amount_str = f"${amount:,.2f}" if isinstance(amount, (int, float)) else str(amount)
         claims.append({
             "text": f"{recipient} received {amount_str} from {agency} ({start_date})",
@@ -107,8 +137,15 @@ def claims_from_usaspending(results: list | None) -> list[dict]:
     return claims
 
 
-def claims_from_opencorporates(officers: list | None) -> list[dict]:
-    """OpenCorporates officers → claims."""
+def claims_from_opencorporates(
+    officers: list | None,
+    *,
+    prospect_name: str | None = None,
+) -> list[dict]:
+    """OpenCorporates officers → claims.
+
+    F4: when ``prospect_name`` is provided, drops records whose officer
+    name doesn't pass ``validate_person_name``."""
     if not officers:
         return []
     claims = []
@@ -118,6 +155,8 @@ def claims_from_opencorporates(officers: list | None) -> list[dict]:
         company = r.get("company_name")
         url = r.get("opencorporates_url", "")
         if not name or not position or not company or not url:
+            continue
+        if prospect_name and not validate_person_name(prospect_name, str(name)):
             continue
         claims.append({
             "text": f"{name} is recorded as {position} at {company} (OpenCorporates — verify current status)",
