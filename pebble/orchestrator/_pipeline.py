@@ -118,6 +118,31 @@ def dedupe_claims(claims: list[dict]) -> list[dict]:
     return [best[k] for k in order]
 
 
+def _filter_claims_to_provided_sources(
+    claims: list[dict], source_urls: list[str],
+) -> list[dict]:
+    """F12 — drop claims whose ``source_url`` isn't anchored to one of
+    the URLs provided to the forager agent. Defends against the LLM
+    hallucinating a plausible-looking URL that doesn't actually
+    correspond to data the agent saw.
+
+    Accepts both exact matches and prefix matches (a forager may cite
+    a deeper page than the API root it was handed). Empty provided
+    list = no filtering (workflows that don't bind to a single source).
+    """
+    if not source_urls:
+        return claims
+    bases = [b for b in source_urls if b]
+    if not bases:
+        return claims
+    out = []
+    for c in claims:
+        url = c.get("source_url", "") or ""
+        if any(url == base or url.startswith(base) for base in bases):
+            out.append(c)
+    return out
+
+
 def _freshness_tier(claim: dict) -> int:
     """Lower = fresher. F10: claims with stale ``data_as_of`` rank
     below recent ones at the same origin/confidence level.
@@ -472,7 +497,18 @@ async def activate_foragers(
                 for c in claims:
                     if isinstance(c, dict):
                         c["origin"] = "forager"
-                return [c for c in claims if isinstance(c, dict) and c.get("source_url")]
+                shaped = [c for c in claims if isinstance(c, dict) and c.get("source_url")]
+                # F12 — drop any forager claim whose source_url isn't
+                # anchored to one of the URLs we handed the agent.
+                # Catches hallucinated URLs before they enter the pool.
+                anchored = _filter_claims_to_provided_sources(shaped, spec.source_urls)
+                dropped = len(shaped) - len(anchored)
+                if dropped:
+                    logger.warning(
+                        "Forager %s emitted %d claim(s) with un-provided source URLs; dropped",
+                        agent_name, dropped,
+                    )
+                return anchored
             except json.JSONDecodeError:
                 logger.warning("Failed to parse forager claims from %s", agent_name)
         return []

@@ -1176,6 +1176,50 @@ async def test_synthesize_profile_both_attempts_fail_returns_partial(monkeypatch
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
+# Forager source-URL anchoring (F12)
+# ---------------------------------------------------------------------------
+
+def test_filter_claims_to_provided_sources_exact_match():
+    from pebble.orchestrator._pipeline import _filter_claims_to_provided_sources
+    claims = [_claim("X", "https://api.open.fec.gov/")]
+    out = _filter_claims_to_provided_sources(claims, ["https://api.open.fec.gov/"])
+    assert len(out) == 1
+
+
+def test_filter_claims_to_provided_sources_prefix_match():
+    """A forager may emit a more specific URL than the provided base
+    (adding a path/fragment). The filter accepts startswith."""
+    from pebble.orchestrator._pipeline import _filter_claims_to_provided_sources
+    claims = [_claim("X", "https://en.wikipedia.org/wiki/Jane_Smith#career")]
+    out = _filter_claims_to_provided_sources(
+        claims, ["https://en.wikipedia.org/wiki/Jane_Smith"],
+    )
+    assert len(out) == 1
+
+
+def test_filter_claims_drops_hallucinated_urls():
+    from pebble.orchestrator._pipeline import _filter_claims_to_provided_sources
+    claims = [
+        _claim("X", "https://api.open.fec.gov/x"),     # valid
+        _claim("Y", "https://hallucinated.example.com"),  # not provided
+        _claim("Z", "https://api.opencorporates.com/y"),  # valid
+    ]
+    provided = ["https://api.open.fec.gov/", "https://api.opencorporates.com/"]
+    out = _filter_claims_to_provided_sources(claims, provided)
+    assert {c["text"] for c in out} == {"X", "Z"}
+
+
+def test_filter_claims_empty_provided_list_keeps_all():
+    """When the agent's source_urls list is empty (e.g., a workflow
+    that doesn't bind to a single source), don't drop everything —
+    fall through to existing source_url-presence check."""
+    from pebble.orchestrator._pipeline import _filter_claims_to_provided_sources
+    claims = [_claim("X", "https://x/1"), _claim("Y", "https://y/2")]
+    out = _filter_claims_to_provided_sources(claims, [])
+    assert len(out) == 2
+
+
+# ---------------------------------------------------------------------------
 # Budget-exhaustion contract (F11)
 # ---------------------------------------------------------------------------
 
