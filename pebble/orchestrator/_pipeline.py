@@ -412,7 +412,22 @@ async def quorum_verify_claims(
     budget: ProspectBudgetTracker,
     user_email: str | None = None,
 ) -> list[dict]:
-    """Quorum Sensing: 3 independent Haiku verifiers, majority vote (2-of-3) to include a claim."""
+    """Quorum Sensing: 3 independent Haiku verifiers, strict-majority vote
+    among the verifiers that actually produced a verdict.
+
+    Fail-closed semantics (fidelity-critical — see test_research_fidelity):
+
+      * A verifier that times out, raises, or returns un-parseable output
+        is treated as ``no verdict`` — it contributes neither approval
+        nor rejection. The previous fail-open behavior (a crashed
+        verifier approving every claim) is a hard regression and must
+        not return.
+      * Quorum requires at least 2 successful verifiers AND a strict
+        majority (> n_success / 2) of approvals among them. With:
+          - 3 successful → 2 votes
+          - 2 successful → 2 votes (full consensus)
+          - 0–1 successful → every claim rejected as ``quorum_aborted``.
+    """
     if not claims or budget.exceeded():
         return claims
 
@@ -427,44 +442,104 @@ async def quorum_verify_claims(
 
     verifier_names = ["verifier_source", "verifier_consistency", "verifier_crossref"]
 
-    async def _run_verifier(agent_name: str) -> set[int]:
-        """Run a single verifier, return set of approved claim indices."""
-        harness = WorkerHarness(agent_name, harness_config_for_agent(agent_name), client)
-        spec = TaskSpec(
-            agent_name=agent_name,
-            data={"claims_text": claims_text},
-        )
-        result = await asyncio.to_thread(harness.execute_task, spec)
+    async def _run_verifier(agent_name: str) -> set[int] | None:
+        """Return approved-indices set, or None if the verifier didn't
+        produce a usable verdict (timeout, crash, malformed JSON)."""
+        try:
+            harness = WorkerHarness(
+                agent_name, harness_config_for_agent(agent_name), client,
+            )
+            spec = TaskSpec(agent_name=agent_name, data={"claims_text": claims_text})
+            result = await asyncio.to_thread(harness.execute_task, spec)
+        except Exception as e:  # noqa: BLE001 — never let one verifier kill the quorum
+            logger.warning("Verifier %s crashed: %s", agent_name, e)
+            return None
+
         await _log_result(result, agent_name, prospect.get("id"))
 
-        if result.outcome in (AgentOutcome.SUCCESS, AgentOutcome.ESCALATED):
-            budget.add(result.cost_usd)
-            try:
-                raw = _strip_fences(result.data.get("content", "{}"))
-                data = json.loads(raw)
-                approved = set(data.get("approved", []))
-                return approved
-            except (json.JSONDecodeError, TypeError):
-                logger.warning("Failed to parse verifier output from %s", agent_name)
-        # On failure, approve all (fail-open to avoid losing claims)
-        return set(range(len(claims)))
+        if result.outcome not in (AgentOutcome.SUCCESS, AgentOutcome.ESCALATED):
+            logger.warning(
+                "Verifier %s did not produce a verdict (outcome=%s)",
+                agent_name, result.outcome.value,
+            )
+            return None
 
-    # Run all 3 verifiers in parallel
-    results = await asyncio.gather(*[_run_verifier(name) for name in verifier_names])
+        budget.add(result.cost_usd)
+        try:
+            raw = _strip_fences(result.data.get("content", "{}"))
+            data = json.loads(raw)
+            approved_raw = data.get("approved")
+            if not isinstance(approved_raw, list):
+                raise TypeError(f"approved is {type(approved_raw).__name__}, not list")
+            # Filter to valid integer indices in range — guards against
+            # an LLM emitting strings, floats, or out-of-bounds entries.
+            return {
+                int(i) for i in approved_raw
+                if isinstance(i, int) or (isinstance(i, str) and i.lstrip("-").isdigit())
+                if 0 <= int(i) < len(claims)
+            }
+        except (json.JSONDecodeError, TypeError, ValueError, AttributeError) as e:
+            logger.warning(
+                "Verifier %s output unparseable (%s) — counts as no verdict",
+                agent_name, type(e).__name__,
+            )
+            return None
 
-    # Majority vote: claim included if approved by 2-of-3
-    verified = []
+    # Run all 3 verifiers in parallel.
+    raw_results = await asyncio.gather(*[_run_verifier(name) for name in verifier_names])
+
+    # Partition into successful + failed for downstream auditing.
+    successful_indices: list[int] = []  # positions in verifier_names that succeeded
+    successful_votes: list[set[int]] = []
+    for idx, vote in enumerate(raw_results):
+        if vote is not None:
+            successful_indices.append(idx)
+            successful_votes.append(vote)
+
+    n_success = len(successful_votes)
+    required = max(2, (n_success // 2) + 1)  # strict majority, floor of 2
+
+    if n_success < 2:
+        # No quorum possible — reject every claim, log the abort so ops
+        # can see persistent verifier-failure modes.
+        failed_verifiers = [
+            verifier_names[i] for i in range(len(verifier_names))
+            if i not in successful_indices
+        ]
+        logger.warning(
+            "Quorum aborted: %d/%d verifiers succeeded; all %d claims rejected",
+            n_success, len(verifier_names), len(claims),
+        )
+        await log_harness_outcome(
+            agent_name="quorum_aborted",
+            outcome="rejected",
+            error=json.dumps({
+                "successful_verifiers": [verifier_names[i] for i in successful_indices],
+                "failed_verifiers": failed_verifiers,
+                "claim_count": len(claims),
+            }),
+            prospect_id=prospect.get("id"),
+            user_email=user_email,
+        )
+        return []
+
+    verified: list[dict] = []
     for i, claim in enumerate(claims):
-        votes = sum(1 for approved_set in results if i in approved_set)
-        if votes >= 2:
+        votes = sum(1 for approved_set in successful_votes if i in approved_set)
+        if votes >= required:
             claim["verification_votes"] = votes
+            claim["verifiers_successful"] = n_success
             verified.append(claim)
         else:
-            logger.info("Quorum rejected claim %d (%d/3 votes): %s", i, votes, claim.get("text", "")[:80])
-            # Log rejection details for future pattern analysis (Level 2 swarm learning)
             rejecting_verifiers = [
-                verifier_names[j] for j, approved_set in enumerate(results) if i not in approved_set
+                verifier_names[successful_indices[j]]
+                for j, approved_set in enumerate(successful_votes)
+                if i not in approved_set
             ]
+            logger.info(
+                "Quorum rejected claim %d (%d/%d votes, need %d): %s",
+                i, votes, n_success, required, claim.get("text", "")[:80],
+            )
             await log_harness_outcome(
                 agent_name="quorum_rejection",
                 outcome="rejected",
@@ -472,6 +547,8 @@ async def quorum_verify_claims(
                     "claim_index": i,
                     "claim_text": claim.get("text", "")[:200],
                     "votes": votes,
+                    "required": required,
+                    "verifiers_successful": n_success,
                     "rejected_by": rejecting_verifiers,
                     "origin": claim.get("origin", "unknown"),
                 }),
@@ -479,9 +556,11 @@ async def quorum_verify_claims(
                 user_email=user_email,
             )
 
-    logger.info("Quorum verification: %d/%d claims passed (2-of-3 vote)", len(verified), len(claims))
+    logger.info(
+        "Quorum verification: %d/%d claims passed (%d verifier(s) succeeded, need %d votes)",
+        len(verified), len(claims), n_success, required,
+    )
 
-    # Log quorum summary for Level 3 yield analysis (accepted + rejected in one entry)
     await log_harness_outcome(
         agent_name="quorum_summary",
         outcome="success",
@@ -489,6 +568,8 @@ async def quorum_verify_claims(
             "total_claims": len(claims),
             "accepted": len(verified),
             "rejected": len(claims) - len(verified),
+            "verifiers_successful": n_success,
+            "required_votes": required,
             "origins": {
                 origin: sum(1 for c in claims if c.get("origin") == origin)
                 for origin in {"forager", "llm_extracted", "template"}
