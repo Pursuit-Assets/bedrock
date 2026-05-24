@@ -1600,6 +1600,9 @@ async def test_research_single_prospect_end_to_end_contract(monkeypatch):
     # F9 — saved profile carries the evidence fingerprint.
     assert isinstance(saved_profile.get("claim_pool_fingerprint"), str)
     assert saved_profile["claim_pool_fingerprint"]
+    # Pipeline-version + timestamp stamp.
+    assert saved_profile.get("pipeline_version", "").startswith("fidelity-v")
+    assert "T" in saved_profile.get("generated_at", "")
     # F5 — citation references are restricted to known claim_ids.
     sentences = saved_profile.get("summary_sentences", [])
     assert sentences

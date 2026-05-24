@@ -79,6 +79,12 @@ logger = logging.getLogger("pebble.orchestrator")
 
 PROSPECT_COST_CAP_USD = 0.50
 
+# Bumped whenever a pipeline change alters the saved-profile shape or
+# the fidelity invariants. Stamped on every saved profile so
+# downstream consumers (export, GUI, audit) can tell which generation
+# produced a given record. Increment on every F-series addition.
+PIPELINE_VERSION = "fidelity-v1.14"
+
 # Strip markdown fences that LLMs sometimes wrap around JSON
 _FENCE_RE = re.compile(r"^```(?:json)?\s*\n?(.*?)\n?```\s*$", re.DOTALL)
 
@@ -1715,6 +1721,10 @@ async def research_single_prospect(
         # data". Operator-debugging surface.
         if source_errors:
             profile["source_errors"] = source_errors
+        # Pipeline-version stamp + generation timestamp for forensics.
+        from datetime import datetime, timezone
+        profile["pipeline_version"] = PIPELINE_VERSION
+        profile["generated_at"] = datetime.now(tz=timezone.utc).isoformat()
     except Exception as e:
         logger.exception("Prospect %s failed: %s", contact_id, e)
         profile = {
