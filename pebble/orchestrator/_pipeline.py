@@ -14,6 +14,35 @@ Decomposition pattern:
       is simpler than analysis)
     - FORAGER: multi-source domain analysis (wealth_indicator, philanthropy)
     - QUEEN: synthesis of pre-processed claims only
+
+Fidelity invariants (F-series — enforced + tested in
+test_research_fidelity.py):
+    F1   Quorum verification is FAIL-CLOSED. A verifier that crashes,
+         times out, or returns malformed JSON contributes no vote;
+         claim needs strict majority of successful verifiers (n≥2).
+    F2   Claims dedupe pre-quorum by (source_url, canonical_text).
+         Forager > llm_extracted > template wins on collision.
+    F3   verify_urls distinguishes 404 (drop) from 5xx/transport
+         (kept + url_verification_status=transient_error). Single
+         shared httpx client for the batch.
+    F4   FEC/USA/OpenCorporates/EDGAR template claim builders validate
+         prospect name/org against returned record names.
+    F5   Synthesis output anchored to claim_ids — every sentence has
+         non-empty citations referencing real claims. One retry on
+         validation failure; partial profile on second failure.
+    F7   detect_conflicts flags "former vs current" role disputes
+         within the same org; downgrades confidence by one tier.
+    F8   compute_confidence_score is deterministic, not LLM-picked.
+    F9   claim_pool_fingerprint stamped on every saved profile so
+         two runs can be diff'd for evidence drift.
+    F10  _rank_claims factors freshness via data_as_of year tier.
+    F11  Budget exhaustion never leaks unverified claims to synthesis.
+    F12  Forager + stage1 LLM claims dropped unless source_url is
+         anchored to a URL the agent was given.
+    F13  classify_source_tier + apply_source_tiers grade URLs 0..3;
+         "high" confidence requires tier ≤ 1 across the pool.
+    F14  Per-source fetch errors recorded in profile.source_errors;
+         synthesis caveats unreachable sources via skipped_sources.
 """
 
 import asyncio
