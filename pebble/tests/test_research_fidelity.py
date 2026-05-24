@@ -626,6 +626,181 @@ def test_claims_from_fec_no_filter_when_prospect_name_omitted():
 
 
 # ---------------------------------------------------------------------------
+# Synthesis citation invariants (F5)
+# ---------------------------------------------------------------------------
+
+def test_validate_synthesis_output_happy():
+    from pebble.orchestrator._pipeline import _validate_synthesis_output
+    parsed = {
+        "sentences": [
+            {"text": "Jane Smith is the CEO of Acme.", "citations": ["c0", "c1"]},
+            {"text": "She gave $25k to ActBlue.", "citations": ["c2"]},
+        ],
+        "confidence_score": "high",
+    }
+    ok, err = _validate_synthesis_output(parsed, {"c0", "c1", "c2"})
+    assert ok, err
+
+
+def test_validate_synthesis_output_rejects_uncited_sentence():
+    from pebble.orchestrator._pipeline import _validate_synthesis_output
+    parsed = {
+        "sentences": [
+            {"text": "Jane is the CEO of Acme.", "citations": ["c0"]},
+            {"text": "She is also known for philanthropy.", "citations": []},
+        ],
+        "confidence_score": "medium",
+    }
+    ok, err = _validate_synthesis_output(parsed, {"c0"})
+    assert not ok
+    assert "uncited" in err.lower()
+
+
+def test_validate_synthesis_output_rejects_unknown_claim_id():
+    from pebble.orchestrator._pipeline import _validate_synthesis_output
+    parsed = {
+        "sentences": [
+            {"text": "x.", "citations": ["c999"]},
+        ],
+        "confidence_score": "low",
+    }
+    ok, err = _validate_synthesis_output(parsed, {"c0"})
+    assert not ok
+    assert "unknown" in err.lower() or "c999" in err
+
+
+def test_validate_synthesis_output_rejects_no_sentences():
+    from pebble.orchestrator._pipeline import _validate_synthesis_output
+    parsed = {"sentences": [], "confidence_score": "high"}
+    ok, err = _validate_synthesis_output(parsed, {"c0"})
+    assert not ok
+
+
+def test_validate_synthesis_output_rejects_empty_sentence_text():
+    from pebble.orchestrator._pipeline import _validate_synthesis_output
+    parsed = {
+        "sentences": [
+            {"text": "", "citations": ["c0"]},
+        ],
+        "confidence_score": "high",
+    }
+    ok, err = _validate_synthesis_output(parsed, {"c0"})
+    assert not ok
+
+
+def test_validate_synthesis_output_rejects_wrong_shape():
+    from pebble.orchestrator._pipeline import _validate_synthesis_output
+    ok, err = _validate_synthesis_output({"summary": "x"}, {"c0"})
+    assert not ok
+    ok, err = _validate_synthesis_output(
+        {"sentences": "string not list"}, {"c0"},
+    )
+    assert not ok
+
+
+def test_assign_claim_ids_stable_and_in_order():
+    from pebble.orchestrator._pipeline import _assign_claim_ids
+    claims = [
+        _claim("a", "https://x/1"),
+        _claim("b", "https://x/2"),
+        _claim("c", "https://x/3"),
+    ]
+    ided = _assign_claim_ids(claims)
+    assert [c["claim_id"] for c in ided] == ["c0", "c1", "c2"]
+
+
+def _synthesizer_result(content: str, outcome=AgentOutcome.SUCCESS,
+                        cost_usd: float = 0.001) -> HarnessResult:
+    return HarnessResult(outcome=outcome, data={"content": content}, cost_usd=cost_usd)
+
+
+@pytest.mark.asyncio
+async def test_synthesize_profile_happy_path(monkeypatch):
+    from pebble.orchestrator import _pipeline
+    import json
+
+    claims = [_claim("CEO of Acme", "https://acme.org/x", origin="forager")]
+    response = json.dumps({
+        "sentences": [
+            {"text": "Serves as CEO of Acme.", "citations": ["c0"]},
+        ],
+        "confidence_score": "high",
+    })
+
+    async def fake_to_thread(fn, prompt, system=""):
+        return _synthesizer_result(response)
+
+    monkeypatch.setattr(_pipeline.asyncio, "to_thread", fake_to_thread)
+    monkeypatch.setattr(_pipeline, "log_harness_outcome", AsyncMock())
+
+    out = await _pipeline.synthesize_profile(
+        claims, {"first_name": "Jane", "last_name": "Smith"},
+        MagicMock(), _budget(),
+    )
+    assert out["partial"] is False
+    assert out["summary"] == "Serves as CEO of Acme."
+    assert out["summary_sentences"][0]["citations"] == ["c0"]
+    assert out["confidence_score"] == "high"
+
+
+@pytest.mark.asyncio
+async def test_synthesize_profile_retries_on_invalid_then_succeeds(monkeypatch):
+    from pebble.orchestrator import _pipeline
+    import json
+
+    claims = [_claim("CEO of Acme", "https://acme.org/x", origin="forager")]
+    bad = json.dumps({  # missing citations
+        "sentences": [{"text": "She is known.", "citations": []}],
+        "confidence_score": "medium",
+    })
+    good = json.dumps({
+        "sentences": [{"text": "Serves as CEO of Acme.", "citations": ["c0"]}],
+        "confidence_score": "high",
+    })
+
+    call_count = {"n": 0}
+
+    async def fake_to_thread(fn, prompt, system=""):
+        call_count["n"] += 1
+        return _synthesizer_result(bad if call_count["n"] == 1 else good)
+
+    monkeypatch.setattr(_pipeline.asyncio, "to_thread", fake_to_thread)
+    monkeypatch.setattr(_pipeline, "log_harness_outcome", AsyncMock())
+
+    out = await _pipeline.synthesize_profile(
+        claims, {"first_name": "Jane", "last_name": "Smith"},
+        MagicMock(), _budget(),
+    )
+    assert call_count["n"] == 2
+    assert out["partial"] is False
+    assert out["summary"]
+
+
+@pytest.mark.asyncio
+async def test_synthesize_profile_both_attempts_fail_returns_partial(monkeypatch):
+    from pebble.orchestrator import _pipeline
+    import json
+
+    claims = [_claim("CEO of Acme", "https://acme.org/x", origin="forager")]
+    bad = json.dumps({"sentences": [{"text": "x", "citations": ["c99"]}]})
+
+    async def fake_to_thread(fn, prompt, system=""):
+        return _synthesizer_result(bad)
+
+    monkeypatch.setattr(_pipeline.asyncio, "to_thread", fake_to_thread)
+    monkeypatch.setattr(_pipeline, "log_harness_outcome", AsyncMock())
+
+    out = await _pipeline.synthesize_profile(
+        claims, {"first_name": "Jane", "last_name": "Smith"},
+        MagicMock(), _budget(),
+    )
+    assert out["partial"] is True
+    assert out["summary"] == ""
+    assert out["confidence_score"] == "low"
+    assert "validation_error" in out
+
+
+# ---------------------------------------------------------------------------
 # Claim ranking (existing behavior — sanity)
 # ---------------------------------------------------------------------------
 

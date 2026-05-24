@@ -629,6 +629,59 @@ async def quorum_verify_claims(
     return verified
 
 
+def _assign_claim_ids(claims: list[dict]) -> list[dict]:
+    """Mutate each claim with a stable ``claim_id`` (``c0``, ``c1``, …)
+    in list order. Idempotent — re-assignment overwrites."""
+    for i, c in enumerate(claims):
+        c["claim_id"] = f"c{i}"
+    return claims
+
+
+def _validate_synthesis_output(
+    parsed: dict, valid_claim_ids: set[str],
+) -> tuple[bool, str]:
+    """Check the synthesizer's JSON against the F5 contract.
+
+    Returns ``(ok, error_message)``. ``ok=True`` means:
+      * ``parsed`` is a dict
+      * ``parsed["sentences"]`` is a non-empty list
+      * Every entry is ``{text: non-empty str, citations: non-empty list}``
+      * Every citation in every sentence is in ``valid_claim_ids``
+    """
+    if not isinstance(parsed, dict):
+        return False, f"output is not a dict (got {type(parsed).__name__})"
+    sentences = parsed.get("sentences")
+    if not isinstance(sentences, list):
+        return False, "missing or non-list `sentences`"
+    if not sentences:
+        return False, "sentences list is empty"
+    uncited: list[int] = []
+    unknown: list[str] = []
+    bad_shape: list[int] = []
+    for idx, sent in enumerate(sentences):
+        if not isinstance(sent, dict):
+            bad_shape.append(idx)
+            continue
+        text = sent.get("text")
+        cites = sent.get("citations")
+        if not isinstance(text, str) or not text.strip():
+            bad_shape.append(idx)
+            continue
+        if not isinstance(cites, list) or not cites:
+            uncited.append(idx)
+            continue
+        for c in cites:
+            if not isinstance(c, str) or c not in valid_claim_ids:
+                unknown.append(str(c))
+    if bad_shape:
+        return False, f"malformed sentence indices: {bad_shape}"
+    if uncited:
+        return False, f"uncited sentence indices: {uncited}"
+    if unknown:
+        return False, f"unknown claim_ids: {sorted(set(unknown))}"
+    return True, ""
+
+
 async def synthesize_profile(
     verified_claims: list[dict],
     prospect: dict,
@@ -647,6 +700,8 @@ async def synthesize_profile(
         return {"claims": verified_claims, "summary": "", "confidence_score": "low", "partial": True, "failed_agents": ["budget"]}
 
     ranked = _rank_claims(verified_claims)
+    _assign_claim_ids(ranked)  # F5: stable IDs for the citation contract
+    valid_claim_ids = {c["claim_id"] for c in ranked}
     logger.info(
         "Ranked %d claims for synthesis (forager: %d, llm: %d, template: %d)",
         len(ranked),
@@ -667,6 +722,8 @@ async def synthesize_profile(
         'Claims tagged origin:"template" are raw data points from public databases. '
         "Always distinguish current from former positions. Never state someone 'serves as' a role "
         "unless evidence shows the position is active. Use 'formerly served as' for past positions. "
+        "EVERY sentence you emit MUST cite at least one claim_id from the provided claims. "
+        "Never make a statement that isn't traceable to a cited claim. "
         "Output valid JSON only, no markdown fences."
     )
 
@@ -676,37 +733,90 @@ async def synthesize_profile(
     if skipped_sources:
         system += f" Unavailable sources: {', '.join(skipped_sources)}. Note any gaps."
 
-    prompt = (
+    base_prompt = (
         f"Write a 2-3 sentence research brief for a development officer about {name}. "
         f"Focus on: current role, organizational affiliations, board service, giving capacity, "
         f"and philanthropic activity. Mention individual donations only if they reveal a "
         f"pattern (e.g., consistent max-out giving, bipartisan strategy).\n\n"
-        f"Claims (ranked by analytical value):\n{verified_json}{wiki_synth}\n\n"
-        f'Output JSON: {{"summary": "...", "confidence_score": "high|medium|low"}}'
+        f"Claims (ranked by analytical value; each has a stable claim_id):\n{verified_json}{wiki_synth}\n\n"
+        "Output JSON of shape:\n"
+        '{\n'
+        '  "sentences": [\n'
+        '    {"text": "<one sentence>", "citations": ["c0", "c3"]},\n'
+        '    ...\n'
+        '  ],\n'
+        '  "confidence_score": "high|medium|low"\n'
+        '}\n'
+        "Every sentence MUST have at least one citation referencing a claim_id "
+        f"from this set: {sorted(valid_claim_ids)}."
     )
 
     harness = WorkerHarness("profile_synthesizer", harness_config_for_agent("profile_synthesizer"), client)
-    result = await asyncio.to_thread(harness.execute, prompt, system=system)
 
-    await _log_result(result, "profile_synthesizer", prospect.get("id"))
+    # F5: try once, validate, retry once with feedback if invalid.
+    attempts = []
+    parsed: dict | None = None
+    last_error = ""
+    for attempt in range(2):
+        prompt = base_prompt
+        if attempt > 0 and last_error:
+            prompt = (
+                f"{base_prompt}\n\nPrevious attempt failed validation: {last_error}. "
+                "Fix the issue and re-emit the full JSON."
+            )
+        result = await asyncio.to_thread(harness.execute, prompt, system=system)
+        await _log_result(result, "profile_synthesizer", prospect.get("id"))
+        attempts.append(result)
 
-    if result.outcome not in (AgentOutcome.SUCCESS, AgentOutcome.ESCALATED):
-        return {"claims": verified_claims, "summary": "", "confidence_score": "low", "partial": True, "failed_agents": ["profile_synthesizer"]}
+        if result.outcome not in (AgentOutcome.SUCCESS, AgentOutcome.ESCALATED):
+            last_error = f"harness outcome={result.outcome.value}"
+            continue
 
-    budget.add(result.cost_usd)
+        budget.add(result.cost_usd)
+        try:
+            raw = _strip_fences(result.data.get("content", "{}"))
+            candidate = json.loads(raw)
+        except json.JSONDecodeError as e:
+            last_error = f"JSON parse failure: {e}"
+            continue
 
-    try:
-        raw = _strip_fences(result.data.get("content", "{}"))
-        data = json.loads(raw)
+        ok, err = _validate_synthesis_output(candidate, valid_claim_ids)
+        if ok:
+            parsed = candidate
+            break
+        last_error = err
+        logger.warning(
+            "Synthesizer attempt %d failed validation: %s", attempt + 1, err,
+        )
+
+    if parsed is None:
+        # Both attempts failed — return partial with the verified claims
+        # so downstream callers can still surface evidence to the user
+        # without an unverified prose summary.
+        logger.warning(
+            "Synthesizer gave up after retry (last_error=%s); returning partial",
+            last_error,
+        )
         return {
-            "claims": verified_claims,
-            "summary": data.get("summary", ""),
-            "confidence_score": data.get("confidence_score", "medium"),
-            "partial": False,
-            "failed_agents": [],
+            "claims": ranked,
+            "summary": "",
+            "summary_sentences": [],
+            "confidence_score": "low",
+            "partial": True,
+            "failed_agents": ["profile_synthesizer"],
+            "validation_error": last_error,
         }
-    except json.JSONDecodeError:
-        return {"claims": verified_claims, "summary": "", "confidence_score": "medium", "partial": False, "failed_agents": []}
+
+    sentences = parsed["sentences"]
+    summary_text = " ".join(s["text"].strip() for s in sentences)
+    return {
+        "claims": ranked,
+        "summary": summary_text,
+        "summary_sentences": sentences,
+        "confidence_score": parsed.get("confidence_score", "medium"),
+        "partial": False,
+        "failed_agents": [],
+    }
 
 
 async def verify_urls(
