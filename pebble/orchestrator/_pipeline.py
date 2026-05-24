@@ -188,6 +188,17 @@ def research_quality_report(profile: dict) -> dict:
         and c.get("verifiers_successful", 0) == 3
         and c.get("verification_votes", 0) >= 2
     )
+    # Source-tier breakdown — useful per-profile evidence-quality vector.
+    source_tier_counts = {0: 0, 1: 0, 2: 0, 3: 0}
+    for c in claims:
+        if not isinstance(c, dict):
+            continue
+        tier = c.get("source_tier")
+        if not isinstance(tier, int):
+            tier = classify_source_tier(c.get("source_url"))
+        if tier in source_tier_counts:
+            source_tier_counts[tier] += 1
+
     return {
         "claim_count": len(claims),
         "forager_count": _origin_count("forager"),
@@ -196,6 +207,8 @@ def research_quality_report(profile: dict) -> dict:
         "verified_url_count": _url_status_count("verified"),
         "transient_url_count": _url_status_count("transient_error"),
         "full_quorum_count": full_quorum,
+        "source_tier_counts": source_tier_counts,
+        "source_error_count": len(profile.get("source_errors", {}) or {}),
         "conflict_count": len(profile.get("conflicts", []) or []),
         "summary_sentence_count": len(profile.get("summary_sentences", []) or []),
         "confidence_score": profile.get("confidence_score", "low"),

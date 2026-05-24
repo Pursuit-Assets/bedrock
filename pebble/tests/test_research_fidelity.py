@@ -1079,9 +1079,7 @@ def test_result_with_error_distinguishes_none_from_failure():
     assert "ConnectionError" in err and "dns dead" in err
 
 
-def test_research_quality_report_passes_through_source_errors():
-    """If the pipeline stamps source_errors on the profile, downstream
-    can show 'we tried but couldn't reach this source' to the operator."""
+def test_research_quality_report_reports_source_error_count():
     from pebble.orchestrator._pipeline import research_quality_report
     profile = {
         "claims": [],
@@ -1090,11 +1088,24 @@ def test_research_quality_report_passes_through_source_errors():
             "sec_cik_search": "ConnectionError: dns",
         },
     }
-    # quality report doesn't aggregate this directly (yet) but the
-    # profile dict should carry the errors through to the GUI.
     r = research_quality_report(profile)
-    # No counts inflated by errored sources.
+    assert r["source_error_count"] == 2
     assert r["claim_count"] == 0
+
+
+def test_research_quality_report_source_tier_breakdown():
+    from pebble.orchestrator._pipeline import research_quality_report
+    profile = {
+        "claims": [
+            {"source_url": "https://www.fec.gov/x"},          # tier 0
+            {"source_url": "https://api.usaspending.gov/y"},  # tier 0
+            {"source_url": "https://projects.propublica.org/nonprofits/organizations/1"},  # tier 1
+            {"source_url": "https://en.wikipedia.org/wiki/X"},  # tier 2
+            {"source_url": "https://blog.example.com/x"},      # tier 3
+        ],
+    }
+    r = research_quality_report(profile)
+    assert r["source_tier_counts"] == {0: 2, 1: 1, 2: 1, 3: 1}
 
 
 # ---------------------------------------------------------------------------
