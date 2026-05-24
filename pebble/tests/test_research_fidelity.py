@@ -1143,6 +1143,71 @@ def test_research_quality_report_source_tier_breakdown():
 # Markdown export
 # ---------------------------------------------------------------------------
 
+def test_export_markdown_fully_populated_profile_smoke():
+    """Render a maximally-populated profile and confirm every section
+    appears + the Markdown is internally well-formed (consistent
+    table structure, no empty headers)."""
+    from pebble.export import render_profile_markdown
+    profile = {
+        "claims": [
+            {"text": "CEO of Acme", "source_url": "https://www.fec.gov/x",
+             "claim_id": "c0", "confidence": "high",
+             "origin": "forager",
+             "verification_votes": 3, "verifiers_successful": 3,
+             "source_tier": 0, "url_verification_status": "verified"},
+            {"text": "Donated to ActBlue", "source_url": "https://www.fec.gov/y",
+             "claim_id": "c1", "confidence": "high",
+             "origin": "template",
+             "verification_votes": 2, "verifiers_successful": 3,
+             "source_tier": 0, "url_verification_status": "verified"},
+        ],
+        "summary": "CEO of Acme. Donated to ActBlue.",
+        "summary_sentences": [
+            {"text": "Serves as CEO of Acme.", "citations": ["c0"]},
+            {"text": "Has donated to ActBlue.", "citations": ["c1"]},
+        ],
+        "conflicts": [
+            {"description": "role at Acme disputed", "claim_ids": ["c0"]},
+        ],
+        "source_errors": {"propublica_search": "TimeoutError: 30s"},
+        "confidence_score": "high",
+        "claim_pool_fingerprint": "abcd1234567890ef",
+        "partial": False,
+        "failed_agents": [],
+        "pipeline_version": "fidelity-v1.14",
+        "generated_at": "2026-05-24T10:30:00+00:00",
+    }
+    md = render_profile_markdown(profile, "Jane Smith", "Acme")
+
+    # Every major section appears.
+    expected_sections = [
+        "# Prospect Research: Jane Smith",
+        "**Organization:** Acme",
+        "**Confidence:** high",
+        "**Evidence:**",
+        "**Conflicts detected:** 1",
+        "## Summary",
+        "[[c0]]",
+        "[[c1]]",
+        "## Disputed claims",
+        "role at Acme disputed",
+        "## Unreachable sources",
+        "propublica_search",
+        "## Claims (2)",
+        "primary .gov/.edu",
+        "3/3",  # quorum cell
+        "verified",
+        "## Sources",
+        "Evidence fingerprint",
+    ]
+    for needle in expected_sections:
+        assert needle in md, f"missing section/marker: {needle}"
+
+    # Table well-formed: header + separator + 2 data rows.
+    assert md.count("| ID | Claim |") == 1
+    assert md.count("|----|-------|") == 1
+
+
 def test_export_markdown_renders_sentence_citations():
     from pebble.export import render_profile_markdown
     profile = {
