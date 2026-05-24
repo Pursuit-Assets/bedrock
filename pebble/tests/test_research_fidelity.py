@@ -883,6 +883,56 @@ def test_confidence_low_with_no_claims():
     assert compute_confidence_score([]) == "low"
 
 
+# ---------------------------------------------------------------------------
+# Conflict detection (F7)
+# ---------------------------------------------------------------------------
+
+def test_detect_conflicts_former_vs_current():
+    from pebble.orchestrator._pipeline import detect_conflicts
+    claims = [
+        _claim("Jane Smith serves as CEO of Acme Corp.",
+               "https://acme.org/exec", origin="template"),
+        _claim("Jane Smith was formerly CEO of Acme Corp.",
+               "https://wiki.org/jane", origin="forager"),
+    ]
+    conflicts = detect_conflicts(claims)
+    assert len(conflicts) == 1
+    assert "Acme" in conflicts[0]["description"]
+
+
+def test_detect_conflicts_no_conflict_different_orgs():
+    from pebble.orchestrator._pipeline import detect_conflicts
+    claims = [
+        _claim("Jane is CEO of Acme.", "https://acme.org/x"),
+        _claim("Jane was formerly CEO of Beta Industries.",
+               "https://beta.com/x"),
+    ]
+    assert detect_conflicts(claims) == []
+
+
+def test_detect_conflicts_handles_empty_and_single():
+    from pebble.orchestrator._pipeline import detect_conflicts
+    assert detect_conflicts([]) == []
+    assert detect_conflicts([
+        _claim("Jane is CEO of Acme.", "https://x/1"),
+    ]) == []
+
+
+def test_detect_conflicts_records_conflicting_claim_ids():
+    """Conflicts should reference the claim_ids that disagree so the
+    synthesizer can name them in its caveat."""
+    from pebble.orchestrator._pipeline import detect_conflicts, _assign_claim_ids
+    claims = _assign_claim_ids([
+        _claim("Jane Smith currently serves as CEO of Acme Corp.",
+               "https://acme.org/exec"),
+        _claim("Jane Smith was previously CEO of Acme Corp.",
+               "https://wiki.org/jane"),
+    ])
+    conflicts = detect_conflicts(claims)
+    assert len(conflicts) == 1
+    assert set(conflicts[0]["claim_ids"]) == {"c0", "c1"}
+
+
 def test_confidence_high_to_medium_when_conflict_detected():
     from pebble.orchestrator._pipeline import compute_confidence_score
     claims = [

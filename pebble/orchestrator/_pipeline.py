@@ -629,6 +629,101 @@ async def quorum_verify_claims(
     return verified
 
 
+# F7 — cross-source conflict detection (former vs current role markers)
+_FORMER_RE = re.compile(r"\b(former|formerly|previously|ex)\b[-\s]?", re.IGNORECASE)
+_ROLE_TOKENS = {
+    "ceo", "cto", "coo", "cfo", "cmo", "ciso", "cpo", "president",
+    "vp", "evp", "svp", "director", "chair", "chairman", "chairwoman",
+    "founder", "cofounder", "co-founder", "principal", "partner",
+    "trustee", "executive", "officer", "owner", "head",
+}
+
+
+# Capture an org phrase only when it follows a positional preposition
+# ("of/at/with/for/in"). Lets us distinguish "CEO of Acme" from
+# generic person-name mentions like "Jane Smith".
+_ORG_AFTER_PREP_RE = re.compile(
+    r"\b(?:of|at|with|for|in)\s+([A-Z][A-Za-z0-9&\-]+(?:\s+[A-Z][A-Za-z0-9&\-]+)*)\b",
+)
+
+
+def _extract_org_tokens(text: str) -> set[str]:
+    """Pull tokens from org phrases that follow positional prepositions
+    in the claim text. Filters out role keywords so they don't pose as
+    org names. Crude proxy for proper-noun mentions — good enough to
+    group conflict candidates without entity extraction."""
+    out: set[str] = set()
+    for phrase in _ORG_AFTER_PREP_RE.findall(text or ""):
+        for tok in phrase.split():
+            if tok.lower() not in _ROLE_TOKENS:
+                out.add(tok)
+    return out
+
+
+def _extract_role_tokens(text: str) -> set[str]:
+    return {tok for tok in re.findall(r"\b\w+\b", (text or "").lower())
+            if tok in _ROLE_TOKENS}
+
+
+def detect_conflicts(claims: list[dict]) -> list[dict]:
+    """Detect 'former vs current' role conflicts within the claim pool.
+
+    For each claim that contains a former-marker (``former``,
+    ``formerly``, ``previously``, ``ex-``), find any claim WITHOUT
+    those markers that shares at least one role token (e.g., ``CEO``)
+    and at least one proper-noun token (the org). The pair is flagged
+    as a conflict for the synthesizer to address.
+
+    Crude regex-based heuristic, not a full entity-resolution model.
+    Catches the common case: a stale OpenCorporates "is the CEO" record
+    overlapping with a forager "was formerly CEO" finding. Future work
+    can layer entity extraction on top of this scaffold.
+    """
+    if len(claims) < 2:
+        return []
+
+    former: list[dict] = []
+    current: list[dict] = []
+    for c in claims:
+        text = c.get("text", "")
+        (former if _FORMER_RE.search(text) else current).append(c)
+
+    if not former or not current:
+        return []
+
+    conflicts: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    for f in former:
+        f_orgs = _extract_org_tokens(f.get("text", ""))
+        f_roles = _extract_role_tokens(f.get("text", ""))
+        if not f_orgs or not f_roles:
+            continue
+        for c in current:
+            c_orgs = _extract_org_tokens(c.get("text", ""))
+            c_roles = _extract_role_tokens(c.get("text", ""))
+            shared_orgs = f_orgs & c_orgs
+            shared_roles = f_roles & c_roles
+            if not shared_orgs or not shared_roles:
+                continue
+            key = (f.get("claim_id", id(f)), c.get("claim_id", id(c)))
+            if key in seen:
+                continue
+            seen.add(key)
+            org_name = sorted(shared_orgs)[0]
+            role_name = sorted(shared_roles)[0]
+            conflicts.append({
+                "description": (
+                    f"role at {org_name} disputed: one source says "
+                    f"'{role_name}', another says 'former {role_name}'"
+                ),
+                "claim_ids": [
+                    f.get("claim_id", ""),
+                    c.get("claim_id", ""),
+                ],
+            })
+    return conflicts
+
+
 def compute_confidence_score(
     claims: list[dict],
     *,
@@ -1172,9 +1267,22 @@ async def research_single_prospect(
             await _save_session_for_prospect(contact_id, {"claims": verified_claims}, name, primary_org, budget, "cancelled")
             return {"contact_id": contact_id, "claims_count": len(verified_claims), "cancelled": True}
 
+        # F7 — surface 'former vs current' role conflicts to the
+        # synthesizer so the brief addresses the discrepancy. Conflicts
+        # also downgrade the deterministic confidence score (F8).
+        conflicts = detect_conflicts(verified_claims) if verified_claims else []
+        if conflicts:
+            logger.info(
+                "Conflict detector flagged %d disputed role(s) for %s",
+                len(conflicts), contact_id,
+            )
+
         # Synthesis (Opus, with pre-verified origin-tagged claims)
         if verified_claims and not budget.exceeded():
-            profile_data = await synthesize_profile(verified_claims, prospect, client, budget, wikipedia_context=wikipedia_context)
+            profile_data = await synthesize_profile(
+                verified_claims, prospect, client, budget,
+                wikipedia_context=wikipedia_context, conflicts=conflicts,
+            )
             profile = {
                 "claims": profile_data.get("claims", verified_claims),
                 "summary": profile_data.get("summary", ""),
