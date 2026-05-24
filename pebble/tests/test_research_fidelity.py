@@ -978,6 +978,23 @@ def test_confidence_high_to_medium_when_conflict_detected():
 # Verifier system-prompt strictness
 # ---------------------------------------------------------------------------
 
+def test_forager_prompts_forbid_url_invention():
+    """Forager system prompts explicitly forbid the LLM from inventing
+    source_urls outside the provided list. Pairs with the F12 post-hoc
+    filter — prompt + filter is defense in depth."""
+    from pebble.harness import PROMPT_TEMPLATES
+    for name in ("wealth_indicator_agent", "philanthropy_agent"):
+        _, system = PROMPT_TEMPLATES[name]({
+            "prospect": {"first_name": "X", "last_name": "Y"},
+            "fec_data": [], "oc_data": [], "usa_data": [],
+            "propublica_data": None, "edgar_data": [], "wiki_data": None,
+        }, [])
+        lower = system.lower()
+        assert "do not invent" in lower or "do not cite urls" in lower, (
+            f"{name} doesn't forbid URL invention"
+        )
+
+
 def test_verifier_prompts_bias_toward_rejection():
     """The verifier system prompts must explicitly bias toward
     rejection when uncertain. Silently passing a wrong claim into a

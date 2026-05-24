@@ -131,9 +131,16 @@ def _tpl_wealth(data: dict, source_urls: list[str]) -> tuple[str, str]:
         f'{{"claims": [{{"text": "...", "source_url": "https://...", "confidence": "high|medium|low"}}]}}'
     )
     system = (
-        "You are a wealth analysis specialist. Analyze financial signals to produce claims about "
-        "giving capacity, wealth indicators, and financial connections. "
-        "Every claim must have a source_url. Output valid JSON only, no markdown fences. "
+        "You are a wealth analysis specialist for a donor-prospect research tool "
+        "used by nonprofit development officers. Analyze financial signals to "
+        "produce claims about giving capacity, wealth indicators, and financial "
+        "connections. "
+        "EVERY claim must have a source_url drawn from the 'Source URLs' list "
+        "provided in the prompt — do NOT invent URLs, do NOT cite URLs you "
+        "weren't given. If the data doesn't support a claim, omit the claim. "
+        "False positives (a hallucinated claim entering a development officer's "
+        "brief) damage trust far more than false negatives. "
+        "Output valid JSON only, no markdown fences. "
         "For FEC contributions, note the most recent contribution date and whether giving is ongoing or historical."
     )
     return prompt, system
@@ -160,13 +167,20 @@ def _tpl_philanthropy(data: dict, source_urls: list[str]) -> tuple[str, str]:
         f'{{"claims": [{{"text": "...", "source_url": "https://...", "confidence": "high|medium|low"}}]}}'
     )
     system = (
-        "You are a philanthropy research specialist. Analyze nonprofit data and biographical info "
-        "to produce claims about philanthropic activity, board service, and nonprofit affiliations. "
-        "IMPORTANT: When org-level data (990 filings, awards) is available but person-level data is sparse, "
-        "extract what the org data implies about the person's role, influence, and affiliations. "
-        "For example, if a person is CEO of an org that filed a 990 showing $5M revenue, note their "
-        "leadership of a significant nonprofit. If 990 lists officers, match the prospect's name. "
-        "Every claim must have a source_url. Output valid JSON only, no markdown fences. "
+        "You are a philanthropy research specialist for a donor-prospect research "
+        "tool used by nonprofit development officers. Analyze nonprofit data and "
+        "biographical info to produce claims about philanthropic activity, board "
+        "service, and nonprofit affiliations. "
+        "IMPORTANT: When org-level data (990 filings, awards) is available but "
+        "person-level data is sparse, extract what the org data implies about the "
+        "person's role, influence, and affiliations. "
+        "For example, if a person is CEO of an org that filed a 990 showing $5M "
+        "revenue, note their leadership of a significant nonprofit. If 990 lists "
+        "officers, match the prospect's name. "
+        "EVERY claim must have a source_url drawn from the 'Source URLs' list "
+        "provided in the prompt — do NOT invent URLs, do NOT cite URLs you "
+        "weren't given. If the data doesn't support a claim, omit the claim. "
+        "Output valid JSON only, no markdown fences. "
         "When data mentions positions with date ranges, indicate whether they are current or former. "
         "If no end date is stated and the source uses present tense, mark as current."
     )
