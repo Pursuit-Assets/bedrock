@@ -161,6 +161,9 @@ async def _resolve_emails_to_contacts(
     return contact_ids, account_id
 
 
+SKIP_LABELS = {"CATEGORY_PROMOTIONS", "CATEGORY_SOCIAL", "CATEGORY_UPDATES", "CATEGORY_FORUMS"}
+
+
 def _extract_thread_meta(service, thread_id: str) -> dict[str, Any] | None:
     """Pull minimal thread metadata via the Gmail API (one API call)."""
     try:
@@ -172,6 +175,13 @@ def _extract_thread_meta(service, thread_id: str) -> dict[str, Any] | None:
         ).execute()
     except HttpError as e:
         logger.warning("gmail thread %s fetch error: %s", thread_id, e)
+        return None
+
+    # Skip threads Gmail categorises as Promotions / Social / Updates / Forums
+    all_labels: set[str] = set()
+    for msg in thread.get("messages", []):
+        all_labels.update(msg.get("labelIds", []))
+    if all_labels & SKIP_LABELS:
         return None
 
     messages = thread.get("messages", [])
@@ -231,12 +241,11 @@ async def sync_gmail_for_staff(
     else:
         since = datetime.now(timezone.utc) - timedelta(days=days_back)
 
-    # category:primary restricts to the Primary inbox tab — Gmail's own ML
-    # routes Zoom receipts, Fireflies summaries, LinkedIn notifications,
-    # newsletters, etc. to Updates/Social/Promotions, so they never appear here.
-    # Python-side checks below handle anything that still slips through.
+    # in:inbox restricts to inbox (excludes Spam/Trash/Sent).
+    # category:primary doesn't work under DWD — instead we check per-thread
+    # labels (CATEGORY_PROMOTIONS, CATEGORY_SOCIAL, etc.) after fetching.
     date_str = since.strftime("%Y/%m/%d")
-    query = f"after:{date_str} category:primary"
+    query = f"after:{date_str} in:inbox"
 
     upserted = 0
     errors = 0
