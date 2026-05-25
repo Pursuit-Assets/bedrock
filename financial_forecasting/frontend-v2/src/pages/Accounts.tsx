@@ -41,20 +41,8 @@ import {
 import { useOpportunities } from "@/services/opportunities";
 import { usePerm } from "@/services/permissions";
 import { useActiveUsers, useUsers } from "@/services/users";
-import type { AccountStatus, SfAccount } from "@/types/salesforce";
-
-/** Playbook status → Tag color. Pursuing = active hunt (accent),
- *  Stewarding = healthy delivery (green), Re-activating = at risk
- *  (amber), Dormant = needs renewed effort (red), Prospect = neutral. */
-function accountStatusVariant(s: AccountStatus): "default" | "accent" | "green" | "amber" | "red" {
-  switch (s) {
-    case "Pursuing": return "accent";
-    case "Stewarding": return "green";
-    case "Re-activating": return "amber";
-    case "Dormant": return "red";
-    default: return "default";
-  }
-}
+import type { SfAccount } from "@/types/salesforce";
+import { accountStatusVariant } from "@/lib/accountStatus";
 import { toast } from "sonner";
 
 const TYPE_FILTERS = ["All", "Foundation", "Corporate", "Government", "Individual"] as const;
