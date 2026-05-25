@@ -9,7 +9,7 @@
  * dropdown UI, FilterChip pill, and pure `ruleApplies` / `describeRule`
  * helpers — keeping each Cleanup tab focused on entity-specific bits.
  */
-import { useMemo, useState } from "react";
+import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, Filter as FilterIcon, Plus, X } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -272,9 +272,25 @@ export function AddFilterButton<F extends string>({
     );
   };
 
+  // Anchor right when opening the popover would clip the right edge of
+  // the viewport. <main> in AppShell uses overflow-hidden, so a
+  // left-anchored 420 px popover gets sliced when the trigger sits in
+  // the right half of a narrow viewport. Measure on open.
+  const POPOVER_WIDTH = 420;
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const [alignRight, setAlignRight] = useState(false);
+  useLayoutEffect(() => {
+    if (!open || !triggerRef.current) return;
+    const rect = triggerRef.current.getBoundingClientRect();
+    const viewport = window.innerWidth;
+    const wouldClip = rect.left + POPOVER_WIDTH > viewport - 16;
+    setAlignRight(wouldClip);
+  }, [open]);
+
   return (
     <div className="relative">
       <button
+        ref={triggerRef}
         type="button"
         onClick={() => setOpen((v) => !v)}
         className="inline-flex h-7 flex-shrink-0 items-center gap-1 whitespace-nowrap rounded border border-border-strong bg-surface px-2.5 text-[12.5px] font-medium text-ink-2 hover:bg-surface-2"
@@ -285,7 +301,12 @@ export function AddFilterButton<F extends string>({
       </button>
 
       {open ? (
-        <div className="absolute left-0 top-full z-20 mt-1 w-[420px] rounded-md border border-border-strong bg-surface p-2 shadow-md">
+        <div
+          className={cn(
+            "absolute top-full z-20 mt-1 w-[420px] rounded-md border border-border-strong bg-surface p-2 shadow-md",
+            alignRight ? "right-0" : "left-0",
+          )}
+        >
           <div className="flex items-center gap-1.5">
             <select
               value={field}
