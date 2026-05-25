@@ -77,8 +77,17 @@ function OppTasks({ opportunityId }: { opportunityId: string }) {
   );
 }
 
-function paymentStatusLabel(p: SfPayment): string {
+function rawPaymentStatus(p: SfPayment): string {
   return p.Paid_Status__c ?? p.Payment_Status__c ?? (p.npe01__Paid__c ? "Paid" : "Scheduled");
+}
+
+/** Salesforce buckets paid payments into "Paid <= 60 Days" / "Paid > 60 Days"
+ *  etc. Tab already shows the paid date in the next column, so collapse every
+ *  "Paid …" variant to just "Paid". The raw value still surfaces on hover. */
+function paymentStatusLabel(p: SfPayment): string {
+  const raw = rawPaymentStatus(p);
+  if (raw.startsWith("Paid")) return "Paid";
+  return raw;
 }
 
 function paymentStatusVariant(p: SfPayment): "green" | "amber" | "red" | "default" {
@@ -158,9 +167,11 @@ function OppPayments({ opportunityId }: { opportunityId: string }) {
                     </span>
                   </td>
                   <td className="px-3 py-1.5 align-middle">
-                    <Tag variant={paymentStatusVariant(p)}>
-                      {paymentStatusLabel(p)}
-                    </Tag>
+                    <span title={rawPaymentStatus(p)}>
+                      <Tag variant={paymentStatusVariant(p)}>
+                        {paymentStatusLabel(p)}
+                      </Tag>
+                    </span>
                   </td>
                   <td className="mono px-3 py-1.5 align-middle text-[11.5px] text-ink-2">
                     {fmtDate(p.npe01__Scheduled_Date__c)}
