@@ -65,7 +65,10 @@ export function NewMyTaskRow() {
           }
         }}
         placeholder="New task — press Enter to create"
-        className="min-w-[220px] flex-1 border-0 bg-transparent text-[13px] text-ink outline-none placeholder:text-ink-4"
+        // Capped width so the trailing controls (link / assignee / due
+        // date) sit close to the input instead of floating at the far
+        // right of a wide row.
+        className="h-7 w-[360px] min-w-0 max-w-full border-0 bg-transparent text-[13px] text-ink outline-none placeholder:text-ink-4"
       />
       {link ? (
         <span className="inline-flex items-center gap-1">
@@ -136,16 +139,16 @@ function LinkPicker({ onPick }: { onPick: (target: LinkTarget) => void }) {
     if (!needle || needle.length < 2) return { opps: [], accounts: [], contacts: [] };
     const opps = (oppsQ.data ?? [])
       .filter((o) => (o.Name ?? "").toLowerCase().includes(needle))
-      .slice(0, 6);
+      .slice(0, 8);
     const accounts = (accountsQ.data ?? [])
       .filter((a) => (a.Name ?? "").toLowerCase().includes(needle))
-      .slice(0, 6);
+      .slice(0, 8);
     const contacts = (contactsQ.data ?? [])
       .filter((c) => {
         const full = `${c.FirstName ?? ""} ${c.LastName ?? ""}`.toLowerCase();
         return full.includes(needle) || (c.Email ?? "").toLowerCase().includes(needle);
       })
-      .slice(0, 6);
+      .slice(0, 8);
     return { opps, accounts, contacts };
   }, [q, oppsQ.data, accountsQ.data, contactsQ.data]);
 
@@ -189,11 +192,14 @@ function LinkPicker({ onPick }: { onPick: (target: LinkTarget) => void }) {
               <div className="px-3 py-3 text-center text-[11.5px] text-ink-3">
                 Type at least 2 characters…
               </div>
-            ) : matches.opps.length + matches.accounts.length + matches.contacts.length === 0 ? (
-              <div className="px-3 py-3 text-center text-[11.5px] text-ink-3">No matches.</div>
             ) : (
               <>
-                <Section title="Opportunities" empty={matches.opps.length === 0}>
+                <Section
+                  title="Opportunities"
+                  isLoading={oppsQ.isLoading}
+                  isError={oppsQ.isError}
+                  count={matches.opps.length}
+                >
                   {matches.opps.map((o) => (
                     <Row
                       key={o.Id}
@@ -203,7 +209,12 @@ function LinkPicker({ onPick }: { onPick: (target: LinkTarget) => void }) {
                     />
                   ))}
                 </Section>
-                <Section title="Accounts" empty={matches.accounts.length === 0}>
+                <Section
+                  title="Accounts"
+                  isLoading={accountsQ.isLoading}
+                  isError={accountsQ.isError}
+                  count={matches.accounts.length}
+                >
                   {matches.accounts.map((a) => (
                     <Row
                       key={a.Id}
@@ -213,7 +224,12 @@ function LinkPicker({ onPick }: { onPick: (target: LinkTarget) => void }) {
                     />
                   ))}
                 </Section>
-                <Section title="Contacts" empty={matches.contacts.length === 0}>
+                <Section
+                  title="Contacts"
+                  isLoading={contactsQ.isLoading}
+                  isError={contactsQ.isError}
+                  count={matches.contacts.length}
+                >
                   {matches.contacts.map((c) => {
                     const name = `${c.FirstName ?? ""} ${c.LastName ?? ""}`.trim() || "(unnamed)";
                     return (
@@ -235,12 +251,31 @@ function LinkPicker({ onPick }: { onPick: (target: LinkTarget) => void }) {
   );
 }
 
-function Section({ title, empty, children }: { title: string; empty: boolean; children: React.ReactNode }) {
-  if (empty) return null;
+function Section({
+  title,
+  isLoading,
+  isError,
+  count,
+  children,
+}: {
+  title: string;
+  isLoading: boolean;
+  isError: boolean;
+  count: number;
+  children: React.ReactNode;
+}) {
+  // Always render the section header so loading/error states for a
+  // given entity type are visible — silent omission (the previous
+  // "if empty return null" behavior) hid the case where useAccounts
+  // hadn't returned yet, making the picker look like it didn't search
+  // accounts at all.
   return (
     <div>
-      <div className="bg-surface-2 px-3 py-1 text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
-        {title}
+      <div className="flex items-center justify-between bg-surface-2 px-3 py-1 text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
+        <span>{title}</span>
+        {isLoading ? <span className="text-ink-4">loading…</span> : null}
+        {!isLoading && isError ? <span className="text-red">error</span> : null}
+        {!isLoading && !isError && count === 0 ? <span className="font-normal normal-case text-ink-4">no matches</span> : null}
       </div>
       {children}
     </div>
