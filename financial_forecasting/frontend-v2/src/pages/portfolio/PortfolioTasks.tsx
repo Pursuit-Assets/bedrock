@@ -24,7 +24,7 @@
 import { useMemo, useState } from "react";
 import { useQueries, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
-import { ChevronDown, ChevronRight, FolderOpen, GitBranch, Building2, ClipboardList } from "lucide-react";
+import { ChevronDown, ChevronRight, FolderOpen, GitBranch, Building2, ClipboardList, Trash2 } from "lucide-react";
 
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -32,8 +32,8 @@ import { riskForTask, riskTextClass, type RiskLevel } from "@/lib/risk";
 import { InlineDate, InlineSelect, InlineText } from "@/components/ui/InlineEdit";
 import { NewMyTaskRow } from "@/components/NewMyTaskRow";
 import { SectionCard, withReferrer } from "@/components/detail";
-import { useUpdateTask as useUpdateSfTask, useUserTasks as useSfUserTasks } from "@/services/opportunities";
-import { useActiveUsers, useUpdateTask as useUpdateProjectTask, type BedrockProject } from "@/services/projects";
+import { useDeleteTask as useDeleteSfTask, useUpdateTask as useUpdateSfTask, useUserTasks as useSfUserTasks } from "@/services/opportunities";
+import { useActiveUsers, useDeleteTask as useDeleteProjectTask, useUpdateTask as useUpdateProjectTask, type BedrockProject } from "@/services/projects";
 import type { SfTask } from "@/types/salesforce";
 
 const SF_STATUS_OPTIONS = [
@@ -537,6 +537,8 @@ function TaskRow({ task }: { task: UnifiedTask }) {
   const qc = useQueryClient();
   const updateSf = useUpdateSfTask();
   const updateProj = useUpdateProjectTask(task.meta.projectId ?? "");
+  const deleteSf = useDeleteSfTask();
+  const deleteProj = useDeleteProjectTask(task.meta.projectId ?? "");
   const risk = riskForTask(task.deadline, task.done);
 
   // Status options + done predicate differ by source.
@@ -587,8 +589,23 @@ function TaskRow({ task }: { task: UnifiedTask }) {
     await saveStatus(next);
   }
 
+  async function deleteRow() {
+    // Optimistic-temp ids (from create) can't round-trip through SF delete.
+    if (task.id.startsWith("__tmp__")) return;
+    const confirmed = window.confirm(
+      `Delete task "${task.title || "(no subject)"}"? This can't be undone.`,
+    );
+    if (!confirmed) return;
+    if (task.source === "sf") {
+      await deleteSf.mutateAsync(task.id);
+    } else {
+      await deleteProj.mutateAsync(task.id);
+    }
+    invalidatePortfolio();
+  }
+
   return (
-    <tr className={cn("border-t border-border-strong", task.done && "text-ink-3")}>
+    <tr className={cn("group border-t border-border-strong", task.done && "text-ink-3")}>
       <td className="px-3 py-1.5 align-middle">
         <input
           type="checkbox"
@@ -650,6 +667,17 @@ function TaskRow({ task }: { task: UnifiedTask }) {
                   : "On track"
           }
         />
+      </td>
+      <td className="px-1 py-1.5 align-middle text-right">
+        <button
+          type="button"
+          onClick={deleteRow}
+          aria-label="Delete task"
+          title="Delete task"
+          className="opacity-0 transition-opacity group-hover:opacity-100 focus:opacity-100"
+        >
+          <Trash2 size={13} className="text-ink-3 hover:text-red" />
+        </button>
       </td>
     </tr>
   );
