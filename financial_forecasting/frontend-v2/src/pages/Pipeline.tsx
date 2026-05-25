@@ -448,7 +448,13 @@ export function PipelinePage() {
           throw new Error("0–100");
         }
       }
-      await updateOpp.mutateAsync({ id, patch: { Manager_Probability_Override__c: parsed } });
+      // Match what Salesforce does when you edit Mgr Prob in its UI:
+      // it propagates the override into Probability so the two stay in
+      // sync. We only co-write Probability when the user set a value —
+      // clearing the override falls back to SF's stage-driven default.
+      const patch: Record<string, unknown> = { Manager_Probability_Override__c: parsed };
+      if (parsed != null) patch.Probability = parsed;
+      await updateOpp.mutateAsync({ id, patch });
     },
     [updateOpp],
   );
