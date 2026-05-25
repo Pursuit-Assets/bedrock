@@ -10,6 +10,7 @@ import { InlineSelect } from "@/components/ui/InlineEdit";
 import { ColGroup, ResizableTh } from "@/components/ui/ResizableTable";
 import { SavedViewsPicker } from "@/components/ui/SavedViewsPicker";
 import { SortableHeader } from "@/components/ui/SortableHeader";
+import { Tag } from "@/components/ui/Tag";
 import { ButtonGroup, Toolbar } from "@/components/ui/Toolbar";
 import {
   buildAccountMetricsMap,
@@ -40,7 +41,20 @@ import {
 import { useOpportunities } from "@/services/opportunities";
 import { usePerm } from "@/services/permissions";
 import { useActiveUsers, useUsers } from "@/services/users";
-import type { SfAccount } from "@/types/salesforce";
+import type { AccountStatus, SfAccount } from "@/types/salesforce";
+
+/** Playbook status → Tag color. Pursuing = active hunt (accent),
+ *  Stewarding = healthy delivery (green), Re-activating = at risk
+ *  (amber), Dormant = needs renewed effort (red), Prospect = neutral. */
+function accountStatusVariant(s: AccountStatus): "default" | "accent" | "green" | "amber" | "red" {
+  switch (s) {
+    case "Pursuing": return "accent";
+    case "Stewarding": return "green";
+    case "Re-activating": return "amber";
+    case "Dormant": return "red";
+    default: return "default";
+  }
+}
 import { toast } from "sonner";
 
 const TYPE_FILTERS = ["All", "Foundation", "Corporate", "Government", "Individual"] as const;
@@ -110,6 +124,7 @@ interface AccountsSavedView {
 type ColKey =
   | "name"
   | "owner"
+  | "status"
   | "openPipeline"
   | "amountWon"
   | "received"
@@ -125,6 +140,7 @@ type ColKey =
 const COLUMN_ORDER: ColKey[] = [
   "name",
   "owner",
+  "status",
   "openPipeline",
   "amountWon",
   "received",
@@ -138,6 +154,7 @@ const COLUMN_ORDER: ColKey[] = [
 const DEFAULT_VISIBLE: ColKey[] = [
   "name",
   "owner",
+  "status",
   "openPipeline",
   "amountWon",
   "received",
@@ -147,6 +164,7 @@ const DEFAULT_VISIBLE: ColKey[] = [
 const DEFAULT_WIDTHS: Record<ColKey, number> = {
   name: 280,
   owner: 160,
+  status: 130,
   openPipeline: 130,
   amountWon: 130,
   received: 120,
@@ -160,6 +178,7 @@ const DEFAULT_WIDTHS: Record<ColKey, number> = {
 const COL_LABELS: Record<ColKey, string> = {
   name: "Account",
   owner: "Account owner",
+  status: "Status",
   openPipeline: "Open pipeline",
   amountWon: "Amount won",
   received: "Received",
@@ -187,6 +206,7 @@ function extractAccount(
   switch (key) {
     case "name": return a.Name;
     case "owner": return a.Owner?.Name;
+    case "status": return a.account_status ?? "";
     case "openPipeline": return metrics.openPipeline;
     case "amountWon": return metrics.amountWon;
     case "received": return metrics.received;
@@ -925,6 +945,9 @@ const AccountRow = memo(function AccountRow({
     ) : (
       <span className="truncate text-[12.5px] text-ink-2">{a.Owner?.Name ?? "—"}</span>
     ),
+    status: a.account_status ? (
+      <Tag variant={accountStatusVariant(a.account_status)}>{a.account_status}</Tag>
+    ) : dash,
     openPipeline: m.openPipeline > 0 ? fmtMoney(m.openPipeline) : dash,
     amountWon: m.amountWon > 0 ? fmtMoney(m.amountWon) : dash,
     received: m.received > 0 ? fmtMoney(m.received) : dash,
@@ -947,6 +970,7 @@ const AccountRow = memo(function AccountRow({
   const cellCls: Partial<Record<ColKey, string>> = {
     name: "overflow-hidden px-3 py-1 text-[13px]",
     owner: "overflow-hidden px-3 py-1 text-[12.5px] text-ink-2",
+    status: "overflow-hidden px-3 py-1",
     openPipeline: cn(numCell, m.openPipeline > 0 && "font-semibold text-accent-ink"),
     amountWon: cn(numCell, m.amountWon > 0 && "font-semibold text-green"),
     received: cn(numCell, m.received > 0 && "font-medium text-green"),
