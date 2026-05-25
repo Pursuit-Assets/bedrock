@@ -130,14 +130,14 @@ function OppPayments({ opportunityId }: { opportunityId: string }) {
         </div>
       ) : (
         <div className="inline-block max-w-full overflow-hidden rounded border border-border-strong bg-surface align-top">
-          <table className="text-[12px]">
+          <table className="table-fixed text-[12px]">
             <colgroup>
-              <col style={{ width: 110 }} />
-              <col style={{ width: 110 }} />
-              <col style={{ width: 100 }} />
-              <col style={{ width: 100 }} />
-              <col style={{ width: 100 }} />
-              <col style={{ width: 100 }} />
+              <col style={{ width: 140 }} />
+              <col style={{ width: 180 }} />
+              <col style={{ width: 130 }} />
+              <col style={{ width: 130 }} />
+              <col style={{ width: 195 }} />
+              <col style={{ width: 195 }} />
             </colgroup>
             <thead className="bg-surface-2 text-[10.5px] uppercase tracking-wider text-ink-3">
               <tr>
