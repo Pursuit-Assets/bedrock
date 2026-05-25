@@ -66,57 +66,60 @@ export function NewMyTaskRow() {
           }
         }}
         placeholder="New task — press Enter to create"
-        // Capped width so the trailing controls (link / assignee / due
-        // date) sit close to the input instead of floating at the far
-        // right of a wide row.
-        className="h-7 w-[360px] min-w-0 max-w-full border-0 bg-transparent text-[13px] text-ink outline-none placeholder:text-ink-4"
+        // Subject input flexes to absorb the empty space, pushing
+        // Link / Assignee / Date / Create to the right edge of the
+        // table. min-w-0 so it can shrink past its content width when
+        // the row wraps on a narrow viewport.
+        className="h-7 min-w-0 flex-1 border-0 bg-transparent text-[13px] text-ink outline-none placeholder:text-ink-4"
       />
-      {link ? (
-        <span className="inline-flex items-center gap-1">
-          <Tag variant="accent">
-            {link.type === "opportunity" ? "Opp" : link.type === "account" ? "Acct" : "Contact"}: {link.label}
-          </Tag>
+      <div className="flex flex-shrink-0 items-center gap-2">
+        {link ? (
+          <span className="inline-flex items-center gap-1">
+            <Tag variant="accent">
+              {link.type === "opportunity" ? "Opp" : link.type === "account" ? "Acct" : "Contact"}: {link.label}
+            </Tag>
+            <button
+              type="button"
+              onClick={() => setLink(null)}
+              aria-label="Clear link"
+              className="text-ink-3 hover:text-ink-2"
+            >
+              <X size={12} />
+            </button>
+          </span>
+        ) : (
+          <LinkPicker onPick={setLink} />
+        )}
+        {ownerOptions.length > 0 ? (
+          <select
+            value={ownerId}
+            onChange={(e) => setOwnerId(e.target.value)}
+            title="Assignee"
+            className="h-7 max-w-[160px] flex-shrink-0 rounded border border-border-strong bg-surface px-1.5 text-[12px] text-ink outline-none focus:border-accent"
+          >
+            <option value="">Assignee…</option>
+            {ownerOptions.map((o) => (
+              <option key={o.value} value={o.value}>{o.label}</option>
+            ))}
+          </select>
+        ) : null}
+        <input
+          type="date"
+          value={dueDate}
+          onChange={(e) => setDueDate(e.target.value)}
+          title="Due date"
+          className="h-7 flex-shrink-0 rounded border border-border-strong bg-surface px-1.5 text-[12px] text-ink outline-none focus:border-accent"
+        />
+        {subject.trim() ? (
           <button
             type="button"
-            onClick={() => setLink(null)}
-            aria-label="Clear link"
-            className="text-ink-3 hover:text-ink-2"
+            onClick={submit}
+            className="h-7 rounded border border-ink bg-ink px-3 text-[12px] font-medium text-surface hover:opacity-90"
           >
-            <X size={12} />
+            Create
           </button>
-        </span>
-      ) : (
-        <LinkPicker onPick={setLink} />
-      )}
-      {ownerOptions.length > 0 ? (
-        <select
-          value={ownerId}
-          onChange={(e) => setOwnerId(e.target.value)}
-          title="Assignee"
-          className="h-7 max-w-[160px] flex-shrink-0 rounded border border-border-strong bg-surface px-1.5 text-[12px] text-ink outline-none focus:border-accent"
-        >
-          <option value="">Assignee…</option>
-          {ownerOptions.map((o) => (
-            <option key={o.value} value={o.value}>{o.label}</option>
-          ))}
-        </select>
-      ) : null}
-      <input
-        type="date"
-        value={dueDate}
-        onChange={(e) => setDueDate(e.target.value)}
-        title="Due date"
-        className="h-7 flex-shrink-0 rounded border border-border-strong bg-surface px-1.5 text-[12px] text-ink outline-none focus:border-accent"
-      />
-      {subject.trim() ? (
-        <button
-          type="button"
-          onClick={submit}
-          className="h-7 rounded border border-ink bg-ink px-3 text-[12px] font-medium text-surface hover:opacity-90"
-        >
-          Create
-        </button>
-      ) : null}
+        ) : null}
+      </div>
     </div>
   );
 }
