@@ -30,6 +30,7 @@ import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { riskForTask, riskTextClass, type RiskLevel } from "@/lib/risk";
 import { InlineDate, InlineSelect, InlineText } from "@/components/ui/InlineEdit";
+import { NewMyTaskRow } from "@/components/NewMyTaskRow";
 import { SectionCard, withReferrer } from "@/components/detail";
 import { useUpdateTask as useUpdateSfTask, useUserTasks as useSfUserTasks } from "@/services/opportunities";
 import { useActiveUsers, useUpdateTask as useUpdateProjectTask, type BedrockProject } from "@/services/projects";
@@ -135,7 +136,12 @@ export function PortfolioTasks({
   projects,
   projectsLoading,
 }: PortfolioTasksProps) {
-  const sfTasksQ = useSfUserTasks(sfUserId ?? undefined);
+  const [showDone, setShowDone] = useState(false);
+  // Expand the SF query to include closed tasks when the user ticks
+  // "Show done". Backend filters by IsClosed by default; without this
+  // flag, done SF tasks would never enter the dataset and the checkbox
+  // would have nothing to reveal.
+  const sfTasksQ = useSfUserTasks(sfUserId ?? undefined, showDone);
   const projectTasksQs = useUserProjectTaskQueries(projects);
   const activeUsersQ = useActiveUsers();
 
@@ -166,7 +172,6 @@ export function PortfolioTasks({
     return false;
   }
 
-  const [showDone, setShowDone] = useState(false);
   const [scope, setScope] = useState<Scope>(readStoredScope);
 
   // Persist scope so the user's preference rides through refreshes —
@@ -248,6 +253,7 @@ export function PortfolioTasks({
         </div>
       }
     >
+      <NewMyTaskRow />
       {!sfUserId && projects.length === 0 ? (
         <EmptyState>Connect Salesforce and own at least one project to see tasks here.</EmptyState>
       ) : isLoading ? (

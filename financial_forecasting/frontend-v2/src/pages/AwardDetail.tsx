@@ -96,7 +96,13 @@ export function AwardDetailPage() {
 }
 
 function Loaded({ award, opp }: { award: Award; opp: SfOpportunity | undefined }) {
-  const enrichment = useAccountEnrichment(opp?.AccountId ?? null);
+  // Prefer live SF data (most current) when present; fall back to the
+  // server-enriched fields on `award` so users without a personal SF
+  // session still see the header / stats. AccountId is used by the
+  // logo enrichment query — when neither is available, fall back to
+  // null (avatar will use the account name initial).
+  const accountId = opp?.AccountId ?? award.account_id ?? null;
+  const enrichment = useAccountEnrichment(accountId);
   const canEdit = usePerm("edit_awards");
   const updateAward = useUpdateAward();
   const updateOpp = useUpdateOpportunity();
@@ -111,17 +117,18 @@ function Loaded({ award, opp }: { award: Award; opp: SfOpportunity | undefined }
   const patchAward = (patch: Record<string, unknown>) =>
     updateAward.mutateAsync({ id: award.id, patch }).then(() => undefined);
 
-  const account = opp?.Account?.Name ?? "—";
-  const oppName = opp?.Name ?? award.opportunity_id;
+  const account = opp?.Account?.Name ?? award.account_name ?? "—";
+  const oppName = opp?.Name ?? award.opportunity_name ?? award.opportunity_id;
   // Referrer for cross-detail jumps (award → account / project) so
   // those pages' BackLinks return here instead of their default lists.
   const referrer = {
     from: { pathname: location.pathname, label: oppName || "Award" },
   };
-  const ownerName = opp?.Owner?.Name ?? "—";
-  const total = opp?.Amount ?? 0;
-  const paid = opp?.npe01__Payments_Made__c ?? 0;
+  const ownerName = opp?.Owner?.Name ?? award.owner_name ?? "—";
+  const total = opp?.Amount ?? award.amount ?? 0;
+  const paid = opp?.npe01__Payments_Made__c ?? award.payments_made ?? 0;
   const pending = Math.max(0, total - paid);
+  const recordTypeName = opp?.RecordType?.Name ?? award.record_type_name ?? null;
 
   return (
     <div className="mx-auto max-w-[1320px] px-7 py-6 pb-20">
@@ -149,15 +156,17 @@ function Loaded({ award, opp }: { award: Award; opp: SfOpportunity | undefined }
             ) : (
               <Tag variant={awardStatusVariant(award.award_status)}>{award.award_status}</Tag>
             )}
-            {opp?.RecordType?.Name ? <Tag>{opp.RecordType.Name}</Tag> : null}
-            {opp?.AccountId ? (
+            {recordTypeName ? <Tag>{recordTypeName}</Tag> : null}
+            {accountId ? (
               <Link
-                to={`/accounts/${opp.AccountId}`}
+                to={`/accounts/${accountId}`}
                 state={referrer}
                 className="underline-offset-4 hover:underline"
               >
                 · {account}
               </Link>
+            ) : account !== "—" ? (
+              <span>· {account}</span>
             ) : null}
             {award.opportunity_id ? (
               <Link
@@ -170,6 +179,9 @@ function Loaded({ award, opp }: { award: Award; opp: SfOpportunity | undefined }
               </Link>
             ) : null}
             <span>·</span>
+            {/* Owner is editable only when SF is connected on the
+                client (writes go through SF). Read-only fallback when
+                we only have the enriched name. */}
             {canEdit && opp ? (
               <InlineSelect
                 value={opp.OwnerId ?? ""}

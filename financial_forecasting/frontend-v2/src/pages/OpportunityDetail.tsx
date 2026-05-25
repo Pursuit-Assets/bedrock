@@ -214,6 +214,12 @@ export function OpportunityDetailPage() {
               onSave={handleStageChange}
               renderValue={(v) => <StageChip stage={v ?? opp.StageName} status={stageStatus({ ...opp, StageName: v ?? opp.StageName })} />}
             />
+            <InlineSelect
+              value={opp.Priority__c ?? ""}
+              options={PRIORITY_OPTIONS}
+              onSave={(v) => patch("Priority__c", v || null)}
+              renderValue={(v) => <PriorityTag value={v ?? opp.Priority__c ?? null} />}
+            />
             {opp.RecordType?.Name ? <Tag>{opp.RecordType.Name}</Tag> : null}
             {opp.AccountId ? (
               <Link
@@ -260,7 +266,16 @@ export function OpportunityDetailPage() {
           <EditField label="Probability">
             <InlineText
               value={opp.Manager_Probability_Override__c != null ? String(opp.Manager_Probability_Override__c) : (opp.Probability != null ? String(opp.Probability) : "")}
-              onSave={(v) => patch("Manager_Probability_Override__c", v ? Number(v) : null)}
+              onSave={async (v) => {
+                // Mirror SF's UI behavior: write Probability alongside
+                // Manager_Probability_Override__c so the two stay in sync.
+                // Clearing the override (null) lets SF restore the
+                // stage-driven default — don't touch Probability then.
+                const next = v ? Number(v) : null;
+                const body: Record<string, unknown> = { Manager_Probability_Override__c: next };
+                if (next != null) body.Probability = next;
+                await updateOpp.mutateAsync({ id: opp.Id, patch: body });
+              }}
               formatDisplay={formatPercentDisplay}
               placeholder="—"
             />
@@ -692,4 +707,36 @@ function formatPercentDisplay(raw: string): string {
   const n = Number(raw);
   if (!Number.isFinite(n)) return raw;
   return `${n}%`;
+}
+
+/** Priority picklist surfaced in the OpportunityDetail header. SF picklist
+ *  on Opportunity.Priority__c — values Low / Medium / High. Empty option
+ *  lets editors clear the value. */
+const PRIORITY_OPTIONS = [
+  { value: "", label: "—" },
+  { value: "High", label: "High" },
+  { value: "Medium", label: "Medium" },
+  { value: "Low", label: "Low" },
+];
+
+function PriorityTag({ value }: { value: string | null }) {
+  if (!value) {
+    return <Tag>Priority —</Tag>;
+  }
+  const cls =
+    value === "High"
+      ? "border-red bg-red-soft text-red"
+      : value === "Medium"
+      ? "border-amber bg-amber-soft text-amber"
+      : "border-border-strong bg-surface-2 text-ink-3";
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center rounded border px-2 py-0.5 text-[11px] font-medium",
+        cls,
+      )}
+    >
+      Priority: {value}
+    </span>
+  );
 }

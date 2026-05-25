@@ -90,11 +90,28 @@ function useProjectAwards(projectId: string | undefined) {
   });
 }
 
+// Server-enriched fields surfaced by /api/projects/{id}/{awards,opportunities}.
+// These are populated by routes/projects.py from a single SOQL IN-list per
+// request, using whatever SF client the request has (per-user cookie OR the
+// service-account fallback). Used as a backup when the user has no SF session
+// of their own, so `useOpportunities()` returns []. Live data still wins
+// when available.
+type SfEnriched = {
+  opportunity_name?: string | null;
+  account_name?: string | null;
+  amount?: number | null;
+  stage_name?: string | null;
+  owner_id?: string | null;
+  owner_name?: string | null;
+};
+
 function useProjectOpportunities(projectId: string | undefined) {
   return useQuery({
     queryKey: ["project-opportunities", projectId],
     queryFn: async () => {
-      const { data } = await api.get<{ data: { id: string; opportunity_id: string; role?: string }[] }>(
+      const { data } = await api.get<{
+        data: ({ id: string; opportunity_id: string; role?: string } & SfEnriched)[];
+      }>(
         `/api/projects/${projectId}/opportunities`,
       );
       return data.data ?? [];
@@ -1264,13 +1281,18 @@ function LinkedRevenueSection({ projectId }: { projectId: string }) {
         opportunityId: string;
         opp: SfOpportunity | undefined;
         // award is the row from /api/projects/{id}/awards — its `award_id`
-        // field is the bedrock.award uuid we link/unlink against.
+        // field is the bedrock.award uuid we link/unlink against. The
+        // response also carries server-enriched SF display fields
+        // (opportunity_name / account_name / stage_name / ...).
         award: any;
       }
     | {
         kind: "opp";
         opportunityId: string;
         opp: SfOpportunity | undefined;
+        // link is the row from /api/projects/{id}/opportunities, which
+        // carries the same server-enriched SF display fields.
+        link: any;
       };
 
   // Merge sources: every linked award is one row; explicit opp links that
@@ -1292,6 +1314,7 @@ function LinkedRevenueSection({ projectId }: { projectId: string }) {
         kind: "opp",
         opportunityId: link.opportunity_id,
         opp: oppById.get(link.opportunity_id),
+        link,
       });
     }
     return [...out.values()].sort((a, b) => {
@@ -1404,12 +1427,21 @@ function RevenueRow({
 }: {
   row:
     | { kind: "award"; opportunityId: string; opp: SfOpportunity | undefined; award: any }
-    | { kind: "opp"; opportunityId: string; opp: SfOpportunity | undefined };
+    | { kind: "opp"; opportunityId: string; opp: SfOpportunity | undefined; link?: any };
   onUnlinkAward: (awardId: string) => void;
   onUnlinkOpp: (oppId: string) => void;
 }) {
-  const oppName = row.opp?.Name ?? row.opportunityId;
-  const acctName = row.opp?.Account?.Name;
+  // Prefer live SF data from useOpportunities (most current). Fall back
+  // to server-enriched fields on the award/opp link row — those are
+  // populated by /api/projects/{id}/{awards,opportunities} using the
+  // service-account SF client, so they work for users who haven't
+  // connected their own Salesforce session.
+  const enriched: SfEnriched | undefined =
+    row.kind === "award" ? row.award : (row as any).link;
+  const oppName =
+    row.opp?.Name ?? enriched?.opportunity_name ?? row.opportunityId;
+  const acctName = row.opp?.Account?.Name ?? enriched?.account_name ?? undefined;
+  const stageName = row.opp?.StageName ?? enriched?.stage_name ?? null;
 
   if (row.kind === "award") {
     const award = row.award;
@@ -1459,9 +1491,9 @@ function RevenueRow({
           {acctName ? `${acctName} · ` : ""}(not yet awarded)
         </span>
       </Link>
-      {row.opp?.StageName ? (
+      {stageName ? (
         <span className="rounded bg-surface-2 px-2 py-0.5 text-[11px] text-ink-3">
-          {row.opp.StageName}
+          {stageName}
         </span>
       ) : null}
       <button

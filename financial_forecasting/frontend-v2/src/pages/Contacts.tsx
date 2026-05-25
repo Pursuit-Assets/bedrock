@@ -34,7 +34,7 @@ import {
 } from "@/pages/cleanup/Filters";
 import { useContacts, useUpdateContact } from "@/services/contacts";
 import { usePerm } from "@/services/permissions";
-import { useActiveUsers } from "@/services/users";
+import { useActiveUsers, useUsers } from "@/services/users";
 import type { SfContact } from "@/types/salesforce";
 
 interface ContactFilter {
@@ -149,6 +149,9 @@ export function ContactsPage() {
   const navigate = useNavigate();
   const contactsQ = useContacts();
   const usersQ = useActiveUsers();
+  // All users (active + inactive). Used only for the chip-filter owner
+  // facet — write-side pickers stay on `usersQ` (active only).
+  const allUsersQ = useUsers();
   const updateContact = useUpdateContact();
   const canEdit = usePerm("edit_contacts");
 
@@ -168,26 +171,69 @@ export function ContactsPage() {
 
   const contacts = contactsQ.data ?? [];
 
-  // Chip-filter facets — owner ids include inactive users so historical
-  // assignments remain selectable; board-status comes from the loaded
-  // dataset.
+  // Contacts that match the toolbar filters (Philanthropy-only toggle +
+  // search). Used to populate the chip-filter owner facet so it
+  // reflects what's visible in the table. Chip `rules` are excluded to
+  // avoid the picker collapsing once an owner filter is applied.
+  const contactsInView = useMemo(() => {
+    const needle = q.toLowerCase();
+    return contacts.filter((c) => {
+      if (philOnly && !c.Philanthropic_Contact__c && !c.Philanthropy__c) {
+        return false;
+      }
+      if (q) {
+        const hit =
+          (c.Name ?? "").toLowerCase().includes(needle) ||
+          (c.FirstName ?? "").toLowerCase().includes(needle) ||
+          (c.LastName ?? "").toLowerCase().includes(needle) ||
+          (c.Email ?? "").toLowerCase().includes(needle) ||
+          (c.Account?.Name ?? "").toLowerCase().includes(needle) ||
+          (c.Title ?? "").toLowerCase().includes(needle);
+        if (!hit) return false;
+      }
+      return true;
+    });
+  }, [contacts, philOnly, q]);
+
+  // Chip-filter facets — owner options are the union of:
+  //   (a) every active SF user, and
+  //   (b) inactive users with at least one row in the current view.
+  // Board status comes from contacts visible in the current view.
   const chipFacets = useMemo(() => {
-    const activeIds = new Set((usersQ.data ?? []).map((u) => u.Id));
-    const owners = new Map<string, string>();
+    const all = allUsersQ.data ?? [];
+    const activeById = new Map(
+      all.filter((u) => u.IsActive).map((u) => [u.Id, u]),
+    );
+    const inactiveById = new Map(
+      all.filter((u) => !u.IsActive).map((u) => [u.Id, u]),
+    );
+
+    const ownersInView = new Set<string>();
+    const ownerNameFromData = new Map<string, string>();
     const boardStatuses = new Set<string>();
-    for (const c of contacts) {
-      if (c.OwnerId && c.Owner?.Name && !owners.has(c.OwnerId)) {
-        owners.set(c.OwnerId, c.Owner.Name);
+    for (const c of contactsInView) {
+      if (c.OwnerId) {
+        ownersInView.add(c.OwnerId);
+        if (c.Owner?.Name) ownerNameFromData.set(c.OwnerId, c.Owner.Name);
       }
       if (c.Board_Status__c) boardStatuses.add(c.Board_Status__c);
     }
+
+    type OwnerOption = { value: string; label: string };
+    const ownerOptions: OwnerOption[] = [];
+    for (const u of activeById.values()) {
+      ownerOptions.push({ value: u.Id, label: u.Name });
+    }
+    for (const id of ownersInView) {
+      if (activeById.has(id)) continue;
+      const inactive = inactiveById.get(id);
+      const name = inactive?.Name ?? ownerNameFromData.get(id) ?? id;
+      ownerOptions.push({ value: id, label: `${name} (inactive)` });
+    }
+    ownerOptions.sort((x, y) => x.label.localeCompare(y.label));
+
     return {
-      owner: Array.from(owners.entries())
-        .map(([id, name]) => ({
-          value: id,
-          label: activeIds.has(id) ? name : `${name} (inactive)`,
-        }))
-        .sort((x, y) => x.label.localeCompare(y.label)),
+      owner: ownerOptions,
       boardStatus: Array.from(boardStatuses)
         .sort()
         .map((v) => ({ value: v, label: v })),
@@ -196,7 +242,7 @@ export function ContactsPage() {
         { value: "No", label: "No" },
       ],
     };
-  }, [contacts, usersQ.data]);
+  }, [contactsInView, allUsersQ.data]);
 
   const ownerLabelLookup = useMemo(() => {
     const m = new Map<string, string>();

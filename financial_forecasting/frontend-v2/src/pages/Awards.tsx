@@ -35,7 +35,7 @@ import {
 } from "@/services/awards";
 import { useOpportunities, useUpdateOpportunity } from "@/services/opportunities";
 import { useProjects } from "@/services/projects";
-import { useActiveUsers } from "@/services/users";
+import { useActiveUsers, useUsers } from "@/services/users";
 import { usePerm } from "@/services/permissions";
 import type { SfOpportunity } from "@/types/salesforce";
 
@@ -329,6 +329,9 @@ export function AwardsPage() {
     useAwards(filter.status === "All" ? undefined : filter.status);
   const { data: oppsData } = useOpportunities({});
   const usersQ = useActiveUsers();
+  // All users (active + inactive). Used only for the chip-filter owner
+  // facet — write-side pickers stay on `usersQ` (active only).
+  const allUsersQ = useUsers();
   const projectsQ = useProjects();
   const updateAward = useUpdateAward();
   const updateOpp = useUpdateOpportunity();
@@ -395,38 +398,75 @@ export function AwardsPage() {
     [oppById],
   );
 
-  // Chip-filter facets — owners pulled from opps' Owner refs (so
-  // historical owners survive even if the user is deactivated),
-  // statuses + reporting frequencies discovered from the loaded set.
-  const chipFacets = useMemo(() => {
-    const activeIds = new Set((usersQ.data ?? []).map((u) => u.Id));
-    const owners = new Map<string, string>();
-    const freqs = new Set<string>();
-    for (const a of awardsData ?? []) {
+  // Awards visible after toolbar-level filters (server-side status pill
+  // already filtered awardsData; only `q` search remains as a
+  // client-side toolbar filter). Used for the chip-filter facet so the
+  // owner picker reflects rows visible in the table. Chip `rules` are
+  // excluded to keep the picker stable when an owner filter is applied.
+  const awardsInView = useMemo(() => {
+    const needle = q.toLowerCase();
+    return (awardsData ?? []).filter((a) => {
+      if (!q) return true;
       const opp = oppById.get(a.opportunity_id);
-      if (opp?.OwnerId && opp.Owner?.Name && !owners.has(opp.OwnerId)) {
-        owners.set(opp.OwnerId, opp.Owner.Name);
+      return (
+        (opp?.Name ?? "").toLowerCase().includes(needle) ||
+        (opp?.Account?.Name ?? "").toLowerCase().includes(needle) ||
+        (opp?.Owner?.Name ?? "").toLowerCase().includes(needle) ||
+        (a.notes ?? "").toLowerCase().includes(needle)
+      );
+    });
+  }, [awardsData, oppById, q]);
+
+  // Chip-filter facets — owner options are the union of:
+  //   (a) every active SF user, and
+  //   (b) inactive users with at least one row in the current view.
+  const chipFacets = useMemo(() => {
+    const all = allUsersQ.data ?? [];
+    const activeById = new Map(
+      all.filter((u) => u.IsActive).map((u) => [u.Id, u]),
+    );
+    const inactiveById = new Map(
+      all.filter((u) => !u.IsActive).map((u) => [u.Id, u]),
+    );
+
+    const ownersInView = new Set<string>();
+    const ownerNameFromData = new Map<string, string>();
+    const freqs = new Set<string>();
+    for (const a of awardsInView) {
+      const opp = oppById.get(a.opportunity_id);
+      if (opp?.OwnerId) {
+        ownersInView.add(opp.OwnerId);
+        if (opp.Owner?.Name) ownerNameFromData.set(opp.OwnerId, opp.Owner.Name);
       }
       if (a.reporting_frequency) freqs.add(a.reporting_frequency);
     }
+
+    type OwnerOption = { value: string; label: string };
+    const ownerOptions: OwnerOption[] = [];
+    for (const u of activeById.values()) {
+      ownerOptions.push({ value: u.Id, label: u.Name });
+    }
+    for (const id of ownersInView) {
+      if (activeById.has(id)) continue;
+      const inactive = inactiveById.get(id);
+      const name = inactive?.Name ?? ownerNameFromData.get(id) ?? id;
+      ownerOptions.push({ value: id, label: `${name} (inactive)` });
+    }
+    ownerOptions.sort((x, y) => x.label.localeCompare(y.label));
+
     const yesNo = [
       { value: "Yes", label: "Yes" },
       { value: "No", label: "No" },
     ];
     return {
-      owner: Array.from(owners.entries())
-        .map(([id, name]) => ({
-          value: id,
-          label: activeIds.has(id) ? name : `${name} (inactive)`,
-        }))
-        .sort((x, y) => x.label.localeCompare(y.label)),
+      owner: ownerOptions,
       status: STATUS_OPTIONS.map((o) => ({ value: o.value, label: o.label })),
       reportingFrequency: Array.from(freqs)
         .sort()
         .map((v) => ({ value: v, label: v })),
       overdue: yesNo,
     };
-  }, [awardsData, oppById, usersQ.data]);
+  }, [awardsInView, oppById, allUsersQ.data]);
 
   const ownerLabelLookup = useMemo(() => {
     const m = new Map<string, string>();
