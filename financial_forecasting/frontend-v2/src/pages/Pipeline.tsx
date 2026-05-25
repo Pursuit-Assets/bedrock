@@ -97,7 +97,7 @@ const PIPELINE_FILTERABLE = {
     getValue: (o: SfOpportunity) => (o.Active_Opportunity__c ? "Yes" : "No"),
   },
   amount: { label: "Amount", type: "number", getValue: (o: SfOpportunity) => o.Amount ?? null },
-  probability: { label: "Probability", type: "number", getValue: (o: SfOpportunity) => o.Probability ?? null },
+  probability: { label: "Probability", type: "number", getValue: (o: SfOpportunity) => o.Manager_Probability_Override__c ?? o.Probability ?? null },
   closeDate: { label: "Close date", type: "date", getValue: (o: SfOpportunity) => o.CloseDate ?? null },
   paymentDate: { label: "1st payment", type: "date", getValue: (o: SfOpportunity) => o.PaymentDate__c ?? null },
 } satisfies Record<string, FieldMeta<SfOpportunity>>;
@@ -200,7 +200,7 @@ function extractOpp(o: SfOpportunity, key: ColKey): unknown {
       return rank[o.Priority__c ?? ""] ?? 0;
     }
     case "amount": return o.Amount ?? 0;
-    case "probability": return o.Probability ?? 0;
+    case "probability": return o.Manager_Probability_Override__c ?? o.Probability ?? 0;
     case "close": return o.CloseDate;
     case "paymentDate": return o.PaymentDate__c;
   }
