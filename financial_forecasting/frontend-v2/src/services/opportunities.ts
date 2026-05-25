@@ -609,7 +609,9 @@ export function useCreateGenericTask() {
       return data;
     },
     onMutate: async (body) => {
-      const targetKey: readonly unknown[] | null = body.WhoId
+      // Primary cache list: contact-tasks if WhoId, opp-tasks if WhatId,
+      // my-tasks otherwise. Snapshot for rollback.
+      const targetKey: readonly unknown[] = body.WhoId
         ? (["contact-tasks", body.WhoId] as const)
         : body.WhatId
           ? (["opportunity-tasks", body.WhatId] as const)
@@ -618,15 +620,38 @@ export function useCreateGenericTask() {
       const prev = qc.getQueryData<SfTask[]>(targetKey);
       const optimistic = buildOptimisticTask(body, body.WhatId ?? body.WhoId ?? "");
       qc.setQueryData<SfTask[]>(targetKey, (old) => [optimistic, ...(old ?? [])]);
-      return { targetKey, prev };
+
+      // ALSO push the optimistic row into every cached `user-tasks`
+      // list whose ownerId matches this task's OwnerId. PortfolioTasks
+      // (My Tasks panel on /portfolio) reads from `["user-tasks",
+      // ownerId, includeClosed]` — without this insert it'd wait for
+      // the server roundtrip + invalidate before the new row appears.
+      const userTaskSnapshots: { key: readonly unknown[]; data: SfTask[] | undefined }[] = [];
+      if (body.OwnerId) {
+        const matches = qc.getQueryCache().findAll({
+          predicate: (q) => {
+            const k = q.queryKey;
+            return Array.isArray(k) && k[0] === "user-tasks" && k[1] === body.OwnerId;
+          },
+        });
+        for (const m of matches) {
+          const previous = qc.getQueryData<SfTask[]>(m.queryKey);
+          userTaskSnapshots.push({ key: m.queryKey, data: previous });
+          qc.setQueryData<SfTask[]>(m.queryKey, (old) => [optimistic, ...(old ?? [])]);
+        }
+      }
+
+      return { targetKey, prev, userTaskSnapshots };
     },
     onError: (_err, _vars, ctx) => {
       if (ctx?.prev !== undefined && ctx.targetKey) {
         qc.setQueryData(ctx.targetKey, ctx.prev);
       }
+      ctx?.userTaskSnapshots?.forEach(({ key, data }) => qc.setQueryData(key, data));
     },
     onSettled: (_data, _err, body) => {
-      // Invalidate every list this task could surface in.
+      // Invalidate every list this task could surface in so the
+      // temp-id optimistic row reconciles with the real server task.
       if (body.WhoId) {
         qc.invalidateQueries({ queryKey: ["contact-tasks", body.WhoId] });
       }
@@ -635,6 +660,7 @@ export function useCreateGenericTask() {
         qc.invalidateQueries({ queryKey: ["account-tasks", body.WhatId] });
       }
       qc.invalidateQueries({ queryKey: ["my-tasks"] });
+      qc.invalidateQueries({ queryKey: ["user-tasks"] });
     },
   });
 }
