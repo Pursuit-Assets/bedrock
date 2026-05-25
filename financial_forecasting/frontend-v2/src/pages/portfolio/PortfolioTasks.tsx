@@ -30,6 +30,7 @@ import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { riskForTask, riskTextClass, type RiskLevel } from "@/lib/risk";
 import { InlineDate, InlineSelect, InlineText } from "@/components/ui/InlineEdit";
+import { NewMyTaskRow } from "@/components/NewMyTaskRow";
 import { SectionCard, withReferrer } from "@/components/detail";
 import { useUpdateTask as useUpdateSfTask, useUserTasks as useSfUserTasks } from "@/services/opportunities";
 import { useActiveUsers, useUpdateTask as useUpdateProjectTask, type BedrockProject } from "@/services/projects";
@@ -252,6 +253,7 @@ export function PortfolioTasks({
         </div>
       }
     >
+      <NewMyTaskRow />
       {!sfUserId && projects.length === 0 ? (
         <EmptyState>Connect Salesforce and own at least one project to see tasks here.</EmptyState>
       ) : isLoading ? (

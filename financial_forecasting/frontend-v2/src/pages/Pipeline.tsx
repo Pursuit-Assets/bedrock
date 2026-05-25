@@ -97,7 +97,7 @@ const PIPELINE_FILTERABLE = {
     getValue: (o: SfOpportunity) => (o.Active_Opportunity__c ? "Yes" : "No"),
   },
   amount: { label: "Amount", type: "number", getValue: (o: SfOpportunity) => o.Amount ?? null },
-  probability: { label: "Probability", type: "number", getValue: (o: SfOpportunity) => o.Probability ?? null },
+  probability: { label: "Probability", type: "number", getValue: (o: SfOpportunity) => o.Manager_Probability_Override__c ?? o.Probability ?? null },
   closeDate: { label: "Close date", type: "date", getValue: (o: SfOpportunity) => o.CloseDate ?? null },
   paymentDate: { label: "1st payment", type: "date", getValue: (o: SfOpportunity) => o.PaymentDate__c ?? null },
 } satisfies Record<string, FieldMeta<SfOpportunity>>;
@@ -200,7 +200,7 @@ function extractOpp(o: SfOpportunity, key: ColKey): unknown {
       return rank[o.Priority__c ?? ""] ?? 0;
     }
     case "amount": return o.Amount ?? 0;
-    case "probability": return o.Probability ?? 0;
+    case "probability": return o.Manager_Probability_Override__c ?? o.Probability ?? 0;
     case "close": return o.CloseDate;
     case "paymentDate": return o.PaymentDate__c;
   }
@@ -448,7 +448,13 @@ export function PipelinePage() {
           throw new Error("0–100");
         }
       }
-      await updateOpp.mutateAsync({ id, patch: { Manager_Probability_Override__c: parsed } });
+      // Match what Salesforce does when you edit Mgr Prob in its UI:
+      // it propagates the override into Probability so the two stay in
+      // sync. We only co-write Probability when the user set a value —
+      // clearing the override falls back to SF's stage-driven default.
+      const patch: Record<string, unknown> = { Manager_Probability_Override__c: parsed };
+      if (parsed != null) patch.Probability = parsed;
+      await updateOpp.mutateAsync({ id, patch });
     },
     [updateOpp],
   );
