@@ -8,7 +8,6 @@ import {
   Trophy,
   FolderOpen,
   Users,
-  Search,
   Sparkles,
   Settings as SettingsIcon,
   ChevronLeft,
@@ -20,7 +19,8 @@ import {
   Receipt,
 } from "lucide-react";
 
-import { GlobalSearch } from "@/components/GlobalSearch";
+import { NotificationBell } from "@/components/NotificationBell";
+import { TopBarSearch } from "@/components/TopBarSearch";
 import { cn } from "@/lib/utils";
 import { recordNavigation, saveScroll, restoreScroll } from "@/lib/navHistory";
 import { useCurrentUser, useSalesforceStatus, startSalesforceConnect } from "@/services/auth";
@@ -88,7 +88,6 @@ function useSidebarCollapsed() {
 
 export function AppShell() {
   const { collapsed, toggle } = useSidebarCollapsed();
-  const [searchOpen, setSearchOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const { pathname } = useLocation();
   const sf = useSalesforceStatus();
@@ -138,16 +137,9 @@ export function AppShell() {
     recordNavigation();
   }, [pathname, navType]);
 
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
-        e.preventDefault();
-        setSearchOpen(true);
-      }
-    };
-    document.addEventListener("keydown", handler);
-    return () => document.removeEventListener("keydown", handler);
-  }, []);
+  // ⌘K is now handled by TopBarSearch (focuses the inline input
+  // instead of opening a modal). Keeping the keydown effect a no-op
+  // here would just shadow that handler — drop it.
 
   return (
     <div
@@ -156,9 +148,16 @@ export function AppShell() {
         gridTemplateColumns: `${collapsed ? NAV_COLLAPSED_W : NAV_EXPANDED_W}px 1fr`,
       }}
     >
-      <GlobalSearch open={searchOpen} onClose={() => setSearchOpen(false)} />
-      <Sidebar collapsed={collapsed} onToggle={toggle} onSearchOpen={() => setSearchOpen(true)} />
+      <Sidebar collapsed={collapsed} onToggle={toggle} />
       <main className="flex flex-col overflow-hidden">
+        {/* Top bar — inline search (left/center) + notification bell
+            (right). Page title removed: the active sidebar item is the
+            canonical "you are here" indicator, and a duplicate label
+            in the top bar was costing vertical space for no signal. */}
+        <header className="flex h-9 flex-shrink-0 items-center justify-between gap-3 border-b border-border bg-surface px-4">
+          <TopBarSearch />
+          <NotificationBell />
+        </header>
         {sfNotConnected && !sfOptional ? (
           <SalesforceGate />
         ) : (
@@ -203,11 +202,12 @@ function SalesforceGate() {
 function Sidebar({
   collapsed,
   onToggle,
-  onSearchOpen,
 }: {
   collapsed: boolean;
   onToggle: () => void;
-  onSearchOpen: () => void;
+  /** Kept in the prop type for callers that still pass it (top-bar
+   *  search trigger replaced the sidebar one as of 2026-05-20). */
+  onSearchOpen?: () => void;
 }) {
   const { data: user } = useCurrentUser();
   const sf = useSalesforceStatus();
@@ -250,22 +250,7 @@ function Sidebar({
         </button>
       </div>
 
-      {/* Search trigger — hidden when collapsed */}
-      {!collapsed && (
-        <button
-          type="button"
-          onClick={onSearchOpen}
-          className="mb-2 mt-1 flex h-[30px] w-full items-center gap-2 rounded-md border border-border-strong bg-surface px-3 text-left text-ink-3 hover:border-ink-3 hover:bg-surface-2"
-        >
-          <Search size={13} className="flex-shrink-0" />
-          <span className="min-w-0 flex-1 text-[12.5px] text-ink-4">
-            Search…
-          </span>
-          <kbd className="rounded border border-border-strong px-1.5 py-px text-[10px] text-ink-3">
-            ⌘K
-          </kbd>
-        </button>
-      )}
+      {/* Search trigger moved to the top bar (2026-05-20). */}
 
       <nav className="flex flex-col">
         {NAV_GROUPS.map((group) => (
@@ -350,7 +335,7 @@ function Sidebar({
           )}
         </NavLink>
 
-        {/* User avatar */}
+        {/* User avatar (bell moved to the top-bar 2026-05-20). */}
         {user && (
           <div
             className={cn(

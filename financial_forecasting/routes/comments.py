@@ -15,6 +15,11 @@ from pydantic import BaseModel
 
 from db import get_db
 from routes.permissions import check_permission
+from services.notifications import (
+    TYPE_COMMENT_MENTION,
+    enqueue_notification,
+    resolve_mentions,
+)
 
 router = APIRouter(prefix="/api/comments", tags=["comments"])
 
@@ -114,8 +119,107 @@ async def create_comment(
         """,
         entity_type, eid, author_id, content,
     )
+
+    # Fan-out @-mention notifications. Parser is conservative: only
+    # tokens that resolve to an org_users row trigger a notification,
+    # so a stray `@everyone` or `@here` is silently ignored. Self-
+    # mentions are suppressed — if you @-mention yourself, you already
+    # know you wrote it (product rule per 2026-05-20).
+    actor_email = (user.get("email") or "").strip()
+    actor_lower = actor_email.lower()
+    mentioned = await resolve_mentions(conn, content)
+    if mentioned:
+        snippet = content if len(content) <= 280 else content[:277] + "…"
+        ctx = await _resolve_comment_context(conn, entity_type, eid)
+        actor_display = await _lookup_display_name(conn, actor_email)
+        for m in mentioned:
+            email = (m.get("email") or "").strip()
+            if not email:
+                continue
+            if actor_lower and email.lower() == actor_lower:
+                continue
+            await enqueue_notification(
+                conn,
+                recipient_email=email,
+                type=TYPE_COMMENT_MENTION,
+                payload={
+                    "title": "You were mentioned in a comment",
+                    "subtitle": snippet,
+                    "comment_body": content,
+                    "comment_id": str(new_id),
+                    "entity_type": entity_type,
+                    "entity_id": str(eid),
+                    "project_id": ctx.get("project_id"),
+                    "project_name": ctx.get("project_name"),
+                    "task_title": ctx.get("task_title"),
+                    "workstream_name": ctx.get("workstream_name"),
+                    "milestone_title": ctx.get("milestone_title"),
+                    "actor_display_name": actor_display,
+                    "target_url": ctx.get("target_url"),
+                },
+                actor_email=actor_email or None,
+            )
+
     row = await conn.fetchrow(_AUTHOR_JOIN_SQL + " WHERE c.id = $1", new_id)
     return {"success": True, "data": _serialize_comment(row)}
+
+
+async def _lookup_display_name(conn, email):
+    """email -> display_name on org_users (fallback to the email itself)."""
+    if not email:
+        return None
+    row = await conn.fetchval(
+        "SELECT display_name FROM public.org_users WHERE LOWER(email) = LOWER($1) LIMIT 1",
+        email,
+    )
+    return row or email
+
+
+async def _resolve_comment_context(conn, entity_type, entity_id):
+    """Look up the project / workstream / milestone / task hierarchy for
+    a comment so the notification message can read like:
+
+        Jac mentioned you in a comment:
+        Project: …
+        Task: …
+        Comment: …
+
+    Returns a dict with project_id, project_name, task_title,
+    workstream_name, milestone_title, target_url. Falls back to empty
+    keys (None) for unknown entity types."""
+    out = {
+        "project_id": None,
+        "project_name": None,
+        "task_title": None,
+        "workstream_name": None,
+        "milestone_title": None,
+        "target_url": None,
+    }
+    if entity_type == "project_task":
+        row = await conn.fetchrow(
+            """SELECT t.title AS task_title,
+                      m.title AS milestone_title,
+                      w.name  AS workstream_name,
+                      p.id    AS project_id,
+                      p.name  AS project_name
+               FROM bedrock.project_task t
+               JOIN bedrock.milestone m  ON m.id = t.milestone_id
+               JOIN bedrock.workstream w ON w.id = m.workstream_id
+               JOIN bedrock.project   p  ON p.id = w.project_id
+               WHERE t.id = $1""",
+            entity_id,
+        )
+        if row:
+            pid = str(row["project_id"])
+            out.update({
+                "project_id": pid,
+                "project_name": row["project_name"],
+                "task_title": row["task_title"],
+                "workstream_name": row["workstream_name"],
+                "milestone_title": row["milestone_title"],
+                "target_url": f"/projects/{pid}?task={entity_id}",
+            })
+    return out
 
 
 @router.put("/{comment_id}")

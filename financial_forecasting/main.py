@@ -4,7 +4,13 @@ import os
 import asyncio
 import calendar
 from dotenv import load_dotenv
-load_dotenv(override=False)
+# override=True so .env is the single source of truth for the backend.
+# Without this, exported shell env vars (e.g. SLACK_BOT_TOKEN in
+# ~/.zshrc) silently shadow .env, which previously caused a Slack-bot
+# swap to be a no-op for hours of debugging — see 2026-05-20 commit
+# notes. Operators who need to override .env from the shell can
+# still do so per-process via `KEY=value ./main.py`.
+load_dotenv(override=True)
 from typing import Any, Dict, List, Optional
 from datetime import datetime, date, timedelta
 from decimal import Decimal
@@ -38,6 +44,7 @@ from data_sync import DataSyncService
 from db import init_db, close_db, get_db, get_db_status
 from routes.projects import router as projects_router
 from routes.comments import router as comments_router
+from routes.notifications import router as notifications_router
 from routes.auth import router as auth_router, get_google_credentials, PBD_CALENDAR_ID
 from routes.sf_dependencies import router as sf_deps_router
 from routes.permissions import router as permissions_router, opp_router as opp_lock_router, check_permission, check_permission_or_internal, resolve_task_lock
@@ -119,6 +126,7 @@ app.add_middleware(
 # Routers
 app.include_router(projects_router)
 app.include_router(comments_router)
+app.include_router(notifications_router)
 app.include_router(auth_router)
 app.include_router(sf_deps_router)
 app.include_router(permissions_router)
@@ -200,6 +208,27 @@ async def startup_event():
             _services["data_sync_service"] = DataSyncService(client)
         asyncio.create_task(background_sync_task())
         asyncio.create_task(background_award_reconciler_task())
+
+    # Cache the db pool on _services so background tasks (notification
+    # Slack dispatcher) can acquire connections without going through
+    # FastAPI's request-scoped get_db dependency.
+    try:
+        from db import get_pool
+        _services["db_pool"] = get_pool()
+    except Exception as e:
+        logger.warning(f"db_pool not registered on _services: {e}")
+
+    # SF-side notification poller — watches for new SF Tasks and
+    # OpportunityFieldHistory rows and fans out notifications. Only
+    # meaningful when SF is connected; the loop self-checks and no-ops
+    # otherwise.
+    if "salesforce" in client.connected_services:
+        try:
+            from services.sf_notification_poller import run_forever as _sf_notif_loop
+            asyncio.create_task(_sf_notif_loop())
+            logger.info("sf_notification_poller started")
+        except Exception as e:
+            logger.warning(f"sf_notification_poller failed to start: {e}")
 
     logger.info(f"API started — connected services: {client.connected_services or ['none']}")
 
