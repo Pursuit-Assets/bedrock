@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   LayoutDashboard,
   Building2,
+  Briefcase,
   GitBranch,
   Trophy,
   FolderOpen,
@@ -15,6 +16,7 @@ import {
   Link as LinkIcon,
   Home,
   MessageSquarePlus,
+  Receipt,
 } from "lucide-react";
 
 import { NotificationBell } from "@/components/NotificationBell";
@@ -35,12 +37,10 @@ const NAV_GROUPS = [
     label: "Portfolio",
     items: [
       { to: "/portfolio", label: "Home",     icon: Home },
-      { to: "/accounts", label: "Accounts", icon: Building2 },
-      { to: "/contacts", label: "Contacts", icon: Users },
-      { to: "/pipeline", label: "Pipeline", icon: GitBranch },
-      { to: "/awards",   label: "Awards",   icon: Trophy },
-      { to: "/projects", label: "Projects", icon: FolderOpen },
-      { to: "/cleanup",  label: "Cleanup",  icon: Sparkles },
+      { to: "/accounts",  label: "Accounts", icon: Building2 },
+      { to: "/contacts",  label: "Contacts", icon: Users },
+      { to: "/pipeline",  label: "Pipeline", icon: GitBranch },
+      { to: "/cleanup",   label: "Cleanup",  icon: Sparkles },
       // Tasks page hidden 2026-05-04 — pending a Salesforce data-hygiene
       // pass to close the years-old open-task backlog. Tasks remain
       // visible on the per-record expand panels and detail pages, where
@@ -48,6 +48,20 @@ const NAV_GROUPS = [
       // re-add `{ to: "/tasks", label: "Tasks", icon: CheckSquare }` and
       // re-import CheckSquare from lucide-react. Route at App.tsx is
       // still wired so direct URLs continue to work.
+    ],
+  },
+  {
+    label: "Awards",
+    items: [
+      { to: "/awards",   label: "Awards",   icon: Trophy },
+      { to: "/payments", label: "Payments", icon: Receipt },
+      { to: "/projects", label: "Projects", icon: FolderOpen },
+    ],
+  },
+  {
+    label: "Jobs",
+    items: [
+      { to: "/jobs", label: "Jobs", icon: Briefcase },
     ],
   },
 ] as const;

@@ -66,6 +66,9 @@ from routes.activities import router as activities_router
 from routes.platform_intake import router as platform_intake_router
 from routes.awards import router as awards_router
 from routes.saved_views import router as saved_views_router
+from routes.affiliations import router as affiliations_router
+from routes.airtable_jobs import router as airtable_jobs_router
+from routes.sputnik import router as sputnik_router
 from auth import get_current_user_dep, require_auth, IS_PRODUCTION, JWT_SECRET_KEY
 from security import validate_salesforce_id, escape_soql_string
 from services.crm_parser import refresh_opp_cache as _refresh_opp_cache
@@ -147,6 +150,9 @@ app.include_router(activities_router)
 app.include_router(platform_intake_router)
 app.include_router(awards_router)
 app.include_router(saved_views_router)
+app.include_router(affiliations_router)
+app.include_router(airtable_jobs_router)
+app.include_router(sputnik_router)
 
 # Service singletons — shared with dependencies.py so route files can use
 # Depends(require_sf_mcp_client) without circular imports.
@@ -414,11 +420,17 @@ async def get_opportunities(
         # (verified via Tooling API describe — DataType Lookup(Contact),
         # label "Primary Contact"). Relationship fields pull the contact's
         # Name + Email for display without a second query.
+        # Field list trimmed 2026-05-25: dropped Description (long-text,
+        # unused in any list or detail view), Reporting_Method__c (unused),
+        # and npsp__Next_Grant_Deadline_Due_Date__c (unused). The previous
+        # list pulled ~625 ms; trimmed is ~50 % smaller payload and ~25 %
+        # faster SOQL on a 1242-row org. Add fields back here only if a
+        # consumer in frontend-v2 actually reads them.
         query = """
         SELECT Id, AccountId, Account.Name, Name, StageName, IsClosed, IsWon,
                Amount, Probability,
                CloseDate, ForecastCategory, LeadSource, NextStep,
-               Description, OwnerId, Owner.Name, CreatedDate, LastModifiedDate,
+               OwnerId, Owner.Name, CreatedDate, LastModifiedDate,
                npe01__Payments_Made__c, Outstanding_Payments__c,
                Number_of_Payments_Received__c, Most_Recent_Payment_Date__c,
                Last_Actual_Payment__c, npe01__Number_of_Payments__c,
@@ -427,7 +439,6 @@ async def get_opportunities(
                npsp__Primary_Contact__c,
                npsp__Primary_Contact__r.Name, npsp__Primary_Contact__r.Email,
                RecordTypeId, RecordType.Name, Active_Opportunity__c,
-               Reporting_Method__c, npsp__Next_Grant_Deadline_Due_Date__c,
                Ask_Amount_if_different_from_actual__c,
                Philanthropy_Type__c,
                Manager_Probability_Override__c,
@@ -862,6 +873,17 @@ async def create_contact(
 PAYMENT_SOQL_FIELDS = """
     Id, Name, npe01__Opportunity__c, npe01__Opportunity__r.Name,
     npe01__Opportunity__r.Account.Name,
+    npe01__Opportunity__r.AccountId,
+    npe01__Opportunity__r.OwnerId,
+    npe01__Opportunity__r.Owner.Name,
+    npe01__Opportunity__r.StageName,
+    npe01__Opportunity__r.Amount,
+    npe01__Opportunity__r.Probability,
+    npe01__Opportunity__r.Manager_Probability_Override__c,
+    npe01__Opportunity__r.CloseDate,
+    npe01__Opportunity__r.RecordType.Name,
+    npe01__Opportunity__r.Active_Opportunity__c,
+    npe01__Opportunity__r.Philanthropy_Type__c,
     npe01__Payment_Amount__c, npe01__Scheduled_Date__c,
     npe01__Payment_Date__c, npe01__Paid__c,
     npe01__Payment_Method__c, npe01__Check_Reference_Number__c,
@@ -1985,8 +2007,12 @@ class TaskCreateRequest(BaseModel):
     # contacts from the TaskPanel Contact autocomplete. SF Task has both
     # WhoId (Contact/Lead) and WhatId (parent entity — Opp/Account/etc.);
     # WhatId is set from the URL path in create_opportunity_task, WhoId
-    # from the body.
+    # from the body. The generic POST /api/salesforce/tasks endpoint
+    # accepts both from the body so the Tasks page (no parent context)
+    # and ContactExpandPanel (Contact-WhoId, optional opp/account WhatId)
+    # can use one endpoint.
     WhoId: Optional[str] = None
+    WhatId: Optional[str] = None
 
 
 class TaskUpdateRequest(BaseModel):
@@ -2500,6 +2526,56 @@ async def create_account_task(
         )
     except Exception as e:
         logger.error(f"Error creating account task: {e}")
+        raise HTTPException(status_code=500, detail="Failed to create task")
+
+
+@app.post("/api/salesforce/tasks")
+async def create_task(
+    task_data: TaskCreateRequest,
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
+    user=Depends(check_permission("create_tasks")),
+):
+    """Generic Task creation. Accepts WhoId (Contact/Lead) and/or WhatId
+    (Opportunity/Account/etc.) from the body — both optional, so this
+    can mint a parent-less "My Tasks" entry too. The opp- and account-
+    scoped POSTs above remain for path-driven creation; this endpoint
+    backs ContactExpandPanel's add-task row and the Home / My Tasks page
+    where the user picks the parent via UI rather than route.
+
+    Salesforce ID validation: only the fields actually present in the
+    body are validated. An empty / missing WhoId or WhatId is fine.
+    """
+    try:
+        salesforce = client.salesforce
+        fields = task_data.model_dump(exclude_none=True)
+        if fields.get("WhoId"):
+            validate_salesforce_id(fields["WhoId"], "WhoId")
+        if fields.get("WhatId"):
+            validate_salesforce_id(fields["WhatId"], "WhatId")
+        result = await salesforce.create_record("Task", fields)
+        task_id = result.get("id") or result.get("Id")
+        cache.invalidate_prefix("my-tasks:")
+        cache.invalidate_prefix("opportunity-tasks:")
+        cache.invalidate_prefix("account-tasks:")
+        cache.invalidate_prefix("contact-tasks:")
+        cache.invalidate_prefix("user-tasks:")
+
+        verify = await _verify_and_recover_task_fields(salesforce, task_id, fields)
+        return ApiResponse(
+            success=True,
+            data={
+                "id": task_id,
+                "message": "Task created",
+                "saved_subject": verify["saved"].get("Subject"),
+                "subject_clobbered": "Subject" in verify["clobbered"],
+                "clobbered_fields": list(verify["clobbered"].keys()),
+                "saved_values": verify["saved"],
+            },
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating task: {e}")
         raise HTTPException(status_code=500, detail="Failed to create task")
 
 

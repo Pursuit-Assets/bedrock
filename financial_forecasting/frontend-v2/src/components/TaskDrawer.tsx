@@ -1,8 +1,27 @@
+import { useMemo } from "react";
 import { Link } from "react-router-dom";
 
 import { Drawer } from "@/components/ui/Drawer";
+import { InlineDate, InlineSelect, InlineText } from "@/components/ui/InlineEdit";
 import { Tag } from "@/components/ui/Tag";
 import { fmtDate } from "@/lib/format";
+import { useUpdateTask } from "@/services/opportunities";
+import { useActiveUsers } from "@/services/users";
+import type { SfTask } from "@/types/salesforce";
+
+const STATUS_OPTIONS = [
+  { value: "Not Started", label: "Not Started" },
+  { value: "In Progress", label: "In Progress" },
+  { value: "Waiting on someone else", label: "Waiting" },
+  { value: "Deferred", label: "Deferred" },
+  { value: "Completed", label: "Completed" },
+];
+
+const PRIORITY_OPTIONS = [
+  { value: "Low", label: "Low" },
+  { value: "Normal", label: "Normal" },
+  { value: "High", label: "High" },
+];
 
 /**
  * Unified task representation rendered by both row + drawer. The Tasks
@@ -24,19 +43,22 @@ export interface FlatTask {
 }
 
 /**
- * Read-only detail view for a unified task. Editing is intentionally
- * deferred — see TODO below.
- *
- * TODO(tasks-edit): wire inline edit. CRM tasks edit through
- * `PUT /api/salesforce/tasks/{id}` (already exists in main.py); project
- * tasks edit through `PUT /api/project-tasks/{id}`. Both need optimistic
- * cache updates against ["my-tasks"] and ["project-detail", id].
+ * Detail view for a unified task. Editable for CRM tasks (Subject,
+ * Status, Priority, Owner, Deadline, Description), routed through
+ * `PUT /api/salesforce/tasks/{id}` via useUpdateTask. Project tasks
+ * remain read-only here (they have their own edit surface inside
+ * the Projects page — TODO: extend if needed).
  */
 export function TaskDrawer({
   task,
+  rawTask,
   onClose,
 }: {
   task: FlatTask | null;
+  /** Underlying SF Task. When present and task.source === "crm", the
+   *  drawer renders inline-edit controls for Status / Priority / Owner
+   *  / Deadline / Description. */
+  rawTask?: SfTask | null;
   onClose: () => void;
 }) {
   const open = !!task;
@@ -49,12 +71,25 @@ export function TaskDrawer({
       linkTo={task?.parentLink ?? undefined}
       width={560}
     >
-      {task ? <TaskDrawerBody task={task} /> : null}
+      {task ? <TaskDrawerBody task={task} rawTask={rawTask ?? null} /> : null}
     </Drawer>
   );
 }
 
-function TaskDrawerBody({ task }: { task: FlatTask }) {
+function TaskDrawerBody({ task, rawTask }: { task: FlatTask; rawTask: SfTask | null }) {
+  const editable = task.source === "crm" && rawTask != null;
+  const updateTask = useUpdateTask();
+  const usersQ = useActiveUsers();
+  const ownerOptions = useMemo(
+    () => (usersQ.data ?? []).map((u) => ({ value: u.Id, label: u.Name })),
+    [usersQ.data],
+  );
+
+  const save = (patch: Parameters<typeof updateTask.mutateAsync>[0]["patch"]) => {
+    if (!rawTask) return Promise.resolve();
+    return updateTask.mutateAsync({ id: rawTask.Id, patch }).then(() => undefined);
+  };
+
   return (
     <div className="flex flex-col gap-5 px-5 py-5">
       <div className="flex flex-wrap items-center gap-2">
@@ -66,6 +101,16 @@ function TaskDrawerBody({ task }: { task: FlatTask }) {
           </Tag>
         ) : null}
       </div>
+
+      {editable ? (
+        <Field label="Subject">
+          <InlineText
+            value={rawTask.Subject ?? ""}
+            onSave={(v) => save({ Subject: v })}
+            placeholder="(no subject)"
+          />
+        </Field>
+      ) : null}
 
       {task.parentLabel ? (
         <Field label="Linked to">
@@ -84,24 +129,61 @@ function TaskDrawerBody({ task }: { task: FlatTask }) {
 
       <div className="grid grid-cols-2 gap-3">
         <Field label="Owner">
-          <span className="text-[13px]">
-            {task.owner || <span className="text-ink-3">—</span>}
-          </span>
+          {editable ? (
+            <InlineSelect
+              value={rawTask.OwnerId ?? null}
+              options={ownerOptions}
+              onSave={(v) => save({ OwnerId: v })}
+              renderValue={() => (
+                <span className="text-[13px] text-ink">
+                  {rawTask.OwnerName ?? ownerOptions.find((o) => o.value === rawTask.OwnerId)?.label ?? "—"}
+                </span>
+              )}
+            />
+          ) : (
+            <span className="text-[13px]">
+              {task.owner || <span className="text-ink-3">—</span>}
+            </span>
+          )}
         </Field>
         <Field label="Deadline">
-          <span className="mono text-[13px] tabular-nums">
-            {fmtDate(task.deadline)}
-          </span>
+          {editable ? (
+            <InlineDate
+              value={rawTask.ActivityDate ?? null}
+              onSave={(v) => save({ ActivityDate: v })}
+              placeholder="—"
+            />
+          ) : (
+            <span className="mono text-[13px] tabular-nums">
+              {fmtDate(task.deadline)}
+            </span>
+          )}
         </Field>
         <Field label="Status">
-          <span className="text-[13px]">{task.status || "—"}</span>
+          {editable ? (
+            <InlineSelect
+              value={rawTask.Status ?? null}
+              options={STATUS_OPTIONS}
+              onSave={(v) => save({ Status: v })}
+            />
+          ) : (
+            <span className="text-[13px]">{task.status || "—"}</span>
+          )}
         </Field>
         <Field label="Priority">
-          <span className="text-[13px]">
-            {task.source === "crm"
-              ? task.priority || <span className="text-ink-3">—</span>
-              : <span className="text-ink-3">— (project tasks have no priority field)</span>}
-          </span>
+          {editable ? (
+            <InlineSelect
+              value={rawTask.Priority ?? null}
+              options={PRIORITY_OPTIONS}
+              onSave={(v) => save({ Priority: v })}
+            />
+          ) : (
+            <span className="text-[13px]">
+              {task.source === "crm"
+                ? task.priority || <span className="text-ink-3">—</span>
+                : <span className="text-ink-3">— (project tasks have no priority field)</span>}
+            </span>
+          )}
         </Field>
         {task.type ? (
           <Field label="Type">
@@ -111,7 +193,15 @@ function TaskDrawerBody({ task }: { task: FlatTask }) {
       </div>
 
       <Field label="Description">
-        {task.description ? (
+        {editable ? (
+          <InlineText
+            value={rawTask.Description ?? ""}
+            onSave={(v) => save({ Description: v })}
+            multiline
+            placeholder="Add a description…"
+            className="text-[13px] leading-relaxed text-ink-2"
+          />
+        ) : task.description ? (
           <div className="whitespace-pre-wrap text-[13px] leading-relaxed text-ink-2">
             {task.description}
           </div>
@@ -120,18 +210,12 @@ function TaskDrawerBody({ task }: { task: FlatTask }) {
         )}
       </Field>
 
-      <div className="rounded-md border border-dashed border-border-strong bg-surface-2 px-3 py-2 text-[11.5px] text-ink-3">
-        Read-only for now. Inline editing lands in a follow-up pass —
-        CRM tasks via{" "}
-        <code className="rounded bg-surface px-1 py-0.5 text-[10.5px]">
-          PUT /api/salesforce/tasks/{"{id}"}
-        </code>
-        , project tasks via{" "}
-        <code className="rounded bg-surface px-1 py-0.5 text-[10.5px]">
-          PUT /api/project-tasks/{"{id}"}
-        </code>
-        .
-      </div>
+      {!editable ? (
+        <div className="rounded-md border border-dashed border-border-strong bg-surface-2 px-3 py-2 text-[11.5px] text-ink-3">
+          Project tasks edit inline on the Projects page. Drawer editing
+          for them lands in a follow-up.
+        </div>
+      ) : null}
     </div>
   );
 }

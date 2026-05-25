@@ -266,7 +266,16 @@ export function OpportunityDetailPage() {
           <EditField label="Probability">
             <InlineText
               value={opp.Manager_Probability_Override__c != null ? String(opp.Manager_Probability_Override__c) : (opp.Probability != null ? String(opp.Probability) : "")}
-              onSave={(v) => patch("Manager_Probability_Override__c", v ? Number(v) : null)}
+              onSave={async (v) => {
+                // Mirror SF's UI behavior: write Probability alongside
+                // Manager_Probability_Override__c so the two stay in sync.
+                // Clearing the override (null) lets SF restore the
+                // stage-driven default — don't touch Probability then.
+                const next = v ? Number(v) : null;
+                const body: Record<string, unknown> = { Manager_Probability_Override__c: next };
+                if (next != null) body.Probability = next;
+                await updateOpp.mutateAsync({ id: opp.Id, patch: body });
+              }}
               formatDisplay={formatPercentDisplay}
               placeholder="—"
             />
