@@ -22,7 +22,8 @@ import {
   type AwardReportStatus,
   type AwardStatus,
 } from "@/services/awards";
-import { useOpportunities, useOpportunityTasks, useUpdateOpportunity, useUpdateTask } from "@/services/opportunities";
+import { TaskListTab } from "@/components/expand/TaskListTab";
+import { useCreateTask, useOpportunities, useOpportunityTasks, useUpdateOpportunity } from "@/services/opportunities";
 import { useOpportunityPayments, useUpdatePayment, type SfPayment } from "@/services/payments";
 import { useActiveUsers } from "@/services/users";
 import { usePerm } from "@/services/permissions";
@@ -329,16 +330,6 @@ function AwardMetaDetail({
 }) {
   return (
     <dl className="space-y-2 text-[12px]">
-      <Row label="Period ends">
-        {canEdit ? (
-          <InlineDate
-            value={award.period_end_date}
-            onSave={(v) => onPatch({ period_end_date: v })}
-          />
-        ) : (
-          <span className="mono text-ink-2">{fmtDate(award.period_end_date)}</span>
-        )}
-      </Row>
       <Row label="Frequency">
         {canEdit ? (
           <InlineSelect
@@ -357,6 +348,16 @@ function AwardMetaDetail({
       </Row>
       <Row label="Awarded">
         <span className="mono text-ink-2">{fmtDate(award.award_date)}</span>
+      </Row>
+      <Row label="Period ends">
+        {canEdit ? (
+          <InlineDate
+            value={award.period_end_date}
+            onSave={(v) => onPatch({ period_end_date: v })}
+          />
+        ) : (
+          <span className="mono text-ink-2">{fmtDate(award.period_end_date)}</span>
+        )}
       </Row>
     </dl>
   );
@@ -692,62 +693,38 @@ function PaymentRow({
 
 // ── Tasks section ─────────────────────────────────────────────────────────
 
-const TASK_STATUS_OPTIONS = [
-  { value: "Not Started", label: "Not Started" },
-  { value: "In Progress", label: "In Progress" },
-  { value: "Waiting on someone else", label: "Waiting" },
-  { value: "Completed", label: "Completed" },
-];
-
 function TasksDetail({ opportunityId }: { opportunityId: string }) {
   const { data: tasks = [], isLoading } = useOpportunityTasks(opportunityId);
-  const updateTask = useUpdateTask();
   const usersQ = useActiveUsers();
   const ownerOptions = useMemo(
     () => (usersQ.data ?? []).map((u) => ({ value: u.Id, label: u.Name })),
     [usersQ.data],
   );
+  const createTask = useCreateTask();
 
-  const open = tasks.filter((t) => !t.IsClosed && t.Status !== "Completed");
-
-  if (isLoading) return <div className="text-[12px] text-ink-3">Loading tasks…</div>;
-  if (open.length === 0)
-    return (
-      <div className="rounded border border-dashed border-border-strong px-3 py-4 text-center text-[12px] text-ink-3">
-        No open tasks.
-      </div>
-    );
-
+  // Reuse the shared TaskListTab so the Award page gets the same full
+  // CRUD surface that every other expand panel has — inline-edit on
+  // subject / status / owner / due, hover-revealed delete, and an
+  // inline "new task" footer row that creates tasks tied to the
+  // award's underlying opportunity.
   return (
-    <div className="space-y-1">
-      {open.map((t) => (
-        <div
-          key={t.Id}
-          className="flex items-center gap-3 rounded border border-border-strong bg-surface px-3 py-1.5 text-[12px]"
-        >
-          <span className="flex-1 truncate text-ink" title={t.Subject ?? ""}>
-            {t.Subject || "(no subject)"}
-          </span>
-          <span className="mono text-[11px] text-ink-3">{fmtDate(t.ActivityDate)}</span>
-          <InlineSelect
-            value={t.Status ?? "Not Started"}
-            options={TASK_STATUS_OPTIONS}
-            onSave={(v) =>
-              updateTask.mutateAsync({ id: t.Id, patch: { Status: v } }).then(() => undefined)
-            }
-            renderValue={(v) => <Tag>{v || "—"}</Tag>}
-          />
-          <InlineSelect
-            value={t.OwnerId ?? ""}
-            options={ownerOptions}
-            onSave={(v) =>
-              updateTask.mutateAsync({ id: t.Id, patch: { OwnerId: v } }).then(() => undefined)
-            }
-            renderValue={() => <span className="text-[11.5px] text-ink-3">{t.OwnerName ?? "—"}</span>}
-          />
-        </div>
-      ))}
-    </div>
+    <TaskListTab
+      tasks={tasks}
+      isLoading={isLoading}
+      placeholder="Add a task — press Enter to create"
+      emptyMessage="No open tasks for this award."
+      ownerOptions={ownerOptions}
+      onCreate={async ({ subject, ownerId, activityDate }) => {
+        await createTask.mutateAsync({
+          opportunityId,
+          body: {
+            Subject: subject,
+            OwnerId: ownerId ?? undefined,
+            ActivityDate: activityDate ?? undefined,
+          },
+        });
+      }}
+    />
   );
 }
 
