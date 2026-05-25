@@ -24,6 +24,73 @@ logger = logging.getLogger(__name__)
 
 PURSUIT_DOMAIN = "@pursuit.org"
 
+# Domains that send automated/transactional mail — never real interactions.
+# Gmail's category:primary filter catches most of these, but some slip through
+# (e.g. Fireflies sends from a real-looking address in Primary).
+AUTOMATED_SENDER_DOMAINS = {
+    # Meeting/recording tools
+    "zoom.us", "zoomgov.com",
+    "fireflies.ai",
+    "otter.ai",
+    "loom.com",
+    "whereby.com",
+    "webex.com",
+    "gotomeeting.com",
+    # Scheduling
+    "calendly.com",
+    "hubspotlinks.com",
+    "chilipiper.com",
+    "savvycal.com",
+    # Social / notifications
+    "linkedin.com", "linkedin.co.uk",
+    "twitter.com", "x.com",
+    "facebook.com", "facebookmail.com",
+    "instagram.com",
+    # Transactional / e-signature
+    "docusign.com", "docusign.net",
+    "hellosign.com",
+    "pandadoc.com",
+    # Productivity notifications
+    "slack.com", "slackb.com",
+    "asana.com",
+    "monday.com",
+    "notion.so",
+    "airtable.com",
+    "jira.atlassian.com",
+    "github.com", "githubusercontent.com",
+    # Generic noreply patterns handled separately below
+}
+
+# Subject-line patterns that indicate automated mail
+AUTOMATED_SUBJECT_PATTERNS = [
+    "unsubscribe",
+    "newsletter",
+    "no-reply",
+    "noreply",
+    "notification",
+    "automated",
+    "do not reply",
+]
+
+
+def _is_automated_sender(from_header: str) -> bool:
+    """Return True if the From address looks like an automated sender."""
+    if not from_header:
+        return False
+    addr = from_header.lower()
+    # Extract just the email address
+    if "<" in addr:
+        addr = addr.split("<")[-1].strip("> ")
+    # noreply / no-reply local parts
+    local = addr.split("@")[0] if "@" in addr else addr
+    if any(pat in local for pat in ("noreply", "no-reply", "donotreply", "do-not-reply",
+                                    "notification", "automated", "mailer", "bounce",
+                                    "postmaster", "newsletter", "support+", "alert")):
+        return True
+    # Blocked domains
+    domain = addr.split("@")[-1] if "@" in addr else ""
+    return domain in AUTOMATED_SENDER_DOMAINS
+
 
 def _build_gmail_service(staff_email: str):
     creds = get_dwd_credentials(staff_email, GMAIL_SCOPES)
@@ -164,12 +231,12 @@ async def sync_gmail_for_staff(
     else:
         since = datetime.now(timezone.utc) - timedelta(days=days_back)
 
-    # Fetch all threads since watermark; Python-side filtering below keeps only
-    # threads with at least one external (non @pursuit.org) participant.
-    # We don't filter in the Gmail query because -to:@pursuit.org would drop
-    # mixed threads (external person + Pursuit colleague CC'd on the same email).
+    # category:primary restricts to the Primary inbox tab — Gmail's own ML
+    # routes Zoom receipts, Fireflies summaries, LinkedIn notifications,
+    # newsletters, etc. to Updates/Social/Promotions, so they never appear here.
+    # Python-side checks below handle anything that still slips through.
     date_str = since.strftime("%Y/%m/%d")
-    query = f"after:{date_str}"
+    query = f"after:{date_str} category:primary"
 
     upserted = 0
     errors = 0
@@ -192,12 +259,21 @@ async def sync_gmail_for_staff(
             if not meta:
                 continue
 
+            # Skip automated/transactional senders
+            if _is_automated_sender(meta["email_from"]):
+                continue
+
             # Skip purely internal threads
             all_external = [e for e in meta["all_emails"] if PURSUIT_DOMAIN not in e]
             if not all_external:
                 continue
 
-            contact_ids, account_id = await _resolve_emails_to_contacts(conn, all_external)
+            # Skip if all external participants are also automated senders
+            real_external = [e for e in all_external if not _is_automated_sender(e)]
+            if not real_external:
+                continue
+
+            contact_ids, account_id = await _resolve_emails_to_contacts(conn, real_external)
 
             try:
                 await conn.execute(
@@ -228,7 +304,7 @@ async def sync_gmail_for_staff(
                     meta["date"],
                     meta["thread_id"],
                     meta["email_from"],
-                    all_external,
+                    real_external,
                     meta["snippet"],
                     contact_ids,
                     account_id,
