@@ -1978,8 +1978,12 @@ class TaskCreateRequest(BaseModel):
     # contacts from the TaskPanel Contact autocomplete. SF Task has both
     # WhoId (Contact/Lead) and WhatId (parent entity — Opp/Account/etc.);
     # WhatId is set from the URL path in create_opportunity_task, WhoId
-    # from the body.
+    # from the body. The generic POST /api/salesforce/tasks endpoint
+    # accepts both from the body so the Tasks page (no parent context)
+    # and ContactExpandPanel (Contact-WhoId, optional opp/account WhatId)
+    # can use one endpoint.
     WhoId: Optional[str] = None
+    WhatId: Optional[str] = None
 
 
 class TaskUpdateRequest(BaseModel):
@@ -2493,6 +2497,56 @@ async def create_account_task(
         )
     except Exception as e:
         logger.error(f"Error creating account task: {e}")
+        raise HTTPException(status_code=500, detail="Failed to create task")
+
+
+@app.post("/api/salesforce/tasks")
+async def create_task(
+    task_data: TaskCreateRequest,
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
+    user=Depends(check_permission("create_tasks")),
+):
+    """Generic Task creation. Accepts WhoId (Contact/Lead) and/or WhatId
+    (Opportunity/Account/etc.) from the body — both optional, so this
+    can mint a parent-less "My Tasks" entry too. The opp- and account-
+    scoped POSTs above remain for path-driven creation; this endpoint
+    backs ContactExpandPanel's add-task row and the Home / My Tasks page
+    where the user picks the parent via UI rather than route.
+
+    Salesforce ID validation: only the fields actually present in the
+    body are validated. An empty / missing WhoId or WhatId is fine.
+    """
+    try:
+        salesforce = client.salesforce
+        fields = task_data.model_dump(exclude_none=True)
+        if fields.get("WhoId"):
+            validate_salesforce_id(fields["WhoId"], "WhoId")
+        if fields.get("WhatId"):
+            validate_salesforce_id(fields["WhatId"], "WhatId")
+        result = await salesforce.create_record("Task", fields)
+        task_id = result.get("id") or result.get("Id")
+        cache.invalidate_prefix("my-tasks:")
+        cache.invalidate_prefix("opportunity-tasks:")
+        cache.invalidate_prefix("account-tasks:")
+        cache.invalidate_prefix("contact-tasks:")
+        cache.invalidate_prefix("user-tasks:")
+
+        verify = await _verify_and_recover_task_fields(salesforce, task_id, fields)
+        return ApiResponse(
+            success=True,
+            data={
+                "id": task_id,
+                "message": "Task created",
+                "saved_subject": verify["saved"].get("Subject"),
+                "subject_clobbered": "Subject" in verify["clobbered"],
+                "clobbered_fields": list(verify["clobbered"].keys()),
+                "saved_values": verify["saved"],
+            },
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating task: {e}")
         raise HTTPException(status_code=500, detail="Failed to create task")
 
 
