@@ -449,13 +449,14 @@ function ParentGroup({ group }: { group: ParentGroupData }) {
       </button>
 
       {open ? (
-        <table className="w-full">
+        <table className="w-full table-fixed">
           <colgroup>
             <col style={{ width: 28 }} />
             <col />
             <col style={{ width: 140 }} />
             <col style={{ width: 130 }} />
             <col style={{ width: 30 }} />
+            <col style={{ width: 32 }} />
           </colgroup>
           <tbody>
             {group.tasks.map((t) => (
