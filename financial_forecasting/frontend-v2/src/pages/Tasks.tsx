@@ -2,6 +2,7 @@ import { memo, useMemo, useRef, useState } from "react";
 import { Search } from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 
+import { NewMyTaskRow } from "@/components/NewMyTaskRow";
 import { PageHeader } from "@/components/PageHeader";
 import {
   SourceBadge,
@@ -290,6 +291,8 @@ export function TasksPage() {
           Couldn't load Bedrock project tasks. CRM tasks still shown.
         </div>
       ) : null}
+
+      <NewMyTaskRow />
 
       <Toolbar>
         <ButtonGroup
