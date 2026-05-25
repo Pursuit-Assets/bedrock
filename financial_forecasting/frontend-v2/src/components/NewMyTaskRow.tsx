@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Plus, X } from "lucide-react";
 
 import { Tag } from "@/components/ui/Tag";
@@ -53,7 +54,7 @@ export function NewMyTaskRow() {
   };
 
   return (
-    <div className="my-2 flex flex-wrap items-center gap-2 rounded-md border border-border-strong bg-surface px-3 py-2">
+    <div className="flex flex-wrap items-center gap-2 border-b border-border-strong bg-surface-2/40 px-5 py-2">
       <Plus size={13} className="flex-shrink-0 text-ink-3" />
       <input
         value={subject}
@@ -128,7 +129,34 @@ export function NewMyTaskRow() {
 function LinkPicker({ onPick }: { onPick: (target: LinkTarget) => void }) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
-  const ref = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const popoverRef = useRef<HTMLDivElement>(null);
+
+  // Portal-positioned popover (position:fixed) so SectionCard's
+  // overflow-hidden doesn't clip the dropdown when the picker is
+  // mounted inside it. Track trigger rect on open + scroll + resize.
+  const POPOVER_WIDTH = 320;
+  const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
+  useLayoutEffect(() => {
+    if (!open || !triggerRef.current) return;
+    const recompute = () => {
+      if (!triggerRef.current) return;
+      const r = triggerRef.current.getBoundingClientRect();
+      const margin = 8;
+      let left = r.left;
+      if (left + POPOVER_WIDTH > window.innerWidth - margin) {
+        left = Math.max(margin, r.right - POPOVER_WIDTH);
+      }
+      setPos({ top: r.bottom + 4, left });
+    };
+    recompute();
+    window.addEventListener("scroll", recompute, true);
+    window.addEventListener("resize", recompute);
+    return () => {
+      window.removeEventListener("scroll", recompute, true);
+      window.removeEventListener("resize", recompute);
+    };
+  }, [open]);
 
   const oppsQ = useOpportunities();
   const accountsQ = useAccounts();
@@ -152,11 +180,16 @@ function LinkPicker({ onPick }: { onPick: (target: LinkTarget) => void }) {
     return { opps, accounts, contacts };
   }, [q, oppsQ.data, accountsQ.data, contactsQ.data]);
 
-  // Close on click-outside.
+  // Close on click-outside. Portal content lives at document.body so
+  // a parent wrapper can't see clicks inside the popover — listen on
+  // the document and compare against both the trigger and the popover.
   useEffect(() => {
     if (!open) return;
     const onDown = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+      const t = e.target as Node;
+      if (popoverRef.current?.contains(t)) return;
+      if (triggerRef.current?.contains(t)) return;
+      setOpen(false);
     };
     document.addEventListener("mousedown", onDown);
     return () => document.removeEventListener("mousedown", onDown);
@@ -169,17 +202,23 @@ function LinkPicker({ onPick }: { onPick: (target: LinkTarget) => void }) {
   };
 
   return (
-    <div ref={ref} className="relative flex-shrink-0">
+    <>
       <button
+        ref={triggerRef}
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="h-7 rounded border border-dashed border-border-strong bg-surface px-2 text-[11.5px] text-ink-3 hover:border-border-strong hover:text-ink-2"
+        className="h-7 flex-shrink-0 rounded border border-dashed border-border-strong bg-surface px-2 text-[11.5px] text-ink-3 hover:border-border-strong hover:text-ink-2"
       >
         Link to…
       </button>
-      {open ? (
-        <div className="absolute left-0 top-full z-30 mt-1 w-[320px] overflow-hidden rounded-lg border border-border-strong bg-surface shadow-xl">
-          <input
+      {open && pos
+        ? createPortal(
+            <div
+              ref={popoverRef}
+              style={{ position: "fixed", top: pos.top, left: pos.left, width: POPOVER_WIDTH }}
+              className="z-50 overflow-hidden rounded-lg border border-border-strong bg-surface shadow-xl"
+            >
+              <input
             autoFocus
             type="text"
             value={q}
@@ -245,9 +284,11 @@ function LinkPicker({ onPick }: { onPick: (target: LinkTarget) => void }) {
               </>
             )}
           </div>
-        </div>
-      ) : null}
-    </div>
+            </div>,
+            document.body,
+          )
+        : null}
+    </>
   );
 }
 
