@@ -5,13 +5,18 @@ For each staff email:
   2. Read watermark → compute 'after:' date
   3. Search threads (skip internal @pursuit.org-only threads)
   4. Resolve participant emails → public.contacts + sf_contact_link
-  5. Upsert bedrock.activity (ON CONFLICT source + source_thread_id)
-  6. Update sync_watermark
+  5. Fetch full message bodies + download attachments → GCS
+  6. Upsert bedrock.activity (ON CONFLICT source + source_thread_id)
+  7. Update sync_watermark
 
 Requires GOOGLE_SERVICE_ACCOUNT_JSON env var (see google_dwd.py).
+Attachments stored in GCS bucket: bedrock-email-content
 """
 
+import base64
+import json
 import logging
+import os
 from datetime import datetime, timezone, timedelta
 from typing import Any
 
@@ -23,12 +28,10 @@ from services.google_dwd import get_dwd_credentials, GMAIL_SCOPES
 logger = logging.getLogger(__name__)
 
 PURSUIT_DOMAIN = "@pursuit.org"
+GCS_BUCKET = "bedrock-email-content"
+MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024  # skip attachments > 25 MB
 
-# Domains that send automated/transactional mail — never real interactions.
-# Gmail's category:primary filter catches most of these, but some slip through
-# (e.g. Fireflies sends from a real-looking address in Primary).
 AUTOMATED_SENDER_DOMAINS = {
-    # Meeting/recording tools
     "zoom.us", "zoomgov.com",
     "fireflies.ai",
     "otter.ai",
@@ -36,21 +39,17 @@ AUTOMATED_SENDER_DOMAINS = {
     "whereby.com",
     "webex.com",
     "gotomeeting.com",
-    # Scheduling
     "calendly.com",
     "hubspotlinks.com",
     "chilipiper.com",
     "savvycal.com",
-    # Social / notifications
     "linkedin.com", "linkedin.co.uk",
     "twitter.com", "x.com",
     "facebook.com", "facebookmail.com",
     "instagram.com",
-    # Transactional / e-signature
     "docusign.com", "docusign.net",
     "hellosign.com",
     "pandadoc.com",
-    # Productivity notifications
     "slack.com", "slackb.com",
     "asana.com",
     "monday.com",
@@ -58,36 +57,20 @@ AUTOMATED_SENDER_DOMAINS = {
     "airtable.com",
     "jira.atlassian.com",
     "github.com", "githubusercontent.com",
-    # Generic noreply patterns handled separately below
 }
-
-# Subject-line patterns that indicate automated mail
-AUTOMATED_SUBJECT_PATTERNS = [
-    "unsubscribe",
-    "newsletter",
-    "no-reply",
-    "noreply",
-    "notification",
-    "automated",
-    "do not reply",
-]
 
 
 def _is_automated_sender(from_header: str) -> bool:
-    """Return True if the From address looks like an automated sender."""
     if not from_header:
         return False
     addr = from_header.lower()
-    # Extract just the email address
     if "<" in addr:
         addr = addr.split("<")[-1].strip("> ")
-    # noreply / no-reply local parts
     local = addr.split("@")[0] if "@" in addr else addr
     if any(pat in local for pat in ("noreply", "no-reply", "donotreply", "do-not-reply",
                                     "notification", "automated", "mailer", "bounce",
                                     "postmaster", "newsletter", "support+", "alert")):
         return True
-    # Blocked domains
     domain = addr.split("@")[-1] if "@" in addr else ""
     return domain in AUTOMATED_SENDER_DOMAINS
 
@@ -95,6 +78,95 @@ def _is_automated_sender(from_header: str) -> bool:
 def _build_gmail_service(staff_email: str):
     creds = get_dwd_credentials(staff_email, GMAIL_SCOPES)
     return build("gmail", "v1", credentials=creds, cache_discovery=False)
+
+
+def _get_gcs_client():
+    """Build a GCS client from the DWD service account JSON."""
+    from google.cloud import storage
+    from google.oauth2 import service_account as sa
+    key_json = base64.b64decode(os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"])
+    info = json.loads(key_json)
+    creds = sa.Credentials.from_service_account_info(
+        info, scopes=["https://www.googleapis.com/auth/devstorage.read_write"]
+    )
+    return storage.Client(credentials=creds, project=info.get("project_id"))
+
+
+_gcs_client = None
+
+
+def _gcs() -> Any:
+    global _gcs_client
+    if _gcs_client is None:
+        _gcs_client = _get_gcs_client()
+    return _gcs_client
+
+
+def _parse_body(payload: dict) -> tuple[str, str]:
+    """Recursively extract text/plain and text/html from a MIME payload."""
+    body_text = ""
+    body_html = ""
+    mime_type = payload.get("mimeType", "")
+
+    if mime_type == "text/plain":
+        data = payload.get("body", {}).get("data", "")
+        if data:
+            body_text = base64.urlsafe_b64decode(data + "==").decode("utf-8", errors="replace")
+    elif mime_type == "text/html":
+        data = payload.get("body", {}).get("data", "")
+        if data:
+            body_html = base64.urlsafe_b64decode(data + "==").decode("utf-8", errors="replace")
+    elif "parts" in payload:
+        for part in payload["parts"]:
+            t, h = _parse_body(part)
+            body_text += t
+            body_html += h
+
+    return body_text, body_html
+
+
+def _parse_attachment_meta(payload: dict, results: list | None = None) -> list[dict]:
+    """Recursively collect attachment metadata from a MIME payload."""
+    if results is None:
+        results = []
+    filename = payload.get("filename", "")
+    body = payload.get("body", {})
+    attachment_id = body.get("attachmentId")
+    if filename and attachment_id:
+        results.append({
+            "filename": filename,
+            "mime_type": payload.get("mimeType", "application/octet-stream"),
+            "size_bytes": body.get("size", 0),
+            "attachment_id": attachment_id,
+        })
+    for part in payload.get("parts", []):
+        _parse_attachment_meta(part, results)
+    return results
+
+
+def _upload_attachment(service, message_id: str, att: dict, staff_email: str, thread_id: str) -> str | None:
+    """Download attachment from Gmail and upload to GCS. Returns GCS public path or None."""
+    if att["size_bytes"] > MAX_ATTACHMENT_BYTES:
+        logger.debug("skipping large attachment %s (%d bytes)", att["filename"], att["size_bytes"])
+        return None
+    try:
+        result = service.users().messages().attachments().get(
+            userId="me", messageId=message_id, id=att["attachment_id"]
+        ).execute()
+        data = base64.urlsafe_b64decode(result.get("data", "") + "==")
+    except HttpError as e:
+        logger.warning("attachment download failed %s/%s: %s", message_id, att["filename"], e)
+        return None
+
+    blob_path = f"{staff_email}/{thread_id}/{message_id}/{att['filename']}"
+    try:
+        bucket = _gcs().bucket(GCS_BUCKET)
+        blob = bucket.blob(blob_path)
+        blob.upload_from_string(data, content_type=att["mime_type"])
+        return f"gs://{GCS_BUCKET}/{blob_path}"
+    except Exception as e:
+        logger.warning("GCS upload failed for %s: %s", blob_path, e)
+        return None
 
 
 async def _get_watermark(conn, staff_email: str) -> datetime | None:
@@ -122,11 +194,6 @@ async def _set_watermark(conn, staff_email: str, count: int) -> None:
 async def _resolve_emails_to_contacts(
     conn, emails: list[str]
 ) -> tuple[list[str], str | None]:
-    """Return (contact_ids, sf_account_id) for a list of email addresses.
-
-    contact_ids — list of sf_contact_id strings (known contacts only)
-    sf_account_id — resolved via contact link first, then domain fallback
-    """
     if not emails:
         return [], None
 
@@ -147,7 +214,6 @@ async def _resolve_emails_to_contacts(
     contact_ids = [r["sf_contact_id"] for r in rows]
     account_id = next((r["sf_account_id"] for r in rows if r["sf_account_id"]), None)
 
-    # Domain fallback: if no account resolved via contact, try email domain lookup
     if account_id is None:
         domains = list({e.split("@")[-1] for e in external if "@" in e})
         if domains:
@@ -165,19 +231,21 @@ SKIP_LABELS = {"CATEGORY_PROMOTIONS", "CATEGORY_SOCIAL", "CATEGORY_UPDATES", "CA
 
 
 def _extract_thread_meta(service, thread_id: str) -> dict[str, Any] | None:
-    """Pull minimal thread metadata via the Gmail API (one API call)."""
+    """Fetch full thread — bodies, attachment metadata, participants.
+
+    Attachment files are NOT downloaded here; that happens after filtering
+    in sync_gmail_for_staff so we don't fetch content for skipped threads.
+    """
     try:
         thread = service.users().threads().get(
             userId="me",
             id=thread_id,
-            format="metadata",
-            metadataHeaders=["From", "To", "Cc", "Subject", "Date"],
+            format="full",
         ).execute()
     except HttpError as e:
         logger.warning("gmail thread %s fetch error: %s", thread_id, e)
         return None
 
-    # Skip threads Gmail categorises as Promotions / Social / Updates / Forums
     all_labels: set[str] = set()
     for msg in thread.get("messages", []):
         all_labels.update(msg.get("labelIds", []))
@@ -199,7 +267,6 @@ def _extract_thread_meta(service, thread_id: str) -> dict[str, Any] | None:
                 for part in h["value"].split(","):
                     part = part.strip()
                     if "@" in part:
-                        # strip display name: "Name <email>" → "email"
                         email = part.split("<")[-1].strip("> ")
                         if email:
                             all_emails.add(email.lower())
@@ -212,6 +279,32 @@ def _extract_thread_meta(service, thread_id: str) -> dict[str, Any] | None:
     except Exception:
         date = datetime.now(timezone.utc)
 
+    # Build per-message body text and attachment metadata (no downloads yet)
+    email_messages = []
+    pending_attachments = []  # [{...meta, message_id}] — downloaded later
+    all_body_text_parts = []
+
+    for msg in messages:
+        payload = msg.get("payload", {})
+        msg_headers = {h["name"].lower(): h["value"] for h in payload.get("headers", [])}
+        body_text, _ = _parse_body(payload)
+        att_meta = _parse_attachment_meta(payload)
+
+        email_messages.append({
+            "message_id": msg["id"],
+            "from": msg_headers.get("from", ""),
+            "date": msg_headers.get("date", ""),
+            "body_text": body_text.strip(),
+            "attachment_count": len(att_meta),
+        })
+
+        if body_text.strip():
+            all_body_text_parts.append(body_text.strip())
+
+        for att in att_meta:
+            att["message_id"] = msg["id"]
+            pending_attachments.append(att)
+
     return {
         "thread_id": thread_id,
         "subject": headers.get("subject", "(no subject)"),
@@ -219,6 +312,9 @@ def _extract_thread_meta(service, thread_id: str) -> dict[str, Any] | None:
         "all_emails": list(all_emails),
         "snippet": first.get("snippet", "")[:500],
         "date": date,
+        "email_body_text": "\n\n---\n\n".join(all_body_text_parts),
+        "email_messages": email_messages,
+        "pending_attachments": pending_attachments,
     }
 
 
@@ -236,14 +332,8 @@ async def sync_gmail_for_staff(
     service = _build_gmail_service(staff_email)
 
     watermark = await _get_watermark(conn, staff_email)
-    if watermark:
-        since = watermark
-    else:
-        since = datetime.now(timezone.utc) - timedelta(days=days_back)
+    since = watermark if watermark else datetime.now(timezone.utc) - timedelta(days=days_back)
 
-    # in:inbox restricts to inbox (excludes Spam/Trash/Sent).
-    # category:primary doesn't work under DWD — instead we check per-thread
-    # labels (CATEGORY_PROMOTIONS, CATEGORY_SOCIAL, etc.) after fetching.
     date_str = since.strftime("%Y/%m/%d")
     query = f"after:{date_str} in:inbox"
 
@@ -268,19 +358,30 @@ async def sync_gmail_for_staff(
             if not meta:
                 continue
 
-            # Skip automated/transactional senders
             if _is_automated_sender(meta["email_from"]):
                 continue
 
-            # Skip purely internal threads
             all_external = [e for e in meta["all_emails"] if PURSUIT_DOMAIN not in e]
             if not all_external:
                 continue
 
-            # Skip if all external participants are also automated senders
             real_external = [e for e in all_external if not _is_automated_sender(e)]
             if not real_external:
                 continue
+
+            # Download attachments now (after filtering — only for kept threads)
+            attachments_out = []
+            for att in meta.get("pending_attachments", []):
+                gcs_url = _upload_attachment(
+                    service, att["message_id"], att, staff_email, meta["thread_id"]
+                )
+                attachments_out.append({
+                    "filename": att["filename"],
+                    "mime_type": att["mime_type"],
+                    "size_bytes": att["size_bytes"],
+                    "message_id": att["message_id"],
+                    "gcs_url": gcs_url,
+                })
 
             contact_ids, account_id = await _resolve_emails_to_contacts(conn, real_external)
 
@@ -291,23 +392,28 @@ async def sync_gmail_for_staff(
                         type, subject, activity_date,
                         source, source_thread_id,
                         email_from, email_to, email_snippet,
+                        email_body_text, email_messages, attachments,
                         contact_ids, account_id,
                         logged_by
                     ) VALUES (
                         'email', $1, $2,
                         'gmail-sync', $3,
                         $4, $5, $6,
-                        $7, $8,
-                        $9
+                        $7, $8, $9,
+                        $10, $11,
+                        $12
                     )
                     ON CONFLICT (source, source_thread_id)
                     WHERE source_thread_id IS NOT NULL
                     DO UPDATE SET
-                        subject        = EXCLUDED.subject,
-                        email_snippet  = EXCLUDED.email_snippet,
-                        contact_ids    = EXCLUDED.contact_ids,
-                        account_id     = COALESCE(EXCLUDED.account_id, bedrock.activity.account_id),
-                        synced_at      = now()
+                        subject          = EXCLUDED.subject,
+                        email_snippet    = EXCLUDED.email_snippet,
+                        email_body_text  = EXCLUDED.email_body_text,
+                        email_messages   = EXCLUDED.email_messages,
+                        attachments      = EXCLUDED.attachments,
+                        contact_ids      = EXCLUDED.contact_ids,
+                        account_id       = COALESCE(EXCLUDED.account_id, bedrock.activity.account_id),
+                        synced_at        = now()
                     """,
                     meta["subject"],
                     meta["date"],
@@ -315,6 +421,9 @@ async def sync_gmail_for_staff(
                     meta["email_from"],
                     real_external,
                     meta["snippet"],
+                    meta["email_body_text"] or None,
+                    json.dumps(meta["email_messages"]) if meta["email_messages"] else None,
+                    json.dumps(attachments_out) if attachments_out else None,
                     contact_ids,
                     account_id,
                     staff_email,
