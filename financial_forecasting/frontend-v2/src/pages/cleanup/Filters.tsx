@@ -9,7 +9,8 @@
  * dropdown UI, FilterChip pill, and pure `ruleApplies` / `describeRule`
  * helpers — keeping each Cleanup tab focused on entity-specific bits.
  */
-import { useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { ChevronDown, Filter as FilterIcon, Plus, X } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -272,19 +273,52 @@ export function AddFilterButton<F extends string>({
     );
   };
 
-  // Anchor right when opening the popover would clip the right edge of
-  // the viewport. <main> in AppShell uses overflow-hidden, so a
-  // left-anchored 420 px popover gets sliced when the trigger sits in
-  // the right half of a narrow viewport. Measure on open.
+  // Portal + position:fixed so the popover escapes every clipping
+  // ancestor (AppShell's <main> overflow-hidden, page wrappers, etc.)
+  // and renders directly against the viewport. Recompute on open and
+  // on scroll/resize so it tracks the trigger.
   const POPOVER_WIDTH = 420;
   const triggerRef = useRef<HTMLButtonElement>(null);
-  const [alignRight, setAlignRight] = useState(false);
-  useLayoutEffect(() => {
-    if (!open || !triggerRef.current) return;
+  const popoverRef = useRef<HTMLDivElement>(null);
+  const [popoverPos, setPopoverPos] = useState<{ top: number; left: number } | null>(null);
+
+  const recomputePos = () => {
+    if (!triggerRef.current) return;
     const rect = triggerRef.current.getBoundingClientRect();
     const viewport = window.innerWidth;
-    const wouldClip = rect.left + POPOVER_WIDTH > viewport - 16;
-    setAlignRight(wouldClip);
+    const margin = 8;
+    let left = rect.left;
+    if (left + POPOVER_WIDTH > viewport - margin) {
+      left = Math.max(margin, rect.right - POPOVER_WIDTH);
+    }
+    setPopoverPos({ top: rect.bottom + 4, left });
+  };
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    recomputePos();
+    const onScroll = () => recomputePos();
+    const onResize = () => recomputePos();
+    window.addEventListener("scroll", onScroll, true);
+    window.addEventListener("resize", onResize);
+    return () => {
+      window.removeEventListener("scroll", onScroll, true);
+      window.removeEventListener("resize", onResize);
+    };
+  }, [open]);
+
+  // Close on click-outside (the popover lives in a portal, so a parent
+  // click handler can't see clicks inside it — we listen on document).
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (popoverRef.current?.contains(t)) return;
+      if (triggerRef.current?.contains(t)) return;
+      setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
   }, [open]);
 
   return (
@@ -300,13 +334,13 @@ export function AddFilterButton<F extends string>({
         <ChevronDown size={12} aria-hidden="true" />
       </button>
 
-      {open ? (
-        <div
-          className={cn(
-            "absolute top-full z-20 mt-1 w-[420px] rounded-md border border-border-strong bg-surface p-2 shadow-md",
-            alignRight ? "right-0" : "left-0",
-          )}
-        >
+      {open && popoverPos
+        ? createPortal(
+            <div
+              ref={popoverRef}
+              style={{ position: "fixed", top: popoverPos.top, left: popoverPos.left, width: POPOVER_WIDTH }}
+              className="z-50 rounded-md border border-border-strong bg-surface p-2 shadow-lg"
+            >
           <div className="flex items-center gap-1.5">
             <select
               value={field}
@@ -469,8 +503,10 @@ export function AddFilterButton<F extends string>({
               <Plus size={11} /> Add filter
             </button>
           </div>
-        </div>
-      ) : null}
+            </div>,
+            document.body,
+          )
+        : null}
     </div>
   );
 }
