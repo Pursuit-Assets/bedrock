@@ -16,6 +16,8 @@ import { AccountExpandPanel } from "@/components/AccountExpandPanel";
 import { SectionCard, withReferrer } from "@/components/detail";
 import { InlineText } from "@/components/ui/InlineEdit";
 import { SortableHeader } from "@/components/ui/SortableHeader";
+import { Tag } from "@/components/ui/Tag";
+import { accountStatusVariant } from "@/lib/accountStatus";
 import { fmtMoney } from "@/lib/format";
 import { sortBy, useSort } from "@/lib/sort";
 import { isOpen, isWon } from "@/lib/stages";
@@ -106,6 +108,9 @@ export function PortfolioAccounts({ accounts, loading, sfReady, canEdit }: Portf
               <th className="w-[120px] px-3 py-1.5 text-left font-semibold">
                 <SortableHeader label="Type" sortKey="type" sort={sort} onToggle={toggle} />
               </th>
+              <th className="w-[120px] px-3 py-1.5 text-left font-semibold">
+                Status
+              </th>
               <th className="w-[120px] px-3 py-1.5 text-right font-semibold">
                 <SortableHeader label="Open pipeline" sortKey="openPipeline" sort={sort} onToggle={toggle} align="right" />
               </th>
@@ -165,6 +170,13 @@ export function PortfolioAccounts({ accounts, loading, sfReady, canEdit }: Portf
                     <td className="px-3 py-1.5 align-middle text-[12px] text-ink-2">
                       {a.Type ?? "—"}
                     </td>
+                    <td className="px-3 py-1.5 align-middle">
+                      {a.account_status ? (
+                        <Tag variant={accountStatusVariant(a.account_status)}>{a.account_status}</Tag>
+                      ) : (
+                        <span className="text-ink-4">—</span>
+                      )}
+                    </td>
                     <td className="mono px-3 py-1.5 text-right align-middle tabular-nums">
                       {fmtMoney(m.openPipeline)}
                     </td>
@@ -177,7 +189,7 @@ export function PortfolioAccounts({ accounts, loading, sfReady, canEdit }: Portf
                   </tr>
                   {isExpanded ? (
                     <tr>
-                      <td colSpan={6} className="p-0">
+                      <td colSpan={7} className="p-0">
                         <AccountExpandPanel accountId={a.Id} />
                       </td>
                     </tr>
