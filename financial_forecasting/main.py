@@ -730,12 +730,91 @@ async def get_accounts(
 
         result = await salesforce.query_all(query)
         records = result.get("records", [])
+
+        # Derive playbook Account Status (Prospect / Pursuing /
+        # Stewarding / Re-activating / Dormant) per account. Pure
+        # derivation — see services/account_status.py for the rules.
+        try:
+            await _attach_account_status(records, salesforce)
+        except Exception as ex:  # noqa: BLE001
+            logger.warning(f"Failed to derive account_status; serving without it: {ex}")
+
         cache.set(cache_key, records, CACHE_TTL_ACCOUNTS)
         return records
 
     except Exception as e:
         logger.error(f"Error fetching accounts: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+async def _attach_account_status(accounts: list, salesforce) -> None:
+    """Compute and attach `account_status` to every account row.
+
+    Pulls the minimum data needed for the derivation:
+      - SF opportunities (Id, AccountId, StageName, IsClosed,
+        Active_Opportunity__c) via one SOQL.
+      - bedrock.award rows joined to opportunity_id via one SQL.
+      - bedrock.activity latest_date per account_id via one SQL.
+
+    All three queries fire in parallel. The compute is ~50 ms for
+    2 k accounts on the laptop; well within the existing endpoint
+    latency budget.
+    """
+    from datetime import datetime, timedelta, timezone as _tz
+
+    from db import get_pool
+    from services.account_status import (
+        build_lookups,
+        compute_account_status,
+    )
+
+    account_ids = [a.get("Id") for a in accounts if a.get("Id")]
+    if not account_ids:
+        return
+
+    # 1. SF opportunities — slim projection, no record-type filter so the
+    # status sees the full picture.
+    opp_query = (
+        "SELECT Id, AccountId, StageName, IsClosed, IsWon, "
+        "Active_Opportunity__c FROM Opportunity"
+    )
+    opp_result = await salesforce.query_all(opp_query)
+    opps = opp_result.get("records", [])
+
+    # 2 + 3. Awards + latest activity per account from bedrock.
+    # Scope activity to the 3-month window we actually care about
+    # (anything older means Dormant either way), with a small buffer
+    # for cron lag.
+    cutoff = datetime.now(_tz.utc) - timedelta(days=120)
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        award_rows = await conn.fetch(
+            "SELECT opportunity_id, award_status FROM bedrock.award"
+        )
+        act_rows = await conn.fetch(
+            "SELECT account_id, MAX(activity_date) AS activity_date "
+            "FROM bedrock.activity "
+            "WHERE account_id IS NOT NULL AND activity_date >= $1 "
+            "GROUP BY account_id",
+            cutoff,
+        )
+    awards = [dict(r) for r in award_rows]
+    activities = [dict(r) for r in act_rows]
+
+    opps_by_account, awards_by_opp, latest_activity_by_account = build_lookups(
+        opps, awards, activities,
+    )
+
+    for a in accounts:
+        aid = a.get("Id")
+        if not aid:
+            continue
+        a["account_status"] = compute_account_status(
+            aid,
+            opps_by_account,
+            awards_by_opp,
+            latest_activity_by_account,
+        )
 
 
 @app.post("/api/salesforce/accounts")
