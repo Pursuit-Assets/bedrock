@@ -57,8 +57,8 @@ async def _resolve_emails_to_contacts(
 ) -> tuple[list[str], str | None]:
     """Return (contact_ids, sf_account_id) for a list of email addresses.
 
-    contact_ids — list of sf_contact_id strings (used as foreign keys in activity)
-    sf_account_id — first non-null SF account found for the resolved contacts
+    contact_ids — list of sf_contact_id strings (known contacts only)
+    sf_account_id — resolved via contact link first, then domain fallback
     """
     if not emails:
         return [], None
@@ -79,6 +79,18 @@ async def _resolve_emails_to_contacts(
     )
     contact_ids = [r["sf_contact_id"] for r in rows]
     account_id = next((r["sf_account_id"] for r in rows if r["sf_account_id"]), None)
+
+    # Domain fallback: if no account resolved via contact, try email domain lookup
+    if account_id is None:
+        domains = list({e.split("@")[-1] for e in external if "@" in e})
+        if domains:
+            domain_row = await conn.fetchrow(
+                "SELECT sf_account_id FROM bedrock.account_email_domain WHERE domain = ANY($1::text[]) LIMIT 1",
+                domains,
+            )
+            if domain_row:
+                account_id = domain_row["sf_account_id"]
+
     return contact_ids, account_id
 
 
