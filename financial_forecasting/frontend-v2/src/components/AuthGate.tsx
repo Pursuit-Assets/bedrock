@@ -48,6 +48,21 @@ export function AuthGate({ children }: { children: ReactNode }) {
       },
       staleTime: 60_000,
     });
+    // Payments share enough surface with Pipeline (column overlap, expand
+    // panel) that warming this in parallel hides the cold-load on the
+    // first /payments navigation without much extra cost.
+    void qc.prefetchQuery({
+      queryKey: ["payments"],
+      queryFn: async () => {
+        try {
+          const { data } = await api.get("/api/salesforce/payments?limit=2000");
+          return data ?? [];
+        } catch {
+          return [];
+        }
+      },
+      staleTime: 60_000,
+    });
     void qc.prefetchQuery({
       queryKey: ["sf-users"],
       queryFn: async () => {
