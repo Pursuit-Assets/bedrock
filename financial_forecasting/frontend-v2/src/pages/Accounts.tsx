@@ -82,6 +82,7 @@ function matchesType(account: SfAccount, filter: TypeFilter): boolean {
 const ACCOUNTS_FILTERABLE_BASE = {
   name: { label: "Name", type: "text", getValue: (a: SfAccount) => a.Name ?? "" },
   owner: { label: "Owner", type: "select", getValue: (a: SfAccount) => a.OwnerId ?? "" },
+  status: { label: "Status", type: "select", getValue: (a: SfAccount) => a.account_status ?? "" },
   type: { label: "Type", type: "select", getValue: (a: SfAccount) => a.Type ?? "" },
   tier: { label: "Tier", type: "select", getValue: (a: SfAccount) => a.Account_Tier__c ?? "" },
   industry: { label: "Industry", type: "text", getValue: (a: SfAccount) => a.Industry ?? "" },
@@ -378,8 +379,21 @@ export function AccountsPage() {
       { value: "Yes", label: "Yes" },
       { value: "No", label: "No" },
     ];
+    // Account status is a fixed enum from the playbook — surface all
+    // five values regardless of whether the current view has any of
+    // each, so users can filter to e.g. "Re-activating" even when the
+    // panel doesn't currently show any.
+    const status = [
+      { value: "Prospect", label: "Prospect" },
+      { value: "Pursuing", label: "Pursuing" },
+      { value: "Stewarding", label: "Stewarding" },
+      { value: "Re-activating", label: "Re-activating" },
+      { value: "Dormant", label: "Dormant" },
+    ];
+
     return {
       owner: ownerOptions,
+      status,
       type: Array.from(types).sort().map((v) => ({ value: v, label: v })),
       tier: Array.from(tiers).sort().map((v) => ({ value: v, label: v })),
       philanthropy: yesNo,
@@ -529,6 +543,7 @@ export function AccountsPage() {
           filterable={filterable as Record<AccountField, FieldMeta<unknown>>}
           selectOptions={{
             owner: chipFacets.owner,
+            status: chipFacets.status,
             type: chipFacets.type,
             tier: chipFacets.tier,
             philanthropy: chipFacets.philanthropy,
