@@ -152,9 +152,12 @@ async def sync_gmail_for_staff(
     else:
         since = datetime.now(timezone.utc) - timedelta(days=days_back)
 
-    # Gmail search query: external threads only (not internal @pursuit.org)
+    # Fetch all threads since watermark; Python-side filtering below keeps only
+    # threads with at least one external (non @pursuit.org) participant.
+    # We don't filter in the Gmail query because -to:@pursuit.org would drop
+    # mixed threads (external person + Pursuit colleague CC'd on the same email).
     date_str = since.strftime("%Y/%m/%d")
-    query = f"after:{date_str} -to:@pursuit.org -cc:@pursuit.org"
+    query = f"after:{date_str}"
 
     upserted = 0
     errors = 0

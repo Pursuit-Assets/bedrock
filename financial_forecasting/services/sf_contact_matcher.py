@@ -56,6 +56,7 @@ async def match_contact(
     sf_last_name: Optional[str],
     sf_account_name: Optional[str],
     db,
+    sf_account_id: Optional[str] = None,
 ) -> Optional[dict]:
     """Try to match one SF Contact to a row in public.contacts.
 
@@ -131,12 +132,13 @@ async def match_contact(
         result_row = await db.fetchrow(
             """
             INSERT INTO bedrock.sf_contact_link
-                (sf_contact_id, public_contact_id, confidence, matched_by)
-            VALUES ($1, $2, $3, 'auto')
-            ON CONFLICT (sf_contact_id) DO NOTHING
-            RETURNING sf_contact_id, public_contact_id, confidence, matched_at
+                (sf_contact_id, public_contact_id, confidence, matched_by, sf_account_id)
+            VALUES ($1, $2, $3, 'auto', $4)
+            ON CONFLICT (sf_contact_id) DO UPDATE
+                SET sf_account_id = COALESCE(EXCLUDED.sf_account_id, bedrock.sf_contact_link.sf_account_id)
+            RETURNING sf_contact_id, public_contact_id, confidence, matched_at, sf_account_id
             """,
-            sf_contact_id, contact_id, confidence,
+            sf_contact_id, contact_id, confidence, sf_account_id,
         )
     except Exception as e:
         logger.warning("match_contact: insert failed for %s: %s", sf_contact_id, e)
@@ -175,7 +177,8 @@ async def match_all_contacts(
     try:
         result = await salesforce_client.query_all(
             f"SELECT Id, FirstName, LastName, Email, "
-            f"Primary_Affiliation_Name__c, Primary_Affiliation_Entity__c "
+            f"Primary_Affiliation_Name__c, Primary_Affiliation_Entity__c, "
+            f"(SELECT Account_ForFellowsOnly__c FROM npe5__Affiliations__r WHERE npe5__Primary__c = true LIMIT 1) "
             f"FROM Contact WHERE LastName != null "
             f"ORDER BY LastName LIMIT {int(limit)}"
         )
@@ -194,6 +197,10 @@ async def match_all_contacts(
         affiliation_name = c.get("Primary_Affiliation_Name__c")
         entity_type = c.get("Primary_Affiliation_Entity__c") or ""
         account_name = affiliation_name if entity_type.lower() != "household" else None
+        # Employer SF Account ID from the NPSP Affiliations subquery
+        affiliations = c.get("npe5__Affiliations__r") or {}
+        affil_records = affiliations.get("records", []) if isinstance(affiliations, dict) else []
+        sf_employer_account_id = affil_records[0].get("Account_ForFellowsOnly__c") if affil_records else None
 
         if dry_run:
             email = (c.get("Email") or "").lower()
@@ -223,6 +230,7 @@ async def match_all_contacts(
                 c.get("LastName"),
                 account_name,
                 db,
+                sf_account_id=sf_employer_account_id,
             )
             if match:
                 summary["matched"] += 1
