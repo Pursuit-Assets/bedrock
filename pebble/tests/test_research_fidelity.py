@@ -2073,6 +2073,40 @@ async def test_synthesize_profile_prompt_includes_conflicts(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_synthesize_profile_prompt_forbids_proper_noun_paraphrase(monkeypatch):
+    """F18: synth prompt must forbid the LLM from rewriting entity
+    names or rounding dollar amounts — both are common fidelity
+    losses in LLM-generated prose."""
+    from pebble.orchestrator import _pipeline
+    import json
+
+    claims = [_claim("Acme Corporation donated $25,000",
+                     "https://www.fec.gov/x", origin="template")]
+    response = json.dumps({
+        "sentences": [{"text": "Acme Corporation donated $25,000.",
+                       "citations": ["c0"]}],
+        "confidence_score": "medium",
+    })
+    captured = {"system": None}
+
+    async def fake_to_thread(fn, prompt, system=""):
+        captured["system"] = system
+        return _synthesizer_result(response)
+
+    monkeypatch.setattr(_pipeline.asyncio, "to_thread", fake_to_thread)
+    monkeypatch.setattr(_pipeline, "log_harness_outcome", AsyncMock())
+
+    await _pipeline.synthesize_profile(
+        claims, {"first_name": "X", "last_name": "Y"},
+        MagicMock(), _budget(),
+    )
+    sys_text = captured["system"] or ""
+    assert "EXACT phrase" in sys_text
+    assert "paraphrase" in sys_text.lower()
+    assert "do not round" in sys_text.lower()
+
+
+@pytest.mark.asyncio
 async def test_synthesize_profile_prompt_instructs_temporal_phrasing(monkeypatch):
     """F15: synth system prompt directs the LLM to anchor time-
     sensitive facts to each claim's data_as_of. A 2018 contribution

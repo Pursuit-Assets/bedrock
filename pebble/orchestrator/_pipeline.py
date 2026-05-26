@@ -52,6 +52,10 @@ test_research_fidelity.py):
          (api_response_extractor, wealth_indicator_agent,
          philanthropy_agent, claims_from_fec, …) so ops can attribute
          fidelity drift to a single emitter rather than just "forager."
+    F18  Synth prompt forbids paraphrasing proper nouns / dollar
+         amounts. The brief must use the exact phrase from a cited
+         claim, not an LLM-restated variant ("Acme Corporation" → not
+         "Acme Inc.").
 """
 
 import asyncio
@@ -92,7 +96,7 @@ PROSPECT_COST_CAP_USD = 0.50
 # the fidelity invariants. Stamped on every saved profile so
 # downstream consumers (export, GUI, audit) can tell which generation
 # produced a given record. Increment on every F-series addition.
-PIPELINE_VERSION = "fidelity-v1.18"
+PIPELINE_VERSION = "fidelity-v1.19"
 
 # Strip markdown fences that LLMs sometimes wrap around JSON
 _FENCE_RE = re.compile(r"^```(?:json)?\s*\n?(.*?)\n?```\s*$", re.DOTALL)
@@ -1302,6 +1306,15 @@ async def synthesize_profile(
         "date in the brief: 'donated $X to Y in [year]' rather than 'donates'; "
         "'as of [date], serves on the Z board' rather than 'serves on'. Don't "
         "imply current activity from a stale data point. "
+        # F18 — entity-name fidelity. The LLM cannot paraphrase proper
+        # nouns: if the claim text says "Acme Corporation" the brief
+        # cannot write "Acme Inc." Similarly for dollar amounts and
+        # dates — quote them from the claim.
+        "When you mention a person, organization, role, or dollar amount, "
+        "use the EXACT phrase as it appears in at least one cited claim's "
+        "text. Do not paraphrase entity names (if claims say 'Acme "
+        "Corporation', do not write 'Acme Inc.'). Do not round or "
+        "approximate dollar amounts. "
         "EVERY sentence you emit MUST cite at least one claim_id from the provided claims. "
         "Never make a statement that isn't traceable to a cited claim. "
         "Output valid JSON only, no markdown fences."
