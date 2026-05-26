@@ -1137,6 +1137,31 @@ def test_research_quality_report_includes_pipeline_version():
     assert r["generated_at"] == "2026-05-24T10:30:00+00:00"
 
 
+def test_research_quality_report_agent_source_counts():
+    from pebble.orchestrator._pipeline import research_quality_report
+    profile = {
+        "claims": [
+            {"source_url": "https://www.fec.gov/x",
+             "agent_source": "claims_from_fec"},
+            {"source_url": "https://www.fec.gov/y",
+             "agent_source": "claims_from_fec"},
+            {"source_url": "https://projects.propublica.org/nonprofits/organizations/1",
+             "agent_source": "philanthropy_agent"},
+            {"source_url": "https://x.com",
+             "agent_source": "wealth_indicator_agent"},
+            # Claim missing agent_source: bucketed under "unknown".
+            {"source_url": "https://x.com/y"},
+        ],
+    }
+    r = research_quality_report(profile)
+    assert r["agent_source_counts"] == {
+        "claims_from_fec": 2,
+        "philanthropy_agent": 1,
+        "wealth_indicator_agent": 1,
+        "unknown": 1,
+    }
+
+
 def test_research_quality_report_source_tier_breakdown():
     from pebble.orchestrator._pipeline import research_quality_report
     profile = {

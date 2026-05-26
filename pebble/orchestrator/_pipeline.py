@@ -234,6 +234,9 @@ def research_quality_report(profile: dict) -> dict:
     )
     # Source-tier breakdown — useful per-profile evidence-quality vector.
     source_tier_counts = {0: 0, 1: 0, 2: 0, 3: 0}
+    # F17 — per-agent claim contribution. Operator can see "ops, this
+    # profile leans 80% on wealth_indicator_agent" at a glance.
+    agent_source_counts: dict[str, int] = {}
     for c in claims:
         if not isinstance(c, dict):
             continue
@@ -242,6 +245,8 @@ def research_quality_report(profile: dict) -> dict:
             tier = classify_source_tier(c.get("source_url"))
         if tier in source_tier_counts:
             source_tier_counts[tier] += 1
+        agent = c.get("agent_source") or "unknown"
+        agent_source_counts[agent] = agent_source_counts.get(agent, 0) + 1
 
     return {
         "claim_count": len(claims),
@@ -252,6 +257,7 @@ def research_quality_report(profile: dict) -> dict:
         "transient_url_count": _url_status_count("transient_error"),
         "full_quorum_count": full_quorum,
         "source_tier_counts": source_tier_counts,
+        "agent_source_counts": agent_source_counts,
         "source_error_count": len(profile.get("source_errors", {}) or {}),
         "conflict_count": len(profile.get("conflicts", []) or []),
         "summary_sentence_count": len(profile.get("summary_sentences", []) or []),
