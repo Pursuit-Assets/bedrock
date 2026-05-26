@@ -83,7 +83,7 @@ PROSPECT_COST_CAP_USD = 0.50
 # the fidelity invariants. Stamped on every saved profile so
 # downstream consumers (export, GUI, audit) can tell which generation
 # produced a given record. Increment on every F-series addition.
-PIPELINE_VERSION = "fidelity-v1.14"
+PIPELINE_VERSION = "fidelity-v1.15"
 
 # Strip markdown fences that LLMs sometimes wrap around JSON
 _FENCE_RE = re.compile(r"^```(?:json)?\s*\n?(.*?)\n?```\s*$", re.DOTALL)
@@ -1230,6 +1230,11 @@ async def synthesize_profile(
         "fact as certain if its only support is a tier-3 source. "
         "Always distinguish current from former positions. Never state someone 'serves as' a role "
         "unless evidence shows the position is active. Use 'formerly served as' for past positions. "
+        # F15 — temporal phrasing anchored to claim data_as_of.
+        "When a claim has a data_as_of date, anchor time-sensitive facts to that "
+        "date in the brief: 'donated $X to Y in [year]' rather than 'donates'; "
+        "'as of [date], serves on the Z board' rather than 'serves on'. Don't "
+        "imply current activity from a stale data point. "
         "EVERY sentence you emit MUST cite at least one claim_id from the provided claims. "
         "Never make a statement that isn't traceable to a cited claim. "
         "Output valid JSON only, no markdown fences."

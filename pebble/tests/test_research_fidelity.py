@@ -1864,6 +1864,41 @@ async def test_synthesize_profile_prompt_includes_conflicts(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_synthesize_profile_prompt_instructs_temporal_phrasing(monkeypatch):
+    """F15: synth system prompt directs the LLM to anchor time-
+    sensitive facts to each claim's data_as_of. A 2018 contribution
+    shouldn't be presented as if it just happened."""
+    from pebble.orchestrator import _pipeline
+    import json
+
+    claims = [_claim("Donated $5k to ActBlue in 2018",
+                     "https://www.fec.gov/x", origin="template")]
+    claims[0]["data_as_of"] = "2018-03-15"
+    response = json.dumps({
+        "sentences": [{"text": "Donated $5k to ActBlue in 2018.",
+                       "citations": ["c0"]}],
+        "confidence_score": "medium",
+    })
+    captured = {"system": None}
+
+    async def fake_to_thread(fn, prompt, system=""):
+        captured["system"] = system
+        return _synthesizer_result(response)
+
+    monkeypatch.setattr(_pipeline.asyncio, "to_thread", fake_to_thread)
+    monkeypatch.setattr(_pipeline, "log_harness_outcome", AsyncMock())
+
+    await _pipeline.synthesize_profile(
+        claims, {"first_name": "X", "last_name": "Y"},
+        MagicMock(), _budget(),
+    )
+    sys_text = captured["system"] or ""
+    assert "data_as_of" in sys_text
+    assert "as of" in sys_text.lower()
+    assert "stale" in sys_text.lower()
+
+
+@pytest.mark.asyncio
 async def test_synthesize_profile_prompt_includes_tier_distribution(monkeypatch):
     """Synthesis prompt now snapshots the source-tier distribution
     so the LLM sees pool quality at a glance, complementing the
