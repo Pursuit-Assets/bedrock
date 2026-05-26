@@ -121,6 +121,23 @@ export function stageStatus(
  * "exit-but-not-won" outcomes (Closed Lost, Withdrawn) at the tail so
  * the happy path reads top-to-bottom.
  */
+/** Stage rank — mirrors the order of SF_STAGE_OPTIONS. Used by
+ *  account-status logic and stage-gate transition detection to
+ *  reason about "is the new stage past the old stage" without
+ *  caring about exact names. */
+export const STAGE_RANK: Record<string, number> = {
+  "New Lead": 0,
+  "Qualifying": 1,
+  "Ask in Progress": 2,
+  "Proposal Submitted": 3,
+  "Contracting": 4,
+  "Collecting / In Effect": 5,
+  "Closed / Completed": 6,
+  "Closed Won": 6,
+  "Closed Lost": 7,
+  "Withdrawn": 8,
+};
+
 export const SF_STAGE_OPTIONS: { value: string; label: string }[] = [
   { value: "New Lead", label: "New Lead" },
   { value: "Qualifying", label: "Qualifying" },
