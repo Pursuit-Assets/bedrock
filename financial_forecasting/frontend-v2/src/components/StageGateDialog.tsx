@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Loader2, X } from "lucide-react";
+import { ArrowLeft, Loader2, X } from "lucide-react";
 import { toast } from "sonner";
 
 import { OpportunityFilesPicker } from "@/components/OpportunityFilesPicker";
@@ -137,17 +137,39 @@ export function StageGateDialog({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => !submitting && onClose()}>
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+      onClick={(e) => {
+        // Only dismiss if the user clicked the backdrop itself, not
+        // bubble events from interactive children. The previous
+        // bubble-through here was closing the gate whenever a click
+        // landed anywhere in a nested editor.
+        if (e.target === e.currentTarget && !submitting) onClose();
+      }}
+    >
       <div
         className="flex max-h-[90vh] w-full max-w-[680px] flex-col overflow-hidden rounded-lg border border-border-strong bg-surface shadow-xl"
-        onClick={(e) => e.stopPropagation()}
       >
         <header className="flex items-start justify-between border-b border-border-strong px-5 py-3">
-          <div className="min-w-0">
-            <div className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
-              {opp.StageName} → {toStage}
+          <div className="flex min-w-0 items-start gap-2">
+            {scheduleBuilderOpen ? (
+              <button
+                type="button"
+                onClick={() => setScheduleBuilderOpen(false)}
+                className="mt-0.5 flex-shrink-0 text-ink-3 hover:text-ink-2"
+                aria-label="Back to stage gate"
+              >
+                <ArrowLeft size={16} />
+              </button>
+            ) : null}
+            <div className="min-w-0">
+              <div className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
+                {opp.StageName} → {toStage}
+              </div>
+              <h2 className="mt-0.5 text-[15px] font-semibold text-ink">
+                {scheduleBuilderOpen ? "Payment schedule" : spec.title}
+              </h2>
             </div>
-            <h2 className="mt-0.5 text-[15px] font-semibold text-ink">{spec.title}</h2>
           </div>
           <button
             type="button"
@@ -160,6 +182,28 @@ export function StageGateDialog({
           </button>
         </header>
 
+        {scheduleBuilderOpen ? (
+          <PaymentScheduleBuilder
+            inline
+            opportunityId={opp.Id}
+            oppAmount={Number.isFinite(amountNum) && amountNum > 0 ? amountNum : opp.Amount ?? null}
+            existingPayments={payments}
+            initialFirstDate={closeDate || null}
+            prompt={
+              payments.length === 0
+                ? `Define the expected payment schedule for this ${spec.title.toLowerCase()}.`
+                : null
+            }
+            onClose={() => setScheduleBuilderOpen(false)}
+            onSaved={() => {
+              // useOpportunityPayments invalidation happens inside the
+              // builder's hooks; the parent gate's satisfied state
+              // recomputes on the next refetch. Toast confirms the save.
+              toast.success("Payment schedule saved");
+            }}
+          />
+        ) : (
+          <>
         <div className="flex-1 overflow-y-auto px-5 py-4">
           <p className="mb-4 text-[12.5px] leading-relaxed text-ink-2">{spec.description}</p>
 
@@ -296,27 +340,9 @@ export function StageGateDialog({
             Move to {toStage}
           </button>
         </footer>
+          </>
+        )}
       </div>
-      {scheduleBuilderOpen ? (
-        <PaymentScheduleBuilder
-          opportunityId={opp.Id}
-          oppAmount={Number.isFinite(amountNum) && amountNum > 0 ? amountNum : opp.Amount ?? null}
-          existingPayments={payments}
-          initialFirstDate={closeDate || null}
-          prompt={
-            payments.length === 0
-              ? `Define the expected payment schedule for this ${spec.title.toLowerCase()}.`
-              : null
-          }
-          onClose={() => setScheduleBuilderOpen(false)}
-          onSaved={() => {
-            // useOpportunityPayments query invalidation handled inside
-            // the builder's hooks; the satisfied state recomputes on
-            // refetch. Toast for the user so they know the save landed.
-            toast.success("Payment schedule saved");
-          }}
-        />
-      ) : null}
     </div>
   );
 }
