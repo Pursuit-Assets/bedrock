@@ -272,8 +272,30 @@ export function StageGateDialog({
                   </p>
                   <button
                     type="button"
-                    onClick={() => setScheduleBuilderOpen(true)}
-                    disabled={!Number.isFinite(amountNum) || amountNum <= 0}
+                    onClick={async () => {
+                      // The backend's create-payment-schedule endpoint
+                      // validates the payment total against opp.Amount
+                      // as it stands in SF. If the user just typed a
+                      // new Amount in the gate but hasn't submitted
+                      // yet, persist it FIRST — otherwise the next
+                      // schedule POST will 400 with "total doesn't
+                      // match" (the SF Amount is still the old one).
+                      if (
+                        spec.confirmAmount &&
+                        Number.isFinite(amountNum) &&
+                        amountNum > 0 &&
+                        amountNum !== opp.Amount
+                      ) {
+                        try {
+                          await updateOpp.mutateAsync({ id: opp.Id, patch: { Amount: amountNum } });
+                        } catch (e) {
+                          toast.error(`Couldn't save Amount: ${e instanceof Error ? e.message : String(e)}`);
+                          return;
+                        }
+                      }
+                      setScheduleBuilderOpen(true);
+                    }}
+                    disabled={!Number.isFinite(amountNum) || amountNum <= 0 || updateOpp.isPending}
                     className="flex-shrink-0 rounded border border-border-strong bg-surface px-2.5 py-1 text-[11.5px] font-medium text-ink-2 hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-50"
                     title={
                       !Number.isFinite(amountNum) || amountNum <= 0
@@ -283,7 +305,7 @@ export function StageGateDialog({
                           : "Edit payment schedule"
                     }
                   >
-                    {payments.length === 0 ? "Create schedule" : "Edit schedule"}
+                    {updateOpp.isPending ? "Saving Amount…" : payments.length === 0 ? "Create schedule" : "Edit schedule"}
                   </button>
                 </div>
               </div>

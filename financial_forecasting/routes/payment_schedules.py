@@ -114,7 +114,21 @@ async def create_payment_schedule(
             raise HTTPException(status_code=404, detail="Opportunity not found")
 
         opp = opp_result["records"][0]
-        opp_amount = float(opp.get("Amount", 0))
+        raw_amount = opp.get("Amount")
+        # Opportunities can have a NULL Amount in SF (new opps where the
+        # user hasn't filled it in yet, or where the gate dialog just
+        # typed a value but hasn't persisted it). float(None) raises —
+        # treat null as "no amount set" and require the caller to fix
+        # it before submitting a schedule.
+        if raw_amount is None:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "Opportunity has no Amount set",
+                    "message": "Set the opportunity Amount before creating a payment schedule.",
+                },
+            )
+        opp_amount = float(raw_amount)
 
         # Validate payment total
         payment_total = sum(p.amount for p in request.payments)
@@ -126,16 +140,21 @@ async def create_payment_schedule(
                     "opportunity_amount": opp_amount,
                     "payment_total": payment_total,
                     "difference": payment_total - opp_amount,
-                    "message": f"Payment total (${payment_total:,.2f}) must equal opportunity amount (${opp_amount:,.2f})",
+                    "message": f"Payment total (${payment_total:,.2f}) must equal opportunity amount (${opp_amount:,.2f}).",
                 },
             )
 
-        # Delete existing payments if requested
+        # Delete existing payments if requested. Skip rows that are
+        # already paid — SF rejects DELETE on a paid OppPayment, and
+        # we don't want to lose financial history anyway.
         if request.delete_existing:
             existing_result = await salesforce.query(
-                f"SELECT Id FROM npe01__OppPayment__c WHERE npe01__Opportunity__c = '{safe_id}'"
+                f"SELECT Id, npe01__Paid__c FROM npe01__OppPayment__c "
+                f"WHERE npe01__Opportunity__c = '{safe_id}'"
             )
             for payment in existing_result.get("records", []):
+                if payment.get("npe01__Paid__c"):
+                    continue
                 await salesforce.delete_record("npe01__OppPayment__c", payment["Id"])
 
         # Create new payments
@@ -172,7 +191,18 @@ async def create_payment_schedule(
         raise
     except Exception as e:
         logger.exception("Error in create_payment_schedule")
-        raise HTTPException(status_code=500, detail="Internal server error")
+        # Surface the underlying SF error so the user can see WHY the
+        # POST failed. Salesforce errors are usually actionable (missing
+        # required field, validation rule, deletion of paid payment,
+        # etc.) — burying them behind a generic 500 leaves the user
+        # debugging blind.
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "Failed to create payment schedule",
+                "message": str(e) or e.__class__.__name__,
+            },
+        )
 
 
 # ---------------------------------------------------------------------------

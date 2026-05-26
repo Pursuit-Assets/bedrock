@@ -229,7 +229,19 @@ export function PaymentScheduleBuilder({
       onSaved?.();
       onClose();
     } catch (e) {
-      const msg = e instanceof Error ? e.message : "Failed to save schedule";
+      // Prefer the structured FastAPI detail (which now carries the
+      // underlying SF error or the validation reason) over the bare
+      // axios message ("Request failed with status code 400"). Detail
+      // can be a string or an object with {error, message}.
+      const err = e as {
+        response?: { data?: { detail?: string | { message?: string; error?: string } } };
+        message?: string;
+      };
+      const detail = err.response?.data?.detail;
+      const msg =
+        typeof detail === "string"
+          ? detail
+          : detail?.message ?? detail?.error ?? err.message ?? "Failed to save schedule";
       setError(msg);
     }
   };
