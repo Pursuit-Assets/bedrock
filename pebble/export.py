@@ -97,8 +97,18 @@ def render_profile_markdown(
         for c in conflicts:
             desc = c.get("description", "")
             cids = c.get("claim_ids") or []
+            ctexts = c.get("claim_texts") or []
             cids_str = ", ".join(f"`{cid}`" for cid in cids)
             lines.append(f"- {desc} ({cids_str})")
+            # Inline the conflicting claim texts so the reader doesn't
+            # have to jump to the claims table to see what each side
+            # actually said.
+            for cid, ctext in zip(cids, ctexts):
+                if ctext:
+                    short = ctext.strip().replace("\n", " ")
+                    if len(short) > 140:
+                        short = short[:137] + "…"
+                    lines.append(f"  - `{cid}`: {short}")
         lines.append("")
 
     # Source errors (F14) — distinguish "no data" from "fetch failed."

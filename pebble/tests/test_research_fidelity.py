@@ -942,7 +942,8 @@ def test_detect_conflicts_handles_empty_and_single():
 
 def test_detect_conflicts_records_conflicting_claim_ids():
     """Conflicts should reference the claim_ids that disagree so the
-    synthesizer can name them in its caveat."""
+    synthesizer can name them in its caveat — and now inline the
+    conflicting claim texts so the export reads without cross-ref."""
     from pebble.orchestrator._pipeline import detect_conflicts, _assign_claim_ids
     claims = _assign_claim_ids([
         _claim("Jane Smith currently serves as CEO of Acme Corp.",
@@ -953,6 +954,9 @@ def test_detect_conflicts_records_conflicting_claim_ids():
     conflicts = detect_conflicts(claims)
     assert len(conflicts) == 1
     assert set(conflicts[0]["claim_ids"]) == {"c0", "c1"}
+    # F17 follow-up: claim_texts inlined for readability.
+    assert "currently serves" in conflicts[0]["claim_texts"][0] + conflicts[0]["claim_texts"][1]
+    assert "previously" in conflicts[0]["claim_texts"][0] + conflicts[0]["claim_texts"][1]
 
 
 def test_confidence_high_to_medium_when_conflict_detected():
@@ -1298,7 +1302,11 @@ def test_export_markdown_lists_conflicts():
         "claims": [],
         "conflicts": [
             {"description": "role at Acme disputed",
-             "claim_ids": ["c0", "c1"]},
+             "claim_ids": ["c0", "c1"],
+             "claim_texts": [
+                 "Jane Smith currently serves as CEO of Acme Corp.",
+                 "Jane Smith was previously CEO of Acme Corp.",
+             ]},
         ],
         "confidence_score": "medium",
     }
@@ -1307,6 +1315,10 @@ def test_export_markdown_lists_conflicts():
     assert "role at Acme disputed" in md
     assert "`c0`" in md and "`c1`" in md
     assert "**Conflicts detected:** 1" in md
+    # Conflicting claim texts inlined so the reader doesn't have to
+    # cross-reference the claims table.
+    assert "currently serves as CEO" in md
+    assert "previously CEO" in md
 
 
 def test_export_markdown_partial_status_names_failed_agents():

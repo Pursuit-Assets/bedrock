@@ -1095,6 +1095,13 @@ def detect_conflicts(claims: list[dict]) -> list[dict]:
                     f.get("claim_id", ""),
                     c.get("claim_id", ""),
                 ],
+                # F17 follow-up: inline the conflicting texts so the
+                # export / GUI doesn't have to cross-reference the
+                # claim table to render a useful disputed-claims block.
+                "claim_texts": [
+                    f.get("text", ""),
+                    c.get("text", ""),
+                ],
             })
     return conflicts
 
