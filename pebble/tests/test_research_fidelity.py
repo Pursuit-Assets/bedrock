@@ -1981,6 +1981,9 @@ async def test_research_single_prospect_end_to_end_contract(monkeypatch):
     # Pipeline-version + timestamp stamp.
     assert saved_profile.get("pipeline_version", "").startswith("fidelity-v")
     assert "T" in saved_profile.get("generated_at", "")
+    # F17 — every claim attributes to a specific agent.
+    for c in saved_profile["claims"]:
+        assert c.get("agent_source"), f"claim missing agent_source: {c}"
     # F5 — citation references are restricted to known claim_ids.
     sentences = saved_profile.get("summary_sentences", [])
     assert sentences

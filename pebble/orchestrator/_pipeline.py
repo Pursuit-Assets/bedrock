@@ -48,6 +48,10 @@ test_research_fidelity.py):
     F16  Verifiers see source_tier annotation in claims_text; the
          source-credibility verifier defers to the deterministic
          tier classification rather than re-judging URLs.
+    F17  Every claim carries agent_source — the specific agent name
+         (api_response_extractor, wealth_indicator_agent,
+         philanthropy_agent, claims_from_fec, …) so ops can attribute
+         fidelity drift to a single emitter rather than just "forager."
 """
 
 import asyncio
@@ -88,7 +92,7 @@ PROSPECT_COST_CAP_USD = 0.50
 # the fidelity invariants. Stamped on every saved profile so
 # downstream consumers (export, GUI, audit) can tell which generation
 # produced a given record. Increment on every F-series addition.
-PIPELINE_VERSION = "fidelity-v1.16"
+PIPELINE_VERSION = "fidelity-v1.17"
 
 # Strip markdown fences that LLMs sometimes wrap around JSON
 _FENCE_RE = re.compile(r"^```(?:json)?\s*\n?(.*?)\n?```\s*$", re.DOTALL)
@@ -533,6 +537,7 @@ async def stage1_enrich_prospect(
             for c in llm_claims:
                 if isinstance(c, dict):
                     c["origin"] = "llm_extracted"
+                    c["agent_source"] = "api_response_extractor"
         except json.JSONDecodeError:
             logger.warning("Failed to parse LLM claims for %s", prospect["id"])
 
@@ -745,6 +750,11 @@ async def activate_foragers(
                 for c in claims:
                     if isinstance(c, dict):
                         c["origin"] = "forager"
+                        # F17 — record the specific agent that emitted the
+                        # claim. Lets ops attribute fidelity drift to a
+                        # specific forager (e.g., wealth_indicator vs
+                        # philanthropy_agent) rather than just "forager."
+                        c["agent_source"] = agent_name
                 shaped = [c for c in claims if isinstance(c, dict) and c.get("source_url")]
                 # F12 — drop any forager claim whose source_url isn't
                 # anchored to one of the URLs we handed the agent.
@@ -1629,17 +1639,24 @@ async def research_single_prospect(
         # etc.). prospect_name/primary_org are derived earlier in this
         # function from the prospect dict.
         structured_claims = []
-        structured_claims.extend(claims_from_fec(fec_data or [], prospect_name=name))
-        structured_claims.extend(claims_from_usaspending(
-            usa_data or [], prospect_org=primary_org, prospect_name=name,
-        ))
-        structured_claims.extend(claims_from_opencorporates(
-            oc_data or [], prospect_name=name,
-        ))
-        structured_claims.extend(claims_from_edgar_search(
-            edgar_data or [], prospect_org=primary_org, prospect_name=name,
-        ))
-        structured_claims.extend(claims_from_wikipedia_infobox(wiki_data))
+        _by_agent = {
+            "claims_from_fec": claims_from_fec(fec_data or [], prospect_name=name),
+            "claims_from_usaspending": claims_from_usaspending(
+                usa_data or [], prospect_org=primary_org, prospect_name=name,
+            ),
+            "claims_from_opencorporates": claims_from_opencorporates(
+                oc_data or [], prospect_name=name,
+            ),
+            "claims_from_edgar_search": claims_from_edgar_search(
+                edgar_data or [], prospect_org=primary_org, prospect_name=name,
+            ),
+            "claims_from_wikipedia_infobox": claims_from_wikipedia_infobox(wiki_data),
+        }
+        for agent_name, agent_claims in _by_agent.items():
+            for c in agent_claims:
+                if isinstance(c, dict):
+                    c["agent_source"] = agent_name
+            structured_claims.extend(agent_claims)
 
         # Cancel checkpoint: before LLM-heavy stages
         if cancel_check():
