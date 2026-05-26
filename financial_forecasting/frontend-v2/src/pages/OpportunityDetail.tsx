@@ -11,6 +11,7 @@ import {
   BackLink as SharedBackLink,
   EditField,
   Empty,
+  LinkedProjectsCard,
   SectionCard,
 } from "@/components/detail";
 import { AccountPicker } from "@/components/ui/AccountPicker";
@@ -74,26 +75,23 @@ export function OpportunityDetailPage() {
     [usersQ.data],
   );
 
-  // Stage options come from the live SF data (distinct StageName values
-  // across all loaded opps). Falls back to the canonical SF_STAGE_OPTIONS
-  // list — and always includes the current opp's stage even if it's not
-  // in either set, so a renamed/legacy stage stays selectable.
+  // Stage options are the curated 7 from SF_STAGE_OPTIONS. If the
+  // current opp is in a non-canonical / legacy stage, include it as
+  // the selected display value so the dropdown still renders correctly
+  // — but only the 7 canonical values are selectable for new edits.
   const stageOptions = useMemo(() => {
-    const seen = new Map<string, string>();
-    for (const o of opps ?? []) {
-      if (o.StageName) seen.set(o.StageName, o.StageName);
+    const out = SF_STAGE_OPTIONS.map((s) => ({ value: s.value, label: s.label }));
+    if (
+      opp?.StageName &&
+      !SF_STAGE_OPTIONS.some((s) => s.value === opp.StageName)
+    ) {
+      out.unshift({
+        value: opp.StageName,
+        label: `${opp.StageName} (legacy)`,
+      });
     }
-    if (seen.size === 0) {
-      for (const s of SF_STAGE_OPTIONS) seen.set(s.value, s.label);
-    }
-    if (opp?.StageName && !seen.has(opp.StageName)) {
-      seen.set(opp.StageName, opp.StageName);
-    }
-    const rank = new Map(SF_STAGE_OPTIONS.map((s, i) => [s.value, i]));
-    return Array.from(seen.entries())
-      .map(([value, label]) => ({ value, label }))
-      .sort((a, b) => (rank.get(a.value) ?? 9999) - (rank.get(b.value) ?? 9999));
-  }, [opps, opp?.StageName]);
+    return out;
+  }, [opp?.StageName]);
 
   const accountOptions = useMemo(
     () =>
@@ -216,6 +214,12 @@ export function OpportunityDetailPage() {
               onSave={handleStageChange}
               renderValue={(v) => <StageChip stage={v ?? opp.StageName} status={stageStatus({ ...opp, StageName: v ?? opp.StageName })} />}
             />
+            <InlineSelect
+              value={opp.Priority__c ?? ""}
+              options={PRIORITY_OPTIONS}
+              onSave={(v) => patch("Priority__c", v || null)}
+              renderValue={(v) => <PriorityTag value={v ?? opp.Priority__c ?? null} />}
+            />
             {opp.RecordType?.Name ? <Tag>{opp.RecordType.Name}</Tag> : null}
             {opp.AccountId ? (
               <Link
@@ -261,8 +265,17 @@ export function OpportunityDetailPage() {
           </EditField>
           <EditField label="Probability">
             <InlineText
-              value={opp.Probability != null ? String(opp.Probability) : ""}
-              onSave={(v) => patch("Probability", v ? Number(v) : null)}
+              value={opp.Manager_Probability_Override__c != null ? String(opp.Manager_Probability_Override__c) : (opp.Probability != null ? String(opp.Probability) : "")}
+              onSave={async (v) => {
+                // Mirror SF's UI behavior: write Probability alongside
+                // Manager_Probability_Override__c so the two stay in sync.
+                // Clearing the override (null) lets SF restore the
+                // stage-driven default — don't touch Probability then.
+                const next = v ? Number(v) : null;
+                const body: Record<string, unknown> = { Manager_Probability_Override__c: next };
+                if (next != null) body.Probability = next;
+                await updateOpp.mutateAsync({ id: opp.Id, patch: body });
+              }}
               formatDisplay={formatPercentDisplay}
               placeholder="—"
             />
@@ -460,6 +473,16 @@ export function OpportunityDetailPage() {
           </div>
         </SectionCard>
       ) : null}
+
+      <SectionCard title="Linked projects" storageScope="opportunity">
+        <div className="px-5 py-4">
+          <LinkedProjectsCard
+            entityType="opportunity"
+            entityId={opp.Id}
+            referrerLabel="Opportunity"
+          />
+        </div>
+      </SectionCard>
 
       {/* Activity timeline — scoped so search/filter state is per-entity. */}
       <ActivityTimeline activities={activities} scopeKey={`opportunity:${opp.Id}`} />
@@ -684,4 +707,36 @@ function formatPercentDisplay(raw: string): string {
   const n = Number(raw);
   if (!Number.isFinite(n)) return raw;
   return `${n}%`;
+}
+
+/** Priority picklist surfaced in the OpportunityDetail header. SF picklist
+ *  on Opportunity.Priority__c — values Low / Medium / High. Empty option
+ *  lets editors clear the value. */
+const PRIORITY_OPTIONS = [
+  { value: "", label: "—" },
+  { value: "High", label: "High" },
+  { value: "Medium", label: "Medium" },
+  { value: "Low", label: "Low" },
+];
+
+function PriorityTag({ value }: { value: string | null }) {
+  if (!value) {
+    return <Tag>Priority —</Tag>;
+  }
+  const cls =
+    value === "High"
+      ? "border-red bg-red-soft text-red"
+      : value === "Medium"
+      ? "border-amber bg-amber-soft text-amber"
+      : "border-border-strong bg-surface-2 text-ink-3";
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center rounded border px-2 py-0.5 text-[11px] font-medium",
+        cls,
+      )}
+    >
+      Priority: {value}
+    </span>
+  );
 }

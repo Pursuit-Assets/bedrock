@@ -236,6 +236,40 @@ COMMENT ON TABLE bedrock.project_opportunity IS
   'Migration note: replaces the singular project.opportunity_id column for new usage.';
 
 -- ---------------------------------------------------------------------------
+-- Project ↔ Account / Contact / Award (Many-to-Many)
+-- Same shape as project_opportunity — text IDs for SF compatibility.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS bedrock.project_account (
+    id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    project_id  UUID NOT NULL REFERENCES bedrock.project(id) ON DELETE CASCADE,
+    account_id  TEXT NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (project_id, account_id)
+);
+CREATE INDEX IF NOT EXISTS idx_pa_project ON bedrock.project_account(project_id);
+CREATE INDEX IF NOT EXISTS idx_pa_account ON bedrock.project_account(account_id);
+
+CREATE TABLE IF NOT EXISTS bedrock.project_contact (
+    id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    project_id  UUID NOT NULL REFERENCES bedrock.project(id) ON DELETE CASCADE,
+    contact_id  TEXT NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (project_id, contact_id)
+);
+CREATE INDEX IF NOT EXISTS idx_pc_project ON bedrock.project_contact(project_id);
+CREATE INDEX IF NOT EXISTS idx_pc_contact ON bedrock.project_contact(contact_id);
+
+CREATE TABLE IF NOT EXISTS bedrock.project_award (
+    id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    project_id  UUID NOT NULL REFERENCES bedrock.project(id) ON DELETE CASCADE,
+    award_id    UUID NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (project_id, award_id)
+);
+CREATE INDEX IF NOT EXISTS idx_paw_project ON bedrock.project_award(project_id);
+CREATE INDEX IF NOT EXISTS idx_paw_award ON bedrock.project_award(award_id);
+
+-- ---------------------------------------------------------------------------
 -- Permission Profiles & User Roles
 -- ---------------------------------------------------------------------------
 
@@ -369,8 +403,8 @@ SET name = 'Relationship Manager',
         "create_contacts": true,
         "edit_payments": false,
         "create_payments": false,
-        "view_projects": false,
-        "edit_projects": false,
+        "view_projects": true,
+        "edit_projects": true,
         "view_revenue_dashboard": true,
         "view_cashflow_forecasts": true,
         "view_sage_invoices_payments": false,
@@ -439,19 +473,19 @@ VALUES (
 INSERT INTO bedrock.permission_profile (name, description, is_default, permissions)
 VALUES (
     'Relationship Manager',
-    'Edit own opportunities and tasks, create accounts and contacts — no projects, no Pebble',
+    'Edit any opportunity/task, create accounts and contacts, manage projects',
     true,
     '{
         "view_opportunities": true,
         "edit_own_opportunities": true,
-        "edit_all_opportunities": false,
+        "edit_all_opportunities": true,
         "create_opportunities": true,
         "bulk_update_opportunities": false,
         "lock_own_opportunities": true,
         "reassign_opportunities": false,
         "view_tasks": true,
         "edit_own_tasks": true,
-        "edit_all_tasks": false,
+        "edit_all_tasks": true,
         "create_tasks": true,
         "edit_accounts": true,
         "create_accounts": true,
@@ -459,8 +493,8 @@ VALUES (
         "create_contacts": true,
         "edit_payments": false,
         "create_payments": false,
-        "view_projects": false,
-        "edit_projects": false,
+        "view_projects": true,
+        "edit_projects": true,
         "view_revenue_dashboard": true,
         "view_cashflow_forecasts": true,
         "view_sage_invoices_payments": false,
@@ -501,7 +535,7 @@ VALUES (
         "edit_payments": false,
         "create_payments": false,
         "view_projects": true,
-        "edit_projects": false,
+        "edit_projects": true,
         "view_revenue_dashboard": true,
         "view_cashflow_forecasts": true,
         "view_sage_invoices_payments": false,
@@ -564,6 +598,33 @@ VALUES (
 UPDATE bedrock.permission_profile
 SET permissions = permissions || '{"view_projects": true, "edit_projects": true, "edit_permission_profiles": true}'::jsonb
 WHERE name = 'Admin' AND NOT (permissions ? 'view_projects');
+
+-- 2026-05-06: track when each user last logged into Bedrock so the
+-- Users tab can filter to "actually logged in" rows (not just users
+-- whose org_users row was created lazily via SF sync or a permission
+-- check). Lives on bedrock.user_config (owned by the bedrock role)
+-- because public.org_users is owned by the platform DB role.
+-- Backfills user_config.last_login_at to created_at as a best-effort
+-- baseline so existing users still show up in the filtered list; the
+-- auth callback refreshes it on every login going forward.
+ALTER TABLE bedrock.user_config
+    ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ;
+UPDATE bedrock.user_config
+   SET last_login_at = COALESCE(last_login_at, created_at)
+ WHERE last_login_at IS NULL;
+
+-- 2026-05-06: grant full Projects access (view + edit) to all standard
+-- CRM profiles. Per JR — every Bedrock user should be able to view AND
+-- edit projects; PM-only edit gating was removed.
+UPDATE bedrock.permission_profile
+SET permissions = permissions || '{"view_projects": true, "edit_projects": true}'::jsonb
+WHERE name IN ('Relationship Manager', 'Fundraiser', 'Executive', 'Project Manager');
+
+-- 2026-05-06: grant RM/Fundraiser edit_all_opportunities + edit_all_tasks.
+-- Per JR — RMs need to edit any opp/task, not just their own.
+UPDATE bedrock.permission_profile
+SET permissions = permissions || '{"edit_all_opportunities": true, "edit_all_tasks": true}'::jsonb
+WHERE name IN ('Relationship Manager', 'Fundraiser');
 
 -- ── Permission unlock request table ──
 

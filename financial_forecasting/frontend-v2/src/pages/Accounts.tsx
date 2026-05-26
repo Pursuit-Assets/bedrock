@@ -1,6 +1,6 @@
 import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { ChevronDown, ChevronRight, Plus, Search, Sparkles, X } from "lucide-react";
+import { ChevronDown, ChevronRight, Plus, Search, X } from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 
 import { AccountExpandPanel, ACCOUNT_PANEL_HEIGHT } from "@/components/AccountExpandPanel";
@@ -10,6 +10,7 @@ import { InlineSelect } from "@/components/ui/InlineEdit";
 import { ColGroup, ResizableTh } from "@/components/ui/ResizableTable";
 import { SavedViewsPicker } from "@/components/ui/SavedViewsPicker";
 import { SortableHeader } from "@/components/ui/SortableHeader";
+import { Tag } from "@/components/ui/Tag";
 import { ButtonGroup, Toolbar } from "@/components/ui/Toolbar";
 import {
   buildAccountMetricsMap,
@@ -21,6 +22,7 @@ import { totalWidth, useColumnWidths } from "@/lib/columnWidths";
 import { fmtMoney } from "@/lib/format";
 import { sortBy, useSort } from "@/lib/sort";
 import { cn } from "@/lib/utils";
+import { useSessionState } from "@/lib/useSessionState";
 import { AccountAvatar } from "@/components/AccountAvatar";
 import {
   AddFilterButton,
@@ -38,8 +40,9 @@ import {
 } from "@/services/accounts";
 import { useOpportunities } from "@/services/opportunities";
 import { usePerm } from "@/services/permissions";
-import { useActiveUsers } from "@/services/users";
+import { useActiveUsers, useUsers } from "@/services/users";
 import type { SfAccount } from "@/types/salesforce";
+import { accountStatusVariant } from "@/lib/accountStatus";
 import { toast } from "sonner";
 
 const TYPE_FILTERS = ["All", "Foundation", "Corporate", "Government", "Individual"] as const;
@@ -67,6 +70,7 @@ function matchesType(account: SfAccount, filter: TypeFilter): boolean {
 const ACCOUNTS_FILTERABLE_BASE = {
   name: { label: "Name", type: "text", getValue: (a: SfAccount) => a.Name ?? "" },
   owner: { label: "Owner", type: "select", getValue: (a: SfAccount) => a.OwnerId ?? "" },
+  status: { label: "Status", type: "select", getValue: (a: SfAccount) => a.account_status ?? "" },
   type: { label: "Type", type: "select", getValue: (a: SfAccount) => a.Type ?? "" },
   tier: { label: "Tier", type: "select", getValue: (a: SfAccount) => a.Account_Tier__c ?? "" },
   industry: { label: "Industry", type: "text", getValue: (a: SfAccount) => a.Industry ?? "" },
@@ -93,7 +97,11 @@ type AccountField =
   | "openPipeline"
   | "amountWon"
   | "received"
-  | "outstanding";
+  | "outstanding"
+  | "wonPhilanthropy"
+  | "wonPBC"
+  | "wonDebtEquity"
+  | "wonOtherFFS";
 
 interface AccountsSavedView {
   filter?: TypeFilter;
@@ -102,11 +110,40 @@ interface AccountsSavedView {
   widths?: Partial<Record<ColKey, number>>;
 }
 
-type ColKey = "name" | "owner" | "openPipeline" | "amountWon" | "received" | "outstanding";
+type ColKey =
+  | "name"
+  | "owner"
+  | "status"
+  | "openPipeline"
+  | "amountWon"
+  | "received"
+  | "outstanding"
+  | "wonPhilanthropy"
+  | "wonPBC"
+  | "wonDebtEquity"
+  | "wonOtherFFS";
 
+// Won-by-record-type columns are hidden by default — they're long, and
+// most users only want them when slicing by funding source. Toggle on
+// via the column chooser.
 const COLUMN_ORDER: ColKey[] = [
   "name",
   "owner",
+  "status",
+  "openPipeline",
+  "amountWon",
+  "received",
+  "outstanding",
+  "wonPhilanthropy",
+  "wonPBC",
+  "wonDebtEquity",
+  "wonOtherFFS",
+];
+
+const DEFAULT_VISIBLE: ColKey[] = [
+  "name",
+  "owner",
+  "status",
   "openPipeline",
   "amountWon",
   "received",
@@ -116,19 +153,29 @@ const COLUMN_ORDER: ColKey[] = [
 const DEFAULT_WIDTHS: Record<ColKey, number> = {
   name: 280,
   owner: 160,
+  status: 130,
   openPipeline: 130,
   amountWon: 130,
   received: 120,
   outstanding: 130,
+  wonPhilanthropy: 140,
+  wonPBC: 110,
+  wonDebtEquity: 140,
+  wonOtherFFS: 140,
 };
 
 const COL_LABELS: Record<ColKey, string> = {
   name: "Account",
   owner: "Account owner",
+  status: "Status",
   openPipeline: "Open pipeline",
   amountWon: "Amount won",
   received: "Received",
   outstanding: "Outstanding",
+  wonPhilanthropy: "Won: Philanthropy",
+  wonPBC: "Won: PBC",
+  wonDebtEquity: "Won: Debt / Equity",
+  wonOtherFFS: "Won: Other FFS",
 };
 
 const ROW_HEIGHT = 44; // px — must match the row's actual rendered height
@@ -148,10 +195,15 @@ function extractAccount(
   switch (key) {
     case "name": return a.Name;
     case "owner": return a.Owner?.Name;
+    case "status": return a.account_status ?? "";
     case "openPipeline": return metrics.openPipeline;
     case "amountWon": return metrics.amountWon;
     case "received": return metrics.received;
     case "outstanding": return metrics.outstanding;
+    case "wonPhilanthropy": return metrics.wonByRecordType["Philanthropy"] ?? 0;
+    case "wonPBC": return metrics.wonByRecordType["PBC"] ?? 0;
+    case "wonDebtEquity": return metrics.wonByRecordType["Debt / Equity"] ?? 0;
+    case "wonOtherFFS": return metrics.wonByRecordType["Other Fee For Service"] ?? 0;
   }
 }
 
@@ -160,6 +212,9 @@ export function AccountsPage() {
   const accountsQ = useAccounts();
   const oppsQ = useOpportunities();
   const usersQ = useActiveUsers();
+  // All users (active + inactive). Used only for the chip-filter owner
+  // facet — write-side pickers stay on `usersQ` (active only).
+  const allUsersQ = useUsers();
   const updateAccount = useUpdateAccount();
   const canEdit = usePerm("edit_accounts");
 
@@ -167,10 +222,10 @@ export function AccountsPage() {
   const [q, setQ] = useState("");
   const [rules, setRules] = useState<FilterRule<AccountField>[]>([]);
   const [showCreate, setShowCreate] = useState(false);
-  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [expandedId, setExpandedId] = useSessionState<string | null>("accounts:expandedId", null);
 
   const { visible: visibleCols, toggle: toggleCol, replaceAll: replaceVisibleCols } =
-    useColumnVisibility("bedrock-v2:vis:accounts", COLUMN_ORDER);
+    useColumnVisibility("bedrock-v2:vis:accounts", COLUMN_ORDER, DEFAULT_VISIBLE);
 
   const { sort, toggle } = useSort<ColKey>({
     key: "openPipeline",
@@ -222,42 +277,117 @@ export function AccountsPage() {
         getValue: (a: SfAccount) =>
           metricsByAccount.get(a.Id)?.outstanding ?? 0,
       },
+      wonPhilanthropy: {
+        label: "Won: Philanthropy",
+        type: "number",
+        getValue: (a: SfAccount) =>
+          metricsByAccount.get(a.Id)?.wonByRecordType["Philanthropy"] ?? 0,
+      },
+      wonPBC: {
+        label: "Won: PBC",
+        type: "number",
+        getValue: (a: SfAccount) =>
+          metricsByAccount.get(a.Id)?.wonByRecordType["PBC"] ?? 0,
+      },
+      wonDebtEquity: {
+        label: "Won: Debt / Equity",
+        type: "number",
+        getValue: (a: SfAccount) =>
+          metricsByAccount.get(a.Id)?.wonByRecordType["Debt / Equity"] ?? 0,
+      },
+      wonOtherFFS: {
+        label: "Won: Other FFS",
+        type: "number",
+        getValue: (a: SfAccount) =>
+          metricsByAccount.get(a.Id)?.wonByRecordType["Other Fee For Service"] ?? 0,
+      },
     }) as Record<AccountField, FieldMeta<SfAccount>>,
     [metricsByAccount],
   );
 
-  // Chip-filter facets — owners include inactive users so historical
-  // owners still appear; type/tier/industry/state are discovered from
-  // the accounts actually loaded.
+  // Accounts that match the toolbar filters (type pill + search). Used
+  // to populate the chip-filter owner facet so it reflects what's
+  // visible in the table, not the entire server load. Chip `rules` are
+  // intentionally excluded — if applied, the owner picker would
+  // collapse to whichever owner you'd already filtered to.
+  const accountsInView = useMemo(() => {
+    const needle = q.toLowerCase();
+    return accounts.filter((a) => {
+      if (!matchesType(a, filter)) return false;
+      if (q) {
+        const hit =
+          (a.Name ?? "").toLowerCase().includes(needle) ||
+          (a.Owner?.Name ?? "").toLowerCase().includes(needle);
+        if (!hit) return false;
+      }
+      return true;
+    });
+  }, [accounts, filter, q]);
+
+  // Chip-filter facets — owner options are the union of:
+  //   (a) every active SF user, and
+  //   (b) inactive users that own at least one row in the current view.
+  // type/tier come from the accounts visible in the current view.
   const chipFacets = useMemo(() => {
-    const activeIds = new Set((usersQ.data ?? []).map((u) => u.Id));
-    const owners = new Map<string, string>();
+    const all = allUsersQ.data ?? [];
+    const activeById = new Map(
+      all.filter((u) => u.IsActive).map((u) => [u.Id, u]),
+    );
+    const inactiveById = new Map(
+      all.filter((u) => !u.IsActive).map((u) => [u.Id, u]),
+    );
+
+    const ownersInView = new Set<string>();
+    const ownerNameFromData = new Map<string, string>();
     const types = new Set<string>();
     const tiers = new Set<string>();
-    for (const a of accounts) {
-      if (a.OwnerId && a.Owner?.Name && !owners.has(a.OwnerId)) {
-        owners.set(a.OwnerId, a.Owner.Name);
+    for (const a of accountsInView) {
+      if (a.OwnerId) {
+        ownersInView.add(a.OwnerId);
+        if (a.Owner?.Name) ownerNameFromData.set(a.OwnerId, a.Owner.Name);
       }
       if (a.Type) types.add(a.Type);
       if (a.Account_Tier__c) tiers.add(a.Account_Tier__c);
     }
+
+    type OwnerOption = { value: string; label: string };
+    const ownerOptions: OwnerOption[] = [];
+    for (const u of activeById.values()) {
+      ownerOptions.push({ value: u.Id, label: u.Name });
+    }
+    for (const id of ownersInView) {
+      if (activeById.has(id)) continue;
+      const inactive = inactiveById.get(id);
+      const name = inactive?.Name ?? ownerNameFromData.get(id) ?? id;
+      ownerOptions.push({ value: id, label: `${name} (inactive)` });
+    }
+    ownerOptions.sort((x, y) => x.label.localeCompare(y.label));
+
     const yesNo = [
       { value: "Yes", label: "Yes" },
       { value: "No", label: "No" },
     ];
+    // Account status is a fixed enum from the playbook — surface all
+    // five values regardless of whether the current view has any of
+    // each, so users can filter to e.g. "Re-activating" even when the
+    // panel doesn't currently show any.
+    const status = [
+      { value: "Prospect", label: "Prospect" },
+      { value: "Pursuing", label: "Pursuing" },
+      { value: "Stewarding", label: "Stewarding" },
+      { value: "Re-activating", label: "Re-activating" },
+      { value: "Dormant", label: "Dormant" },
+    ];
+
     return {
-      owner: Array.from(owners.entries())
-        .map(([id, name]) => ({
-          value: id,
-          label: activeIds.has(id) ? name : `${name} (inactive)`,
-        }))
-        .sort((x, y) => x.label.localeCompare(y.label)),
+      owner: ownerOptions,
+      status,
       type: Array.from(types).sort().map((v) => ({ value: v, label: v })),
       tier: Array.from(tiers).sort().map((v) => ({ value: v, label: v })),
       philanthropy: yesNo,
       active: yesNo,
     };
-  }, [accounts, usersQ.data]);
+  }, [accountsInView, allUsersQ.data]);
 
   const ownerLabelLookup = useMemo(() => {
     const m = new Map<string, string>();
@@ -296,14 +426,19 @@ export function AccountsPage() {
         (acc, a) => {
           const m = metricsByAccount.get(a.Id);
           if (!m) return acc;
+          const summed: Record<string, number> = { ...acc.wonByRecordType };
+          for (const [k, v] of Object.entries(m.wonByRecordType)) {
+            summed[k] = (summed[k] ?? 0) + v;
+          }
           return {
             openPipeline: acc.openPipeline + m.openPipeline,
             amountWon: acc.amountWon + m.amountWon,
             received: acc.received + m.received,
             outstanding: acc.outstanding + m.outstanding,
+            wonByRecordType: summed,
           };
         },
-        { ...ZERO_METRICS },
+        { ...ZERO_METRICS, wonByRecordType: { ...ZERO_METRICS.wonByRecordType } },
       ),
     [filtered, metricsByAccount],
   );
@@ -364,17 +499,12 @@ export function AccountsPage() {
             : `${accounts.length.toLocaleString()} funder organizations · ${fmtMoney(totals.openPipeline)} open pipeline · ${fmtMoney(totals.amountWon)} won`
         }
         actions={
-          <>
-            <button className="inline-flex h-[30px] items-center gap-1.5 rounded border border-border-strong bg-surface px-3 text-[13px] font-medium text-ink hover:bg-surface-2">
-              <Sparkles size={14} /> Enrich with Donor Atlas
-            </button>
-            <button
-              onClick={() => setShowCreate(true)}
-              className="inline-flex h-[30px] items-center gap-1.5 rounded border border-ink bg-ink px-3 text-[13px] font-medium text-surface hover:opacity-90"
-            >
-              <Plus size={14} /> New account
-            </button>
-          </>
+          <button
+            onClick={() => setShowCreate(true)}
+            className="inline-flex h-[30px] items-center gap-1.5 rounded border border-ink bg-ink px-3 text-[13px] font-medium text-surface hover:opacity-90"
+          >
+            <Plus size={14} /> New account
+          </button>
         }
       />
 
@@ -401,6 +531,7 @@ export function AccountsPage() {
           filterable={filterable as Record<AccountField, FieldMeta<unknown>>}
           selectOptions={{
             owner: chipFacets.owner,
+            status: chipFacets.status,
             type: chipFacets.type,
             tier: chipFacets.tier,
             philanthropy: chipFacets.philanthropy,
@@ -572,6 +703,10 @@ export function AccountsPage() {
                     amountWon: fmtMoney(totals.amountWon),
                     received: fmtMoney(totals.received),
                     outstanding: fmtMoney(totals.outstanding),
+                    wonPhilanthropy: fmtMoney(totals.wonByRecordType["Philanthropy"] ?? 0),
+                    wonPBC: fmtMoney(totals.wonByRecordType["PBC"] ?? 0),
+                    wonDebtEquity: fmtMoney(totals.wonByRecordType["Debt / Equity"] ?? 0),
+                    wonOtherFFS: fmtMoney(totals.wonByRecordType["Other Fee For Service"] ?? 0),
                   };
                   const label = totalsMap[key];
                   if (idx === 0) {
@@ -813,22 +948,46 @@ const AccountRow = memo(function AccountRow({
     ) : (
       <span className="truncate text-[12.5px] text-ink-2">{a.Owner?.Name ?? "—"}</span>
     ),
+    status: a.account_status ? (
+      <Tag variant={accountStatusVariant(a.account_status)}>{a.account_status}</Tag>
+    ) : dash,
     openPipeline: m.openPipeline > 0 ? fmtMoney(m.openPipeline) : dash,
     amountWon: m.amountWon > 0 ? fmtMoney(m.amountWon) : dash,
     received: m.received > 0 ? fmtMoney(m.received) : dash,
     outstanding: m.outstanding > 0 ? fmtMoney(m.outstanding) : dash,
+    wonPhilanthropy: (m.wonByRecordType["Philanthropy"] ?? 0) > 0
+      ? fmtMoney(m.wonByRecordType["Philanthropy"]!) : dash,
+    wonPBC: (m.wonByRecordType["PBC"] ?? 0) > 0
+      ? fmtMoney(m.wonByRecordType["PBC"]!) : dash,
+    wonDebtEquity: (m.wonByRecordType["Debt / Equity"] ?? 0) > 0
+      ? fmtMoney(m.wonByRecordType["Debt / Equity"]!) : dash,
+    wonOtherFFS: (m.wonByRecordType["Other Fee For Service"] ?? 0) > 0
+      ? fmtMoney(m.wonByRecordType["Other Fee For Service"]!) : dash,
   };
+
+  const wonP = m.wonByRecordType["Philanthropy"] ?? 0;
+  const wonPBCVal = m.wonByRecordType["PBC"] ?? 0;
+  const wonDE = m.wonByRecordType["Debt / Equity"] ?? 0;
+  const wonOFFS = m.wonByRecordType["Other Fee For Service"] ?? 0;
 
   const cellCls: Partial<Record<ColKey, string>> = {
     name: "overflow-hidden px-3 py-1 text-[13px]",
     owner: "overflow-hidden px-3 py-1 text-[12.5px] text-ink-2",
+    status: "overflow-hidden px-3 py-1",
     openPipeline: cn(numCell, m.openPipeline > 0 && "font-semibold text-accent-ink"),
     amountWon: cn(numCell, m.amountWon > 0 && "font-semibold text-green"),
     received: cn(numCell, m.received > 0 && "font-medium text-green"),
     outstanding: cn(numCell, m.outstanding > 0 && "font-medium text-amber"),
+    wonPhilanthropy: cn(numCell, wonP > 0 && "font-medium text-green"),
+    wonPBC: cn(numCell, wonPBCVal > 0 && "font-medium text-green"),
+    wonDebtEquity: cn(numCell, wonDE > 0 && "font-medium text-green"),
+    wonOtherFFS: cn(numCell, wonOFFS > 0 && "font-medium text-green"),
   };
 
-  const clickable = new Set<ColKey>(["openPipeline", "amountWon", "received", "outstanding"]);
+  const clickable = new Set<ColKey>([
+    "openPipeline", "amountWon", "received", "outstanding",
+    "wonPhilanthropy", "wonPBC", "wonDebtEquity", "wonOtherFFS",
+  ]);
 
   return (
     <tr

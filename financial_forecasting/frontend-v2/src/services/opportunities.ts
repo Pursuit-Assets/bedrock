@@ -271,6 +271,7 @@ interface TaskCreateBody {
   Description?: string | null;
   OwnerId?: string | null;
   WhoId?: string | null;
+  WhatId?: string | null;
 }
 
 interface TaskUpdateBody {
@@ -326,12 +327,46 @@ export function useCreateTask() {
       );
       return data;
     },
-    onSuccess: (_data, vars) => {
+    // Optimistic insert so the new row shows up the instant the user
+    // hits Enter — without waiting for the SF roundtrip. The temp Id
+    // is replaced when the cache refetches onSuccess.
+    onMutate: async ({ opportunityId, body }) => {
+      const key = ["opportunity-tasks", opportunityId] as const;
+      await qc.cancelQueries({ queryKey: key });
+      const prev = qc.getQueryData<SfTask[]>(key);
+      const optimistic = buildOptimisticTask(body, opportunityId);
+      qc.setQueryData<SfTask[]>(key, (old) => [optimistic, ...(old ?? [])]);
+      return { key, prev };
+    },
+    onError: (_err, _vars, ctx) => {
+      if (ctx?.prev !== undefined && ctx.key) {
+        qc.setQueryData(ctx.key, ctx.prev);
+      }
+    },
+    onSettled: (_data, _err, vars) => {
       qc.invalidateQueries({
         queryKey: ["opportunity-tasks", vars.opportunityId],
       });
     },
   });
+}
+
+/** Build a synthetic SfTask for optimistic list insertion. The temp Id
+ *  is replaced when the real task lands via the refetch in onSettled. */
+function buildOptimisticTask(body: TaskCreateBody, whatId: string): SfTask {
+  return {
+    Id: `__tmp__${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    Subject: body.Subject ?? null,
+    Status: body.Status ?? "Not Started",
+    Priority: body.Priority ?? null,
+    ActivityDate: body.ActivityDate ?? null,
+    Description: body.Description ?? null,
+    IsClosed: false,
+    OwnerId: body.OwnerId ?? null,
+    OwnerName: null,
+    WhatId: whatId,
+    WhatName: null,
+  };
 }
 
 /** Cache-key prefixes that may hold a task list — used by useUpdateTask
@@ -496,18 +531,21 @@ export function useContactTasks(contactId: string | undefined) {
   });
 }
 
-async function fetchUserTasks(ownerId: string): Promise<SfTask[]> {
+async function fetchUserTasks(ownerId: string, includeClosed: boolean): Promise<SfTask[]> {
+  const qs = includeClosed ? "?include_closed=true" : "";
   const { data } = await api.get<TasksResponse>(
-    `/api/salesforce/users/${encodeURIComponent(ownerId)}/tasks`,
+    `/api/salesforce/users/${encodeURIComponent(ownerId)}/tasks${qs}`,
   );
   return data.data ?? [];
 }
 
-/** Open tasks owned by a Salesforce user (Task.OwnerId). */
-export function useUserTasks(ownerId: string | undefined) {
+/** Tasks owned by a Salesforce user (Task.OwnerId).
+ *  By default returns only open tasks; pass `includeClosed` to fetch
+ *  all (used by the homebase "Show done" toggle). */
+export function useUserTasks(ownerId: string | undefined, includeClosed = false) {
   return useQuery({
-    queryKey: ["user-tasks", ownerId],
-    queryFn: () => fetchUserTasks(ownerId!),
+    queryKey: ["user-tasks", ownerId, includeClosed],
+    queryFn: () => fetchUserTasks(ownerId!, includeClosed),
     staleTime: 60_000,
     enabled: !!ownerId,
   });
@@ -533,8 +571,96 @@ export function useCreateAccountTask() {
       );
       return data;
     },
-    onSuccess: (_data, vars) => {
+    onMutate: async ({ accountId, body }) => {
+      const key = ["account-tasks", accountId] as const;
+      await qc.cancelQueries({ queryKey: key });
+      const prev = qc.getQueryData<SfTask[]>(key);
+      const optimistic = buildOptimisticTask(body, accountId);
+      qc.setQueryData<SfTask[]>(key, (old) => [optimistic, ...(old ?? [])]);
+      return { key, prev };
+    },
+    onError: (_err, _vars, ctx) => {
+      if (ctx?.prev !== undefined && ctx.key) {
+        qc.setQueryData(ctx.key, ctx.prev);
+      }
+    },
+    onSettled: (_data, _err, vars) => {
       qc.invalidateQueries({ queryKey: ["account-tasks", vars.accountId] });
+    },
+  });
+}
+
+/**
+ * Generic Task creation against `POST /api/salesforce/tasks`. Use this
+ * when the parent record is set via UI (Contact expand panel, Tasks
+ * page link-picker) rather than fixed by the URL route. The body's
+ * WhoId / WhatId / OwnerId / ActivityDate are all optional, so this
+ * also covers ownerless "My Tasks" entries.
+ *
+ * Optimistic insert: drops the new row into the matching cache list
+ * (contact-tasks if WhoId present, my-tasks otherwise). The temp Id
+ * is replaced when the cache refetches onSettled.
+ */
+export function useCreateGenericTask() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (body: TaskCreateBody) => {
+      const { data } = await api.post<TaskCreateResult>("/api/salesforce/tasks", body);
+      return data;
+    },
+    onMutate: async (body) => {
+      // Primary cache list: contact-tasks if WhoId, opp-tasks if WhatId,
+      // my-tasks otherwise. Snapshot for rollback.
+      const targetKey: readonly unknown[] = body.WhoId
+        ? (["contact-tasks", body.WhoId] as const)
+        : body.WhatId
+          ? (["opportunity-tasks", body.WhatId] as const)
+          : (["my-tasks"] as const);
+      await qc.cancelQueries({ queryKey: targetKey });
+      const prev = qc.getQueryData<SfTask[]>(targetKey);
+      const optimistic = buildOptimisticTask(body, body.WhatId ?? body.WhoId ?? "");
+      qc.setQueryData<SfTask[]>(targetKey, (old) => [optimistic, ...(old ?? [])]);
+
+      // ALSO push the optimistic row into every cached `user-tasks`
+      // list whose ownerId matches this task's OwnerId. PortfolioTasks
+      // (My Tasks panel on /portfolio) reads from `["user-tasks",
+      // ownerId, includeClosed]` — without this insert it'd wait for
+      // the server roundtrip + invalidate before the new row appears.
+      const userTaskSnapshots: { key: readonly unknown[]; data: SfTask[] | undefined }[] = [];
+      if (body.OwnerId) {
+        const matches = qc.getQueryCache().findAll({
+          predicate: (q) => {
+            const k = q.queryKey;
+            return Array.isArray(k) && k[0] === "user-tasks" && k[1] === body.OwnerId;
+          },
+        });
+        for (const m of matches) {
+          const previous = qc.getQueryData<SfTask[]>(m.queryKey);
+          userTaskSnapshots.push({ key: m.queryKey, data: previous });
+          qc.setQueryData<SfTask[]>(m.queryKey, (old) => [optimistic, ...(old ?? [])]);
+        }
+      }
+
+      return { targetKey, prev, userTaskSnapshots };
+    },
+    onError: (_err, _vars, ctx) => {
+      if (ctx?.prev !== undefined && ctx.targetKey) {
+        qc.setQueryData(ctx.targetKey, ctx.prev);
+      }
+      ctx?.userTaskSnapshots?.forEach(({ key, data }) => qc.setQueryData(key, data));
+    },
+    onSettled: (_data, _err, body) => {
+      // Invalidate every list this task could surface in so the
+      // temp-id optimistic row reconciles with the real server task.
+      if (body.WhoId) {
+        qc.invalidateQueries({ queryKey: ["contact-tasks", body.WhoId] });
+      }
+      if (body.WhatId) {
+        qc.invalidateQueries({ queryKey: ["opportunity-tasks", body.WhatId] });
+        qc.invalidateQueries({ queryKey: ["account-tasks", body.WhatId] });
+      }
+      qc.invalidateQueries({ queryKey: ["my-tasks"] });
+      qc.invalidateQueries({ queryKey: ["user-tasks"] });
     },
   });
 }

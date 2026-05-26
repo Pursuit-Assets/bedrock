@@ -23,6 +23,8 @@ from pydantic import BaseModel, Field
 
 from auth import require_auth
 from db import get_db
+from dependencies import get_mcp_client
+from routes.projects import _enrich_opp_ids_with_sf
 from security import validate_salesforce_id
 
 logger = logging.getLogger(__name__)
@@ -145,6 +147,35 @@ _FREQUENCY_TO_MONTHS: Dict[str, int] = {
 # ── Endpoints ─────────────────────────────────────────────────────────────
 
 
+@router.post("/reconcile")
+async def reconcile_awards(
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Idempotently create award rows for any award-eligible opp that's
+    missing one. Catches the case where someone changes the stage in
+    Salesforce directly (workflow rule, data loader, SF UI), bypassing
+    Bedrock's update-stage endpoint.
+
+    Admin-only. Also runs as a daily background task; this endpoint
+    just lets an admin force a run.
+    """
+    # Lazy imports to keep awards.py import light.
+    from main import _services
+    from routes.permissions import require_admin
+    # Manually invoke the admin gate so we can keep this file's auth
+    # imports minimal; if non-admin reaches here require_admin raises 403.
+    await require_admin(user=user, db=conn)
+
+    client = _services.get("mcp_client")
+    if not client or "salesforce" not in (client.connected_services or set()):
+        raise HTTPException(status_code=503, detail="Salesforce not connected")
+
+    from services.awards_reconciler import reconcile_all
+    summary = await reconcile_all(conn, client.salesforce)
+    return {"success": True, "data": summary}
+
+
 @router.get("")
 async def list_awards(
     status: Optional[str] = Query(None, description="Filter by award_status"),
@@ -191,6 +222,7 @@ async def get_award(
     award_id: str,
     conn=Depends(get_db),
     user=Depends(require_auth),
+    client=Depends(get_mcp_client),
 ) -> Dict[str, Any]:
     try:
         aid = uuid.UUID(award_id)
@@ -202,7 +234,23 @@ async def get_award(
     )
     if not row:
         raise HTTPException(status_code=404, detail="Award not found")
-    return _serialize(row)
+    out = _serialize(row)
+    # Enrich with SF Opportunity display fields so the AwardDetail page
+    # can render headline data (account, opp name, amount, paid, owner,
+    # record type) for users who haven't connected their own Salesforce
+    # session — uses the service-account SF via get_mcp_client.
+    opp_lookup = await _enrich_opp_ids_with_sf([out.get("opportunity_id")], client)
+    sf = opp_lookup.get(out.get("opportunity_id")) or {}
+    out["opportunity_name"] = sf.get("Name")
+    out["account_id"] = sf.get("AccountId")
+    out["account_name"] = sf.get("AccountName")
+    out["amount"] = sf.get("Amount")
+    out["stage_name"] = sf.get("StageName")
+    out["owner_id"] = sf.get("OwnerId")
+    out["owner_name"] = sf.get("OwnerName")
+    out["record_type_name"] = sf.get("RecordTypeName")
+    out["payments_made"] = sf.get("PaymentsMade")
+    return out
 
 
 @router.patch("/{award_id}")

@@ -2,6 +2,7 @@ import { memo, useMemo, useRef, useState } from "react";
 import { Search } from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 
+import { NewMyTaskRow } from "@/components/NewMyTaskRow";
 import { PageHeader } from "@/components/PageHeader";
 import {
   SourceBadge,
@@ -178,6 +179,13 @@ export function TasksPage() {
 
   const sfTasks = myTasksQ.data ?? [];
   const projectDetails = projectsQ.details;
+  // Lookup: SF task id → SfMyTask, so the drawer can switch to inline
+  // edit mode when the row's source === "crm".
+  const sfTaskById = useMemo(() => {
+    const m = new Map<string, SfMyTask>();
+    for (const t of sfTasks) m.set(t.Id, t);
+    return m;
+  }, [sfTasks]);
 
   // ── Unified list ─────────────────────────────────────────────────────
   // CRM rows come from `/api/salesforce/my-tasks`. Project rows come from
@@ -291,6 +299,8 @@ export function TasksPage() {
         </div>
       ) : null}
 
+      <NewMyTaskRow />
+
       <Toolbar>
         <ButtonGroup
           value={sourceFilter}
@@ -400,7 +410,15 @@ export function TasksPage() {
         </table>
       </div>
 
-      <TaskDrawer task={drawerTask} onClose={() => setDrawerTask(null)} />
+      <TaskDrawer
+        task={drawerTask}
+        rawTask={
+          drawerTask?.source === "crm"
+            ? (sfTaskById.get(drawerTask.id) as SfMyTask | undefined) ?? null
+            : null
+        }
+        onClose={() => setDrawerTask(null)}
+      />
     </div>
   );
 }

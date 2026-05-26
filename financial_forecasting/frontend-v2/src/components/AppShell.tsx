@@ -1,25 +1,29 @@
-import { NavLink, Outlet, useLocation } from "react-router-dom";
+import { NavLink, Outlet, useLocation, useNavigationType } from "react-router-dom";
 import { useEffect, useRef, useState } from "react";
 import {
   LayoutDashboard,
   Building2,
+  Briefcase,
   GitBranch,
   Trophy,
   FolderOpen,
   Users,
-  Search,
   Sparkles,
   Settings as SettingsIcon,
   ChevronLeft,
   ChevronRight,
   TrendingUp,
   Link as LinkIcon,
+  Home,
   MessageSquarePlus,
   Hammer,
+  Receipt,
 } from "lucide-react";
 
-import { GlobalSearch } from "@/components/GlobalSearch";
+import { NotificationBell } from "@/components/NotificationBell";
+import { TopBarSearch } from "@/components/TopBarSearch";
 import { cn } from "@/lib/utils";
+import { recordNavigation, saveScroll, restoreScroll } from "@/lib/navHistory";
 import { useCurrentUser, useSalesforceStatus, startSalesforceConnect } from "@/services/auth";
 
 const NAV_GROUPS = [
@@ -33,12 +37,11 @@ const NAV_GROUPS = [
   {
     label: "Portfolio",
     items: [
-      { to: "/accounts", label: "Accounts", icon: Building2 },
-      { to: "/contacts", label: "Contacts", icon: Users },
-      { to: "/pipeline", label: "Pipeline", icon: GitBranch },
-      { to: "/awards",   label: "Awards",   icon: Trophy },
-      { to: "/projects", label: "Projects", icon: FolderOpen },
-      { to: "/cleanup",  label: "Cleanup",  icon: Sparkles },
+      { to: "/portfolio", label: "Home",     icon: Home },
+      { to: "/accounts",  label: "Accounts", icon: Building2 },
+      { to: "/contacts",  label: "Contacts", icon: Users },
+      { to: "/pipeline",  label: "Pipeline", icon: GitBranch },
+      { to: "/cleanup",   label: "Cleanup",  icon: Sparkles },
       // Tasks page hidden 2026-05-04 — pending a Salesforce data-hygiene
       // pass to close the years-old open-task backlog. Tasks remain
       // visible on the per-record expand panels and detail pages, where
@@ -60,6 +63,20 @@ const NAV_GROUPS = [
       // un-permissioned users (added in B0.6 follow-up).
       { to: "/pebble", label: "Ask Pebble", icon: MessageSquarePlus },
       { to: "/chisel", label: "Chisel", icon: Hammer },
+    ],
+  },
+  {
+    label: "Awards",
+    items: [
+      { to: "/awards",   label: "Awards",   icon: Trophy },
+      { to: "/payments", label: "Payments", icon: Receipt },
+      { to: "/projects", label: "Projects", icon: FolderOpen },
+    ],
+  },
+  {
+    label: "Jobs",
+    items: [
+      { to: "/jobs", label: "Jobs", icon: Briefcase },
     ],
   },
 ] as const;
@@ -86,29 +103,58 @@ function useSidebarCollapsed() {
 
 export function AppShell() {
   const { collapsed, toggle } = useSidebarCollapsed();
-  const [searchOpen, setSearchOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const { pathname } = useLocation();
   const sf = useSalesforceStatus();
 
-  // Allow Settings so the user can connect SF even when not yet connected.
-  const isSettingsPage = pathname.startsWith("/settings");
+  // Pages that don't fundamentally need Salesforce — Settings (so the user
+  // can connect SF), Projects (planning lives in Bedrock's own DB),
+  // Feedback (intake form), and individual Award detail pages (status /
+  // reports / dates live in bedrock; the SF-derived header is
+  // server-enriched via the service-account client). Anything else
+  // 503s the SF gate when SF is off.
+  // Award LIST (`/awards`) still depends on a client-side join with
+  // useOpportunities(), so it's intentionally NOT in this list — we
+  // exempt only the `/awards/:id` detail route via the trailing slash.
+  const SF_OPTIONAL_PREFIXES = [
+    "/settings",
+    "/projects",
+    "/feedback",
+    "/awards/",
+  ];
+  const sfOptional = SF_OPTIONAL_PREFIXES.some((p) => pathname.startsWith(p));
   const sfNotConnected = !sf.isLoading && sf.data?.connected === false;
 
+  const navType = useNavigationType();
+  const prevPathRef = useRef(pathname);
   useEffect(() => {
-    scrollRef.current?.scrollTo({ top: 0 });
-  }, [pathname]);
+    const prev = prevPathRef.current;
+    prevPathRef.current = pathname;
 
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
-        e.preventDefault();
-        setSearchOpen(true);
+    // Save scroll position of the page we're leaving
+    if (prev !== pathname && scrollRef.current) {
+      saveScroll(prev, scrollRef.current.scrollTop);
+    }
+
+    if (navType === "POP") {
+      // Back/forward — restore the saved scroll position
+      const saved = restoreScroll(pathname);
+      if (saved !== null && scrollRef.current) {
+        // Defer so the DOM has time to render before scrolling
+        requestAnimationFrame(() => {
+          scrollRef.current?.scrollTo({ top: saved });
+        });
       }
-    };
-    document.addEventListener("keydown", handler);
-    return () => document.removeEventListener("keydown", handler);
-  }, []);
+    } else {
+      // Forward navigation — scroll to top
+      scrollRef.current?.scrollTo({ top: 0 });
+    }
+    recordNavigation();
+  }, [pathname, navType]);
+
+  // ⌘K is now handled by TopBarSearch (focuses the inline input
+  // instead of opening a modal). Keeping the keydown effect a no-op
+  // here would just shadow that handler — drop it.
 
   return (
     <div
@@ -117,10 +163,17 @@ export function AppShell() {
         gridTemplateColumns: `${collapsed ? NAV_COLLAPSED_W : NAV_EXPANDED_W}px 1fr`,
       }}
     >
-      <GlobalSearch open={searchOpen} onClose={() => setSearchOpen(false)} />
-      <Sidebar collapsed={collapsed} onToggle={toggle} onSearchOpen={() => setSearchOpen(true)} />
+      <Sidebar collapsed={collapsed} onToggle={toggle} />
       <main className="flex flex-col overflow-hidden">
-        {sfNotConnected && !isSettingsPage ? (
+        {/* Top bar — inline search (left/center) + notification bell
+            (right). Page title removed: the active sidebar item is the
+            canonical "you are here" indicator, and a duplicate label
+            in the top bar was costing vertical space for no signal. */}
+        <header className="flex h-9 flex-shrink-0 items-center justify-between gap-3 border-b border-border bg-surface px-4">
+          <TopBarSearch />
+          <NotificationBell />
+        </header>
+        {sfNotConnected && !sfOptional ? (
           <SalesforceGate />
         ) : (
           <div ref={scrollRef} className="flex-1 overflow-y-auto">
@@ -164,11 +217,12 @@ function SalesforceGate() {
 function Sidebar({
   collapsed,
   onToggle,
-  onSearchOpen,
 }: {
   collapsed: boolean;
   onToggle: () => void;
-  onSearchOpen: () => void;
+  /** Kept in the prop type for callers that still pass it (top-bar
+   *  search trigger replaced the sidebar one as of 2026-05-20). */
+  onSearchOpen?: () => void;
 }) {
   const { data: user } = useCurrentUser();
   const sf = useSalesforceStatus();
@@ -211,22 +265,7 @@ function Sidebar({
         </button>
       </div>
 
-      {/* Search trigger — hidden when collapsed */}
-      {!collapsed && (
-        <button
-          type="button"
-          onClick={onSearchOpen}
-          className="mb-2 mt-1 flex h-[30px] w-full items-center gap-2 rounded-md border border-border-strong bg-surface px-3 text-left text-ink-3 hover:border-ink-3 hover:bg-surface-2"
-        >
-          <Search size={13} className="flex-shrink-0" />
-          <span className="min-w-0 flex-1 text-[12.5px] text-ink-4">
-            Search…
-          </span>
-          <kbd className="rounded border border-border-strong px-1.5 py-px text-[10px] text-ink-3">
-            ⌘K
-          </kbd>
-        </button>
-      )}
+      {/* Search trigger moved to the top bar (2026-05-20). */}
 
       <nav className="flex flex-col">
         {NAV_GROUPS.map((group) => (
@@ -311,7 +350,7 @@ function Sidebar({
           )}
         </NavLink>
 
-        {/* User avatar */}
+        {/* User avatar (bell moved to the top-bar 2026-05-20). */}
         {user && (
           <div
             className={cn(

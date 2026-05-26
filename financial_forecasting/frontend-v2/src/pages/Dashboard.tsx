@@ -14,6 +14,8 @@ import { useACVSummary } from "@/services/payments";
 import { useOwnerGoals } from "@/services/ownerGoals";
 import { useActiveUsers } from "@/services/users";
 import type { SfOpportunity } from "@/types/salesforce";
+import type { CashflowBucket } from "@/services/cashflow";
+import { filterByBucket } from "@/lib/bucketFilter";
 
 // ── Year helper ──────────────────────────────────────────────────────────
 
@@ -31,6 +33,8 @@ export function DashboardPage() {
   const { data: activeUsers = [] } = useActiveUsers();
 
   const fy = new Date().getUTCFullYear();
+  const [bucket, setBucket] = useState<CashflowBucket>("philanthropy");
+  const filteredOpps = useMemo(() => filterByBucket(opps, bucket), [opps, bucket]);
 
   return (
     <div className="mx-auto max-w-[1320px] px-7 py-6 pb-20">
@@ -39,14 +43,32 @@ export function DashboardPage() {
       />
 
       <div className="flex flex-col gap-6">
-        <CurrentFYOverview opps={opps} fy={fy} />
+        {/* Record-type filter */}
+        <div className="inline-flex flex-wrap gap-1.5">
+          {(["all", "philanthropy", "pbc", "capital_grants", "other"] as const).map((b) => (
+            <button
+              key={b}
+              type="button"
+              onClick={() => setBucket(b)}
+              className={
+                bucket === b
+                  ? "h-7 rounded-full border border-accent bg-accent/10 px-3 text-[12.5px] font-medium text-accent"
+                  : "h-7 rounded-full border border-border-strong bg-surface px-3 text-[12.5px] font-medium text-ink-2 hover:text-ink"
+              }
+              aria-pressed={bucket === b}
+            >
+              {{all:"All",philanthropy:"Philanthropy",pbc:"PBC",capital_grants:"Capital Grants",other:"Other"}[b]}
+            </button>
+          ))}
+        </div>
+        <CurrentFYOverview opps={filteredOpps} fy={fy} bucket={bucket} />
         <IndividualGoals
-          opps={opps}
+          opps={filteredOpps}
           fy={fy}
           ownerGoals={ownerGoals}
           activeUsers={activeUsers}
         />
-        <PipelineFunnel opps={opps} />
+        <PipelineFunnel opps={filteredOpps} />
       </div>
     </div>
   );
@@ -54,20 +76,21 @@ export function DashboardPage() {
 
 // ── Section: Current FY Overview ─────────────────────────────────────────
 //
-// Scenario matrix matching the deployed bedrock dashboard exactly:
+// Scenario matrix — confidence-tiered, weighted by SF Probability.
+// Renewals are always included regardless of probability (they're
+// inherently near-certain by definition).
 //
 //   Wins              full Amount of opps where isWon (terminal stages)
 //   Total Pipeline    wins + open Amount (unweighted)
-//   Upside            wins + Σ (open Amount × Probability)
-//   Base Case         wins + Σ open Amount where (RenewalRepeat__c='Renewal'
-//                     OR Probability ≥ 50%), weighted
-//   Downside          wins + Σ open Amount where (RenewalRepeat__c='Renewal'
-//                     OR Probability ≥ 70%), weighted
+//   Downside          wins + Σ (open Amount × Probability) for opps where
+//                     RenewalRepeat__c='Renewal' OR Probability ≥ 90%
+//   Base Case         wins + Σ weighted where Renewal OR Probability ≥ 75%
+//   Upside            wins + Σ weighted where Renewal OR Probability ≥ 50%
 //
-// "Overall" column on Wins / Upside / Base / Downside is intentionally —
-// (the deployed dashboard only shows all-time on Total Pipeline; the
-// scenario projections are FY-only). Past quarters render — for every
-// row except Wins (we only know wins for past quarters; pipeline /
+// "Overall" column on the weighted scenarios is intentionally — (the
+// deployed dashboard only shows all-time on Total Pipeline; cumulative
+// scenario projections aren't meaningful). Past quarters render — for
+// every row except Wins (we only know wins for past quarters; pipeline /
 // scenarios for closed quarters are meaningless).
 
 function isRenewal(o: SfOpportunity): boolean {
@@ -83,9 +106,9 @@ interface QuarterMetrics {
   isPast: boolean;
   wins: number;
   pipeline: number;
-  upside: number;
-  baseCase: number;
   downside: number;
+  baseCase: number;
+  upside: number;
 }
 
 function endOfQuarterMs(year: number, q: number): number {
@@ -98,11 +121,13 @@ function endOfQuarterMs(year: number, q: number): number {
 function CurrentFYOverview({
   opps,
   fy,
+  bucket = "all",
 }: {
   opps: SfOpportunity[];
   fy: number;
+  bucket?: string;
 }) {
-  const { data: acv } = useACVSummary(fy);
+  const { data: acv } = useACVSummary(fy, bucket);
   const metrics = useMemo(() => {
     const openOpps = opps.filter(isOpen);
     const wonOpps = opps.filter(isWon);
@@ -122,17 +147,17 @@ function CurrentFYOverview({
     const fyWinsAmount = fyWon.reduce((s, o) => s + (o.Amount ?? 0), 0);
     const fyOpenAmount = fyOpen.reduce((s, o) => s + (o.Amount ?? 0), 0);
     const fyPipeline = fyOpenAmount + fyWinsAmount;
-    const fyUpside = fyWinsAmount + fyOpen.reduce((s, o) => s + weightedValue(o), 0);
-    const fyBase =
+    // All three weighted scenarios share the same shape: wins + Σ(open
+    // Amount × Probability) for opps that EITHER are renewals OR exceed
+    // a probability cutoff. Renewals are always included.
+    const weightedAbove = (opps: SfOpportunity[], minProb: number) =>
       fyWinsAmount +
-      fyOpen
-        .filter((o) => isRenewal(o) || (o.Probability ?? 0) >= 50)
+      opps
+        .filter((o) => isRenewal(o) || (o.Probability ?? 0) >= minProb)
         .reduce((s, o) => s + weightedValue(o), 0);
-    const fyDownside =
-      fyWinsAmount +
-      fyOpen
-        .filter((o) => isRenewal(o) || (o.Probability ?? 0) >= 70)
-        .reduce((s, o) => s + weightedValue(o), 0);
+    const fyDownside = weightedAbove(fyOpen, 90);
+    const fyBase = weightedAbove(fyOpen, 75);
+    const fyUpside = weightedAbove(fyOpen, 50);
 
     // Per-quarter — past quarters get wins only; current/future get the
     // full set of pipeline+scenario projections.
@@ -155,28 +180,25 @@ function CurrentFYOverview({
           isPast,
           wins,
           pipeline: 0,
-          upside: 0,
-          baseCase: 0,
           downside: 0,
+          baseCase: 0,
+          upside: 0,
         };
       }
       const openTotal = qOpen.reduce((s, o) => s + (o.Amount ?? 0), 0);
+      const qWeightedAbove = (minProb: number) =>
+        wins +
+        qOpen
+          .filter((o) => isRenewal(o) || (o.Probability ?? 0) >= minProb)
+          .reduce((s, o) => s + weightedValue(o), 0);
       return {
         label: `Q${q}` as QuarterMetrics["label"],
         isPast,
         wins,
         pipeline: wins + openTotal,
-        upside: wins + qOpen.reduce((s, o) => s + weightedValue(o), 0),
-        baseCase:
-          wins +
-          qOpen
-            .filter((o) => isRenewal(o) || (o.Probability ?? 0) >= 50)
-            .reduce((s, o) => s + weightedValue(o), 0),
-        downside:
-          wins +
-          qOpen
-            .filter((o) => isRenewal(o) || (o.Probability ?? 0) >= 70)
-            .reduce((s, o) => s + weightedValue(o), 0),
+        downside: qWeightedAbove(90),
+        baseCase: qWeightedAbove(75),
+        upside: qWeightedAbove(50),
       };
     });
 
@@ -185,9 +207,9 @@ function CurrentFYOverview({
       fy: {
         wins: fyWinsAmount,
         pipeline: fyPipeline,
-        upside: fyUpside,
-        baseCase: fyBase,
         downside: fyDownside,
+        baseCase: fyBase,
+        upside: fyUpside,
       },
       qMetrics,
     };
@@ -292,22 +314,22 @@ function CurrentFYOverview({
             </tr>
 
             <ScenarioRowEl
-              label="Upside"
-              tooltip="Wins (100% TCV) + all open opps weighted by probability"
-              fyValue={metrics.fy.upside}
-              quarters={metrics.qMetrics.map((q) => ({ q, value: q.upside }))}
+              label="Downside"
+              tooltip="Wins (100% TCV) + open renewals or Probability ≥ 90%, weighted"
+              fyValue={metrics.fy.downside}
+              quarters={metrics.qMetrics.map((q) => ({ q, value: q.downside }))}
             />
             <ScenarioRowEl
               label="Base Case"
-              tooltip="Wins (100% TCV) + open renewals or 50%+ probability, weighted"
+              tooltip="Wins (100% TCV) + open renewals or Probability ≥ 75%, weighted"
               fyValue={metrics.fy.baseCase}
               quarters={metrics.qMetrics.map((q) => ({ q, value: q.baseCase }))}
             />
             <ScenarioRowEl
-              label="Downside"
-              tooltip="Wins (100% TCV) + open renewals or 70%+ probability, weighted"
-              fyValue={metrics.fy.downside}
-              quarters={metrics.qMetrics.map((q) => ({ q, value: q.downside }))}
+              label="Upside"
+              tooltip="Wins (100% TCV) + open renewals or Probability ≥ 50%, weighted"
+              fyValue={metrics.fy.upside}
+              quarters={metrics.qMetrics.map((q) => ({ q, value: q.upside }))}
             />
           </tbody>
         </table>
@@ -428,7 +450,14 @@ function IndividualGoals({
         .filter((o) => isWon(o) && o.CloseDate && yearOf(o.CloseDate) === fy)
         .reduce((s, o) => s + (o.Amount ?? 0), 0);
 
-      const openOppsOwner = ownedOpps.filter(isOpen);
+      // Open pipeline + weighted pipeline are scoped to the same FY as
+      // the goal — opps with a CloseDate falling outside this year don't
+      // count toward an owner's FY goal, so they shouldn't be in the
+      // pipeline columns either. Previously these were unfiltered, which
+      // made the columns inconsistent with Closed Won.
+      const openOppsOwner = ownedOpps.filter(
+        (o) => isOpen(o) && o.CloseDate && yearOf(o.CloseDate) === fy,
+      );
       const openPipeline = openOppsOwner.reduce((s, o) => s + (o.Amount ?? 0), 0);
       const weightedPipeline = openOppsOwner.reduce(
         (s, o) => s + ((o.Amount ?? 0) * (o.Probability ?? 0)) / 100,

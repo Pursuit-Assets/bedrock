@@ -11,11 +11,61 @@ from pydantic import BaseModel
 
 from auth import require_auth
 from db import get_db
+from dependencies import get_mcp_client
 from routes.permissions import require_admin, check_permission
 from security import validate_salesforce_id
+from services.notifications import (
+    TYPE_PROJECT_TASK_ASSIGNED,
+    enqueue_notification,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["projects"])
+
+
+async def _enrich_opp_ids_with_sf(opp_ids, client) -> dict:
+    """Batch-fetch a small set of Opportunity display fields and return
+    a {opp_id: {Name, Account, Amount, StageName, OwnerId, Owner.Name}}
+    dict. Uses whatever SF client the request has — which falls back to
+    the service-account SF (per get_mcp_client) when the caller has no
+    per-user SF cookie. This lets users without a personal SF account
+    still see linked-award / linked-opp details on the project page.
+
+    Best-effort: returns {} silently on any SF error so the project page
+    still renders the bedrock-side data even if SF is misconfigured.
+    """
+    ids = [o for o in dict.fromkeys(opp_ids) if o]  # dedupe, preserve order, drop falsy
+    if not ids:
+        return {}
+    if not client or "salesforce" not in (client.connected_services or []):
+        return {}
+    try:
+        in_list = ", ".join(f"'{i}'" for i in ids)
+        soql = (
+            "SELECT Id, Name, AccountId, Account.Name, Amount, StageName, "
+            "OwnerId, Owner.Name, RecordType.Name, "
+            "npe01__Payments_Made__c "
+            f"FROM Opportunity WHERE Id IN ({in_list}) LIMIT {len(ids)}"
+        )
+        result = await client.salesforce.query(soql)
+        records = result.get("records", []) or []
+        out = {}
+        for r in records:
+            out[r["Id"]] = {
+                "Name": r.get("Name"),
+                "AccountId": r.get("AccountId"),
+                "AccountName": (r.get("Account") or {}).get("Name"),
+                "Amount": r.get("Amount"),
+                "StageName": r.get("StageName"),
+                "OwnerId": r.get("OwnerId"),
+                "OwnerName": (r.get("Owner") or {}).get("Name"),
+                "RecordTypeName": (r.get("RecordType") or {}).get("Name"),
+                "PaymentsMade": r.get("npe01__Payments_Made__c"),
+            }
+        return out
+    except Exception as e:
+        logger.warning(f"SF enrichment for project linked-revenue failed: {e}")
+        return {}
 
 # ── Pydantic models ──
 
@@ -663,19 +713,43 @@ async def unlink_opportunity(project_id: str, opportunity_id: str, user=Depends(
 
 
 @router.get("/projects/{project_id}/opportunities")
-async def get_project_opportunities(project_id: str, user=Depends(check_permission("view_projects")), conn=Depends(get_db)):
-    """Get all Opportunities linked to a Project."""
+async def get_project_opportunities(
+    project_id: str,
+    user=Depends(check_permission("view_projects")),
+    conn=Depends(get_db),
+    client=Depends(get_mcp_client),
+):
+    """Get all Opportunities linked to a Project.
+
+    Each row is enriched with the SF Opportunity's display fields
+    (Name / Account.Name / Amount / StageName / Owner) so the project
+    page can render meaningful detail for users without a personal SF
+    session — falls back to the service-account client via
+    get_mcp_client.
+    """
     pid = uuid.UUID(project_id)
     rows = await conn.fetch(
         "SELECT id, opportunity_id, role, created_at "
         "FROM bedrock.project_opportunity WHERE project_id = $1 ORDER BY created_at",
         pid,
     )
-    return {"success": True, "data": [
+    base = [
         {"id": str(r["id"]), "opportunity_id": r["opportunity_id"],
          "role": r["role"], "created_at": r["created_at"].isoformat() if r["created_at"] else None}
         for r in rows
-    ]}
+    ]
+    opp_lookup = await _enrich_opp_ids_with_sf(
+        [r["opportunity_id"] for r in base], client,
+    )
+    for r in base:
+        sf = opp_lookup.get(r["opportunity_id"]) or {}
+        r["opportunity_name"] = sf.get("Name")
+        r["account_name"] = sf.get("AccountName")
+        r["amount"] = sf.get("Amount")
+        r["stage_name"] = sf.get("StageName")
+        r["owner_id"] = sf.get("OwnerId")
+        r["owner_name"] = sf.get("OwnerName")
+    return {"success": True, "data": base}
 
 
 # ── Bulk Import ──
@@ -914,11 +988,13 @@ async def create_milestone(workstream_id: str, body: MilestoneCreate, user=Depen
 async def update_milestone(milestone_id: str, body: MilestoneUpdate, user=Depends(check_permission("edit_projects")), conn=Depends(get_db)):
     from datetime import date as d
     mid = uuid.UUID(milestone_id)
-    fields = body.model_dump(exclude_none=True)
+    # Use exclude_unset so explicit nulls flow through (e.g. clearing
+    # due_date). exclude_none would silently drop them.
+    fields = body.model_dump(exclude_unset=True)
     if not fields:
         raise HTTPException(status_code=400, detail="No fields to update")
 
-    if "owner_ids" in fields:
+    if "owner_ids" in fields and fields["owner_ids"] is not None:
         fields["owner_ids"] = [uuid.UUID(x) for x in fields["owner_ids"]]
     if "due_date" in fields:
         # Drop silently if migration hasn't run yet
@@ -986,6 +1062,20 @@ async def create_project_task(milestone_id: str, body: ProjectTaskCreate, user=D
         mid, body.title, body.status, body.owner, owner_ids, deadline, start_date_val,
         body.description, body.updates, body.links, depends, body.sort_order,
     )
+
+    # Notify every owner that was set on creation. The creator is excluded
+    # by _notify_task_owners — no point pinging yourself for a task you
+    # just made.
+    if owner_ids:
+        await _notify_task_owners(
+            conn,
+            task_id=str(row["id"]),
+            milestone_id=str(mid),
+            title=body.title,
+            new_owner_ids=owner_ids,
+            actor_email=user.get("email"),
+        )
+
     return {"success": True, "data": {"id": str(row["id"])}}
 
 
@@ -1014,10 +1104,132 @@ async def update_project_task(task_id: str, body: ProjectTaskUpdate, user=Depend
     if "owner_ids" in fields:
         fields["owner_ids"] = [uuid.UUID(x) for x in fields["owner_ids"]]
 
+    # Snapshot pre-update state so we can diff owner_ids if it's part of
+    # this patch. The snapshot also gives us the canonical task title +
+    # milestone_id for the notification payload regardless of whether
+    # they were in the patch.
+    pre = await conn.fetchrow(
+        "SELECT title, milestone_id, owner_ids FROM bedrock.project_task "
+        "WHERE id = $1 AND deleted_at IS NULL",
+        tid,
+    )
+    if not pre:
+        raise HTTPException(status_code=404, detail="Task not found")
+
     sets = ", ".join(f"{k} = ${i+2}" for i, k in enumerate(fields))
     vals = [tid] + list(fields.values())
     await conn.execute(f"UPDATE bedrock.project_task SET {sets} WHERE id = $1 AND deleted_at IS NULL", *vals)
+
+    # Owner-diff notification fan-out. Only owners ADDED in this update
+    # receive a ping; removed owners get nothing (task-unassignment is
+    # not a notifiable event in this iteration).
+    if "owner_ids" in fields:
+        before = set(pre["owner_ids"] or [])
+        after = set(fields["owner_ids"])
+        newly_added = list(after - before)
+        if newly_added:
+            new_title = fields.get("title", pre["title"])
+            await _notify_task_owners(
+                conn,
+                task_id=str(tid),
+                milestone_id=str(pre["milestone_id"]),
+                title=new_title,
+                new_owner_ids=newly_added,
+                actor_email=user.get("email"),
+            )
+
     return {"success": True, "data": {"message": "Task updated"}}
+
+
+async def _notify_task_owners(
+    conn,
+    *,
+    task_id: str,
+    milestone_id: str,
+    title: str,
+    new_owner_ids: list,
+    actor_email: Optional[str],
+) -> None:
+    """Resolve org_users → recipient_email and enqueue one
+    project_task_assigned notification per added owner. Skips the
+    actor's own row so creators don't get notified about tasks they
+    assign to themselves."""
+    if not new_owner_ids:
+        return
+    rows = await conn.fetch(
+        "SELECT id, email, display_name FROM public.org_users "
+        "WHERE id = ANY($1::uuid[])",
+        new_owner_ids,
+    )
+    # Hierarchy lookup: project / workstream / milestone names for the
+    # rich notification body.
+    parent = await conn.fetchrow(
+        """SELECT p.id   AS project_id,    p.name  AS project_name,
+                  w.id   AS workstream_id, w.name  AS workstream_name,
+                  m.id   AS milestone_id,  m.title AS milestone_title
+           FROM bedrock.milestone m
+           JOIN bedrock.workstream w ON w.id = m.workstream_id
+           JOIN bedrock.project   p ON p.id = w.project_id
+           WHERE m.id = $1""",
+        uuid.UUID(milestone_id),
+    )
+    project_id = str(parent["project_id"]) if parent else None
+    project_name = parent["project_name"] if parent else None
+    workstream_name = parent["workstream_name"] if parent else None
+    milestone_title = parent["milestone_title"] if parent else None
+
+    # Resolve actor display_name once so the notification can say
+    # "Jacqueline Reverand assigned you a task" instead of "jac@pursuit.org…".
+    actor_display = await _lookup_display_name(conn, actor_email)
+    actor_lower = (actor_email or "").strip().lower()
+
+    for r in rows:
+        email = (r["email"] or "").strip()
+        if not email:
+            continue
+        # Suppress self-action pings: if you assigned a task to yourself,
+        # you already know — don't notify. (Product rule per 2026-05-20.)
+        if actor_lower and email.lower() == actor_lower:
+            continue
+        # target_url deep-links to the task drawer so the recipient lands
+        # directly on the task they were assigned, not the project root.
+        target_url = (
+            f"/projects/{project_id}?task={task_id}" if project_id else None
+        )
+        await enqueue_notification(
+            conn,
+            recipient_email=email,
+            type=TYPE_PROJECT_TASK_ASSIGNED,
+            payload={
+                "title": f"Task assigned: {title}",
+                "subtitle": title,
+                "task_id": task_id,
+                "task_title": title,
+                "project_id": project_id,
+                "project_name": project_name,
+                "workstream_name": workstream_name,
+                "milestone_title": milestone_title,
+                "actor_display_name": actor_display,
+                "target_url": target_url,
+            },
+            actor_email=actor_email,
+        )
+
+
+async def _lookup_display_name(conn, email: Optional[str]) -> Optional[str]:
+    """Resolve email -> display_name from public.org_users. Falls back
+    to the email itself when no row exists (gives the formatter
+    *something* sensible to use). Returns None for empty input."""
+    if not email:
+        return None
+    norm = email.strip().lower()
+    if not norm:
+        return None
+    row = await conn.fetchval(
+        "SELECT display_name FROM public.org_users WHERE LOWER(email) = LOWER($1) LIMIT 1",
+        norm,
+    )
+    return row or email
 
 
 @router.delete("/project-tasks/{task_id}")
@@ -1114,3 +1326,216 @@ async def get_sf_task_project_link(sf_task_id: str, user=Depends(check_permissio
     if not row:
         return {"success": True, "data": None}
     return {"success": True, "data": dict(row)}
+
+
+# ── Project ↔ Account M2M ───────────────────────────────────────────────
+
+
+class EntityLink(BaseModel):
+    entity_id: str
+
+
+@router.post("/projects/{project_id}/accounts")
+async def link_account(project_id: str, body: EntityLink, user=Depends(check_permission("edit_projects")), conn=Depends(get_db)):
+    """Link a CRM Account to a Project."""
+    pid = uuid.UUID(project_id)
+    validate_salesforce_id(body.entity_id, "account_id")
+    row = await conn.fetchrow(
+        "INSERT INTO bedrock.project_account (project_id, account_id) "
+        "VALUES ($1, $2) ON CONFLICT DO NOTHING RETURNING id",
+        pid, body.entity_id,
+    )
+    return {"success": True, "data": {"linked": row is not None}}
+
+
+@router.delete("/projects/{project_id}/accounts/{account_id}")
+async def unlink_account(project_id: str, account_id: str, user=Depends(check_permission("edit_projects")), conn=Depends(get_db)):
+    pid = uuid.UUID(project_id)
+    validate_salesforce_id(account_id, "account_id")
+    result = await conn.execute(
+        "DELETE FROM bedrock.project_account WHERE project_id = $1 AND account_id = $2", pid, account_id,
+    )
+    if result == "DELETE 0":
+        raise HTTPException(404, "Link not found")
+    return {"success": True}
+
+
+@router.get("/projects/{project_id}/accounts")
+async def get_project_accounts(project_id: str, user=Depends(check_permission("view_projects")), conn=Depends(get_db)):
+    pid = uuid.UUID(project_id)
+    rows = await conn.fetch(
+        "SELECT id, account_id, created_at FROM bedrock.project_account WHERE project_id = $1 ORDER BY created_at", pid,
+    )
+    return {"success": True, "data": [{"id": str(r["id"]), "account_id": r["account_id"]} for r in rows]}
+
+
+@router.get("/accounts/{account_id}/projects")
+async def get_account_projects(account_id: str, user=Depends(check_permission("view_projects")), conn=Depends(get_db)):
+    """Get all Projects linked to an Account (reverse lookup)."""
+    validate_salesforce_id(account_id, "account_id")
+    rows = await conn.fetch(
+        "SELECT p.id, p.name, p.description, p.owner_email, p.created_at "
+        "FROM bedrock.project p "
+        "JOIN bedrock.project_account pa ON pa.project_id = p.id "
+        "WHERE pa.account_id = $1 AND p.deleted_at IS NULL "
+        "ORDER BY p.name",
+        account_id,
+    )
+    return {"success": True, "data": [dict(r) for r in rows]}
+
+
+# ── Project ↔ Contact M2M ───────────────────────────────────────────────
+
+
+@router.post("/projects/{project_id}/contacts")
+async def link_contact(project_id: str, body: EntityLink, user=Depends(check_permission("edit_projects")), conn=Depends(get_db)):
+    pid = uuid.UUID(project_id)
+    validate_salesforce_id(body.entity_id, "contact_id")
+    row = await conn.fetchrow(
+        "INSERT INTO bedrock.project_contact (project_id, contact_id) "
+        "VALUES ($1, $2) ON CONFLICT DO NOTHING RETURNING id",
+        pid, body.entity_id,
+    )
+    return {"success": True, "data": {"linked": row is not None}}
+
+
+@router.delete("/projects/{project_id}/contacts/{contact_id}")
+async def unlink_contact(project_id: str, contact_id: str, user=Depends(check_permission("edit_projects")), conn=Depends(get_db)):
+    pid = uuid.UUID(project_id)
+    validate_salesforce_id(contact_id, "contact_id")
+    result = await conn.execute(
+        "DELETE FROM bedrock.project_contact WHERE project_id = $1 AND contact_id = $2", pid, contact_id,
+    )
+    if result == "DELETE 0":
+        raise HTTPException(404, "Link not found")
+    return {"success": True}
+
+
+@router.get("/projects/{project_id}/contacts")
+async def get_project_contacts(project_id: str, user=Depends(check_permission("view_projects")), conn=Depends(get_db)):
+    pid = uuid.UUID(project_id)
+    rows = await conn.fetch(
+        "SELECT id, contact_id, created_at FROM bedrock.project_contact WHERE project_id = $1 ORDER BY created_at", pid,
+    )
+    return {"success": True, "data": [{"id": str(r["id"]), "contact_id": r["contact_id"]} for r in rows]}
+
+
+# ── Project ↔ Award M2M ────────────────────────────────────────────────
+
+
+@router.post("/projects/{project_id}/awards")
+async def link_award(project_id: str, body: EntityLink, user=Depends(check_permission("edit_projects")), conn=Depends(get_db)):
+    pid = uuid.UUID(project_id)
+    aid = uuid.UUID(body.entity_id)
+    row = await conn.fetchrow(
+        "INSERT INTO bedrock.project_award (project_id, award_id) "
+        "VALUES ($1, $2) ON CONFLICT DO NOTHING RETURNING id",
+        pid, aid,
+    )
+    return {"success": True, "data": {"linked": row is not None}}
+
+
+@router.delete("/projects/{project_id}/awards/{award_id}")
+async def unlink_award(project_id: str, award_id: str, user=Depends(check_permission("edit_projects")), conn=Depends(get_db)):
+    pid = uuid.UUID(project_id)
+    aid = uuid.UUID(award_id)
+    result = await conn.execute(
+        "DELETE FROM bedrock.project_award WHERE project_id = $1 AND award_id = $2", pid, aid,
+    )
+    if result == "DELETE 0":
+        raise HTTPException(404, "Link not found")
+    return {"success": True}
+
+
+@router.get("/projects/{project_id}/awards")
+async def get_project_awards(
+    project_id: str,
+    user=Depends(check_permission("view_projects")),
+    conn=Depends(get_db),
+    client=Depends(get_mcp_client),
+):
+    pid = uuid.UUID(project_id)
+    rows = await conn.fetch(
+        "SELECT pa.id, pa.award_id, a.opportunity_id, a.award_status, a.award_date, a.period_end_date "
+        "FROM bedrock.project_award pa "
+        "JOIN bedrock.award a ON a.id = pa.award_id "
+        "WHERE pa.project_id = $1 ORDER BY pa.created_at",
+        pid,
+    )
+    base_rows = [dict(r) for r in rows]
+    # Enrich each row with the opportunity's display fields (Name,
+    # Account.Name, Amount, StageName, Owner) via the SF client so the
+    # project page can render award details for users who don't have
+    # their own Salesforce session.
+    opp_lookup = await _enrich_opp_ids_with_sf(
+        [r["opportunity_id"] for r in base_rows], client,
+    )
+    for r in base_rows:
+        sf = opp_lookup.get(r["opportunity_id"]) or {}
+        r["opportunity_name"] = sf.get("Name")
+        r["account_id"] = sf.get("AccountId")
+        r["account_name"] = sf.get("AccountName")
+        r["amount"] = sf.get("Amount")
+        r["stage_name"] = sf.get("StageName")
+        r["owner_id"] = sf.get("OwnerId")
+        r["owner_name"] = sf.get("OwnerName")
+        r["record_type_name"] = sf.get("RecordTypeName")
+        r["payments_made"] = sf.get("PaymentsMade")
+    return {"success": True, "data": base_rows}
+
+
+# ── Reverse lookup: Award → Projects ────────────────────────────────────
+
+@router.get("/awards/{award_id}/projects")
+async def get_award_projects(award_id: str, user=Depends(check_permission("view_projects")), conn=Depends(get_db)):
+    """Get all Projects linked to an Award (reverse lookup via project_award)."""
+    aid = uuid.UUID(award_id)
+    rows = await conn.fetch(
+        "SELECT p.id, p.name, p.description, p.owner_email, p.created_at "
+        "FROM bedrock.project p "
+        "JOIN bedrock.project_award pa ON pa.project_id = p.id "
+        "WHERE pa.award_id = $1 AND p.deleted_at IS NULL "
+        "ORDER BY p.name",
+        aid,
+    )
+    return {"success": True, "data": [dict(r) for r in rows]}
+
+
+# ── Reverse lookup: Contact → Projects ──────────────────────────────────
+
+@router.get("/contacts/{contact_id}/projects")
+async def get_contact_projects(contact_id: str, user=Depends(check_permission("view_projects")), conn=Depends(get_db)):
+    """Get all Projects linked to a Contact (reverse lookup via project_contact)."""
+    validate_salesforce_id(contact_id, "contact_id")
+    rows = await conn.fetch(
+        "SELECT p.id, p.name, p.description, p.owner_email, p.created_at "
+        "FROM bedrock.project p "
+        "JOIN bedrock.project_contact pc ON pc.project_id = p.id "
+        "WHERE pc.contact_id = $1 AND p.deleted_at IS NULL "
+        "ORDER BY p.name",
+        contact_id,
+    )
+    return {"success": True, "data": [dict(r) for r in rows]}
+
+
+# ── Reverse lookup: Opportunity → Projects (M2M + legacy column union) ──
+
+@router.get("/opportunities/{opportunity_id}/projects")
+async def get_opportunity_projects(opportunity_id: str, user=Depends(check_permission("view_projects")), conn=Depends(get_db)):
+    """Get all Projects linked to an Opportunity.
+
+    Unions two sources so callers don't have to know about the migration:
+      1. project.opportunity_id  (legacy single-link column, still populated)
+      2. project_opportunity     (M2M junction; canonical going forward)
+    """
+    validate_salesforce_id(opportunity_id, "opportunity_id")
+    rows = await conn.fetch(
+        "SELECT DISTINCT p.id, p.name, p.description, p.owner_email, p.created_at "
+        "FROM bedrock.project p "
+        "LEFT JOIN bedrock.project_opportunity po ON po.project_id = p.id "
+        "WHERE p.deleted_at IS NULL "
+        "  AND (p.opportunity_id = $1 OR po.opportunity_id = $1) "
+        "ORDER BY p.name",
+        opportunity_id,
+    )
+    return {"success": True, "data": [dict(r) for r in rows]}

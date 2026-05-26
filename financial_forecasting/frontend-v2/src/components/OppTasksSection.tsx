@@ -127,10 +127,15 @@ export function OppTasksSection({
 
         <NewTaskRow
           disabled={createTask.isPending}
-          onCreate={async (subject) => {
+          ownerOptions={ownerOptions}
+          onCreate={async ({ subject, ownerId, activityDate }) => {
             await createTask.mutateAsync({
               opportunityId,
-              body: { Subject: subject },
+              body: {
+                Subject: subject,
+                OwnerId: ownerId ?? undefined,
+                ActivityDate: activityDate ?? undefined,
+              },
             });
           }}
         />
@@ -297,21 +302,31 @@ function TaskRow({
 function NewTaskRow({
   onCreate,
   disabled,
+  ownerOptions,
 }: {
-  onCreate: (subject: string) => Promise<void>;
+  onCreate: (input: { subject: string; ownerId?: string | null; activityDate?: string | null }) => Promise<void>;
   disabled?: boolean;
+  ownerOptions?: { value: string; label: string }[];
 }) {
   const [subject, setSubject] = useState("");
+  const [ownerId, setOwnerId] = useState("");
+  const [dueDate, setDueDate] = useState("");
 
   const submit = async () => {
     const trimmed = subject.trim();
     if (!trimmed || disabled) return;
-    await onCreate(trimmed);
+    await onCreate({
+      subject: trimmed,
+      ownerId: ownerId || null,
+      activityDate: dueDate || null,
+    });
     setSubject("");
+    setOwnerId("");
+    setDueDate("");
   };
 
   return (
-    <div className="flex items-center gap-3 border-t border-border-strong bg-surface-2/40 px-5 py-2">
+    <div className="flex flex-wrap items-center gap-2 border-t border-border-strong bg-surface-2/40 px-5 py-2">
       <Plus size={14} className="flex-shrink-0 text-ink-3" />
       <input
         value={subject}
@@ -324,7 +339,29 @@ function NewTaskRow({
         }}
         placeholder="Add a task — press Enter to create"
         disabled={disabled}
-        className="min-w-0 flex-1 border-0 bg-transparent text-[13px] text-ink outline-none placeholder:text-ink-4 disabled:opacity-50"
+        className="min-w-[180px] flex-1 border-0 bg-transparent text-[13px] text-ink outline-none placeholder:text-ink-4 disabled:opacity-50"
+      />
+      {ownerOptions && ownerOptions.length > 0 ? (
+        <select
+          value={ownerId}
+          onChange={(e) => setOwnerId(e.target.value)}
+          disabled={disabled}
+          title="Assignee"
+          className="h-7 max-w-[160px] flex-shrink-0 rounded border border-border-strong bg-surface px-1.5 text-[12px] text-ink outline-none focus:border-accent disabled:opacity-50"
+        >
+          <option value="">Assignee…</option>
+          {ownerOptions.map((o) => (
+            <option key={o.value} value={o.value}>{o.label}</option>
+          ))}
+        </select>
+      ) : null}
+      <input
+        type="date"
+        value={dueDate}
+        onChange={(e) => setDueDate(e.target.value)}
+        disabled={disabled}
+        title="Due date"
+        className="h-7 flex-shrink-0 rounded border border-border-strong bg-surface px-1.5 text-[12px] text-ink outline-none focus:border-accent disabled:opacity-50"
       />
       {subject.trim() ? (
         <button

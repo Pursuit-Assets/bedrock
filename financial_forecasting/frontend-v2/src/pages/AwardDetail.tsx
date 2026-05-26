@@ -1,9 +1,9 @@
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import { Link, useLocation, useParams } from "react-router-dom";
-import { Check, ExternalLink, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { Check, Plus, RefreshCw, Trash2 } from "lucide-react";
 
 import { AccountAvatar } from "@/components/AccountAvatar";
-import { BackLink as SharedBackLink } from "@/components/detail";
+import { BackLink as SharedBackLink, LinkedProjectsCard } from "@/components/detail";
 import { InlineDate, InlineSelect, InlineText } from "@/components/ui/InlineEdit";
 import { Tag } from "@/components/ui/Tag";
 import { fmtDate, fmtMoneyFull } from "@/lib/format";
@@ -22,9 +22,9 @@ import {
   type AwardReportStatus,
   type AwardStatus,
 } from "@/services/awards";
-import { useOpportunities, useOpportunityTasks, useUpdateOpportunity, useUpdateTask } from "@/services/opportunities";
+import { TaskListTab } from "@/components/expand/TaskListTab";
+import { useCreateTask, useOpportunities, useOpportunityTasks, useUpdateOpportunity } from "@/services/opportunities";
 import { useOpportunityPayments, useUpdatePayment, type SfPayment } from "@/services/payments";
-import { useCreateProject, useLinkProjectToOpportunity, useProjects } from "@/services/projects";
 import { useActiveUsers } from "@/services/users";
 import { usePerm } from "@/services/permissions";
 import type { SfOpportunity } from "@/types/salesforce";
@@ -97,7 +97,13 @@ export function AwardDetailPage() {
 }
 
 function Loaded({ award, opp }: { award: Award; opp: SfOpportunity | undefined }) {
-  const enrichment = useAccountEnrichment(opp?.AccountId ?? null);
+  // Prefer live SF data (most current) when present; fall back to the
+  // server-enriched fields on `award` so users without a personal SF
+  // session still see the header / stats. AccountId is used by the
+  // logo enrichment query — when neither is available, fall back to
+  // null (avatar will use the account name initial).
+  const accountId = opp?.AccountId ?? award.account_id ?? null;
+  const enrichment = useAccountEnrichment(accountId);
   const canEdit = usePerm("edit_awards");
   const updateAward = useUpdateAward();
   const updateOpp = useUpdateOpportunity();
@@ -112,17 +118,18 @@ function Loaded({ award, opp }: { award: Award; opp: SfOpportunity | undefined }
   const patchAward = (patch: Record<string, unknown>) =>
     updateAward.mutateAsync({ id: award.id, patch }).then(() => undefined);
 
-  const account = opp?.Account?.Name ?? "—";
-  const oppName = opp?.Name ?? award.opportunity_id;
+  const account = opp?.Account?.Name ?? award.account_name ?? "—";
+  const oppName = opp?.Name ?? award.opportunity_name ?? award.opportunity_id;
   // Referrer for cross-detail jumps (award → account / project) so
   // those pages' BackLinks return here instead of their default lists.
   const referrer = {
     from: { pathname: location.pathname, label: oppName || "Award" },
   };
-  const ownerName = opp?.Owner?.Name ?? "—";
-  const total = opp?.Amount ?? 0;
-  const paid = opp?.npe01__Payments_Made__c ?? 0;
+  const ownerName = opp?.Owner?.Name ?? award.owner_name ?? "—";
+  const total = opp?.Amount ?? award.amount ?? 0;
+  const paid = opp?.npe01__Payments_Made__c ?? award.payments_made ?? 0;
   const pending = Math.max(0, total - paid);
+  const recordTypeName = opp?.RecordType?.Name ?? award.record_type_name ?? null;
 
   return (
     <div className="mx-auto max-w-[1320px] px-7 py-6 pb-20">
@@ -150,17 +157,32 @@ function Loaded({ award, opp }: { award: Award; opp: SfOpportunity | undefined }
             ) : (
               <Tag variant={awardStatusVariant(award.award_status)}>{award.award_status}</Tag>
             )}
-            {opp?.RecordType?.Name ? <Tag>{opp.RecordType.Name}</Tag> : null}
-            {opp?.AccountId ? (
+            {recordTypeName ? <Tag>{recordTypeName}</Tag> : null}
+            {accountId ? (
               <Link
-                to={`/accounts/${opp.AccountId}`}
+                to={`/accounts/${accountId}`}
                 state={referrer}
                 className="underline-offset-4 hover:underline"
               >
                 · {account}
               </Link>
+            ) : account !== "—" ? (
+              <span>· {account}</span>
+            ) : null}
+            {award.opportunity_id ? (
+              <Link
+                to={`/opportunities/${award.opportunity_id}`}
+                state={referrer}
+                className="inline-flex items-center gap-1 rounded border border-border-strong bg-surface px-2 py-0.5 text-[11.5px] text-ink-2 hover:bg-surface-2"
+                title="Open the underlying Salesforce opportunity"
+              >
+                View opportunity →
+              </Link>
             ) : null}
             <span>·</span>
+            {/* Owner is editable only when SF is connected on the
+                client (writes go through SF). Read-only fallback when
+                we only have the enriched name. */}
             {canEdit && opp ? (
               <InlineSelect
                 value={opp.OwnerId ?? ""}
@@ -216,7 +238,11 @@ function Loaded({ award, opp }: { award: Award; opp: SfOpportunity | undefined }
           </Section>
 
           <Section title="Linked projects">
-            <ProjectsDetail award={award} />
+            <LinkedProjectsCard
+              entityType="award"
+              entityId={award.id}
+              referrerLabel="Award"
+            />
           </Section>
 
           <Section title="Notes">
@@ -304,16 +330,6 @@ function AwardMetaDetail({
 }) {
   return (
     <dl className="space-y-2 text-[12px]">
-      <Row label="Period ends">
-        {canEdit ? (
-          <InlineDate
-            value={award.period_end_date}
-            onSave={(v) => onPatch({ period_end_date: v })}
-          />
-        ) : (
-          <span className="mono text-ink-2">{fmtDate(award.period_end_date)}</span>
-        )}
-      </Row>
       <Row label="Frequency">
         {canEdit ? (
           <InlineSelect
@@ -332,6 +348,16 @@ function AwardMetaDetail({
       </Row>
       <Row label="Awarded">
         <span className="mono text-ink-2">{fmtDate(award.award_date)}</span>
+      </Row>
+      <Row label="Period ends">
+        {canEdit ? (
+          <InlineDate
+            value={award.period_end_date}
+            onSave={(v) => onPatch({ period_end_date: v })}
+          />
+        ) : (
+          <span className="mono text-ink-2">{fmtDate(award.period_end_date)}</span>
+        )}
       </Row>
     </dl>
   );
@@ -667,179 +693,38 @@ function PaymentRow({
 
 // ── Tasks section ─────────────────────────────────────────────────────────
 
-const TASK_STATUS_OPTIONS = [
-  { value: "Not Started", label: "Not Started" },
-  { value: "In Progress", label: "In Progress" },
-  { value: "Waiting on someone else", label: "Waiting" },
-  { value: "Completed", label: "Completed" },
-];
-
 function TasksDetail({ opportunityId }: { opportunityId: string }) {
   const { data: tasks = [], isLoading } = useOpportunityTasks(opportunityId);
-  const updateTask = useUpdateTask();
   const usersQ = useActiveUsers();
   const ownerOptions = useMemo(
     () => (usersQ.data ?? []).map((u) => ({ value: u.Id, label: u.Name })),
     [usersQ.data],
   );
+  const createTask = useCreateTask();
 
-  const open = tasks.filter((t) => !t.IsClosed && t.Status !== "Completed");
-
-  if (isLoading) return <div className="text-[12px] text-ink-3">Loading tasks…</div>;
-  if (open.length === 0)
-    return (
-      <div className="rounded border border-dashed border-border-strong px-3 py-4 text-center text-[12px] text-ink-3">
-        No open tasks.
-      </div>
-    );
-
+  // Reuse the shared TaskListTab so the Award page gets the same full
+  // CRUD surface that every other expand panel has — inline-edit on
+  // subject / status / owner / due, hover-revealed delete, and an
+  // inline "new task" footer row that creates tasks tied to the
+  // award's underlying opportunity.
   return (
-    <div className="space-y-1">
-      {open.map((t) => (
-        <div
-          key={t.Id}
-          className="flex items-center gap-3 rounded border border-border-strong bg-surface px-3 py-1.5 text-[12px]"
-        >
-          <span className="flex-1 truncate text-ink" title={t.Subject ?? ""}>
-            {t.Subject || "(no subject)"}
-          </span>
-          <span className="mono text-[11px] text-ink-3">{fmtDate(t.ActivityDate)}</span>
-          <InlineSelect
-            value={t.Status ?? "Not Started"}
-            options={TASK_STATUS_OPTIONS}
-            onSave={(v) =>
-              updateTask.mutateAsync({ id: t.Id, patch: { Status: v } }).then(() => undefined)
-            }
-            renderValue={(v) => <Tag>{v || "—"}</Tag>}
-          />
-          <InlineSelect
-            value={t.OwnerId ?? ""}
-            options={ownerOptions}
-            onSave={(v) =>
-              updateTask.mutateAsync({ id: t.Id, patch: { OwnerId: v } }).then(() => undefined)
-            }
-            renderValue={() => <span className="text-[11.5px] text-ink-3">{t.OwnerName ?? "—"}</span>}
-          />
-        </div>
-      ))}
-    </div>
+    <TaskListTab
+      tasks={tasks}
+      isLoading={isLoading}
+      placeholder="Add a task — press Enter to create"
+      emptyMessage="No open tasks for this award."
+      ownerOptions={ownerOptions}
+      onCreate={async ({ subject, ownerId, activityDate }) => {
+        await createTask.mutateAsync({
+          opportunityId,
+          body: {
+            Subject: subject,
+            OwnerId: ownerId ?? undefined,
+            ActivityDate: activityDate ?? undefined,
+          },
+        });
+      }}
+    />
   );
 }
 
-// ── Projects section (sidebar) ────────────────────────────────────────────
-
-function ProjectsDetail({ award }: { award: Award }) {
-  const location = useLocation();
-  const referrer = {
-    from: { pathname: location.pathname, label: "Award" },
-  };
-  const projectsQ = useProjects();
-  const createProject = useCreateProject();
-  const linkProject = useLinkProjectToOpportunity();
-  const [creating, setCreating] = useState(false);
-  const [linking, setLinking] = useState(false);
-  const [name, setName] = useState("");
-  const [pick, setPick] = useState("");
-
-  const linked = useMemo(
-    () => (projectsQ.data ?? []).filter((p) => p.opportunity_id === award.opportunity_id),
-    [projectsQ.data, award.opportunity_id],
-  );
-  const linkable = useMemo(
-    () => (projectsQ.data ?? []).filter((p) => p.opportunity_id !== award.opportunity_id),
-    [projectsQ.data, award.opportunity_id],
-  );
-
-  return (
-    <div>
-      <div className="mb-2 flex items-center justify-between">
-        <span className="text-[12px] text-ink-3">
-          {linked.length} project{linked.length === 1 ? "" : "s"}
-        </span>
-        <div className="flex items-center gap-1.5">
-          <button
-            type="button"
-            onClick={() => { setLinking(true); setCreating(false); }}
-            className="text-[11.5px] text-ink-3 hover:text-ink-2"
-          >
-            Link
-          </button>
-          <button
-            type="button"
-            onClick={() => { setCreating(true); setLinking(false); }}
-            className="flex items-center gap-1 rounded bg-accent px-2 py-0.5 text-[11.5px] text-surface hover:opacity-90"
-          >
-            <Plus size={10} /> New
-          </button>
-        </div>
-      </div>
-
-      {creating ? (
-        <form
-          className="mb-2 flex items-center gap-1.5"
-          onSubmit={async (e) => {
-            e.preventDefault();
-            if (!name.trim()) return;
-            await createProject.mutateAsync({ name: name.trim(), opportunity_id: award.opportunity_id });
-            setName(""); setCreating(false);
-          }}
-        >
-          <input
-            autoFocus
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="Project name"
-            className="h-7 flex-1 rounded border border-border-strong bg-surface px-2 text-[12px] text-ink outline-none focus:border-accent"
-          />
-          <button type="submit" className="rounded bg-accent px-2 py-0.5 text-[11.5px] text-surface">Create</button>
-        </form>
-      ) : null}
-
-      {linking ? (
-        <form
-          className="mb-2 flex items-center gap-1.5"
-          onSubmit={async (e) => {
-            e.preventDefault();
-            if (!pick) return;
-            await linkProject.mutateAsync({ projectId: pick, opportunityId: award.opportunity_id });
-            setPick(""); setLinking(false);
-          }}
-        >
-          <select
-            autoFocus
-            value={pick}
-            onChange={(e) => setPick(e.target.value)}
-            className="h-7 flex-1 rounded border border-border-strong bg-surface px-2 text-[12px] text-ink outline-none focus:border-accent"
-          >
-            <option value="">Select project…</option>
-            {linkable.map((p) => (
-              <option key={p.id} value={p.id}>{p.name}</option>
-            ))}
-          </select>
-          <button type="submit" className="rounded bg-accent px-2 py-0.5 text-[11.5px] text-surface">Link</button>
-        </form>
-      ) : null}
-
-      {linked.length === 0 ? (
-        <div className="text-[12px] text-ink-4">No projects linked.</div>
-      ) : (
-        <ul className="space-y-1">
-          {linked.map((p) => (
-            <li key={p.id}>
-              <Link
-                to={`/projects/${p.id}`}
-                state={referrer}
-                className="group flex items-center gap-2 rounded border border-border-strong bg-surface px-3 py-1.5 hover:border-accent"
-              >
-                <span className="flex-1 truncate text-[12.5px] font-medium text-ink">
-                  {p.name}
-                </span>
-                <ExternalLink size={11} className="flex-shrink-0 text-ink-4 group-hover:text-accent" />
-              </Link>
-            </li>
-          ))}
-        </ul>
-      )}
-    </div>
-  );
-}

@@ -109,32 +109,26 @@ export function stageStatus(
  * labels. If SF adds a new stage, append it here (or fetch the picklist
  * from the API once we wire that up).
  */
+/**
+ * Curated stage funnel surfaced in the Pipeline + Opportunity Detail
+ * dropdowns. Salesforce's picklist has dozens of variants from legacy
+ * record types; only these are usable for new edits per Jac. Existing
+ * opps in dropped stages display their current stage on the record
+ * but you can't reassign them to those values from the dropdown — they
+ * have to be moved to one of these to be edited further.
+ *
+ * Order: forward funnel (New Lead → Closed / Completed), then the two
+ * "exit-but-not-won" outcomes (Closed Lost, Withdrawn) at the tail so
+ * the happy path reads top-to-bottom.
+ */
 export const SF_STAGE_OPTIONS: { value: string; label: string }[] = [
   { value: "New Lead", label: "New Lead" },
-  { value: "Identified", label: "Identified" },
-  { value: "Lead Gen", label: "Lead Gen" },
   { value: "Qualifying", label: "Qualifying" },
-  { value: "Discovery", label: "Discovery" },
-  { value: "Cultivation", label: "Cultivation" },
-  { value: "Solicitation", label: "Solicitation" },
-  { value: "Ask", label: "Ask" },
   { value: "Ask in Progress", label: "Ask in Progress" },
-  { value: "Proposal Sent", label: "Proposal Sent" },
   { value: "Proposal Submitted", label: "Proposal Submitted" },
-  { value: "Verbal Commitment", label: "Verbal Commitment" },
-  { value: "Contract Creation", label: "Contract Creation" },
   { value: "Contracting", label: "Contracting" },
-  { value: "Contract Signed", label: "Contract Signed" },
-  { value: "Closed Won", label: "Closed Won" },
-  { value: "Closed / Completed", label: "Closed / Completed" },
-  { value: "Closed / Fulfilled", label: "Closed / Fulfilled" },
-  { value: "Closed / Full-Time or Successful Conversion", label: "Closed / Full-Time or Successful Conversion" },
-  { value: "Closed / Temporary Hire", label: "Closed / Temporary Hire" },
-  { value: "Collecting", label: "Collecting" },
   { value: "Collecting / In Effect", label: "Collecting / In Effect" },
-  { value: "In Effect", label: "In Effect" },
+  { value: "Closed / Completed", label: "Closed / Completed" },
   { value: "Closed Lost", label: "Closed Lost" },
-  { value: "Closed / Did not Fulfill", label: "Closed / Did not Fulfill" },
-  { value: "Closed / Contract or Agreement But No Fellows Hired", label: "Closed / Contract or Agreement But No Fellows Hired" },
   { value: "Withdrawn", label: "Withdrawn" },
 ];

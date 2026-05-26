@@ -32,6 +32,17 @@ export function AuthGate({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!user || prefetchedRef.current) return;
     prefetchedRef.current = true;
+    // Two-phase accounts prefetch matching the useAccounts() hook —
+    // active-only resolves fast (~1.5 s) so the first page paint reads
+    // from cache; the full 20 k set lands in the background.
+    void qc.prefetchQuery({
+      queryKey: ["accounts", "active-only"],
+      queryFn: async () => {
+        const { data } = await api.get<SfAccount[]>("/api/salesforce/accounts?fields=light&active_only=true");
+        return data;
+      },
+      staleTime: 60_000,
+    });
     void qc.prefetchQuery({
       queryKey: ["accounts"],
       queryFn: async () => {
@@ -45,6 +56,36 @@ export function AuthGate({ children }: { children: ReactNode }) {
       queryFn: async () => {
         const { data } = await api.get("/api/salesforce/opportunities");
         return data;
+      },
+      staleTime: 60_000,
+    });
+    // Contacts: prefetch only the recently-touched subset (~310 rows,
+    // ~100 ms) so the /contacts list paints instantly. The full ~15k
+    // set kicks in via useContacts() when the page mounts.
+    void qc.prefetchQuery({
+      queryKey: ["contacts", "active-only"],
+      queryFn: async () => {
+        try {
+          const { data } = await api.get("/api/salesforce/contacts?fields=light&active_only=true");
+          return data ?? [];
+        } catch {
+          return [];
+        }
+      },
+      staleTime: 60_000,
+    });
+    // Payments share enough surface with Pipeline (column overlap, expand
+    // panel) that warming this in parallel hides the cold-load on the
+    // first /payments navigation without much extra cost.
+    void qc.prefetchQuery({
+      queryKey: ["payments"],
+      queryFn: async () => {
+        try {
+          const { data } = await api.get("/api/salesforce/payments?limit=2000");
+          return data ?? [];
+        } catch {
+          return [];
+        }
       },
       staleTime: 60_000,
     });

@@ -1,0 +1,56 @@
+# CODEOWNERS
+#
+# Every PR opened against this repo auto-requests a review from the
+# matching owner(s) below. Combined with branch protection (Settings →
+# Branches → Add rule on `dev` and `main`: "Require a pull request
+# before merging" + "Require approvals" + "Require review from
+# Code Owners"), this enforces that nothing lands on `dev` or `main`
+# without Jacqueline's explicit approval.
+#
+# Patterns are first-match-wins from bottom to top — most-specific
+# rules go last.
+
+# Global fallback — Jac reviews anything not otherwise routed.
+*                                            @jacrev-pursuit
+
+# Backend (Python) — Jac reviews all FastAPI changes.
+financial_forecasting/main.py                @jacrev-pursuit
+financial_forecasting/routes/                @jacrev-pursuit
+financial_forecasting/services/              @jacrev-pursuit
+financial_forecasting/db/                    @jacrev-pursuit
+financial_forecasting/scripts/               @jacrev-pursuit
+financial_forecasting/tests/                 @jacrev-pursuit
+
+# Frontend shell + routing + auth — Jac reviews structural changes.
+financial_forecasting/frontend-v2/src/App.tsx                  @jacrev-pursuit
+financial_forecasting/frontend-v2/src/main.tsx                 @jacrev-pursuit
+financial_forecasting/frontend-v2/src/components/AppShell.tsx  @jacrev-pursuit
+financial_forecasting/frontend-v2/src/components/AuthGate.tsx  @jacrev-pursuit
+financial_forecasting/frontend-v2/src/services/                @jacrev-pursuit
+financial_forecasting/frontend-v2/src/lib/                     @jacrev-pursuit
+financial_forecasting/frontend-v2/vite.config.ts               @jacrev-pursuit
+financial_forecasting/frontend-v2/tsconfig*.json               @jacrev-pursuit
+financial_forecasting/frontend-v2/package.json                 @jacrev-pursuit
+financial_forecasting/frontend-v2/package-lock.json            @jacrev-pursuit
+
+# Owner-specific home pages — each owner edits their own file. Jac is
+# co-owner so she sees every PR; the explicit owner means they can
+# approve their own (or you can drop their handle to require Jac).
+financial_forecasting/frontend-v2/src/pages/home/HomeAllie.tsx      @jacrev-pursuit
+financial_forecasting/frontend-v2/src/pages/home/HomeAndrew.tsx     @jacrev-pursuit
+financial_forecasting/frontend-v2/src/pages/home/HomeAngie.tsx      @jacrev-pursuit
+financial_forecasting/frontend-v2/src/pages/home/HomeDevika.tsx     @jacrev-pursuit
+financial_forecasting/frontend-v2/src/pages/home/HomeErica.tsx      @jacrev-pursuit
+financial_forecasting/frontend-v2/src/pages/home/HomeGuilherme.tsx  @jacrev-pursuit
+financial_forecasting/frontend-v2/src/pages/home/HomeJp.tsx         @jacrev-pursuit
+financial_forecasting/frontend-v2/src/pages/home/HomeNick.tsx       @jacrev-pursuit
+financial_forecasting/frontend-v2/src/pages/home/HomeTrent.tsx      @jacrev-pursuit
+
+# Shared home plumbing — must be Jac (prevents owners from rewiring
+# the dispatcher or the slugs registry).
+financial_forecasting/frontend-v2/src/pages/home/index.tsx     @jacrev-pursuit
+financial_forecasting/frontend-v2/src/pages/home/slugs.ts      @jacrev-pursuit
+
+# This file + GitHub workflow / governance — Jac only.
+.github/                                     @jacrev-pursuit
+CODEOWNERS                                   @jacrev-pursuit

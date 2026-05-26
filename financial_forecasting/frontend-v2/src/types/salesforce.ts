@@ -21,9 +21,21 @@ export interface SfUser {
   IsActive?: boolean | null;
 }
 
+/** Playbook-defined Account Status, derived server-side. Values come
+ *  from services/account_status.py — kept in sync there. */
+export type AccountStatus =
+  | "Prospect"
+  | "Pursuing"
+  | "Stewarding"
+  | "Re-activating"
+  | "Dormant";
+
 export interface SfAccount {
   Id: string;
   Name: string;
+  /** Playbook Account Status. Derived field, not stored on the SF
+   *  record — see services/account_status.py for the rules. */
+  account_status?: AccountStatus;
   Type?: string | null;
   Industry?: string | null;
   Phone?: string | null;
@@ -94,6 +106,12 @@ export interface SfOpportunity {
    *  SF API name is intentionally awkward (`..._if_different_...`)
    *  but the picklist label is just "Ask Amount". */
   Ask_Amount_if_different_from_actual__c?: number | null;
+  Philanthropy_Type__c?: string | null;
+  Manager_Probability_Override__c?: number | null;
+  /** SF picklist: "Low" | "Medium" | "High" (or null). Surfaced as a
+   *  filter facet on /pipeline + /portfolio and as an editable pill
+   *  in the Opportunity Detail header. */
+  Priority__c?: string | null;
   CloseDate?: string | null;
   LeadSource?: string | null;
   NextStep?: string | null;

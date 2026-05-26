@@ -7,6 +7,7 @@ import { ActivityTimeline } from "@/components/ActivityTimeline";
 import {
   BackLink as SharedBackLink,
   EditField,
+  LinkedProjectsCard,
   SectionCard,
   Stat,
 } from "@/components/detail";
@@ -382,6 +383,16 @@ export function ContactDetailPage() {
             onSave={(v) => patch("Description", v)}
             placeholder="Add a bio, context, or notes…"
             multiline
+          />
+        </div>
+      </SectionCard>
+
+      <SectionCard title="Linked projects" storageScope="contact">
+        <div className="px-5 py-4">
+          <LinkedProjectsCard
+            entityType="contact"
+            entityId={contact.Id}
+            referrerLabel="Contact"
           />
         </div>
       </SectionCard>

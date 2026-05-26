@@ -4,7 +4,13 @@ import os
 import asyncio
 import calendar
 from dotenv import load_dotenv
-load_dotenv(override=False)
+# override=True so .env is the single source of truth for the backend.
+# Without this, exported shell env vars (e.g. SLACK_BOT_TOKEN in
+# ~/.zshrc) silently shadow .env, which previously caused a Slack-bot
+# swap to be a no-op for hours of debugging — see 2026-05-20 commit
+# notes. Operators who need to override .env from the shell can
+# still do so per-process via `KEY=value ./main.py`.
+load_dotenv(override=True)
 from typing import Any, Dict, List, Optional
 from datetime import datetime, date, timedelta
 from decimal import Decimal
@@ -37,6 +43,8 @@ from forecasting_engine import ForecastingEngine
 from data_sync import DataSyncService
 from db import init_db, close_db, get_db, get_db_status
 from routes.projects import router as projects_router
+from routes.comments import router as comments_router
+from routes.notifications import router as notifications_router
 from routes.auth import router as auth_router, get_google_credentials, PBD_CALENDAR_ID
 from routes.sf_dependencies import router as sf_deps_router
 from routes.permissions import router as permissions_router, opp_router as opp_lock_router, check_permission, check_permission_or_internal, resolve_task_lock
@@ -61,6 +69,9 @@ from routes.saved_views import router as saved_views_router
 from routes.search import router as search_router
 from routes.pebble_proxy import router as pebble_proxy_router, close as close_pebble_proxy
 from routes.chisel_proxy import router as chisel_proxy_router, close as close_chisel_proxy
+from routes.affiliations import router as affiliations_router
+from routes.airtable_jobs import router as airtable_jobs_router
+from routes.sputnik import router as sputnik_router
 from services.search_indexer import run_worker as run_search_indexer_worker
 from services.pebble_audit import PebbleWriteAuditMiddleware
 from auth import get_current_user_dep, require_auth, IS_PRODUCTION, JWT_SECRET_KEY
@@ -134,6 +145,8 @@ app.add_middleware(
 
 # Routers
 app.include_router(projects_router)
+app.include_router(comments_router)
+app.include_router(notifications_router)
 app.include_router(auth_router)
 app.include_router(sf_deps_router)
 app.include_router(permissions_router)
@@ -160,6 +173,9 @@ app.include_router(saved_views_router)
 app.include_router(search_router)
 app.include_router(pebble_proxy_router)
 app.include_router(chisel_proxy_router)
+app.include_router(affiliations_router)
+app.include_router(airtable_jobs_router)
+app.include_router(sputnik_router)
 
 # Service singletons — shared with dependencies.py so route files can use
 # Depends(require_sf_mcp_client) without circular imports.
@@ -214,6 +230,50 @@ async def startup_event():
         except Exception:
             _services["data_sync_service"] = DataSyncService(client)
         asyncio.create_task(background_sync_task())
+        asyncio.create_task(background_award_reconciler_task())
+        asyncio.create_task(background_interaction_sync_task())
+
+    # Cache the db pool on _services so background tasks (notification
+    # Slack dispatcher) can acquire connections without going through
+    # FastAPI's request-scoped get_db dependency.
+    try:
+        from db import get_pool
+        _services["db_pool"] = get_pool()
+    except Exception as e:
+        logger.warning(f"db_pool not registered on _services: {e}")
+
+    # SF-side notification poller — watches for new SF Tasks and
+    # OpportunityFieldHistory rows and fans out notifications. Only
+    # meaningful when SF is connected; the loop self-checks and no-ops
+    # otherwise.
+    if "salesforce" in client.connected_services:
+        try:
+            from services.sf_notification_poller import run_forever as _sf_notif_loop
+            asyncio.create_task(_sf_notif_loop())
+            logger.info("sf_notification_poller started")
+        except Exception as e:
+            logger.warning(f"sf_notification_poller failed to start: {e}")
+
+    # Cache the db pool on _services so background tasks (notification
+    # Slack dispatcher) can acquire connections without going through
+    # FastAPI's request-scoped get_db dependency.
+    try:
+        from db import get_pool
+        _services["db_pool"] = get_pool()
+    except Exception as e:
+        logger.warning(f"db_pool not registered on _services: {e}")
+
+    # SF-side notification poller — watches for new SF Tasks and
+    # OpportunityFieldHistory rows and fans out notifications. Only
+    # meaningful when SF is connected; the loop self-checks and no-ops
+    # otherwise.
+    if "salesforce" in client.connected_services:
+        try:
+            from services.sf_notification_poller import run_forever as _sf_notif_loop
+            asyncio.create_task(_sf_notif_loop())
+            logger.info("sf_notification_poller started")
+        except Exception as e:
+            logger.warning(f"sf_notification_poller failed to start: {e}")
 
     # Search indexer worker — drains bedrock.search_index_queue and
     # upserts bedrock.search_doc rows. Lives on the Bedrock process
@@ -272,24 +332,109 @@ async def shutdown_event():
 # Background tasks
 
 async def background_sync_task():
-    """Background task to sync data periodically."""
+    """Background task to sync data periodically.
+
+    Hard-capped at 10 minutes per cycle. If sync_all_data hangs (e.g.,
+    simple_salesforce stuck on a network read), the wait_for raises
+    TimeoutError, we release the lock, and the next cycle gets a fresh
+    shot. Without this cap, a hung SF call could hold the lock + the
+    event loop indefinitely — which was making the whole API stop
+    responding ("listens but doesn't respond" pattern observed in dev).
+    """
     while True:
         try:
             data_sync_service = _services.get("data_sync_service")
             if data_sync_service:
-                        # Non-blocking acquire — skip cycle if lock held
                 if _sync_lock.locked():
                     logger.warning("Sync already in progress, skipping cycle.")
                 else:
                     async with _sync_lock:
                         logger.info("Running background data sync...")
-                        await data_sync_service.sync_all_data()
+                        await asyncio.wait_for(
+                            data_sync_service.sync_all_data(),
+                            timeout=600.0,  # 10 minutes
+                        )
                         logger.info("Background data sync completed.")
+        except asyncio.TimeoutError:
+            logger.error(
+                "Background sync timed out after 600s — lock released; "
+                "next cycle will retry. If this fires repeatedly, a SF "
+                "or DB call is stuck and needs investigation."
+            )
         except Exception as e:
             logger.error(f"Background sync error: {e}")
 
         # Wait 15 minutes before next sync
         await asyncio.sleep(900)
+
+
+async def background_award_reconciler_task():
+    """Hourly background task: catch awards missed when an opp's stage
+    was changed directly in Salesforce (bypassing Bedrock's update-stage
+    endpoint, where the auto-create side-effect lives).
+
+    Idempotent — opps that already have an award row are skipped via the
+    bedrock.award partial unique index. First run is delayed 60s after
+    startup to let the SF connection stabilize.
+    """
+    await asyncio.sleep(60)
+    while True:
+        try:
+            client = _services.get("mcp_client")
+            if client and "salesforce" in (client.connected_services or set()):
+                from db import get_pool
+                from services.awards_reconciler import reconcile_all
+                pool = get_pool()
+                if pool is not None:
+                    async with pool.acquire() as conn:
+                        # Hard-cap at 5 min — same rationale as the
+                        # background sync wait_for: a stuck SF call
+                        # would otherwise hold the event loop.
+                        summary = await asyncio.wait_for(
+                            reconcile_all(conn, client.salesforce),
+                            timeout=300.0,
+                        )
+                        logger.info("awards.reconcile summary: %s", summary)
+        except asyncio.TimeoutError:
+            logger.error("Award reconciler timed out after 300s — skipping cycle")
+        except Exception as e:
+            logger.error(f"Award reconciler error: {e}")
+
+        # Wait 1h before next pass
+        await asyncio.sleep(3_600)
+
+
+async def background_interaction_sync_task():
+    """Nightly background task: sync Gmail + Calendar for all staff in
+    bedrock.sync_staff.  Runs once per day at 23:00 ET (04:00 UTC next day).
+    First run is delayed 180s after startup so the DB pool is ready.
+    """
+    import asyncio as _asyncio
+    from datetime import timezone as _tz, datetime as _dt, timedelta as _td
+    await _asyncio.sleep(180)
+    while True:
+        # Sleep until next 04:00 UTC (= 23:00 ET / 00:00 ET summer)
+        now_utc = _dt.now(_tz.utc)
+        target = now_utc.replace(hour=4, minute=0, second=0, microsecond=0)
+        if target <= now_utc:
+            target += _td(days=1)
+        await _asyncio.sleep((target - now_utc).total_seconds())
+
+        try:
+            from db import get_pool
+            from services.interaction_sync import run_interaction_sync
+            pool = get_pool()
+            if pool is not None:
+                logger.info("interaction_sync: starting nightly run")
+                summary = await _asyncio.wait_for(
+                    run_interaction_sync(pool),
+                    timeout=7_200.0,  # 2h hard cap
+                )
+                logger.info("interaction_sync: done %s", summary)
+        except _asyncio.TimeoutError:
+            logger.error("interaction_sync timed out after 2h — skipping cycle")
+        except Exception as e:
+            logger.error("interaction_sync error: %s", e)
 
 
 # Dependency functions — get_current_user is now cookie-based (see auth.py)
@@ -378,6 +523,15 @@ async def services_health_check(
 # this widened — see tasks/stage-schema-drift.md § "Known pre-existing defects" item 3.
 VALID_STAGES = {s.value for s in OpportunityStage} | WON_STAGES_SET | LOST_STAGES_SET
 
+# ISA (Income Share Agreement) opportunities are a separate revenue
+# stream owned by another team and are explicitly out-of-scope for
+# bedrock — they should never surface in the pipeline / search /
+# cashflow views. Filter at the SOQL layer so the API never returns
+# them. SOQL `!=` includes NULLs, so opps with no RecordType still
+# pass through.
+ISA_EXCLUDE_WHERE = "RecordType.Name != 'ISA'"
+ISA_EXCLUDE_VIA_OPP = "npe01__Opportunity__r.RecordType.Name != 'ISA'"
+
 
 @app.get("/api/salesforce/opportunities")
 async def get_opportunities(
@@ -396,7 +550,7 @@ async def get_opportunities(
         # Server-side cache — key encodes all filter params
         stage_val = stage.value if stage else None
         stages_key = ",".join(sorted(stages)) if stages else None
-        cache_key = f"opps:{stage_val}:{stages_key}:{record_type}:{active_only}:{limit}"
+        cache_key = f"opps:no-isa:{stage_val}:{stages_key}:{record_type}:{active_only}:{limit}"
         cached = cache.get(cache_key)
         if cached is not None:
             return cached
@@ -408,11 +562,17 @@ async def get_opportunities(
         # (verified via Tooling API describe — DataType Lookup(Contact),
         # label "Primary Contact"). Relationship fields pull the contact's
         # Name + Email for display without a second query.
+        # Field list trimmed 2026-05-25: dropped Description (long-text,
+        # unused in any list or detail view), Reporting_Method__c (unused),
+        # and npsp__Next_Grant_Deadline_Due_Date__c (unused). The previous
+        # list pulled ~625 ms; trimmed is ~50 % smaller payload and ~25 %
+        # faster SOQL on a 1242-row org. Add fields back here only if a
+        # consumer in frontend-v2 actually reads them.
         query = """
         SELECT Id, AccountId, Account.Name, Name, StageName, IsClosed, IsWon,
                Amount, Probability,
                CloseDate, ForecastCategory, LeadSource, NextStep,
-               Description, OwnerId, Owner.Name, CreatedDate, LastModifiedDate,
+               OwnerId, Owner.Name, CreatedDate, LastModifiedDate,
                npe01__Payments_Made__c, Outstanding_Payments__c,
                Number_of_Payments_Received__c, Most_Recent_Payment_Date__c,
                Last_Actual_Payment__c, npe01__Number_of_Payments__c,
@@ -421,12 +581,15 @@ async def get_opportunities(
                npsp__Primary_Contact__c,
                npsp__Primary_Contact__r.Name, npsp__Primary_Contact__r.Email,
                RecordTypeId, RecordType.Name, Active_Opportunity__c,
-               Reporting_Method__c, npsp__Next_Grant_Deadline_Due_Date__c,
-               Ask_Amount_if_different_from_actual__c
+               Ask_Amount_if_different_from_actual__c,
+               Philanthropy_Type__c,
+               Manager_Probability_Override__c,
+               Priority__c
         FROM Opportunity
         """
 
-        where_clauses = []
+        # ISA opps are always excluded — baseline WHERE clause.
+        where_clauses = [ISA_EXCLUDE_WHERE]
         if stage:
             where_clauses.append(f"StageName = '{stage.value}'")
         if stages:
@@ -438,8 +601,7 @@ async def get_opportunities(
             where_clauses.append(f"RecordType.Name = '{escape_soql_string(record_type)}'")
         if active_only:
             where_clauses.append("Active_Opportunity__c = true")
-        if where_clauses:
-            query += " WHERE " + " AND ".join(where_clauses)
+        query += " WHERE " + " AND ".join(where_clauses)
 
         query += " ORDER BY CloseDate DESC"
         if limit is not None:
@@ -466,19 +628,25 @@ async def get_opportunity_record_types(
     client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user=Depends(require_auth),
 ):
-    """Return active Opportunity RecordTypes as [{id, name}]."""
-    cached = cache.get("opp_record_types")
+    """Return active Opportunity RecordTypes as [{id, name}].
+
+    ISA is excluded — see ISA_EXCLUDE_WHERE comment. We don't want users
+    to be able to create or move opps onto the ISA record type from this
+    app.
+    """
+    cached = cache.get("opp_record_types:no-isa")
     if cached is not None:
         return cached
     salesforce = client.salesforce
     result = await salesforce.query(
         "SELECT Id, Name FROM RecordType "
         "WHERE SObjectType = 'Opportunity' AND IsActive = true "
+        "AND Name != 'ISA' "
         "ORDER BY Name"
     )
     records = result.get("records", [])
     out = [{"id": r["Id"], "name": r["Name"]} for r in records]
-    cache.set("opp_record_types", out, 3600)
+    cache.set("opp_record_types:no-isa", out, 3600)
     return out
 
 
@@ -644,6 +812,13 @@ async def get_accounts(
     # `fields=light` returns only the ~17 fields the v2 frontend uses,
     # cutting SOQL payload ~70% vs the full 50-field default (kept for v1).
     fields: Optional[str] = Query(None),
+    # `active_only=true` narrows the SOQL to accounts touched in the
+    # last 6 months (LastActivityDate >= LAST_N_MONTHS:6) — ~370 rows
+    # vs ~20k total, fetched in ~200 ms vs ~5.6 s. Frontend uses this
+    # for the first-paint pass; the full set lands in a follow-up
+    # request. Active__c was tried as a filter but turns out 19.9k of
+    # 20.2k accounts have it set — not useful as a subset signal.
+    active_only: bool = Query(False),
     client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user = Depends(require_auth)
 ):
@@ -652,7 +827,11 @@ async def get_accounts(
         if "salesforce" not in (client.connected_services or []):
             return []
         use_light = fields == "light"
-        cache_key = f"accounts:{limit or 'all'}:{'light' if use_light else 'full'}"
+        cache_key = (
+            f"accounts:{limit or 'all'}:"
+            f"{'light' if use_light else 'full'}:"
+            f"{'active' if active_only else 'any'}"
+        )
         cached = cache.get(cache_key)
         if cached is not None:
             return cached
@@ -702,14 +881,108 @@ async def get_accounts(
         if limit is not None:
             query += f" LIMIT {limit}"
 
+        # Inject the active_only WHERE clause between FROM and ORDER BY.
+        # Both branches above are "SELECT ... FROM Account ORDER BY ..."
+        # — splice rather than re-quote the string to keep the field
+        # list untouched.
+        if active_only:
+            query = query.replace(
+                "FROM Account\n",
+                "FROM Account\n            WHERE LastActivityDate = LAST_N_MONTHS:6\n",
+            )
+
         result = await salesforce.query_all(query)
         records = result.get("records", [])
+
+        # Derive playbook Account Status (Prospect / Pursuing /
+        # Stewarding / Re-activating / Dormant) per account. Pure
+        # derivation — see services/account_status.py. Skip on the
+        # active_only pre-paint because status derivation needs the
+        # FULL opportunity history of each account to classify
+        # Re-activating vs Dormant correctly; the follow-up full-set
+        # request attaches status to the same accounts.
+        if not active_only:
+            try:
+                await _attach_account_status(records, salesforce)
+            except Exception as ex:  # noqa: BLE001
+                logger.warning(f"Failed to derive account_status; serving without it: {ex}")
+
         cache.set(cache_key, records, CACHE_TTL_ACCOUNTS)
         return records
 
     except Exception as e:
         logger.error(f"Error fetching accounts: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+async def _attach_account_status(accounts: list, salesforce) -> None:
+    """Compute and attach `account_status` to every account row.
+
+    Pulls the minimum data needed for the derivation:
+      - SF opportunities (Id, AccountId, StageName, IsClosed,
+        Active_Opportunity__c) via one SOQL.
+      - bedrock.award rows joined to opportunity_id via one SQL.
+      - bedrock.activity latest_date per account_id via one SQL.
+
+    All three queries fire in parallel. The compute is ~50 ms for
+    2 k accounts on the laptop; well within the existing endpoint
+    latency budget.
+    """
+    from datetime import datetime, timedelta, timezone as _tz
+
+    from db import get_pool
+    from services.account_status import (
+        build_lookups,
+        compute_account_status,
+    )
+
+    account_ids = [a.get("Id") for a in accounts if a.get("Id")]
+    if not account_ids:
+        return
+
+    # 1. SF opportunities — slim projection, no record-type filter so the
+    # status sees the full picture.
+    opp_query = (
+        "SELECT Id, AccountId, StageName, IsClosed, IsWon, "
+        "Active_Opportunity__c FROM Opportunity"
+    )
+    opp_result = await salesforce.query_all(opp_query)
+    opps = opp_result.get("records", [])
+
+    # 2 + 3. Awards + latest activity per account from bedrock.
+    # Scope activity to the 3-month window we actually care about
+    # (anything older means Dormant either way), with a small buffer
+    # for cron lag.
+    cutoff = datetime.now(_tz.utc) - timedelta(days=120)
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        award_rows = await conn.fetch(
+            "SELECT opportunity_id, award_status FROM bedrock.award"
+        )
+        act_rows = await conn.fetch(
+            "SELECT account_id, MAX(activity_date) AS activity_date "
+            "FROM bedrock.activity "
+            "WHERE account_id IS NOT NULL AND activity_date >= $1 "
+            "GROUP BY account_id",
+            cutoff,
+        )
+    awards = [dict(r) for r in award_rows]
+    activities = [dict(r) for r in act_rows]
+
+    opps_by_account, awards_by_opp, latest_activity_by_account = build_lookups(
+        opps, awards, activities,
+    )
+
+    for a in accounts:
+        aid = a.get("Id")
+        if not aid:
+            continue
+        a["account_status"] = compute_account_status(
+            aid,
+            opps_by_account,
+            awards_by_opp,
+            latest_activity_by_account,
+        )
 
 
 @app.post("/api/salesforce/accounts")
@@ -750,6 +1023,12 @@ async def get_contacts(
     # the dominant cause of the contacts list feeling slow on cold
     # cache. Per-contact detail page still uses fields=full.
     fields: Optional[str] = Query(None),
+    # `active_only=true` narrows the SOQL to contacts touched in the
+    # last 6 months — same pattern as /accounts. Pursuit has ~15k
+    # total contacts; only ~311 have LastActivityDate in the window.
+    # First-paint fetch drops from ~1.4 s → ~100 ms backend. Full set
+    # arrives in a follow-up call.
+    active_only: bool = Query(False),
     client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user = Depends(require_auth)
 ):
@@ -758,7 +1037,11 @@ async def get_contacts(
         if "salesforce" not in (client.connected_services or []):
             return []
         use_light = fields == "light"
-        cache_key = f"contacts:{account_id}:{limit or 'all'}:{'light' if use_light else 'full'}"
+        cache_key = (
+            f"contacts:{account_id}:{limit or 'all'}:"
+            f"{'light' if use_light else 'full'}:"
+            f"{'active' if active_only else 'any'}"
+        )
         cached = cache.get(cache_key)
         if cached is not None:
             return cached
@@ -799,9 +1082,20 @@ async def get_contacts(
             FROM Contact
             """
 
+        # Build WHERE clauses. account_id and active_only stack with AND;
+        # an account-scoped fetch from the detail page doesn't apply
+        # active_only since the user wants every contact on the account.
+        wheres = []
         if account_id:
             validate_salesforce_id(account_id, "account_id")
-            query += f" WHERE AccountId = '{account_id}'"
+            wheres.append(f"AccountId = '{account_id}'")
+        elif active_only:
+            # SF date-literal — anchors the window relative to today
+            # without needing a server-side timestamp.
+            wheres.append("LastActivityDate = LAST_N_MONTHS:6")
+
+        if wheres:
+            query += " WHERE " + " AND ".join(wheres)
 
         query += " ORDER BY LastName ASC"
         if limit is not None:
@@ -847,13 +1141,24 @@ async def create_contact(
 PAYMENT_SOQL_FIELDS = """
     Id, Name, npe01__Opportunity__c, npe01__Opportunity__r.Name,
     npe01__Opportunity__r.Account.Name,
+    npe01__Opportunity__r.AccountId,
+    npe01__Opportunity__r.OwnerId,
+    npe01__Opportunity__r.Owner.Name,
+    npe01__Opportunity__r.StageName,
+    npe01__Opportunity__r.Amount,
+    npe01__Opportunity__r.Probability,
+    npe01__Opportunity__r.Manager_Probability_Override__c,
+    npe01__Opportunity__r.CloseDate,
+    npe01__Opportunity__r.RecordType.Name,
+    npe01__Opportunity__r.Active_Opportunity__c,
+    npe01__Opportunity__r.Philanthropy_Type__c,
     npe01__Payment_Amount__c, npe01__Scheduled_Date__c,
     npe01__Payment_Date__c, npe01__Paid__c,
     npe01__Payment_Method__c, npe01__Check_Reference_Number__c,
     npe01__Written_Off__c, Write_off_reason__c,
     Amount_Received__c, Department__c, GL_Account__c,
     GL_Payment_Received__c, Reconciled_with_Finance__c,
-    Batch_Name__c, Payment_Estimate__c, Invoice__c,
+    Batch_Name__c, Payment_Estimate__c,
     Affiliation__c, CreatedDate, LastModifiedDate,
     Payment_Status__c, Delinquent__c, Paid_Status__c,
     Amount_Formula__c, Amount_Minus_Received__c
@@ -930,6 +1235,7 @@ async def get_opportunity_payments(
 @app.get("/api/salesforce/payments/acv-summary")
 async def get_acv_summary(
     year: int = Query(..., ge=2000, le=2100),
+    bucket: str = Query("all", regex="^(all|philanthropy|pbc|capital_grants|other)$"),
     client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user=Depends(require_auth),
 ):
@@ -941,13 +1247,18 @@ async def get_acv_summary(
     Returns quarterly + annual totals for the Wins (ACV) row in the
     FY Overview matrix on the Dashboard.
     """
-    cache_key = f"acv-summary:{year}"
+    cache_key = f"acv-summary:{year}:{bucket}"
     cached = cache.get(cache_key)
     if cached is not None:
         return cached
 
     try:
         salesforce = client.salesforce
+        bucket_clause = _cashflow_bucket_soql(bucket)
+        won_stages = (
+            "('Collecting / In Effect', 'Collecting', 'In Effect', "
+            "'Closed Won', 'Closed / Completed', 'Closed / Fulfilled')"
+        )
         soql = f"""
             SELECT npe01__Payment_Amount__c, npe01__Scheduled_Date__c,
                    npe01__Opportunity__r.CloseDate
@@ -955,9 +1266,10 @@ async def get_acv_summary(
             WHERE npe01__Scheduled_Date__c >= {year}-01-01
             AND npe01__Scheduled_Date__c <= {year}-12-31
             AND npe01__Written_Off__c = false
-            AND npe01__Opportunity__r.StageName IN ('Collecting / In Effect', 'Closed Won', 'Closed Completed')
+            AND npe01__Opportunity__r.StageName IN {won_stages}
             AND npe01__Opportunity__r.CloseDate >= {year}-01-01
             AND npe01__Opportunity__r.CloseDate <= {year}-12-31
+            {bucket_clause}
             LIMIT 2000
         """
         result = await salesforce.query(soql)
@@ -992,9 +1304,56 @@ async def get_acv_summary(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+_VALID_CASHFLOW_BUCKETS = {"all", "philanthropy", "pbc", "capital_grants", "other"}
+
+
+def _cashflow_bucket_soql(bucket: str) -> str:
+    """Return a SOQL fragment to AND into a payment query so it only
+    matches the requested record-type bucket.
+
+    Every bucket carries the ISA exclusion — ISA opps are not in scope
+    for bedrock's cashflow views.
+
+    Buckets:
+        all             — only ISA excluded
+        philanthropy    — RecordType.Name = 'Philanthropy' AND not a Capital Grant
+        capital_grants  — Philanthropy_Type__c = 'Capital Grant' (any RT, but in
+                          practice all sit under Philanthropy)
+        pbc             — RecordType.Name = 'PBC'
+        other           — neither Philanthropy nor PBC nor ISA (includes NULL RT;
+                          Capital Grants are excluded since they're RT=Philanthropy)
+    """
+    opp = "npe01__Opportunity__r"
+    isa = f" AND {opp}.RecordType.Name != 'ISA'"
+    if bucket == "all":
+        return isa
+    if bucket == "philanthropy":
+        return (
+            f" AND {opp}.RecordType.Name = 'Philanthropy' "
+            f"AND ({opp}.Philanthropy_Type__c != 'Capital Grant' "
+            f"OR {opp}.Philanthropy_Type__c = null)"
+        )
+    if bucket == "capital_grants":
+        return (
+            f" AND {opp}.Philanthropy_Type__c = 'Capital Grant'"
+            + isa
+        )
+    if bucket == "pbc":
+        return f" AND {opp}.RecordType.Name = 'PBC'"
+    if bucket == "other":
+        return (
+            f" AND ({opp}.RecordType.Name = null OR "
+            f"{opp}.RecordType.Name NOT IN ('Philanthropy', 'PBC', 'ISA')) "
+            f"AND ({opp}.Philanthropy_Type__c != 'Capital Grant' "
+            f"OR {opp}.Philanthropy_Type__c = null)"
+        )
+    return isa
+
+
 @app.get("/api/salesforce/cashflow")
 async def get_cashflow(
     year: int = Query(..., ge=2000, le=2100),
+    bucket: str = Query("all", regex="^(all|philanthropy|pbc|capital_grants|other)$"),
     client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user=Depends(require_auth),
 ):
@@ -1004,31 +1363,42 @@ async def get_cashflow(
       - actuals: paid payments (npe01__Payment_Date__c) from won opps
       - scheduled: unpaid future payments (npe01__Scheduled_Date__c) from won opps
       - projected: open-pipeline payments weighted by opp probability
+
+    Optional `bucket` filter restricts to a record-type bucket.
     """
-    cache_key = f"cashflow:{year}"
+    cache_key = f"cashflow:{year}:{bucket}"
     cached = cache.get(cache_key)
     if cached is not None:
         return cached
 
     try:
         salesforce = client.salesforce
-        won_stages = "('Collecting / In Effect', 'Closed Won', 'Closed Completed')"
+        # Stage filter is used for "scheduled" only (so we don't count
+        # scheduled payments from open-pipeline opps as committed cash).
+        # "Actuals" — Paid=true is sufficient: money in the bank doesn't
+        # care about the opp's current stage.
+        won_stages = (
+            "('Collecting / In Effect', 'Collecting', 'In Effect', "
+            "'Closed Won', 'Closed / Completed', 'Closed / Fulfilled')"
+        )
+        bucket_clause = _cashflow_bucket_soql(bucket)
 
-        # Won-opp payments: actuals (paid) + scheduled (unpaid)
+        # Won-opp scheduled payments + ALL paid payments (any stage).
         soql_won = f"""
             SELECT npe01__Payment_Amount__c, npe01__Scheduled_Date__c,
                    npe01__Paid__c, npe01__Payment_Date__c
             FROM npe01__OppPayment__c
             WHERE npe01__Written_Off__c = false
-            AND npe01__Opportunity__r.StageName IN {won_stages}
             AND (
-                (npe01__Scheduled_Date__c >= {year}-01-01
+                (npe01__Opportunity__r.StageName IN {won_stages}
+                 AND npe01__Scheduled_Date__c >= {year}-01-01
                  AND npe01__Scheduled_Date__c <= {year}-12-31)
                 OR
                 (npe01__Paid__c = true
                  AND npe01__Payment_Date__c >= {year}-01-01
                  AND npe01__Payment_Date__c <= {year}-12-31)
             )
+            {bucket_clause}
             LIMIT 2000
         """
 
@@ -1042,6 +1412,7 @@ async def get_cashflow(
             AND npe01__Opportunity__r.StageName NOT IN {won_stages}
             AND npe01__Scheduled_Date__c >= {year}-01-01
             AND npe01__Scheduled_Date__c <= {year}-12-31
+            {bucket_clause}
             LIMIT 2000
         """
 
@@ -1053,18 +1424,57 @@ async def get_cashflow(
         months = {m: {"actuals": 0.0, "scheduled": 0.0, "projected": 0.0}
                   for m in range(1, 13)}
 
+        # Today as YYYY-MM-DD; used to keep "actuals" strictly historical.
+        # Without this, paid payments with future-dated Payment_Date (a
+        # data-hygiene issue in SF where someone clicks Paid=true on a
+        # row whose Payment_Date still equals the original scheduled date)
+        # would show as future-month actuals on the dashboard.
+        from datetime import date as _date
+        today_iso = _date.today().isoformat()
+
         for r in won_result.get("records", []):
             amt = r.get("npe01__Payment_Amount__c") or 0
             if not amt:
                 continue
-            if r.get("npe01__Paid__c"):
-                date_str = r.get("npe01__Payment_Date__c")
+            payment_date = r.get("npe01__Payment_Date__c")
+            scheduled_date = r.get("npe01__Scheduled_Date__c")
+
+            # "Actuals" means: money already in the bank, in the FY we're
+            # asking about. Three conditions must hold:
+            #   1. Paid=true
+            #   2. Payment_Date is in the queried year (otherwise the
+            #      record is here because of disjunct (1) — Won-stage
+            #      payment scheduled this year — but the actual payment
+            #      happened in a different year and belongs to that
+            #      year's actuals, not ours)
+            #   3. Payment_Date is on or before today (a future
+            #      Payment_Date isn't an actual — treat as scheduled)
+            year_prefix = f"{year}-"
+            # Money already in the bank — any year, on/before today.
+            already_received = (
+                bool(r.get("npe01__Paid__c"))
+                and payment_date
+                and payment_date <= today_iso
+            )
+            is_actual_this_year = (
+                already_received
+                and payment_date.startswith(year_prefix)
+            )
+
+            if is_actual_this_year:
+                date_str = payment_date
                 key = "actuals"
-            else:
-                date_str = r.get("npe01__Scheduled_Date__c")
-                key = "scheduled"
-            if not date_str:
+            elif already_received:
+                # Paid in a different year. Belongs to that year's
+                # actuals, not this view's outstanding/scheduled.
                 continue
+            else:
+                # Not yet received → scheduled. Only count if the
+                # scheduled date is in this year.
+                if not scheduled_date or not scheduled_date.startswith(year_prefix):
+                    continue
+                date_str = scheduled_date
+                key = "scheduled"
             try:
                 months[int(date_str[5:7])][key] += amt
             except (ValueError, KeyError):
@@ -1098,53 +1508,87 @@ async def get_cashflow_detail(
     year: int = Query(..., ge=2000, le=2100),
     month: int = Query(..., ge=1, le=12),
     type: str = Query(..., regex="^(actuals|scheduled|outstanding|projected)$"),
+    bucket: str = Query("all", regex="^(all|philanthropy|pbc|capital_grants|other)$"),
     client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user=Depends(require_auth),
 ):
     """Individual payment records for a specific cash flow cell."""
-    cache_key = f"cashflow-detail:{year}:{month}:{type}"
+    cache_key = f"cashflow-detail:{year}:{month}:{type}:{bucket}"
     cached = cache.get(cache_key)
     if cached is not None:
         return cached
 
     try:
         salesforce = client.salesforce
-        won_stages = "('Collecting / In Effect', 'Closed Won', 'Closed Completed')"
+        # Same expanded won-stages list as the aggregate cashflow query.
+        # Includes the correct "Closed / Completed" spelling and the
+        # Collecting / In Effect / Fulfilled stages that produce paid
+        # payments in practice.
+        won_stages = (
+            "('Collecting / In Effect', 'Collecting', 'In Effect', "
+            "'Closed Won', 'Closed / Completed', 'Closed / Fulfilled')"
+        )
+        bucket_clause = _cashflow_bucket_soql(bucket)
         last_day = calendar.monthrange(year, month)[1]
         m_start = f"{year}-{month:02d}-01"
         m_end   = f"{year}-{month:02d}-{last_day:02d}"
 
         if type == "actuals":
+            # Matches the aggregate's actuals rule: must be paid, with a
+            # Payment_Date in the queried month AND on/before today. The
+            # extra "<= today" clamp prevents the dashboard from listing
+            # paid-but-future-dated payments under "actuals" (those will
+            # show as scheduled instead).
+            from datetime import date as _date
+            today_iso = _date.today().isoformat()
+            actuals_upper = min(m_end, today_iso)
             soql = f"""
-                SELECT npe01__Payment_Amount__c, npe01__Payment_Date__c,
+                SELECT Id, npe01__Payment_Amount__c, npe01__Payment_Date__c,
                        npe01__Scheduled_Date__c,
+                       npe01__Opportunity__c,
                        npe01__Opportunity__r.Name, npe01__Opportunity__r.StageName,
                        npe01__Opportunity__r.Account.Name
                 FROM npe01__OppPayment__c
                 WHERE npe01__Paid__c = true
                 AND npe01__Written_Off__c = false
                 AND npe01__Payment_Date__c >= {m_start}
-                AND npe01__Payment_Date__c <= {m_end}
+                AND npe01__Payment_Date__c <= {actuals_upper}
+                {bucket_clause}
                 ORDER BY npe01__Payment_Date__c ASC
                 LIMIT 500
             """
         elif type in ("scheduled", "outstanding"):
+            # Outstanding/scheduled = won-stage payment scheduled in
+            # the queried month whose money isn't already in the bank.
+            # Excludes anything paid with a past Payment_Date (regardless
+            # of year — if it's received, it's not outstanding). Future
+            # Payment_Date counts as outstanding still (money not in yet).
+            from datetime import date as _date
+            today_iso = _date.today().isoformat()
             soql = f"""
-                SELECT npe01__Payment_Amount__c, npe01__Scheduled_Date__c,
+                SELECT Id, npe01__Payment_Amount__c, npe01__Scheduled_Date__c,
+                       npe01__Paid__c, npe01__Payment_Date__c,
+                       npe01__Opportunity__c,
                        npe01__Opportunity__r.Name, npe01__Opportunity__r.StageName,
                        npe01__Opportunity__r.Account.Name
                 FROM npe01__OppPayment__c
-                WHERE npe01__Paid__c = false
-                AND npe01__Written_Off__c = false
+                WHERE npe01__Written_Off__c = false
                 AND npe01__Opportunity__r.StageName IN {won_stages}
                 AND npe01__Scheduled_Date__c >= {m_start}
                 AND npe01__Scheduled_Date__c <= {m_end}
+                AND (
+                    npe01__Paid__c = false
+                    OR npe01__Payment_Date__c = null
+                    OR npe01__Payment_Date__c > {today_iso}
+                )
+                {bucket_clause}
                 ORDER BY npe01__Scheduled_Date__c ASC
                 LIMIT 500
             """
         else:  # projected
             soql = f"""
-                SELECT npe01__Payment_Amount__c, npe01__Scheduled_Date__c,
+                SELECT Id, npe01__Payment_Amount__c, npe01__Scheduled_Date__c,
+                       npe01__Opportunity__c,
                        npe01__Opportunity__r.Name, npe01__Opportunity__r.StageName,
                        npe01__Opportunity__r.Probability,
                        npe01__Opportunity__r.Account.Name
@@ -1154,6 +1598,7 @@ async def get_cashflow_detail(
                 AND npe01__Opportunity__r.StageName NOT IN {won_stages}
                 AND npe01__Scheduled_Date__c >= {m_start}
                 AND npe01__Scheduled_Date__c <= {m_end}
+                {bucket_clause}
                 ORDER BY npe01__Scheduled_Date__c ASC
                 LIMIT 500
             """
@@ -1165,10 +1610,23 @@ async def get_cashflow_detail(
             prob = opp.get("Probability") or 0
             amt = r.get("npe01__Payment_Amount__c") or 0
             records.append({
+                "payment_id": r.get("Id"),
+                "opp_id": r.get("npe01__Opportunity__c"),
                 "amount": amt,
                 "weighted_amount": round(amt * prob / 100, 2) if type == "projected" else None,
                 "probability": prob if type == "projected" else None,
-                "date": r.get("npe01__Payment_Date__c") or r.get("npe01__Scheduled_Date__c"),
+                # Date column should reflect why this row is in the
+                # selected cashflow cell. Actuals → the day it was paid.
+                # Scheduled/outstanding/projected → the day it's scheduled
+                # for (the date that put it in the column the user clicked).
+                # The previous fallback `Payment_Date or Scheduled_Date`
+                # caused scheduled rows with a stray non-null Payment_Date
+                # to display the wrong month.
+                "date": (
+                    r.get("npe01__Payment_Date__c")
+                    if type == "actuals"
+                    else r.get("npe01__Scheduled_Date__c")
+                ),
                 "opp_name": opp.get("Name"),
                 "account_name": (opp.get("Account") or {}).get("Name"),
                 "stage": opp.get("StageName"),
@@ -1699,9 +2157,18 @@ async def get_users(
     client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user = Depends(require_auth)
 ):
-    """Get Salesforce users (active + inactive, grouped by IsActive)."""
+    """Get Salesforce users (active + inactive, grouped by IsActive).
+
+    Filters to humans by excluding the well-known system / integration
+    users by Name pattern: Security User, Chatter Expert, Insights /
+    Integration / Analytics Cloud accounts, Automated Process, and
+    Slackbot. A previous attempt to filter on UserLicense.Name = 'Salesforce'
+    returned zero rows in Pursuit's org (their humans aren't on a
+    license literally named "Salesforce"), so we go back to Name-based
+    exclusion which is what the user actually called out.
+    """
     try:
-        cache_key = f"users:{limit}"
+        cache_key = f"users:{limit}:name-exclude-v3"
         cached = cache.get(cache_key)
         if cached is not None:
             return cached
@@ -1711,6 +2178,14 @@ async def get_users(
         query = f"""
         SELECT Id, Name, Email, IsActive
         FROM User
+        WHERE UserType = 'Standard'
+        AND (NOT Name LIKE '%Integration%')
+        AND (NOT Name LIKE '%Security User%')
+        AND (NOT Name LIKE '%Chatter Expert%')
+        AND (NOT Name LIKE 'Insights%')
+        AND (NOT Name LIKE 'Slackbot%')
+        AND (NOT Name LIKE 'Automated Process%')
+        AND (NOT Name LIKE 'Platform Integration%')
         ORDER BY IsActive DESC, Name ASC
         LIMIT {limit}
         """
@@ -1752,7 +2227,13 @@ async def get_my_tasks(
 
         salesforce = client.salesforce
 
-        where_clauses = ["IsClosed = false"]
+        # Filter to real Tasks — exclude Email / Call / ListEmail / etc.
+        # subtypes which clutter the view with auto-captured email
+        # activity that has Subject = "true" or other garbage.
+        where_clauses = [
+            "IsClosed = false",
+            "(TaskSubtype = 'Task' OR TaskSubtype = null)",
+        ]
         if start:
             where_clauses.append(f"ActivityDate >= {start}")
         if end:
@@ -1794,8 +2275,12 @@ class TaskCreateRequest(BaseModel):
     # contacts from the TaskPanel Contact autocomplete. SF Task has both
     # WhoId (Contact/Lead) and WhatId (parent entity — Opp/Account/etc.);
     # WhatId is set from the URL path in create_opportunity_task, WhoId
-    # from the body.
+    # from the body. The generic POST /api/salesforce/tasks endpoint
+    # accepts both from the body so the Tasks page (no parent context)
+    # and ContactExpandPanel (Contact-WhoId, optional opp/account WhatId)
+    # can use one endpoint.
     WhoId: Optional[str] = None
+    WhatId: Optional[str] = None
 
 
 class TaskUpdateRequest(BaseModel):
@@ -1826,6 +2311,8 @@ async def get_opportunity_tasks(
     validate_salesforce_id(opportunity_id, "opportunity_id")
     try:
         salesforce = client.salesforce
+        # TaskSubtype filter — drop Email / Call / ListEmail subtypes
+        # that get auto-captured by integrations with Subject = "true".
         query = f"""
         SELECT Id, Subject, Status, Priority, ActivityDate, Description,
                IsClosed, OwnerId, Owner.Name, WhoId, Who.Name, WhatId,
@@ -1833,6 +2320,7 @@ async def get_opportunity_tasks(
                CreatedById, CreatedBy.Name, CreatedDate, LastModifiedDate
         FROM Task
         WHERE WhatId = '{opportunity_id}'
+          AND (TaskSubtype = 'Task' OR TaskSubtype = null)
         ORDER BY ActivityDate DESC NULLS LAST
         """
         if limit is not None:
@@ -1964,6 +2452,7 @@ async def get_account_tasks(
                CreatedById, CreatedBy.Name, CreatedDate, LastModifiedDate
         FROM Task
         WHERE WhatId IN ({whatid_list})
+          AND (TaskSubtype = 'Task' OR TaskSubtype = null)
         ORDER BY ActivityDate DESC NULLS LAST
         """
         if limit is not None:
@@ -2008,32 +2497,35 @@ async def get_account_tasks(
 async def get_user_tasks(
     owner_id: str,
     limit: Optional[int] = Query(None, le=2000),
+    include_closed: bool = Query(False),
     client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user=Depends(require_auth),
 ):
     """Tasks owned by this Salesforce user (Task.OwnerId = owner_id).
 
-    Mirrors the per-account / per-opp / per-contact endpoints' shape so
-    the frontend's TaskListTab consumes it without an adapter. Cached
-    server-side (60s); existing task-mutation invalidations cover the
-    `user-tasks:` prefix.
+    Open-only by default; `include_closed=true` returns completed/cancelled
+    tasks too (used by the homebase "Show done" toggle). Cached server-side
+    (60s) keyed on the include_closed flag so the two variants don't
+    collide.
     """
     validate_salesforce_id(owner_id, "owner_id")
     try:
         salesforce = client.salesforce
 
-        cache_key = f"user-tasks:{owner_id}:{limit or 'all'}"
+        cache_key = f"user-tasks:{owner_id}:{limit or 'all'}:closed={include_closed}"
         cached = cache.get(cache_key)
         if cached is not None:
             return cached
 
+        closed_clause = "" if include_closed else "AND IsClosed = false"
         query = f"""
         SELECT Id, Subject, Status, Priority, ActivityDate, Description,
                IsClosed, OwnerId, Owner.Name, WhoId, Who.Name, WhatId, What.Name,
                Type, TaskSubtype,
                CreatedById, CreatedBy.Name, CreatedDate, LastModifiedDate
         FROM Task
-        WHERE OwnerId = '{owner_id}' AND IsClosed = false
+        WHERE OwnerId = '{owner_id}' {closed_clause}
+          AND (TaskSubtype = 'Task' OR TaskSubtype = null)
         ORDER BY ActivityDate ASC NULLS LAST
         """
         if limit is not None:
@@ -2104,6 +2596,7 @@ async def get_contact_tasks(
                CreatedById, CreatedBy.Name, CreatedDate, LastModifiedDate
         FROM Task
         WHERE WhoId = '{contact_id}'
+          AND (TaskSubtype = 'Task' OR TaskSubtype = null)
         ORDER BY ActivityDate DESC NULLS LAST
         """
         if limit is not None:
@@ -2301,6 +2794,56 @@ async def create_account_task(
         )
     except Exception as e:
         logger.error(f"Error creating account task: {e}")
+        raise HTTPException(status_code=500, detail="Failed to create task")
+
+
+@app.post("/api/salesforce/tasks")
+async def create_task(
+    task_data: TaskCreateRequest,
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
+    user=Depends(check_permission("create_tasks")),
+):
+    """Generic Task creation. Accepts WhoId (Contact/Lead) and/or WhatId
+    (Opportunity/Account/etc.) from the body — both optional, so this
+    can mint a parent-less "My Tasks" entry too. The opp- and account-
+    scoped POSTs above remain for path-driven creation; this endpoint
+    backs ContactExpandPanel's add-task row and the Home / My Tasks page
+    where the user picks the parent via UI rather than route.
+
+    Salesforce ID validation: only the fields actually present in the
+    body are validated. An empty / missing WhoId or WhatId is fine.
+    """
+    try:
+        salesforce = client.salesforce
+        fields = task_data.model_dump(exclude_none=True)
+        if fields.get("WhoId"):
+            validate_salesforce_id(fields["WhoId"], "WhoId")
+        if fields.get("WhatId"):
+            validate_salesforce_id(fields["WhatId"], "WhatId")
+        result = await salesforce.create_record("Task", fields)
+        task_id = result.get("id") or result.get("Id")
+        cache.invalidate_prefix("my-tasks:")
+        cache.invalidate_prefix("opportunity-tasks:")
+        cache.invalidate_prefix("account-tasks:")
+        cache.invalidate_prefix("contact-tasks:")
+        cache.invalidate_prefix("user-tasks:")
+
+        verify = await _verify_and_recover_task_fields(salesforce, task_id, fields)
+        return ApiResponse(
+            success=True,
+            data={
+                "id": task_id,
+                "message": "Task created",
+                "saved_subject": verify["saved"].get("Subject"),
+                "subject_clobbered": "Subject" in verify["clobbered"],
+                "clobbered_fields": list(verify["clobbered"].keys()),
+                "saved_values": verify["saved"],
+            },
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating task: {e}")
         raise HTTPException(status_code=500, detail="Failed to create task")
 
 
@@ -2924,11 +3467,13 @@ async def search_opportunities(
             query = (
                 f"SELECT {fields} FROM Opportunity "
                 f"WHERE (Name LIKE '%{safe_q}%' OR Account.Name LIKE '%{safe_q}%') "
+                f"AND {ISA_EXCLUDE_WHERE} "
                 f"ORDER BY CloseDate DESC LIMIT {limit}"
             )
         else:
             query = (
                 f"SELECT {fields} FROM Opportunity "
+                f"WHERE {ISA_EXCLUDE_WHERE} "
                 f"ORDER BY CloseDate DESC LIMIT {limit}"
             )
 

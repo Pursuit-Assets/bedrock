@@ -77,8 +77,33 @@ async def _ensure_org_user(email: str, name: str, db) -> Optional[Dict[str, Any]
             logger.info(f"Created public.org_users row for {email}")
             return dict(row)
     except Exception as e:
-        logger.debug(f"Could not ensure org_users for {email}: {e}")
+        logger.warning(f"_ensure_org_user failed for {email}: {e}")
     return None
+
+
+async def record_bedrock_login(email: str, name: str, db) -> None:
+    """Provision (if needed) an org_users row + user_config row and stamp
+    user_config.last_login_at = now().
+
+    Called from the Google OAuth callback so every successful login both
+    creates the rows (no longer waiting on a permission check) and refreshes
+    last_login_at — which the Users tab uses to distinguish people who have
+    actually logged into Bedrock from rows created via SF sync only.
+    """
+    try:
+        org = await _ensure_org_user(email, name, db)
+        if not org or not org.get("id"):
+            return
+        org_user_id = org["id"]
+        await db.execute(
+            "INSERT INTO bedrock.user_config (org_user_id, last_login_at) "
+            "VALUES ($1, now()) "
+            "ON CONFLICT (org_user_id) DO UPDATE "
+            "SET last_login_at = now(), updated_at = now()",
+            org_user_id,
+        )
+    except Exception as e:
+        logger.warning(f"record_bedrock_login failed for {email}: {e}")
 
 
 async def get_user_permissions(email: str, db) -> Dict[str, Any]:
@@ -523,15 +548,28 @@ async def delete_profile(profile_id: str, user=Depends(require_admin), db=Depend
 
 
 @router.get("/users")
-async def list_users(user=Depends(require_admin), db=Depends(get_db)):
-    """List all app users with their profiles."""
+async def list_users(
+    include_never_logged_in: bool = False,
+    user=Depends(require_admin),
+    db=Depends(get_db),
+):
+    """List Bedrock users with their permission profiles.
+
+    Default (`include_never_logged_in=false`) returns only users with a
+    non-null `last_login_at` — i.e. people who have actually signed into
+    Bedrock at least once. Pass `?include_never_logged_in=true` to also
+    show rows provisioned via SF sync but never logged in (useful for
+    pre-assigning permissions).
+    """
+    where_clause = "" if include_never_logged_in else "WHERE uc.last_login_at IS NOT NULL "
     rows = await db.fetch(
         "SELECT ou.id, ou.sf_user_id, ou.email, ou.display_name AS name, "
-        "COALESCE(ou.is_active, true) AS is_active, uc.profile_id, "
-        "pp.name AS profile_name "
+        "COALESCE(ou.is_active, true) AS is_active, uc.last_login_at, "
+        "uc.profile_id, pp.name AS profile_name "
         "FROM public.org_users ou "
-        "JOIN bedrock.user_config uc ON uc.org_user_id = ou.id "
+        "LEFT JOIN bedrock.user_config uc ON uc.org_user_id = ou.id "
         "LEFT JOIN bedrock.permission_profile pp ON pp.id = uc.profile_id "
+        f"{where_clause}"
         "ORDER BY ou.display_name, ou.email"
     )
     return {"success": True, "data": [dict(r) for r in rows]}
@@ -546,13 +584,18 @@ class UserUpdate(BaseModel):
 
 @router.put("/users/{user_id}")
 async def update_user(user_id: str, body: UserUpdate, user=Depends(require_admin), db=Depends(get_db)):
-    """Update a user's profile, SF user ID, name, or active status."""
+    """Update a user's profile, SF user ID, name, or active status.
+
+    Uses LEFT JOIN + UPSERT so admins can assign a profile even to a
+    user that has no bedrock.user_config row yet (e.g. provisioned via
+    SF sync but never logged into Bedrock).
+    """
     uid = uuid.UUID(user_id)
     existing = await db.fetchrow(
         "SELECT ou.id, ou.sf_user_id, ou.email, ou.display_name AS name, "
         "COALESCE(ou.is_active, true) AS is_active, uc.profile_id "
         "FROM public.org_users ou "
-        "JOIN bedrock.user_config uc ON uc.org_user_id = ou.id "
+        "LEFT JOIN bedrock.user_config uc ON uc.org_user_id = ou.id "
         "WHERE ou.id = $1", uid
     )
     if not existing:
@@ -560,7 +603,7 @@ async def update_user(user_id: str, body: UserUpdate, user=Depends(require_admin
 
     # Split updates between org_users and user_config
     org_updates = {}
-    config_updates = {}
+    config_profile_id = None
     if body.sf_user_id is not None:
         org_updates["sf_user_id"] = body.sf_user_id
     if body.name is not None:
@@ -568,9 +611,9 @@ async def update_user(user_id: str, body: UserUpdate, user=Depends(require_admin
     if body.is_active is not None:
         org_updates["is_active"] = body.is_active
     if body.profile_id is not None:
-        config_updates["profile_id"] = uuid.UUID(body.profile_id)
+        config_profile_id = uuid.UUID(body.profile_id)
 
-    if not org_updates and not config_updates:
+    if not org_updates and config_profile_id is None:
         return {"success": True, "data": dict(existing)}
 
     if org_updates:
@@ -582,17 +625,22 @@ async def update_user(user_id: str, body: UserUpdate, user=Depends(require_admin
             logger.warning(f"Failed to update org_users for {uid}: {e}")
             raise HTTPException(500, "Failed to update user identity fields")
 
-    if config_updates:
-        sets = ", ".join(f"{k} = ${i+2}" for i, k in enumerate(config_updates))
-        vals = [uid] + list(config_updates.values())
-        await db.execute(f"UPDATE bedrock.user_config SET {sets}, updated_at = now() WHERE org_user_id = $1", *vals)
+    if config_profile_id is not None:
+        # UPSERT — works whether or not the user already has a user_config row.
+        await db.execute(
+            "INSERT INTO bedrock.user_config (org_user_id, profile_id) "
+            "VALUES ($1, $2) "
+            "ON CONFLICT (org_user_id) DO UPDATE "
+            "SET profile_id = EXCLUDED.profile_id, updated_at = now()",
+            uid, config_profile_id,
+        )
 
     row = await db.fetchrow(
         "SELECT ou.id, ou.sf_user_id, ou.email, ou.display_name AS name, "
         "COALESCE(ou.is_active, true) AS is_active, uc.profile_id, "
         "pp.name AS profile_name "
         "FROM public.org_users ou "
-        "JOIN bedrock.user_config uc ON uc.org_user_id = ou.id "
+        "LEFT JOIN bedrock.user_config uc ON uc.org_user_id = ou.id "
         "LEFT JOIN bedrock.permission_profile pp ON pp.id = uc.profile_id "
         "WHERE ou.id = $1", uid
     )

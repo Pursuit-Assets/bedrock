@@ -5,7 +5,7 @@ import os
 import json
 import uuid
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, call
+from unittest.mock import AsyncMock, call, patch
 
 import pytest
 
@@ -249,10 +249,16 @@ class TestCreateProjectTask:
         mock_db.fetchrow = AsyncMock(return_value=MockDBRow(id=TASK_ID))
         owner_a = str(uuid.uuid4())
         owner_b = str(uuid.uuid4())
-        resp = authed_client.post(
-            f"/api/milestones/{MILESTONE_ID}/tasks",
-            json={"title": "Research", "owner_ids": [owner_a, owner_b], "owner": "McKinsey"},
-        )
+        # The route fans out a notification to each new owner via
+        # _notify_task_owners, which fires additional DB reads against
+        # org_users and the milestone hierarchy that we don't want to
+        # mock here. Stub the helper so the INSERT assertions are
+        # isolated. Notification behavior has its own tests.
+        with patch("routes.projects._notify_task_owners", new=AsyncMock()):
+            resp = authed_client.post(
+                f"/api/milestones/{MILESTONE_ID}/tasks",
+                json={"title": "Research", "owner_ids": [owner_a, owner_b], "owner": "McKinsey"},
+            )
         assert resp.status_code == 200
         # INSERT call params: milestone_id, title, status, owner, owner_ids, …
         insert_call = mock_db.fetchrow.call_args_list[0]
@@ -305,6 +311,17 @@ class TestListActiveUsers:
 
 class TestUpdateProjectTask:
     def test_updates_task(self, authed_client, mock_db):
+        # The route now snapshots the pre-update row first so it can
+        # diff owner_ids for the notification fan-out. Return a stub
+        # pre-row; this update only changes status, so the diff yields
+        # no new owners and the notification path is skipped.
+        mock_db.fetchrow = AsyncMock(
+            return_value=MockDBRow(
+                title="Existing task",
+                milestone_id=uuid.UUID(MILESTONE_ID),
+                owner_ids=[],
+            ),
+        )
         mock_db.execute = AsyncMock(return_value="UPDATE 1")
         resp = authed_client.put(
             f"/api/project-tasks/{TASK_ID}",

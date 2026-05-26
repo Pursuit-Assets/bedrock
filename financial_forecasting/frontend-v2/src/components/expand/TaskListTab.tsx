@@ -1,10 +1,14 @@
 import { useMemo, useState } from "react";
-import { Plus } from "lucide-react";
+import { Plus, Search, Trash2, X } from "lucide-react";
 
-import { InlineDate, InlineSelect } from "@/components/ui/InlineEdit";
-import { useUpdateTask } from "@/services/opportunities";
+import { InlineDate, InlineSelect, InlineText } from "@/components/ui/InlineEdit";
+import { SortableHeader } from "@/components/ui/SortableHeader";
+import { sortBy, useSort } from "@/lib/sort";
+import { useDeleteTask, useUpdateTask } from "@/services/opportunities";
 import { cn } from "@/lib/utils";
 import type { SfTask } from "@/types/salesforce";
+
+type TaskSortKey = "subject" | "status" | "due";
 
 const STATUS_OPTIONS = [
   { value: "Not Started", label: "Not Started" },
@@ -38,22 +42,45 @@ function isOverdue(t: SfTask): boolean {
  * shown as a subtitle line under the subject — used by the Account
  * panel for tasks rolled up from child opps.
  */
+/** Payload from the inline new-task row. Subject is required;
+ *  assignee + due date are optional and only sent to the backend
+ *  when set by the user. */
+export interface NewTaskInput {
+  subject: string;
+  ownerId?: string | null;
+  activityDate?: string | null;
+}
+
 export function TaskListTab({
   tasks,
   isLoading,
   emptyMessage = "No open tasks.",
   placeholder = "Add a task — press Enter to create",
   onCreate,
+  ownerOptions,
   contextResolver,
 }: {
   tasks: SfTask[];
   isLoading: boolean;
   emptyMessage?: string;
   placeholder?: string;
-  onCreate?: (subject: string) => Promise<void>;
+  /** Receives the full new-task input. Subject is always present;
+   *  ownerId and activityDate are present only when the user filled
+   *  the corresponding inline control. */
+  onCreate?: (input: NewTaskInput) => Promise<void>;
+  /** Active users to surface in the assignee picker. When omitted,
+   *  the picker is hidden and the row only accepts subject + date. */
+  ownerOptions?: { value: string; label: string }[];
   contextResolver?: (t: SfTask) => string | null;
 }) {
   const updateTask = useUpdateTask();
+  const deleteTask = useDeleteTask();
+  // Tap the overdue counter to filter the list. State is local to the
+  // panel so different parent records (per-account, per-owner) each
+  // keep their own toggle.
+  const [overdueOnly, setOverdueOnly] = useState(false);
+  const [query, setQuery] = useState("");
+  const { sort, toggle } = useSort<TaskSortKey>();
 
   const open = useMemo(
     () => tasks.filter((t) => !isTaskClosed(t)),
@@ -63,11 +90,42 @@ export function TaskListTab({
     () => open.filter(isOverdue).length,
     [open],
   );
+  const visible = useMemo(() => {
+    const base = overdueOnly ? open.filter(isOverdue) : open;
+    const q = query.trim().toLowerCase();
+    const filtered = base.filter((t) => {
+      if (!q) return true;
+      if ((t.Subject ?? "").toLowerCase().includes(q)) return true;
+      if ((t.Status ?? "").toLowerCase().includes(q)) return true;
+      if ((t.WhatName ?? "").toLowerCase().includes(q)) return true;
+      return false;
+    });
+    if (sort.key == null) return filtered;
+    return sortBy(filtered, sort, (t, key) => {
+      switch (key) {
+        case "subject": return t.Subject ?? "";
+        case "status": return t.Status ?? "";
+        case "due": return t.ActivityDate ?? "";
+      }
+    });
+  }, [open, overdueOnly, query, sort]);
 
   const saveStatus = (id: string, status: string) =>
     updateTask.mutateAsync({ id, patch: { Status: status } }).then(() => undefined);
   const saveDate = (id: string, date: string | null) =>
     updateTask.mutateAsync({ id, patch: { ActivityDate: date } }).then(() => undefined);
+  const saveOwner = (id: string, ownerId: string) =>
+    updateTask.mutateAsync({ id, patch: { OwnerId: ownerId } }).then(() => undefined);
+  const saveSubject = (id: string, subject: string) =>
+    updateTask.mutateAsync({ id, patch: { Subject: subject } }).then(() => undefined);
+  const removeTask = (t: SfTask) => {
+    if (t.Id.startsWith("__tmp__")) return; // optimistic row, not yet on the server
+    const confirmed = window.confirm(
+      `Delete task "${t.Subject ?? "(no subject)"}"? This can't be undone.`,
+    );
+    if (!confirmed) return;
+    void deleteTask.mutateAsync(t.Id);
+  };
   const toggleComplete = (t: SfTask) =>
     void updateTask.mutateAsync({
       id: t.Id,
@@ -76,58 +134,99 @@ export function TaskListTab({
 
   return (
     <div className="px-4 py-3">
-      <div className="mb-2 flex items-center justify-between text-[11px] uppercase tracking-wider text-ink-3">
-        <span>{isLoading ? "…" : `${open.length} open`}</span>
-        {overdueCount > 0 ? (
-          <span className="font-semibold text-amber-700">
-            {overdueCount} overdue
-          </span>
-        ) : null}
+      <div className="mb-2 flex items-center justify-between gap-3 text-[11px] uppercase tracking-wider text-ink-3">
+        <span>
+          {isLoading ? "…" : `${visible.length} ${overdueOnly ? "overdue" : "open"}`}
+          {overdueOnly ? (
+            <button
+              type="button"
+              onClick={() => setOverdueOnly(false)}
+              className="ml-1.5 normal-case text-ink-3 underline underline-offset-2 hover:text-ink"
+            >
+              show all open ({open.length})
+            </button>
+          ) : null}
+        </span>
+        <div className="flex items-center gap-3">
+          {overdueCount > 0 ? (
+            <button
+              type="button"
+              onClick={() => setOverdueOnly((v) => !v)}
+              className={cn(
+                "font-semibold text-amber-700 underline-offset-2 hover:underline",
+                overdueOnly && "underline",
+              )}
+              aria-pressed={overdueOnly}
+              title={overdueOnly ? "Show all open tasks" : "Show overdue only"}
+            >
+              {overdueCount} overdue
+            </button>
+          ) : null}
+          {open.length > 0 ? <TaskSearchBox value={query} onChange={setQuery} /> : null}
+        </div>
       </div>
 
       {isLoading ? (
         <div className="text-[12px] text-ink-3">Loading tasks…</div>
-      ) : open.length === 0 ? (
-        <>
-          <div className="rounded border border-dashed border-border-strong px-3 py-4 text-center text-[12px] text-ink-3">
-            {emptyMessage}
-          </div>
-          {onCreate ? (
-            <div className="mt-2 overflow-hidden rounded border border-border-strong bg-surface">
-              <NewTaskRow placeholder={placeholder} onCreate={onCreate} />
-            </div>
-          ) : null}
-        </>
       ) : (
-        <div className="overflow-hidden rounded border border-border-strong bg-surface">
-          <table className="w-full text-[12px]">
+        <div className="inline-block max-w-full overflow-hidden rounded border border-border-strong bg-surface align-top">
+          <table className="table-fixed text-[12px]">
+            <colgroup>
+              <col style={{ width: 36 }} />
+              <col style={{ width: 480 }} />
+              <col style={{ width: 150 }} />
+              <col style={{ width: 150 }} />
+              <col style={{ width: 120 }} />
+              <col style={{ width: 42 }} />
+            </colgroup>
             <thead className="bg-surface-2 text-[10.5px] uppercase tracking-wider text-ink-3">
               <tr>
-                <th className="w-[28px] px-3 py-1.5"></th>
-                <th className="px-3 py-1.5 text-left font-semibold">Subject</th>
-                <th className="w-[130px] px-3 py-1.5 text-left font-semibold">
-                  Status
+                <th className="px-2 py-1.5"></th>
+                <th className="px-2 py-1.5 text-left font-semibold">
+                  <SortableHeader label="Subject" sortKey="subject" sort={sort} onToggle={toggle} />
                 </th>
-                <th className="w-[110px] px-3 py-1.5 text-right font-semibold">
-                  Due
+                <th className="px-2 py-1.5 text-left font-semibold">
+                  <SortableHeader label="Status" sortKey="status" sort={sort} onToggle={toggle} />
                 </th>
+                <th className="px-2 py-1.5 text-left font-semibold">
+                  Owner
+                </th>
+                <th className="px-2 py-1.5 text-right font-semibold">
+                  <SortableHeader label="Due" sortKey="due" sort={sort} onToggle={toggle} align="right" />
+                </th>
+                <th className="px-2 py-1.5"></th>
               </tr>
             </thead>
             <tbody>
-              {open.map((t) => (
-                <TaskRow
-                  key={t.Id}
-                  t={t}
-                  contextLabel={contextResolver?.(t) ?? null}
-                  onToggleComplete={() => toggleComplete(t)}
-                  onSaveStatus={(s) => saveStatus(t.Id, s)}
-                  onSaveDate={(d) => saveDate(t.Id, d)}
-                />
-              ))}
+              {visible.length === 0 ? (
+                <tr>
+                  <td
+                    colSpan={6}
+                    className="px-4 py-5 text-center text-[12px] italic text-ink-3"
+                  >
+                    {overdueOnly ? "No overdue tasks." : emptyMessage}
+                  </td>
+                </tr>
+              ) : (
+                visible.map((t) => (
+                  <TaskRow
+                    key={t.Id}
+                    t={t}
+                    ownerOptions={ownerOptions ?? []}
+                    contextLabel={contextResolver?.(t) ?? null}
+                    onToggleComplete={() => toggleComplete(t)}
+                    onSaveSubject={(s) => saveSubject(t.Id, s)}
+                    onSaveStatus={(s) => saveStatus(t.Id, s)}
+                    onSaveDate={(d) => saveDate(t.Id, d)}
+                    onSaveOwner={(o) => saveOwner(t.Id, o)}
+                    onDelete={() => removeTask(t)}
+                  />
+                ))
+              )}
             </tbody>
           </table>
-          {onCreate ? (
-            <NewTaskRow placeholder={placeholder} onCreate={onCreate} />
+          {onCreate && !overdueOnly ? (
+            <NewTaskRow placeholder={placeholder} onCreate={onCreate} ownerOptions={ownerOptions} />
           ) : null}
         </div>
       )}
@@ -137,27 +236,36 @@ export function TaskListTab({
 
 function TaskRow({
   t,
+  ownerOptions,
   contextLabel,
   onToggleComplete,
+  onSaveSubject,
   onSaveStatus,
   onSaveDate,
+  onSaveOwner,
+  onDelete,
 }: {
   t: SfTask;
+  ownerOptions: { value: string; label: string }[];
   contextLabel: string | null;
   onToggleComplete: () => void;
+  onSaveSubject: (next: string) => Promise<void>;
   onSaveStatus: (next: string) => Promise<void>;
   onSaveDate: (next: string | null) => Promise<void>;
+  onSaveOwner: (next: string) => Promise<void>;
+  onDelete: () => void;
 }) {
   const closed = isTaskClosed(t);
   const overdue = isOverdue(t);
+  const isOptimistic = t.Id.startsWith("__tmp__");
   return (
     <tr
       className={cn(
-        "border-t border-border-strong",
+        "group border-t border-border-strong",
         closed && "text-ink-3",
       )}
     >
-      <td className="px-3 py-1.5 align-middle">
+      <td className="px-2 py-1.5 align-middle">
         <input
           type="checkbox"
           checked={closed}
@@ -166,16 +274,13 @@ function TaskRow({
           aria-label={closed ? "Reopen task" : "Mark complete"}
         />
       </td>
-      <td className="px-3 py-1.5 align-middle">
-        <span
-          className={cn(
-            "block truncate text-[12.5px]",
-            closed && "line-through",
-          )}
-          title={t.Subject ?? ""}
-        >
-          {t.Subject ?? "(no subject)"}
-        </span>
+      <td className="px-2 py-1.5 align-middle">
+        <InlineText
+          value={t.Subject ?? ""}
+          onSave={onSaveSubject}
+          placeholder="(no subject)"
+          className={cn("text-[12.5px]", closed && "line-through")}
+        />
         {contextLabel ? (
           <span
             className="block truncate text-[10.5px] text-ink-3"
@@ -185,16 +290,34 @@ function TaskRow({
           </span>
         ) : null}
       </td>
-      <td className="px-3 py-1.5 align-middle">
+      <td className="px-2 py-1.5 align-middle">
         <InlineSelect
           value={t.Status ?? null}
           options={STATUS_OPTIONS}
           onSave={onSaveStatus}
         />
       </td>
+      <td className="px-2 py-1.5 align-middle">
+        {ownerOptions.length > 0 ? (
+          <InlineSelect
+            value={t.OwnerId ?? null}
+            options={ownerOptions}
+            onSave={onSaveOwner}
+            renderValue={() => (
+              <span className="block truncate text-[12px] text-ink-2" title={t.OwnerName ?? undefined}>
+                {t.OwnerName ?? ownerOptions.find((o) => o.value === t.OwnerId)?.label ?? "—"}
+              </span>
+            )}
+          />
+        ) : (
+          <span className="block truncate text-[12px] text-ink-3" title={t.OwnerName ?? undefined}>
+            {t.OwnerName ?? "—"}
+          </span>
+        )}
+      </td>
       <td
         className={cn(
-          "px-3 py-1.5 align-middle text-right",
+          "px-2 py-1.5 align-middle text-right",
           overdue && "text-red",
         )}
       >
@@ -205,6 +328,18 @@ function TaskRow({
           placeholder="—"
         />
       </td>
+      <td className="px-1 py-1.5 align-middle text-right">
+        <button
+          type="button"
+          onClick={onDelete}
+          disabled={isOptimistic}
+          aria-label="Delete task"
+          title={isOptimistic ? "Saving…" : "Delete task"}
+          className="opacity-0 transition-opacity group-hover:opacity-100 focus:opacity-100 disabled:cursor-not-allowed disabled:opacity-0"
+        >
+          <Trash2 size={13} className="text-ink-3 hover:text-red" />
+        </button>
+      </td>
     </tr>
   );
 }
@@ -212,27 +347,36 @@ function TaskRow({
 function NewTaskRow({
   onCreate,
   placeholder,
+  ownerOptions,
 }: {
-  onCreate: (subject: string) => Promise<void>;
+  onCreate: (input: NewTaskInput) => Promise<void>;
   placeholder: string;
+  ownerOptions?: { value: string; label: string }[];
 }) {
   const [subject, setSubject] = useState("");
-  const [busy, setBusy] = useState(false);
+  const [ownerId, setOwnerId] = useState("");
+  const [dueDate, setDueDate] = useState("");
 
-  const submit = async () => {
+  // Reset the row the instant Enter is pressed so the user can keep
+  // typing more tasks without waiting for the server. The mutation
+  // runs in the background; React Query's optimistic insert on
+  // useCreateTask makes the new row appear in the list immediately.
+  const submit = () => {
     const trimmed = subject.trim();
-    if (!trimmed || busy) return;
-    setBusy(true);
-    try {
-      await onCreate(trimmed);
-      setSubject("");
-    } finally {
-      setBusy(false);
-    }
+    if (!trimmed) return;
+    const payload = {
+      subject: trimmed,
+      ownerId: ownerId || null,
+      activityDate: dueDate || null,
+    };
+    setSubject("");
+    setOwnerId("");
+    setDueDate("");
+    void onCreate(payload);
   };
 
   return (
-    <div className="flex items-center gap-2 border-t border-border-strong bg-surface-2/40 px-4 py-1.5">
+    <div className="flex flex-wrap items-center gap-2 border-t border-border-strong bg-surface-2/40 px-4 py-1.5">
       <Plus size={13} className="flex-shrink-0 text-ink-3" />
       <input
         value={subject}
@@ -244,17 +388,62 @@ function NewTaskRow({
           }
         }}
         placeholder={placeholder}
-        disabled={busy}
-        className="min-w-0 flex-1 border-0 bg-transparent text-[12.5px] text-ink outline-none placeholder:text-ink-4 disabled:opacity-50"
+        className="min-w-[180px] flex-1 border-0 bg-transparent text-[12.5px] text-ink outline-none placeholder:text-ink-4"
+      />
+      {ownerOptions && ownerOptions.length > 0 ? (
+        <select
+          value={ownerId}
+          onChange={(e) => setOwnerId(e.target.value)}
+          title="Assignee"
+          className="h-6 max-w-[140px] flex-shrink-0 rounded border border-border-strong bg-surface px-1.5 text-[11.5px] text-ink outline-none focus:border-accent"
+        >
+          <option value="">Assignee…</option>
+          {ownerOptions.map((o) => (
+            <option key={o.value} value={o.value}>{o.label}</option>
+          ))}
+        </select>
+      ) : null}
+      <input
+        type="date"
+        value={dueDate}
+        onChange={(e) => setDueDate(e.target.value)}
+        title="Due date"
+        className="h-6 flex-shrink-0 rounded border border-border-strong bg-surface px-1.5 text-[11.5px] text-ink outline-none focus:border-accent"
       />
       {subject.trim() ? (
         <button
           type="button"
           onClick={submit}
-          disabled={busy}
-          className="rounded border border-ink bg-ink px-2 py-0.5 text-[11px] font-medium text-surface hover:opacity-90 disabled:opacity-50"
+          className="rounded border border-ink bg-ink px-2 py-0.5 text-[11px] font-medium text-surface hover:opacity-90"
         >
           Create
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+function TaskSearchBox({ value, onChange }: { value: string; onChange: (s: string) => void }) {
+  return (
+    <div className="relative">
+      <Search
+        size={11}
+        className="pointer-events-none absolute left-1.5 top-1/2 -translate-y-1/2 text-ink-4"
+      />
+      <input
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder="Filter tasks…"
+        className="h-6 w-[160px] rounded border border-border-strong bg-surface pl-5 pr-5 text-[11.5px] normal-case outline-none focus:border-accent"
+      />
+      {value ? (
+        <button
+          type="button"
+          onClick={() => onChange("")}
+          className="absolute right-1 top-1/2 -translate-y-1/2 text-ink-4 hover:text-ink-2"
+          aria-label="Clear"
+        >
+          <X size={11} />
         </button>
       ) : null}
     </div>

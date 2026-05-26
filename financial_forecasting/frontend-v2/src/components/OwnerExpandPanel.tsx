@@ -1,20 +1,41 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
+import { Check, Search, X } from "lucide-react";
 
 import { ActivityTab } from "@/components/expand/ActivityTab";
 import { TaskListTab } from "@/components/expand/TaskListTab";
 import { RowExpandPanel, ROW_EXPAND_HEIGHT } from "@/components/RowExpandPanel";
+import { SortableHeader } from "@/components/ui/SortableHeader";
 import { StageChip } from "@/components/ui/StageChip";
 import { Tag } from "@/components/ui/Tag";
+import { accountStatusVariant } from "@/lib/accountStatus";
 import { fmtDate, fmtMoney } from "@/lib/format";
+import { sortBy, useSort } from "@/lib/sort";
 import { isOpen, isWon, stageStatus } from "@/lib/stages";
-import { STAGE_IDX } from "@/lib/funnelStages";
 import { useAccounts } from "@/services/accounts";
 import { useAwards, type AwardStatus } from "@/services/awards";
 import {
   useOpportunities,
   useUserTasks,
 } from "@/services/opportunities";
+import type { AccountStatus, SfOpportunity } from "@/types/salesforce";
+
+// Record-type families surfaced as checkmarks on the Accounts tab so RMs
+// can see at a glance which types of business they've already won with a
+// given account. The canonical four mirror the cashflow bucket filter.
+const RECORD_TYPE_BUCKETS = ["Philanthropy", "PBC", "Capital Grants", "Other"] as const;
+type RecordTypeBucket = typeof RECORD_TYPE_BUCKETS[number];
+
+/** Map an opp's RecordType.Name + Philanthropy_Type__c into one of the
+ *  four buckets we show as checkmarks. Falls back to "Other". */
+function recordTypeBucket(o: SfOpportunity): RecordTypeBucket {
+  const rt = o.RecordType?.Name ?? "";
+  const phType = o.Philanthropy_Type__c ?? "";
+  if (phType === "Capital Grant") return "Capital Grants";
+  if (rt === "Philanthropy") return "Philanthropy";
+  if (rt === "PBC") return "PBC";
+  return "Other";
+}
 export const OWNER_PANEL_HEIGHT = ROW_EXPAND_HEIGHT;
 
 /**
@@ -82,44 +103,82 @@ function OwnerTasks({ ownerId }: { ownerId: string }) {
 
 // ── Accounts ─────────────────────────────────────────────────────────────
 
+type AccountSortKey = "name" | "open" | "won";
+
 function OwnerAccounts({ ownerId }: { ownerId: string }) {
   const { data: accounts = [], isLoading } = useAccounts();
   const { data: opps = [] } = useOpportunities();
+  const [query, setQuery] = useState("");
+  const { sort, toggle } = useSort<AccountSortKey>();
 
-  const rows = useMemo(() => {
+  type AccountRow = {
+    id: string;
+    name: string;
+    status: AccountStatus | null;
+    open: number;
+    won: number;
+    /** Record-type buckets the account has at least one won opp in. */
+    types: Set<RecordTypeBucket>;
+  };
+
+  const rows = useMemo<AccountRow[]>(() => {
     const owned = accounts.filter((a) => a.OwnerId === ownerId);
-    // Compute open pipeline + amount won per account so this table has
-    // the same shape as the Accounts page totals.
     const accountIds = new Set(owned.map((a) => a.Id));
-    const totals = new Map<string, { open: number; won: number }>();
+    const totals = new Map<string, { open: number; won: number; types: Set<RecordTypeBucket> }>();
     for (const o of opps) {
       if (!o.AccountId || !accountIds.has(o.AccountId)) continue;
-      const cur = totals.get(o.AccountId) ?? { open: 0, won: 0 };
-      if (isOpen(o)) cur.open += o.Amount ?? 0;
-      else if (isWon(o)) cur.won += o.Amount ?? 0;
+      const cur = totals.get(o.AccountId) ?? { open: 0, won: 0, types: new Set<RecordTypeBucket>() };
+      const amt = o.Amount ?? 0;
+      if (isOpen(o)) cur.open += amt;
+      else if (isWon(o)) {
+        cur.won += amt;
+        cur.types.add(recordTypeBucket(o));
+      }
       totals.set(o.AccountId, cur);
     }
-    return owned.map((a) => ({
-      id: a.Id,
-      name: a.Name,
-      type: a.Type ?? null,
-      open: totals.get(a.Id)?.open ?? 0,
-      won: totals.get(a.Id)?.won ?? 0,
-    })).sort((x, y) => y.open - x.open);
+    return owned.map((a) => {
+      const t = totals.get(a.Id);
+      return {
+        id: a.Id,
+        name: a.Name,
+        status: a.account_status ?? null,
+        open: t?.open ?? 0,
+        won: t?.won ?? 0,
+        types: t?.types ?? new Set<RecordTypeBucket>(),
+      };
+    });
   }, [accounts, opps, ownerId]);
+
+  const visible = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const filtered = rows.filter((r) =>
+      !q || r.name.toLowerCase().includes(q),
+    );
+    if (sort.key == null) return filtered.slice().sort((a, b) => b.open - a.open);
+    return sortBy(filtered, sort, (r, key) => {
+      switch (key) {
+        case "name": return r.name;
+        case "open": return r.open;
+        case "won": return r.won;
+      }
+    });
+  }, [rows, query, sort]);
 
   const totalOpen = rows.reduce((s, r) => s + r.open, 0);
   const totalWon = rows.reduce((s, r) => s + r.won, 0);
 
   return (
     <div className="px-4 py-3">
-      <div className="mb-2 flex items-center justify-between text-[11px] uppercase tracking-wider text-ink-3">
-        <span>{isLoading ? "…" : `${rows.length} account${rows.length === 1 ? "" : "s"}`}</span>
-        {rows.length > 0 ? (
-          <span className="mono">
-            {fmtMoney(totalOpen)} open · {fmtMoney(totalWon)} won
-          </span>
-        ) : null}
+      <div className="mb-2 flex items-center justify-between gap-3 text-[11px] uppercase tracking-wider text-ink-3">
+        <span>{isLoading ? "…" : `${visible.length}${visible.length !== rows.length ? ` of ${rows.length}` : ""} account${rows.length === 1 ? "" : "s"}`}</span>
+        <div className="flex items-center gap-3">
+          {rows.length > 0 ? (
+            <span className="mono normal-case">
+              {fmtMoney(totalOpen)} open · {fmtMoney(totalWon)} won
+            </span>
+          ) : null}
+          {rows.length > 0 ? <SearchBox value={query} onChange={setQuery} placeholder="Filter accounts…" /> : null}
+        </div>
       </div>
 
       {isLoading ? (
@@ -128,19 +187,48 @@ function OwnerAccounts({ ownerId }: { ownerId: string }) {
         <div className="rounded border border-dashed border-border-strong px-3 py-4 text-center text-[12px] text-ink-3">
           No accounts owned by this user.
         </div>
+      ) : visible.length === 0 ? (
+        <div className="rounded border border-dashed border-border-strong px-3 py-4 text-center text-[12px] text-ink-3">
+          No accounts match.
+        </div>
       ) : (
         <div className="overflow-hidden rounded border border-border-strong bg-surface">
           <table className="w-full text-[12px]">
             <thead className="bg-surface-2 text-[10.5px] uppercase tracking-wider text-ink-3">
               <tr>
-                <th className="px-3 py-1.5 text-left font-semibold">Name</th>
-                <th className="px-3 py-1.5 text-left font-semibold">Type</th>
-                <th className="px-3 py-1.5 text-right font-semibold">Open pipeline</th>
-                <th className="px-3 py-1.5 text-right font-semibold">Amount won</th>
+                <th className="px-3 py-1.5 text-left font-semibold">
+                  <SortableHeader label="Name" sortKey="name" sort={sort} onToggle={toggle} />
+                </th>
+                <th className="px-3 py-1.5 text-left font-semibold">
+                  Status
+                </th>
+                <th className="px-3 py-1.5 text-center font-semibold" colSpan={RECORD_TYPE_BUCKETS.length}>
+                  History
+                </th>
+                <th className="px-3 py-1.5 text-right font-semibold">
+                  <SortableHeader label="Open pipeline" sortKey="open" sort={sort} onToggle={toggle} align="right" />
+                </th>
+                <th className="px-3 py-1.5 text-right font-semibold">
+                  <SortableHeader label="Lifetime won" sortKey="won" sort={sort} onToggle={toggle} align="right" />
+                </th>
+              </tr>
+              <tr>
+                <th></th>
+                <th></th>
+                {RECORD_TYPE_BUCKETS.map((b) => (
+                  <th
+                    key={b}
+                    className="px-1 pb-1 text-center text-[9.5px] font-medium normal-case text-ink-4"
+                    title={b}
+                  >
+                    {b === "Capital Grants" ? "Cap." : b === "Philanthropy" ? "Phil." : b}
+                  </th>
+                ))}
+                <th colSpan={2}></th>
               </tr>
             </thead>
             <tbody>
-              {rows.map((r) => (
+              {visible.map((r) => (
                 <tr key={r.id} className="border-t border-border-strong">
                   <td className="px-3 py-1.5">
                     <Link
@@ -151,9 +239,22 @@ function OwnerAccounts({ ownerId }: { ownerId: string }) {
                       {r.name}
                     </Link>
                   </td>
-                  <td className="px-3 py-1.5 text-ink-2">
-                    {r.type ?? <span className="text-ink-4">—</span>}
+                  <td className="px-3 py-1.5">
+                    {r.status ? (
+                      <Tag variant={accountStatusVariant(r.status)}>{r.status}</Tag>
+                    ) : (
+                      <span className="text-ink-4">—</span>
+                    )}
                   </td>
+                  {RECORD_TYPE_BUCKETS.map((b) => (
+                    <td key={b} className="px-1 py-1.5 text-center">
+                      {r.types.has(b) ? (
+                        <Check size={12} className="inline text-green" aria-label={`Won ${b}`} />
+                      ) : (
+                        <span className="text-ink-4">·</span>
+                      )}
+                    </td>
+                  ))}
                   <td className="mono px-3 py-1.5 text-right font-medium tabular-nums">
                     {r.open > 0 ? fmtMoney(r.open) : "—"}
                   </td>
@@ -170,77 +271,166 @@ function OwnerAccounts({ ownerId }: { ownerId: string }) {
   );
 }
 
+function SearchBox({ value, onChange, placeholder }: { value: string; onChange: (s: string) => void; placeholder: string }) {
+  return (
+    <div className="relative">
+      <Search
+        size={11}
+        className="pointer-events-none absolute left-1.5 top-1/2 -translate-y-1/2 text-ink-4"
+      />
+      <input
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        className="h-6 w-[160px] rounded border border-border-strong bg-surface pl-5 pr-5 text-[11.5px] normal-case outline-none focus:border-accent"
+      />
+      {value ? (
+        <button
+          type="button"
+          onClick={() => onChange("")}
+          className="absolute right-1 top-1/2 -translate-y-1/2 text-ink-4 hover:text-ink-2"
+          aria-label="Clear"
+        >
+          <X size={11} />
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
 // ── Opportunities ────────────────────────────────────────────────────────
+
+type OppSortKey = "name" | "stage" | "close" | "amount";
 
 function OwnerOpps({ ownerId }: { ownerId: string }) {
   const { data: opps = [], isLoading } = useOpportunities();
-  const owned = useMemo(
+  const [query, setQuery] = useState("");
+  // Default: open opps only. Toggle expands to include closed (any age).
+  const [showClosed, setShowClosed] = useState(false);
+  const { sort, toggle } = useSort<OppSortKey>();
+
+  const ownedAll = useMemo(
     () => opps.filter((o) => o.OwnerId === ownerId),
     [opps, ownerId],
   );
+  const ownedOpen = useMemo(() => ownedAll.filter(isOpen), [ownedAll]);
+  const scope = showClosed ? ownedAll : ownedOpen;
+  const hiddenClosed = ownedAll.length - ownedOpen.length;
 
   const totals = useMemo(() => {
     let open = 0;
     let won = 0;
-    for (const o of owned) {
+    for (const o of ownedAll) {
       const amt = o.Amount ?? 0;
       if (isOpen(o)) open += amt;
       else if (isWon(o)) won += amt;
     }
     return { open, won };
-  }, [owned]);
+  }, [ownedAll]);
 
-  // Later funnel stages first (most advanced = most actionable), then by
-  // close date ascending within each stage.
-  const sorted = useMemo(
-    () =>
-      owned.slice().sort((a, b) => {
+  // Default order: soonest close date first; opps with no close date
+  // sink to the bottom. Once the user clicks a column header, that
+  // sort takes over.
+  const visible = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const filtered = scope.filter((o) => {
+      if (!q) return true;
+      if (o.Name?.toLowerCase().includes(q)) return true;
+      if (o.Account?.Name?.toLowerCase().includes(q)) return true;
+      if (o.StageName?.toLowerCase().includes(q)) return true;
+      return false;
+    });
+    if (sort.key == null) {
+      return filtered.slice().sort((a, b) => {
+        // Within scope, open at the top (sorted by close date asc),
+        // then closed (sorted by close date desc — most recent first).
         const aOpen = isOpen(a) ? 0 : 1;
         const bOpen = isOpen(b) ? 0 : 1;
         if (aOpen !== bOpen) return aOpen - bOpen;
-        // Within open opps: later stage first (higher STAGE_IDX = further along)
-        const aIdx = STAGE_IDX.get(a.StageName ?? "") ?? -1;
-        const bIdx = STAGE_IDX.get(b.StageName ?? "") ?? -1;
-        if (aIdx !== bIdx) return bIdx - aIdx;
-        const aDate = a.CloseDate ? new Date(a.CloseDate).getTime() : 0;
-        const bDate = b.CloseDate ? new Date(b.CloseDate).getTime() : 0;
-        return aDate - bDate;
-      }),
-    [owned],
-  );
+        if (!a.CloseDate) return 1;
+        if (!b.CloseDate) return -1;
+        if (aOpen === 0) return a.CloseDate.localeCompare(b.CloseDate); // open: ASC
+        return b.CloseDate.localeCompare(a.CloseDate); // closed: DESC
+      });
+    }
+    return sortBy(filtered, sort, (o, key) => {
+      switch (key) {
+        case "name": return o.Name ?? "";
+        case "stage": return o.StageName ?? "";
+        case "close": return o.CloseDate ?? "";
+        case "amount": return o.Amount ?? 0;
+      }
+    });
+  }, [scope, query, sort]);
 
   return (
     <div className="px-4 py-3">
-      <div className="mb-2 flex items-center justify-between text-[11px] uppercase tracking-wider text-ink-3">
+      <div className="mb-2 flex items-center justify-between gap-3 text-[11px] uppercase tracking-wider text-ink-3">
         <span>
-          {isLoading ? "…" : owned.length} opportunit{owned.length === 1 ? "y" : "ies"}
+          {isLoading
+            ? "…"
+            : `${visible.length}${visible.length !== scope.length ? ` of ${scope.length}` : ""} ${showClosed ? "" : "open "}opportunit${scope.length === 1 ? "y" : "ies"}`}
+          {!showClosed && hiddenClosed > 0 ? (
+            <button
+              type="button"
+              onClick={() => setShowClosed(true)}
+              className="ml-1.5 normal-case text-ink-3 underline underline-offset-2 hover:text-ink"
+            >
+              +{hiddenClosed} closed
+            </button>
+          ) : showClosed && hiddenClosed > 0 ? (
+            <button
+              type="button"
+              onClick={() => setShowClosed(false)}
+              className="ml-1.5 normal-case text-ink-3 underline underline-offset-2 hover:text-ink"
+            >
+              open only
+            </button>
+          ) : null}
         </span>
-        {owned.length > 0 ? (
-          <span className="mono">
-            {fmtMoney(totals.open)} open · {fmtMoney(totals.won)} won
-          </span>
-        ) : null}
+        <div className="flex items-center gap-3">
+          {ownedAll.length > 0 ? (
+            <span className="mono normal-case">
+              {fmtMoney(totals.open)} open · {fmtMoney(totals.won)} won
+            </span>
+          ) : null}
+          {ownedAll.length > 0 ? <SearchBox value={query} onChange={setQuery} placeholder="Filter opps…" /> : null}
+        </div>
       </div>
 
       {isLoading ? (
         <div className="text-[12px] text-ink-3">Loading…</div>
-      ) : owned.length === 0 ? (
+      ) : scope.length === 0 ? (
         <div className="rounded border border-dashed border-border-strong px-3 py-4 text-center text-[12px] text-ink-3">
-          No opportunities owned by this user.
+          {showClosed
+            ? "No opportunities owned by this user."
+            : "No open opportunities owned by this user."}
+        </div>
+      ) : visible.length === 0 ? (
+        <div className="rounded border border-dashed border-border-strong px-3 py-4 text-center text-[12px] text-ink-3">
+          No opportunities match.
         </div>
       ) : (
         <div className="overflow-hidden rounded border border-border-strong bg-surface">
           <table className="w-full text-[12px]">
             <thead className="bg-surface-2 text-[10.5px] uppercase tracking-wider text-ink-3">
               <tr>
-                <th className="px-3 py-1.5 text-left font-semibold">Name</th>
-                <th className="px-3 py-1.5 text-left font-semibold">Stage</th>
-                <th className="px-3 py-1.5 text-left font-semibold">Close</th>
-                <th className="px-3 py-1.5 text-right font-semibold">Amount</th>
+                <th className="px-3 py-1.5 text-left font-semibold">
+                  <SortableHeader label="Name" sortKey="name" sort={sort} onToggle={toggle} />
+                </th>
+                <th className="px-3 py-1.5 text-left font-semibold">
+                  <SortableHeader label="Stage" sortKey="stage" sort={sort} onToggle={toggle} />
+                </th>
+                <th className="px-3 py-1.5 text-left font-semibold">
+                  <SortableHeader label="Close" sortKey="close" sort={sort} onToggle={toggle} />
+                </th>
+                <th className="px-3 py-1.5 text-right font-semibold">
+                  <SortableHeader label="Amount" sortKey="amount" sort={sort} onToggle={toggle} align="right" />
+                </th>
               </tr>
             </thead>
             <tbody>
-              {sorted.map((o) => (
+              {visible.map((o) => (
                 <tr key={o.Id} className="border-t border-border-strong">
                   <td className="px-3 py-1.5">
                     <Link
@@ -291,10 +481,14 @@ const AWARD_STATUS_ORDER: Record<AwardStatus, number> = {
   "Did Not Fulfill": 3,
 };
 
+type AwardSortKey = "name" | "status" | "awarded" | "total" | "collected" | "pending";
+
 function OwnerAwards({ ownerId }: { ownerId: string }) {
   const { data: opps = [] } = useOpportunities();
   const { data: awards = [], isLoading } = useAwards();
   const [showAll, setShowAll] = useState(false);
+  const [query, setQuery] = useState("");
+  const { sort, toggle } = useSort<AwardSortKey>();
 
   const rows = useMemo(() => {
     const ownedOppIds = new Set(
@@ -315,28 +509,52 @@ function OwnerAwards({ ownerId }: { ownerId: string }) {
     () => rows.filter((r) => r.award.award_status === "Active"),
     [rows],
   );
-  const displayed = showAll ? rows : activeRows;
+  const scope = showAll ? rows : activeRows;
   const hiddenCount = rows.length - activeRows.length;
+
+  const displayed = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const filtered = scope.filter(({ award, opp }) => {
+      if (!q) return true;
+      if (opp?.Name?.toLowerCase().includes(q)) return true;
+      if (opp?.Account?.Name?.toLowerCase().includes(q)) return true;
+      if (award.award_status.toLowerCase().includes(q)) return true;
+      return false;
+    });
+    if (sort.key == null) return filtered;
+    return sortBy(filtered, sort, ({ award, opp }, key) => {
+      const total = opp?.Amount ?? 0;
+      const collected = opp?.npe01__Payments_Made__c ?? 0;
+      switch (key) {
+        case "name": return opp?.Name ?? award.opportunity_id;
+        case "status": return award.award_status;
+        case "awarded": return award.award_date ?? "";
+        case "total": return total;
+        case "collected": return collected;
+        case "pending": return Math.max(0, total - collected);
+      }
+    });
+  }, [scope, query, sort]);
 
   const totals = useMemo(() => {
     let total = 0;
-    let paid = 0;
+    let collected = 0;
     for (const { opp } of rows) {
       total += opp?.Amount ?? 0;
-      paid += opp?.npe01__Payments_Made__c ?? 0;
+      collected += opp?.npe01__Payments_Made__c ?? 0;
     }
-    return { total, paid };
+    return { total, collected, pending: Math.max(0, total - collected) };
   }, [rows]);
 
   return (
     <div className="px-4 py-3">
-      <div className="mb-2 flex items-center justify-between text-[11px] uppercase tracking-wider text-ink-3">
+      <div className="mb-2 flex items-center justify-between gap-3 text-[11px] uppercase tracking-wider text-ink-3">
         <span>
           {isLoading
             ? "…"
             : showAll
-              ? `${rows.length} award${rows.length === 1 ? "" : "s"}`
-              : `${activeRows.length} active award${activeRows.length === 1 ? "" : "s"}`}
+              ? `${displayed.length}${displayed.length !== rows.length ? ` of ${rows.length}` : ""} award${rows.length === 1 ? "" : "s"}`
+              : `${displayed.length}${displayed.length !== activeRows.length ? ` of ${activeRows.length}` : ""} active award${activeRows.length === 1 ? "" : "s"}`}
           {!showAll && hiddenCount > 0 ? (
             <button
               type="button"
@@ -355,11 +573,14 @@ function OwnerAwards({ ownerId }: { ownerId: string }) {
             </button>
           ) : null}
         </span>
-        {rows.length > 0 ? (
-          <span className="mono">
-            {fmtMoney(totals.total)} total · {fmtMoney(totals.paid)} paid
-          </span>
-        ) : null}
+        <div className="flex items-center gap-3">
+          {rows.length > 0 ? (
+            <span className="mono normal-case">
+              {fmtMoney(totals.total)} total · {fmtMoney(totals.collected)} collected · {fmtMoney(totals.pending)} pending
+            </span>
+          ) : null}
+          {rows.length > 0 ? <SearchBox value={query} onChange={setQuery} placeholder="Filter awards…" /> : null}
+        </div>
       </div>
 
       {isLoading ? (
@@ -373,14 +594,32 @@ function OwnerAwards({ ownerId }: { ownerId: string }) {
           <table className="w-full text-[12px]">
             <thead className="bg-surface-2 text-[10.5px] uppercase tracking-wider text-ink-3">
               <tr>
-                <th className="px-3 py-1.5 text-left font-semibold">Name</th>
-                <th className="px-3 py-1.5 text-left font-semibold">Status</th>
-                <th className="px-3 py-1.5 text-left font-semibold">Awarded</th>
-                <th className="px-3 py-1.5 text-right font-semibold">Total</th>
+                <th className="px-3 py-1.5 text-left font-semibold">
+                  <SortableHeader label="Name" sortKey="name" sort={sort} onToggle={toggle} />
+                </th>
+                <th className="px-3 py-1.5 text-left font-semibold">
+                  <SortableHeader label="Status" sortKey="status" sort={sort} onToggle={toggle} />
+                </th>
+                <th className="px-3 py-1.5 text-left font-semibold">
+                  <SortableHeader label="Awarded" sortKey="awarded" sort={sort} onToggle={toggle} />
+                </th>
+                <th className="px-3 py-1.5 text-right font-semibold">
+                  <SortableHeader label="Total" sortKey="total" sort={sort} onToggle={toggle} align="right" />
+                </th>
+                <th className="px-3 py-1.5 text-right font-semibold">
+                  <SortableHeader label="Collected" sortKey="collected" sort={sort} onToggle={toggle} align="right" />
+                </th>
+                <th className="px-3 py-1.5 text-right font-semibold">
+                  <SortableHeader label="Pending" sortKey="pending" sort={sort} onToggle={toggle} align="right" />
+                </th>
               </tr>
             </thead>
             <tbody>
-              {displayed.map(({ award, opp }) => (
+              {displayed.map(({ award, opp }) => {
+                const total = opp?.Amount ?? 0;
+                const collected = opp?.npe01__Payments_Made__c ?? 0;
+                const pending = Math.max(0, total - collected);
+                return (
                 <tr key={award.id} className="border-t border-border-strong">
                   <td className="px-3 py-1.5">
                     <Link
@@ -400,10 +639,17 @@ function OwnerAwards({ ownerId }: { ownerId: string }) {
                     {fmtDate(award.award_date)}
                   </td>
                   <td className="mono px-3 py-1.5 text-right font-medium tabular-nums">
-                    {opp?.Amount ? fmtMoney(opp.Amount) : "—"}
+                    {total > 0 ? fmtMoney(total) : "—"}
+                  </td>
+                  <td className="mono px-3 py-1.5 text-right tabular-nums text-green">
+                    {collected > 0 ? fmtMoney(collected) : "—"}
+                  </td>
+                  <td className="mono px-3 py-1.5 text-right tabular-nums text-ink-2">
+                    {pending > 0 ? fmtMoney(pending) : "—"}
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>

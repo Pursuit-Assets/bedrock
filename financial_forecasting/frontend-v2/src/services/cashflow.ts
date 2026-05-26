@@ -10,7 +10,13 @@ export interface CashflowMonth {
 
 export type CashflowType = "actuals" | "scheduled" | "outstanding" | "projected";
 
+/** Record-type buckets the cashflow page can filter to. Matches the
+ *  backend `bucket` query param on /cashflow + /cashflow/detail. */
+export type CashflowBucket = "all" | "philanthropy" | "pbc" | "capital_grants" | "other";
+
 export interface CashflowDetailRecord {
+  payment_id: string | null;
+  opp_id: string | null;
   amount: number;
   weighted_amount: number | null;
   probability: number | null;
@@ -24,12 +30,13 @@ export function useCashflowDetail(
   year: number,
   month: number | null,
   type: CashflowType | null,
+  bucket: CashflowBucket = "all",
 ) {
   return useQuery({
-    queryKey: ["cashflow-detail", year, month, type],
+    queryKey: ["cashflow-detail", year, month, type, bucket],
     queryFn: async () => {
       const { data } = await api.get<CashflowDetailRecord[]>(
-        `/api/salesforce/cashflow/detail?year=${year}&month=${month}&type=${type}`,
+        `/api/salesforce/cashflow/detail?year=${year}&month=${month}&type=${type}&bucket=${bucket}`,
       );
       return data;
     },
@@ -38,12 +45,12 @@ export function useCashflowDetail(
   });
 }
 
-export function useCashflow(year: number) {
+export function useCashflow(year: number, bucket: CashflowBucket = "all") {
   return useQuery({
-    queryKey: ["cashflow", year],
+    queryKey: ["cashflow", year, bucket],
     queryFn: async () => {
       const { data } = await api.get<CashflowMonth[]>(
-        `/api/salesforce/cashflow?year=${year}`,
+        `/api/salesforce/cashflow?year=${year}&bucket=${bucket}`,
       );
       return data;
     },

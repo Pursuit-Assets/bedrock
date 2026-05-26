@@ -7,6 +7,7 @@ import { DashboardPage } from "./pages/Dashboard";
 import { AccountsPage } from "./pages/Accounts";
 import { AccountDetailPage } from "./pages/AccountDetail";
 import { PipelinePage } from "./pages/Pipeline";
+import { PaymentsPage } from "./pages/Payments";
 import { CleanupPage } from "./pages/Cleanup";
 import { OpportunityDetailPage } from "./pages/OpportunityDetail";
 import { AwardsPage } from "./pages/Awards";
@@ -22,6 +23,9 @@ import { ChiselPage } from "./pages/Chisel";
 import { SettingsPage } from "./pages/Settings";
 import { CashFlowPage } from "./pages/CashFlow";
 import { PlatformIntakePage } from "./pages/PlatformIntake";
+import { PortfolioPage } from "./pages/Portfolio";
+import { JobsPage } from "./pages/Jobs";
+import { HomePage, HomeIndexPage } from "./pages/home";
 
 export default function App() {
   return (
@@ -44,6 +48,7 @@ export default function App() {
         <Route path="/accounts" element={<AccountsPage />} />
         <Route path="/accounts/:id" element={<AccountDetailPage />} />
         <Route path="/pipeline" element={<PipelinePage />} />
+        <Route path="/payments" element={<PaymentsPage />} />
         <Route path="/cleanup" element={<CleanupPage />} />
         <Route path="/opportunities/:id" element={<OpportunityDetailPage />} />
         <Route path="/awards" element={<AwardsPage />} />
@@ -56,7 +61,12 @@ export default function App() {
         <Route path="/cashflow" element={<CashFlowPage />} />
         <Route path="/pebble" element={<PebblePage />} />
         <Route path="/chisel" element={<ChiselPage />} />
+        <Route path="/portfolio" element={<PortfolioPage />} />
+        <Route path="/portfolio/:identifier" element={<PortfolioPage />} />
+        <Route path="/jobs" element={<JobsPage />} />
         <Route path="/feedback" element={<PlatformIntakePage />} />
+        <Route path="/home" element={<HomeIndexPage />} />
+        <Route path="/home/:slug" element={<HomePage />} />
         <Route path="/settings" element={<SettingsPage />} />
 
         {/* Backend redirects to /priorities after Google OAuth — alias it */}

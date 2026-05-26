@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, type ReactNode } from "react";
-import { X } from "lucide-react";
+import { useNavigate } from "react-router-dom";
+import { ExternalLink, X } from "lucide-react";
 import {
   BarChart,
   Bar,
@@ -14,7 +15,7 @@ import {
 import { PageHeader } from "@/components/PageHeader";
 import { fmtMoney } from "@/lib/format";
 import { cn } from "@/lib/utils";
-import { useCashflow, useCashflowDetail, type CashflowType } from "@/services/cashflow";
+import { useCashflow, useCashflowDetail, type CashflowBucket, type CashflowType } from "@/services/cashflow";
 import { fmtDate } from "@/lib/format";
 
 const MONTH_NAMES = [
@@ -55,10 +56,20 @@ function HeaderCell({ children, className }: { children: ReactNode; className?: 
 }
 
 
+const BUCKET_OPTIONS: { value: CashflowBucket; label: string }[] = [
+  { value: "all",            label: "All" },
+  { value: "philanthropy",   label: "Philanthropy" },
+  { value: "pbc",            label: "PBC" },
+  { value: "capital_grants", label: "Capital Grants" },
+  { value: "other",          label: "Other" },
+];
+
 export function CashFlowPage() {
+  const navigate = useNavigate();
   const currentYear = new Date().getFullYear();
   const [fy, setFy] = useState(currentYear);
-  const { data, isLoading } = useCashflow(fy);
+  const [bucket, setBucket] = useState<CashflowBucket>("philanthropy");
+  const { data, isLoading } = useCashflow(fy, bucket);
 
   const currentMonth = new Date().getMonth() + 1;
   const isPastMonth  = (m: number) => fy < currentYear || (fy === currentYear && m < currentMonth);
@@ -67,7 +78,7 @@ export function CashFlowPage() {
   const [selected, setSelected] = useState<{ month: number; type: CashflowType } | null>(null);
   const detailRef = useRef<HTMLDivElement>(null);
   const { data: detail, isLoading: detailLoading } = useCashflowDetail(
-    fy, selected?.month ?? null, selected?.type ?? null,
+    fy, selected?.month ?? null, selected?.type ?? null, bucket,
   );
 
   useEffect(() => {
@@ -134,6 +145,26 @@ export function CashFlowPage() {
       />
 
       <div className="flex flex-col gap-4">
+        {/* Record-type filter pills */}
+        <div className="inline-flex flex-wrap gap-1.5">
+          {BUCKET_OPTIONS.map((opt) => (
+            <button
+              key={opt.value}
+              type="button"
+              onClick={() => setBucket(opt.value)}
+              className={cn(
+                "h-7 rounded-full border px-3 text-[12.5px] font-medium transition-colors",
+                bucket === opt.value
+                  ? "border-accent bg-accent/10 text-accent"
+                  : "border-border-strong bg-surface text-ink-2 hover:text-ink",
+              )}
+              aria-pressed={bucket === opt.value}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+
         {/* Chart */}
         <Card>
           <div className="px-4 pb-4 pt-5">
@@ -357,8 +388,20 @@ export function CashFlowPage() {
                   </thead>
                   <tbody>
                     {detail.map((r, i) => (
-                      <tr key={i} className="border-t border-border hover:bg-surface-2">
-                        <td className="px-4 py-2 font-medium text-ink">{r.opp_name ?? "—"}</td>
+                      <tr
+                        key={i}
+                        onClick={() => r.opp_id && navigate(`/opportunities/${r.opp_id}`)}
+                        className={cn(
+                          "border-t border-border",
+                          r.opp_id ? "cursor-pointer hover:bg-surface-2" : "",
+                        )}
+                      >
+                        <td className="px-4 py-2 font-medium text-ink">
+                          <span className="inline-flex items-center gap-1.5">
+                            {r.opp_name ?? "—"}
+                            {r.opp_id && <ExternalLink size={11} className="text-ink-4" />}
+                          </span>
+                        </td>
                         <td className="px-4 py-2 text-ink-2">{r.account_name ?? "—"}</td>
                         <td className="px-4 py-2 text-ink-3">{r.stage ?? "—"}</td>
                         <td className="px-4 py-2 text-right tabular-nums text-ink-3">

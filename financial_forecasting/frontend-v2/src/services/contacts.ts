@@ -15,25 +15,73 @@ export interface CreateContactBody {
   Philanthropic_Contact__c?: boolean;
 }
 
-async function fetchContacts(accountId?: string): Promise<SfContact[]> {
+async function fetchContacts(opts: { accountId?: string; activeOnly?: boolean } = {}): Promise<SfContact[]> {
   // ?fields=light cuts SOQL payload by ~70% — the list view, Cleanup
   // tab, and Contact-detail header only need the ~12 light fields.
   // Per-account drilldowns get the full set for the detail page that
   // exposes things like NPSP Primary Affiliation, deceased flag, etc.
   const params = new URLSearchParams();
-  if (accountId) params.set("account_id", accountId);
+  if (opts.accountId) params.set("account_id", opts.accountId);
   else params.set("fields", "light");
+  if (opts.activeOnly) params.set("active_only", "true");
   const path = `/api/salesforce/contacts?${params.toString()}`;
   const { data } = await api.get<SfContact[]>(path);
   return data;
 }
 
+/**
+ * Two-phase load (same pattern as useAccounts). Pursuit has ~15k
+ * contacts total but only ~310 have been touched in the last 6
+ * months. We fire both queries — the active subset resolves in
+ * ~100 ms vs ~1.5 s for the full set, so any contacts surface paints
+ * fast on cold cache and the full list lands silently behind it.
+ *
+ * Account-scoped queries (`useContacts(accountId)`) bypass this —
+ * the contact-detail / account-detail use case wants every contact
+ * for that account, no partial states.
+ */
 export function useContacts(accountId?: string) {
-  return useQuery({
+  // Account-scoped: single query, no progressive loading.
+  const scopedQ = useQuery({
     queryKey: ["contacts", accountId ?? "all"],
-    queryFn: () => fetchContacts(accountId),
+    queryFn: () => fetchContacts({ accountId }),
     staleTime: 60_000,
+    enabled: !!accountId,
   });
+  // Cross-account: progressive 2-phase load.
+  const activeQ = useQuery({
+    queryKey: ["contacts", "active-only"],
+    queryFn: () => fetchContacts({ activeOnly: true }),
+    staleTime: 60_000,
+    enabled: !accountId,
+  });
+  const fullQ = useQuery({
+    queryKey: ["contacts", "all"],
+    queryFn: () => fetchContacts({}),
+    staleTime: 60_000,
+    enabled: !accountId && activeQ.isSuccess,
+  });
+
+  if (accountId) {
+    return {
+      data: scopedQ.data,
+      isLoading: scopedQ.isLoading,
+      isFetching: scopedQ.isFetching,
+      isError: scopedQ.isError,
+      error: scopedQ.error,
+      isStale: scopedQ.isStale,
+      isPartial: false,
+    };
+  }
+  return {
+    data: (fullQ.data ?? activeQ.data) as SfContact[] | undefined,
+    isLoading: activeQ.isLoading && !activeQ.data,
+    isFetching: activeQ.isFetching || fullQ.isFetching,
+    isError: activeQ.isError && fullQ.isError,
+    error: fullQ.error ?? activeQ.error,
+    isStale: fullQ.isStale,
+    isPartial: !fullQ.data && !!activeQ.data,
+  };
 }
 
 export function useCreateContact() {

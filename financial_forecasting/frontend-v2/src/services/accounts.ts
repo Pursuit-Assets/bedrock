@@ -72,17 +72,51 @@ export function useAccountsEnrichment(sfAccountIds: string[]) {
  * The backend (main.py:535) returns [] if the SF session isn't connected
  * — we treat that as a non-error empty list, same as the legacy frontend.
  */
-async function fetchAccounts(): Promise<SfAccount[]> {
-  const { data } = await api.get<SfAccount[]>("/api/salesforce/accounts?fields=light");
+async function fetchAccounts(activeOnly = false): Promise<SfAccount[]> {
+  const qs = activeOnly ? "&active_only=true" : "";
+  const { data } = await api.get<SfAccount[]>(`/api/salesforce/accounts?fields=light${qs}`);
   return data;
 }
 
+/**
+ * Two-phase load. Pursuit has ~20k total accounts but only ~5k are
+ * active. The cold full-set fetch takes ~6 s; the active-only subset
+ * takes ~1.5 s. We kick off both — the active query resolves first
+ * so the UI paints fast, then the full set lands and React Query
+ * silently swaps the larger array in. Consumers get the bigger one
+ * whenever it's available, otherwise the active set, otherwise empty.
+ *
+ * Both queries share independent cache entries so navigation between
+ * pages never re-fetches — once they're warm they stay warm for 60 s
+ * (staleTime). The full set gates on the active set succeeding to
+ * keep failure modes contained: if SF is down, both fail together.
+ */
 export function useAccounts() {
-  return useQuery({
-    queryKey: ["accounts"],
-    queryFn: fetchAccounts,
+  const activeQ = useQuery({
+    queryKey: ["accounts", "active-only"],
+    queryFn: () => fetchAccounts(true),
     staleTime: 60_000,
   });
+  const fullQ = useQuery({
+    queryKey: ["accounts"],
+    queryFn: () => fetchAccounts(false),
+    staleTime: 60_000,
+    enabled: activeQ.isSuccess,
+  });
+  // Compose a single-query-like return shape so callers don't need to
+  // know about the staged loading. Prefer the full set; fall back to
+  // active while it's still in flight.
+  return {
+    data: (fullQ.data ?? activeQ.data) as SfAccount[] | undefined,
+    isLoading: activeQ.isLoading && !activeQ.data,
+    isFetching: activeQ.isFetching || fullQ.isFetching,
+    isError: activeQ.isError && fullQ.isError,
+    error: fullQ.error ?? activeQ.error,
+    isStale: fullQ.isStale,
+    /** True until the FULL set is loaded — useful for "results may be
+     *  partial" UI hints. */
+    isPartial: !fullQ.data && !!activeQ.data,
+  };
 }
 
 export interface CreateAccountBody {

@@ -7,12 +7,13 @@ import { api } from "@/lib/api";
 import { ChevronDown, ChevronRight, ExternalLink, Mail, Pencil, Phone, Plus, Search, UserPlus, X } from "lucide-react";
 
 import { AccountAvatar } from "@/components/AccountAvatar";
-import { BackLink as SharedBackLink } from "@/components/detail";
+import { BackLink as SharedBackLink, LinkedProjectsCard } from "@/components/detail";
 import { AccountTasksSection } from "@/components/AccountTasksSection";
 import { ActivityTimeline } from "@/components/ActivityTimeline";
 import { InlineSelect, InlineText } from "@/components/ui/InlineEdit";
 import { StageChip } from "@/components/ui/StageChip";
 import { Tag } from "@/components/ui/Tag";
+import { accountStatusVariant } from "@/lib/accountStatus";
 import { fmtDate, fmtMoney, fmtMoneyFull, initials } from "@/lib/format";
 import { useCollapsible } from "@/lib/collapsible";
 import { isLost, isOpen, isWon, SF_STAGE_OPTIONS, stageStatus } from "@/lib/stages";
@@ -166,6 +167,9 @@ export function AccountDetailPage() {
             className="text-[24px] font-bold leading-tight tracking-tight text-ink py-0"
           />
           <div className="mt-1 flex flex-wrap items-center gap-2 text-[12.5px] text-ink-3">
+            {account.account_status ? (
+              <Tag variant={accountStatusVariant(account.account_status)}>{account.account_status}</Tag>
+            ) : null}
             {account.Type ? <Tag>{account.Type}</Tag> : null}
           </div>
         </div>
@@ -302,6 +306,26 @@ export function AccountDetailPage() {
           <AwardsForAccountTable awards={accountAwards} opps={opps} />
         </SectionCard>
       ) : null}
+
+      <SectionCard title="Linked projects">
+        <div className="px-5 py-4">
+          {/* Account-detail card surfaces projects linked three ways:
+                1. Directly to the account (project_account)
+                2. Via any opp on the account (project_opportunity + legacy column)
+                3. Via any award on the account (project_award)
+              The card merges all three behind the scenes and tags the
+              indirect ones with a small "via opportunity/award" pill. */}
+          <LinkedProjectsCard
+            entityType="account"
+            entityId={account.Id}
+            referrerLabel="Account"
+            alsoFrom={[
+              ...opps.map((o) => ({ type: "opportunity" as const, id: o.Id })),
+              ...accountAwards.map((a) => ({ type: "award" as const, id: a.id })),
+            ]}
+          />
+        </div>
+      </SectionCard>
 
       {/* Activity timeline — full width, below awards */}
       <ActivityTimeline

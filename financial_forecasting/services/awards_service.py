@@ -235,4 +235,35 @@ async def ensure_for_opp(
         "awards.ensure_for_opp: created award for opp=%s stage=%s status=%s",
         opp_id, stage_name, initial_status,
     )
+
+    # Cascade: if the source opportunity was already linked to projects (so the
+    # RM could plan work before the award officially existed), copy those links
+    # onto the new award. Idempotent via ON CONFLICT.
+    await _cascade_opp_projects_to_award(conn, opp_id, row["id"])
+
     return dict(row)
+
+
+async def _cascade_opp_projects_to_award(conn, opp_id: str, award_id) -> int:
+    """Mirror project_opportunity links onto project_award when an award is born.
+
+    Returns the count of new project_award rows inserted. Safe to call repeatedly:
+    ON CONFLICT DO NOTHING means re-running on an already-cascaded award is a no-op.
+    """
+    inserted = await conn.fetch(
+        """
+        INSERT INTO bedrock.project_award (project_id, award_id)
+        SELECT po.project_id, $2
+        FROM bedrock.project_opportunity po
+        WHERE po.opportunity_id = $1
+        ON CONFLICT DO NOTHING
+        RETURNING id
+        """,
+        opp_id, award_id,
+    )
+    if inserted:
+        logger.info(
+            "awards.cascade: opp=%s award=%s linked %d project(s)",
+            opp_id, award_id, len(inserted),
+        )
+    return len(inserted)

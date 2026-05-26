@@ -34,7 +34,12 @@ export function RowExpandPanel({
 
   return (
     <div
-      className="border-t border-border-strong bg-surface-2/40"
+      // overflow-hidden + a solid bottom border give a clean boundary
+      // between this panel and the next outer-table row. Without it, the
+      // last inner row was rendering as a half-row pressed against the
+      // next outer row (the outer row's hover bg made it look like the
+      // inner row was bleeding through).
+      className="overflow-hidden border-t border-b border-border-strong bg-surface-2/40"
       style={{ height }}
     >
       <div
@@ -59,7 +64,11 @@ export function RowExpandPanel({
       <div
         role="tabpanel"
         id={current ? `row-expand-panel-${current.id}` : undefined}
-        className="h-[calc(100%-32px)] overflow-y-auto"
+        // Modest pb-2 + the wrapper's overflow-hidden + bottom border
+        // give breathing room for the last visible row without leaving
+        // a huge dead-space gap. Hidden rows still reach via the scroll
+        // bar; the panel boundary is now a clean horizontal line.
+        className="h-[calc(100%-32px)] overflow-y-auto pb-2"
       >
         {current ? current.render() : null}
       </div>
