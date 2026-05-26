@@ -1794,15 +1794,24 @@ async def research_single_prospect(
     # complete by the time we reach here; awaiting them in the gather
     # is a no-op in the common case. cost_usd now flows into
     # save_profile so the per-prospect spend is recorded next to the
-    # output, not lost.
+    # output, not lost. return_exceptions=True so one failed write
+    # doesn't abort the others — the profile is the durable record we
+    # care most about; losing the session row is recoverable.
     session_status = "cancelled" if cancel_check() else "completed"
-    await asyncio.gather(
+    results = await asyncio.gather(
         save_profile(contact_id, profile, cost_usd=budget.total_cost_usd),
         _save_session_for_prospect(
             contact_id, profile, name, primary_org, budget, session_status,
         ),
         *background_tasks,
+        return_exceptions=True,
     )
+    for r in results:
+        if isinstance(r, BaseException):
+            logger.warning(
+                "research_single_prospect: tail write failed for %s: %s",
+                contact_id, r,
+            )
     return {"contact_id": contact_id, "claims_count": len(profile["claims"])}
 
 
