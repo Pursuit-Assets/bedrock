@@ -1,56 +1,39 @@
 """ProPublica Nonprofit Explorer API v2. GET /organizations/:ein.json
 
 Also: IRS 990 XML download from S3 + officer parsing.
+
+P1 — native async via _http.get_with_retry. XML parsing functions
+remain sync since they're CPU-bound (no I/O).
 """
 
+from __future__ import annotations
+
 import logging
-import time
 import xml.etree.ElementTree as ET
 
-import httpx
+from ._http import get_with_retry
 
 logger = logging.getLogger("pebble.data_sources.propublica")
 
 BASE = "https://projects.propublica.org/nonprofits/api/v2"
 
 
-def _get_with_retry(url: str, params: dict | None = None, max_retries: int = 2) -> httpx.Response | None:
-    """GET with retry on 429 (rate limit). Returns None on error."""
-    for attempt in range(max_retries + 1):
-        try:
-            r = httpx.get(url, params=params, timeout=30.0)
-            if r.status_code == 429 and attempt < max_retries:
-                time.sleep(2 ** attempt)
-                continue
-            r.raise_for_status()
-            return r
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 429 and attempt < max_retries:
-                time.sleep(2 ** attempt)
-                continue
-            return None
-        except httpx.HTTPError:
-            return None
-    return None
-
-
-def fetch_organization(ein: str) -> dict | None:
+async def fetch_organization(ein: str) -> dict | None:
     """Fetch org data by EIN. Returns None on 404 or error."""
     url = f"{BASE}/organizations/{ein}.json"
-    r = _get_with_retry(url)
+    r = await get_with_retry(url)
     return r.json() if r else None
 
 
-def search_organizations(query: str, state: str | None = None) -> list[dict]:
+async def search_organizations(query: str, state: str | None = None) -> list[dict]:
     """Search organizations by name. Returns list of orgs."""
-    params = {"q": query}
+    params: dict = {"q": query}
     if state:
         params["state[id]"] = state
-    r = _get_with_retry(f"{BASE}/search.json", params=params)
+    r = await get_with_retry(f"{BASE}/search.json", params=params)
     if not r:
         return []
-    data = r.json()
-    return data.get("organizations", [])
+    return r.json().get("organizations", [])
 
 
 def extract_org_financials(org_data: dict | None) -> dict | None:
@@ -115,7 +98,7 @@ def get_latest_object_id(org_data: dict | None) -> str | None:
     return org_data.get("organization", {}).get("latest_object_id")
 
 
-def download_990_xml(object_id: str) -> str | None:
+async def download_990_xml(object_id: str) -> str | None:
     """Download a 990 XML filing from IRS S3 by object_id.
 
     Checks the api_cache first (30-day TTL). Returns the raw XML string
@@ -123,21 +106,18 @@ def download_990_xml(object_id: str) -> str | None:
     """
     from ..storage.cache import get_cached, set_cached
 
-    # Cache check
     cached = get_cached("propublica_990_xml", object_id)
     if cached is not None:
         logger.info("990 XML cache hit: object_id=%s", object_id)
         return cached.get("xml")
 
-    # Download from IRS S3
     url = f"{_IRS_S3_BASE}/{object_id}_public.xml"
-    r = _get_with_retry(url)
+    r = await get_with_retry(url)
     if not r:
         logger.warning("990 XML download failed: object_id=%s", object_id)
         return None
 
     xml_text = r.text
-    # Cache for 30 days (2,592,000 seconds)
     set_cached("propublica_990_xml", object_id, {"xml": xml_text}, ttl_seconds=2_592_000)
     logger.info("990 XML downloaded and cached: object_id=%s (%d bytes)", object_id, len(xml_text))
     return xml_text

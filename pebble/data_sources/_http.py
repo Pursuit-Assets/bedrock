@@ -67,22 +67,77 @@ async def get_with_retry(
     headers: dict | None = None,
     max_retries: int = 2,
     backoff_base: float = 2.0,
+    breaker: object | None = None,
 ) -> httpx.Response | None:
     """GET with 429-aware backoff. Returns the Response on 2xx/3xx,
     None on terminal failure. Generalizes the retry loop that lived in
-    each data_source module."""
+    each data_source module.
+
+    Optional ``breaker`` (CircuitBreaker-shaped) is checked before the
+    call and recorded after: is_open() short-circuits, record_success()
+    on 2xx/3xx, record_failure() on terminal error / 4xx / 5xx."""
+    if breaker is not None and getattr(breaker, "is_open", lambda: False)():
+        logger.debug("circuit open for %s — skipping", url)
+        return None
     client = await get_client()
     for attempt in range(max_retries + 1):
         try:
             r = await client.get(url, params=params, headers=headers)
         except httpx.HTTPError as e:
             logger.debug("HTTP error on attempt %d for %s: %s", attempt, url, e)
+            if breaker is not None:
+                breaker.record_failure()
             return None
         if r.status_code == 429 and attempt < max_retries:
             await asyncio.sleep(backoff_base ** attempt)
             continue
         if r.status_code >= 400:
             logger.debug("HTTP %d for %s (attempt %d)", r.status_code, url, attempt)
+            if breaker is not None:
+                breaker.record_failure()
             return None
+        if breaker is not None:
+            breaker.record_success()
         return r
+    if breaker is not None:
+        breaker.record_failure()
+    return None
+
+
+async def post_with_retry(
+    url: str,
+    *,
+    json: dict | None = None,
+    headers: dict | None = None,
+    max_retries: int = 2,
+    backoff_base: float = 2.0,
+    breaker: object | None = None,
+) -> httpx.Response | None:
+    """POST variant of get_with_retry. Same 429 backoff + breaker
+    semantics."""
+    if breaker is not None and getattr(breaker, "is_open", lambda: False)():
+        logger.debug("circuit open for %s — skipping", url)
+        return None
+    client = await get_client()
+    for attempt in range(max_retries + 1):
+        try:
+            r = await client.post(url, json=json, headers=headers)
+        except httpx.HTTPError as e:
+            logger.debug("HTTP error on attempt %d for %s: %s", attempt, url, e)
+            if breaker is not None:
+                breaker.record_failure()
+            return None
+        if r.status_code == 429 and attempt < max_retries:
+            await asyncio.sleep(backoff_base ** attempt)
+            continue
+        if r.status_code >= 400:
+            logger.debug("HTTP %d for %s (attempt %d)", r.status_code, url, attempt)
+            if breaker is not None:
+                breaker.record_failure()
+            return None
+        if breaker is not None:
+            breaker.record_success()
+        return r
+    if breaker is not None:
+        breaker.record_failure()
     return None

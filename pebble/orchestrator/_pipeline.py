@@ -1647,15 +1647,15 @@ async def fetch_research_data(
         "edgar_filings", "usaspending_awards", "wikipedia_profile",
         "opencorporates_officers",
     ]
+    # P1: every phase-1 fetcher is async-native; direct awaits.
     phase1 = await asyncio.gather(
-        asyncio.to_thread(search_organizations, primary_org) if primary_org and not ein else _noop(),
-        asyncio.to_thread(search_cik, primary_org) if primary_org else _noop(),
-        # P1: FEC is async-native; direct await.
+        search_organizations(primary_org) if primary_org and not ein else _noop(),
+        search_cik(primary_org) if primary_org else _noop(),
         search_contributions(name, 10) if name else _noop(),
-        asyncio.to_thread(search_filings, name) if name else _noop(),
-        asyncio.to_thread(search_awards, name) if name else _noop(),
-        asyncio.to_thread(fetch_full_profile, name) if name else _noop(),
-        asyncio.to_thread(search_officers, name) if name else _noop(),
+        search_filings(name) if name else _noop(),
+        search_awards(name) if name else _noop(),
+        fetch_full_profile(name) if name else _noop(),
+        search_officers(name) if name else _noop(),
         return_exceptions=True,
     )
 
@@ -1675,9 +1675,10 @@ async def fetch_research_data(
     # Phase 2: Dependent fetches (need EIN / CIK from phase 1)
     ein = ein or (str(ein_orgs[0]["ein"]) if ein_orgs and ein_orgs[0].get("ein") else None)
     cik_val = cik_result
+    # P1: phase-2 dependent fetches also async-native.
     phase2 = await asyncio.gather(
-        asyncio.to_thread(fetch_organization, ein) if ein else _noop(),
-        asyncio.to_thread(fetch_company, cik_val) if cik_val else _noop(),
+        fetch_organization(ein) if ein else _noop(),
+        fetch_company(cik_val) if cik_val else _noop(),
         return_exceptions=True,
     )
     propublica_data, propublica_err = _result_with_error(phase2[0])

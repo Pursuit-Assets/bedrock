@@ -74,7 +74,7 @@ async def investigate_connected_orgs(
 
         if not ein:
             try:
-                search_results = await asyncio.to_thread(search_organizations, org_name)
+                search_results = await search_organizations(org_name)
                 budget.record_call()
                 if search_results:
                     ein = str(search_results[0].get("ein", ""))
@@ -85,7 +85,7 @@ async def investigate_connected_orgs(
         # Fetch full org data if we have an EIN
         if ein and budget.can_call():
             try:
-                org_data = await asyncio.to_thread(fetch_organization, ein)
+                org_data = await fetch_organization(ein)
                 budget.record_call()
             except Exception as e:
                 logger.warning("Org intelligence: fetch failed for EIN %s: %s", ein, e)
@@ -134,7 +134,7 @@ async def investigate_connected_orgs(
             object_id = get_latest_object_id(org_data)
             if object_id:
                 try:
-                    xml_content = await asyncio.to_thread(download_990_xml, object_id)
+                    xml_content = await download_990_xml(object_id)
                     budget.record_call()
                     if xml_content:
                         officers = parse_officers_from_xml(xml_content)

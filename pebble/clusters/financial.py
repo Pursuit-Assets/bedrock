@@ -70,7 +70,7 @@ async def run_financial_cluster(
     # USAspending ("yes" or "conditional" — conditional checks handled below)
     if source_config.usaspending != "skip" and not ctx.has_source("usa_data") and budget.can_call():
         usa_limit = limits.get("usaspending", 10)
-        phase1_tasks.append(asyncio.to_thread(search_awards, name, usa_limit))
+        phase1_tasks.append(search_awards(name, usa_limit))
         phase1_keys.append("usa_data")
 
     # FINRA
@@ -86,12 +86,12 @@ async def run_financial_cluster(
 
     # ProPublica org search (to get EIN) — "yes" or "conditional"
     if source_config.propublica != "skip" and not ctx.has_source("propublica_data") and org_name and budget.can_call():
-        phase1_tasks.append(asyncio.to_thread(search_organizations, org_name))
+        phase1_tasks.append(search_organizations(org_name))
         phase1_keys.append("ein_orgs")
 
     # SEC CIK lookup (for company filings)
     if source_config.sec_company != "skip" and not ctx.has_source("sec_data") and org_name and budget.can_call():
-        phase1_tasks.append(asyncio.to_thread(search_cik, org_name))
+        phase1_tasks.append(search_cik(org_name))
         phase1_keys.append("cik_result")
 
     if phase1_tasks:
@@ -116,22 +116,20 @@ async def run_financial_cluster(
         ein = (str(ein_orgs[0]["ein"]) if ein_orgs and isinstance(ein_orgs, list)
                and len(ein_orgs) > 0 and ein_orgs[0].get("ein") else None)
         if ein:
-            phase2_tasks.append(asyncio.to_thread(fetch_organization, ein))
+            phase2_tasks.append(fetch_organization(ein))
             phase2_keys.append("propublica_data")
 
     # SEC company detail (needs CIK from phase 1)
     if source_config.sec_company != "skip" and not ctx.has_source("sec_data") and budget.can_call():
         cik_val = ctx.raw_data.get("cik_result")
         if cik_val:
-            phase2_tasks.append(asyncio.to_thread(fetch_company, cik_val))
+            phase2_tasks.append(fetch_company(cik_val))
             phase2_keys.append("sec_data")
 
     # EDGAR Form 4 (needs person CIK — search for person specifically)
     if source_config.edgar_form4 and not ctx.has_source("insider_data") and person_name and budget.can_call():
         form4_limit = limits.get("edgar_form4", 5)
-        phase2_tasks.append(asyncio.to_thread(
-            _fetch_form4, person_name, form4_limit
-        ))
+        phase2_tasks.append(_fetch_form4(person_name, form4_limit))
         phase2_keys.append("insider_data")
 
     # EDGAR search — conditional: only if CIK was found (for GOVERNMENT, FOUNDATION, etc.)
@@ -139,7 +137,7 @@ async def run_financial_cluster(
         cik_val = ctx.raw_data.get("cik_result")
         if cik_val:
             edgar_limit = limits.get("edgar_search", 10)
-            phase2_tasks.append(asyncio.to_thread(search_filings, name, edgar_limit))
+            phase2_tasks.append(search_filings(name, edgar_limit))
             phase2_keys.append("edgar_data")
             logger.info("Conditional EDGAR search activated — CIK found")
 
@@ -203,7 +201,7 @@ async def run_financial_cluster(
     return claims
 
 
-def _fetch_form4(person_name: str, limit: int = 5) -> list[dict]:
+async def _fetch_form4(person_name: str, limit: int = 5) -> list[dict]:
     """Fetch Form 4 filings for a person via EDGAR EFTS.
 
     Step 1: Resolve person → CIK via doc text search
@@ -212,8 +210,8 @@ def _fetch_form4(person_name: str, limit: int = 5) -> list[dict]:
     from ..data_sources.sec import search_person_cik
     from ..data_sources.edgar_search import search_filings
 
-    person_cik = search_person_cik(person_name)
+    person_cik = await search_person_cik(person_name)
     if not person_cik:
         return []
 
-    return search_filings(person_name, limit=limit, forms="4", cik=person_cik)
+    return await search_filings(person_name, limit=limit, forms="4", cik=person_cik)
