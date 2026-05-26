@@ -855,6 +855,12 @@ async def get_contacts(
     # the dominant cause of the contacts list feeling slow on cold
     # cache. Per-contact detail page still uses fields=full.
     fields: Optional[str] = Query(None),
+    # `active_only=true` narrows the SOQL to contacts touched in the
+    # last 6 months — same pattern as /accounts. Pursuit has ~15k
+    # total contacts; only ~311 have LastActivityDate in the window.
+    # First-paint fetch drops from ~1.4 s → ~100 ms backend. Full set
+    # arrives in a follow-up call.
+    active_only: bool = Query(False),
     client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user = Depends(require_auth)
 ):
@@ -863,7 +869,11 @@ async def get_contacts(
         if "salesforce" not in (client.connected_services or []):
             return []
         use_light = fields == "light"
-        cache_key = f"contacts:{account_id}:{limit or 'all'}:{'light' if use_light else 'full'}"
+        cache_key = (
+            f"contacts:{account_id}:{limit or 'all'}:"
+            f"{'light' if use_light else 'full'}:"
+            f"{'active' if active_only else 'any'}"
+        )
         cached = cache.get(cache_key)
         if cached is not None:
             return cached
@@ -904,9 +914,20 @@ async def get_contacts(
             FROM Contact
             """
 
+        # Build WHERE clauses. account_id and active_only stack with AND;
+        # an account-scoped fetch from the detail page doesn't apply
+        # active_only since the user wants every contact on the account.
+        wheres = []
         if account_id:
             validate_salesforce_id(account_id, "account_id")
-            query += f" WHERE AccountId = '{account_id}'"
+            wheres.append(f"AccountId = '{account_id}'")
+        elif active_only:
+            # SF date-literal — anchors the window relative to today
+            # without needing a server-side timestamp.
+            wheres.append("LastActivityDate = LAST_N_MONTHS:6")
+
+        if wheres:
+            query += " WHERE " + " AND ".join(wheres)
 
         query += " ORDER BY LastName ASC"
         if limit is not None:
