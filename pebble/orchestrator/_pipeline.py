@@ -43,6 +43,11 @@ test_research_fidelity.py):
          "high" confidence requires tier ≤ 1 across the pool.
     F14  Per-source fetch errors recorded in profile.source_errors;
          synthesis caveats unreachable sources via skipped_sources.
+    F15  Synthesis prompt anchors time-sensitive facts to data_as_of
+         ("as of 2018, donated $X" rather than "donates $X").
+    F16  Verifiers see source_tier annotation in claims_text; the
+         source-credibility verifier defers to the deterministic
+         tier classification rather than re-judging URLs.
 """
 
 import asyncio
@@ -83,7 +88,7 @@ PROSPECT_COST_CAP_USD = 0.50
 # the fidelity invariants. Stamped on every saved profile so
 # downstream consumers (export, GUI, audit) can tell which generation
 # produced a given record. Increment on every F-series addition.
-PIPELINE_VERSION = "fidelity-v1.15"
+PIPELINE_VERSION = "fidelity-v1.16"
 
 # Strip markdown fences that LLMs sometimes wrap around JSON
 _FENCE_RE = re.compile(r"^```(?:json)?\s*\n?(.*?)\n?```\s*$", re.DOTALL)
