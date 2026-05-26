@@ -15,6 +15,7 @@ import {
   TrendingUp,
   Link as LinkIcon,
   MessageSquarePlus,
+  Hammer,
 } from "lucide-react";
 
 import { GlobalSearch } from "@/components/GlobalSearch";
@@ -58,6 +59,7 @@ const NAV_GROUPS = [
       // it exists; gated routes show a "request access" panel for
       // un-permissioned users (added in B0.6 follow-up).
       { to: "/pebble", label: "Ask Pebble", icon: MessageSquarePlus },
+      { to: "/chisel", label: "Chisel", icon: Hammer },
     ],
   },
 ] as const;

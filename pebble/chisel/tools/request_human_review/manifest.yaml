@@ -8,7 +8,4 @@ version: 1.0.0
 tags:
   - control_flow
 requires_human: true
-cost_estimate:
-  fixed: 0.0
-output_kind: checkpoint
-scope: global
+cost_estimate_usd: 0.0

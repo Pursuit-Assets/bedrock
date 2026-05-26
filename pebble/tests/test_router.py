@@ -190,5 +190,7 @@ class TestSlashCommand:
 
     def test_slash_commands_table_has_pipeline(self):
         """Smoke test: chisel autoload registers the /pipeline slash."""
-        assert _chisel.slash_command_map().get("/pipeline") == "weekly_pipeline_review"
-        assert _chisel.slash_to_intent("/pipeline") == "workflow_weekly_pipeline_review"
+        entry = _chisel.lookup_slash("/pipeline")
+        assert entry is not None
+        assert entry.name == "weekly_pipeline_review"
+        assert entry.dispatch_intent == "workflow_weekly_pipeline_review"

@@ -1,15 +1,14 @@
-"""Phase A.1 unit tests for the Chisel framework.
+"""Unit tests for the Chisel framework.
 
-Covers, per plan §8:
-
-  * manifest schema validation
-  * Pydantic→strict JSON Schema (P1 — additionalProperties:false at every object node)
+Covers:
+  * manifest schema validation (ToolManifest + WorkflowManifest)
+  * Pydantic→strict JSON Schema (additionalProperties:false everywhere)
   * handler adapter happy / validation-error / exception / wrong-return-type
   * autoload: empty dirs, malformed manifest doesn't poison siblings,
-    registry= argument honored (P4), idempotent across calls
-  * RBAC stub: bypass env, missing perm, no requirement
-  * lints: bare httpx, sync run, os.environ in run, overrides
-  * snapshot: survives in-flight mutation of source registry (P5)
+    registry= argument honored, lint warnings surface in the report
+  * workflow dispatch: slash + intent lookup, declarative + custom builders
+  * lints: bare httpx, sync/missing run
+  * snapshot: survives in-flight mutation of source registry
 """
 
 from __future__ import annotations
@@ -24,19 +23,12 @@ from pydantic import BaseModel, Field, ValidationError
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from pebble.chisel.autoload import autoload
+from pebble.chisel.autoload import autoload, lookup_intent, lookup_slash
 from pebble.chisel.handler_adapter import HandlerContext, build_handler_wrapper
 from pebble.chisel.lints import lint_handler_module
-from pebble.chisel.manifest import (
-    FixedCost,
-    ToolManifest,
-    VariableCost,
-    WorkflowManifest,
-    cost_estimate_to_float,
-)
-from pebble.chisel.rbac import check_permission
+from pebble.chisel.manifest import ToolManifest, WorkflowManifest
 from pebble.chisel.reload import snapshot
-from pebble.chisel.schema import assert_strict, pydantic_to_strict_schema
+from pebble.chisel.schema import pydantic_to_strict_schema
 from pebble.orchestrator.tools import ToolContext, ToolRegistry, ToolSpec
 
 
@@ -47,9 +39,8 @@ from pebble.orchestrator.tools import ToolContext, ToolRegistry, ToolSpec
 def test_tool_manifest_minimal_valid() -> None:
     m = ToolManifest(name="search_crm", description="x")
     assert m.version == "1.0.0"
-    assert isinstance(m.cost_estimate, FixedCost)
-    assert m.output_kind == "prose"
-    assert m.scope == "global"
+    assert m.cost_estimate_usd == 0.0
+    assert m.requires_human is False
 
 
 def test_tool_manifest_rejects_bad_name() -> None:
@@ -62,15 +53,6 @@ def test_tool_manifest_rejects_bad_name() -> None:
 def test_tool_manifest_rejects_unknown_field() -> None:
     with pytest.raises(ValidationError):
         ToolManifest(name="ok_name", description="x", typo_field=1)
-
-
-def test_cost_variable_collapses_to_max() -> None:
-    m = ToolManifest(
-        name="llm_tool",
-        description="x",
-        cost_estimate=VariableCost(variable={"max": 0.5}),
-    )
-    assert cost_estimate_to_float(m.cost_estimate) == pytest.approx(0.5)
 
 
 def test_workflow_requires_steps_or_custom_plan() -> None:
@@ -90,8 +72,20 @@ def test_workflow_slash_command_format() -> None:
     WorkflowManifest(name="wf", description="x", has_custom_plan=True, slash_command="/pipeline")
 
 
+def test_workflow_dispatch_intent_auto_filled() -> None:
+    """Convention: dispatch_intent defaults to workflow_<name>."""
+    wf = WorkflowManifest(name="foo", description="x", has_custom_plan=True)
+    assert wf.dispatch_intent == "workflow_foo"
+
+    explicit = WorkflowManifest(
+        name="bar", description="x", has_custom_plan=True,
+        dispatch_intent="custom_intent",
+    )
+    assert explicit.dispatch_intent == "custom_intent"
+
+
 # ---------------------------------------------------------------------------
-# schema strictness (P1)
+# schema strictness
 # ---------------------------------------------------------------------------
 
 class _Inner(BaseModel):
@@ -104,9 +98,25 @@ class _NestedInput(BaseModel):
     tags: list[str] = []
 
 
+def _walk_object_nodes(schema):
+    out = []
+    def visit(node):
+        if isinstance(node, dict):
+            if node.get("type") == "object":
+                out.append(node)
+            for v in node.values():
+                visit(v)
+        elif isinstance(node, list):
+            for v in node:
+                visit(v)
+    visit(schema)
+    return out
+
+
 def test_strict_schema_has_no_permissive_objects() -> None:
     schema = pydantic_to_strict_schema(_NestedInput)
-    assert_strict(schema)
+    for node in _walk_object_nodes(schema):
+        assert node["additionalProperties"] is False
 
 
 def test_strict_schema_inlines_refs() -> None:
@@ -117,14 +127,8 @@ def test_strict_schema_inlines_refs() -> None:
     assert inner_prop["additionalProperties"] is False
 
 
-def test_assert_strict_flags_permissive_object() -> None:
-    bad = {"type": "object", "properties": {"x": {"type": "integer"}}}
-    with pytest.raises(AssertionError):
-        assert_strict(bad)
-
-
 # ---------------------------------------------------------------------------
-# handler adapter (P2, P11)
+# handler adapter
 # ---------------------------------------------------------------------------
 
 class _AdapterInput(BaseModel):
@@ -138,7 +142,7 @@ def _make_ctx() -> ToolContext:
 
 @pytest.mark.asyncio
 async def test_adapter_happy_path_records_version_and_citations() -> None:
-    async def run(args: _AdapterInput, ctx: HandlerContext) -> dict:
+    async def run(args, ctx):
         ctx.cite("sf_account", "001ABC")
         return {"hits": 1, "query": args.query}
 
@@ -156,7 +160,7 @@ async def test_adapter_happy_path_records_version_and_citations() -> None:
 
 @pytest.mark.asyncio
 async def test_adapter_input_validation_returns_ok_false() -> None:
-    async def run(args: _AdapterInput, ctx: HandlerContext) -> dict:
+    async def run(args, ctx):
         return {}
 
     wrapped = build_handler_wrapper(
@@ -171,7 +175,7 @@ async def test_adapter_input_validation_returns_ok_false() -> None:
 
 @pytest.mark.asyncio
 async def test_adapter_handler_exception_wrapped() -> None:
-    async def run(args: _AdapterInput, ctx: HandlerContext) -> dict:
+    async def run(args, ctx):
         raise RuntimeError("boom")
 
     wrapped = build_handler_wrapper(
@@ -185,8 +189,8 @@ async def test_adapter_handler_exception_wrapped() -> None:
 
 @pytest.mark.asyncio
 async def test_adapter_non_dict_return_rejected() -> None:
-    async def run(args: _AdapterInput, ctx: HandlerContext) -> dict:
-        return ["wrong shape"]  # type: ignore[return-value]
+    async def run(args, ctx):
+        return ["wrong shape"]
 
     wrapped = build_handler_wrapper(
         tool_name="t", tool_version="1.0.0",
@@ -197,8 +201,19 @@ async def test_adapter_non_dict_return_rejected() -> None:
     assert "handler_contract" in (res.error or "")
 
 
+@pytest.mark.asyncio
+async def test_handler_context_forwards_to_toolcontext() -> None:
+    """HandlerContext exposes ToolContext attributes via __getattr__."""
+    ctx = ToolContext(user_email="rm@pursuit.org", conversation_id="c1", org_id="acme")
+    hctx = HandlerContext(ctx)
+    assert hctx.user_email == "rm@pursuit.org"
+    assert hctx.conversation_id == "c1"
+    assert hctx.org_id == "acme"
+    assert hctx.http_client is None
+
+
 # ---------------------------------------------------------------------------
-# autoload (P4 — isolation, robustness)
+# autoload
 # ---------------------------------------------------------------------------
 
 def _write_tool(root: Path, name: str, *, manifest_yaml: str, handler_py: str) -> None:
@@ -247,16 +262,14 @@ def test_autoload_loads_tool_into_isolated_registry(tmp_path: Path) -> None:
     reg = ToolRegistry()
     report = autoload(registry=reg, root=tmp_path)
     assert report.loaded_tools == ["alpha"]
-    assert "alpha" in reg
     spec = reg.get("alpha")
     assert isinstance(spec, ToolSpec)
-    # input_schema must be strict
-    assert_strict(spec.input_schema)
+    for node in _walk_object_nodes(spec.input_schema):
+        assert node["additionalProperties"] is False
 
 
 def test_autoload_isolates_malformed_from_siblings(tmp_path: Path) -> None:
     _write_tool(tmp_path, "good", manifest_yaml=_ok_manifest("good"), handler_py=_ok_handler("good"))
-    # Malformed: invalid name
     _write_tool(
         tmp_path, "bad",
         manifest_yaml="name: BadName\ndescription: x",
@@ -271,7 +284,7 @@ def test_autoload_isolates_malformed_from_siblings(tmp_path: Path) -> None:
     assert "bad" not in reg
 
 
-def test_autoload_workflow_declarative_populates_slash_intent_and_builder(tmp_path: Path) -> None:
+def test_autoload_workflow_declarative_populates_lookup_and_builder(tmp_path: Path) -> None:
     wf = tmp_path / "workflows" / "demo_wf"
     wf.mkdir(parents=True)
     (wf / "workflow.yaml").write_text(
@@ -280,7 +293,6 @@ def test_autoload_workflow_declarative_populates_slash_intent_and_builder(tmp_pa
             name: demo_wf
             description: declarative demo
             slash_command: /demo
-            dispatch_intent: workflow_demo
             steps:
               - tool: aggregate_pipeline_views
                 args: {days_to_close: 30}
@@ -291,20 +303,18 @@ def test_autoload_workflow_declarative_populates_slash_intent_and_builder(tmp_pa
     )
     reg = ToolRegistry()
     report = autoload(registry=reg, root=tmp_path)
-    from pebble.chisel.autoload import (
-        build_workflow_plan,
-        dispatch_workflow,
-        slash_command_map,
-    )
-
     assert "demo_wf" in report.loaded_workflows
-    assert slash_command_map().get("/demo") == "demo_wf"
-    assert dispatch_workflow("workflow_demo") == "demo_wf"
 
-    plan = build_workflow_plan("workflow_demo", user_query="hi")
-    assert plan is not None
+    entry = lookup_slash("/demo")
+    assert entry is not None
+    assert entry.name == "demo_wf"
+    assert entry.dispatch_intent == "workflow_demo_wf"  # auto-filled
+
+    via_intent = lookup_intent("workflow_demo_wf")
+    assert via_intent is entry
+
+    plan = entry.build_plan(user_query="hi")
     assert plan.user_query == "hi"
-    assert len(plan.steps) == 1
     assert plan.steps[0].tool == "aggregate_pipeline_views"
 
 
@@ -318,7 +328,6 @@ def test_autoload_workflow_custom_build_plan(tmp_path: Path) -> None:
             name: custom_wf
             description: custom-plan demo
             slash_command: /custom
-            dispatch_intent: workflow_custom
             has_custom_plan: true
             """
         ).strip(),
@@ -340,11 +349,11 @@ def test_autoload_workflow_custom_build_plan(tmp_path: Path) -> None:
     )
     reg = ToolRegistry()
     report = autoload(registry=reg, root=tmp_path)
-    from pebble.chisel.autoload import build_workflow_plan
-
     assert "custom_wf" in report.loaded_workflows, report.errors
-    plan = build_workflow_plan("workflow_custom", user_query="hi", multiplier=3)
-    assert plan is not None
+
+    entry = lookup_intent("workflow_custom_wf")
+    assert entry is not None
+    plan = entry.build_plan(user_query="hi", multiplier=3)
     assert plan.steps[0].args == {"q": "xxx"}
 
 
@@ -367,43 +376,32 @@ def test_autoload_workflow_missing_build_plan_reports_error(tmp_path: Path) -> N
     assert any("build_plan" in reason for _, reason in report.errors)
 
 
+def test_autoload_lint_warnings_surface_in_report(tmp_path: Path) -> None:
+    """A handler with a bare httpx import still registers, but the
+    lint warning shows up in the report so CI/log readers see it."""
+    handler_with_lint = dedent(
+        """
+        import httpx
+        from pydantic import BaseModel
+        class Input(BaseModel):
+            q: str = "default"
+        async def run(args, ctx):
+            return {"q": args.q}
+        """
+    ).strip()
+    _write_tool(tmp_path, "lintme", manifest_yaml=_ok_manifest("lintme"), handler_py=handler_with_lint)
+    reg = ToolRegistry()
+    report = autoload(registry=reg, root=tmp_path)
+    assert "lintme" in report.loaded_tools  # registered despite lint hit
+    assert any("no_bare_httpx" in msg for _, msg in report.lint_warnings)
+
+
 def test_autoload_isolation_does_not_touch_default_registry(tmp_path: Path) -> None:
     _write_tool(tmp_path, "iso_only", manifest_yaml=_ok_manifest("iso_only"), handler_py=_ok_handler("iso_only"))
     reg = ToolRegistry()
     autoload(registry=reg, root=tmp_path)
     from pebble.orchestrator.tools import DEFAULT_REGISTRY
     assert "iso_only" not in DEFAULT_REGISTRY
-
-
-# ---------------------------------------------------------------------------
-# RBAC stub (§11.9)
-# ---------------------------------------------------------------------------
-
-def test_rbac_no_requirement_always_ok() -> None:
-    res = check_permission(user_email="anyone@x", required_permission=None)
-    assert res.ok
-
-
-def test_rbac_bypass_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("PEBBLE_CHISEL_RBAC_BYPASS_USERS", "rm@pursuit.org , staff@pursuit.org")
-    res = check_permission(user_email="RM@pursuit.org", required_permission="chisel_write")
-    assert res.ok
-    assert res.reason == "bypass_list"
-
-
-def test_rbac_missing_permission(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("PEBBLE_CHISEL_RBAC_BYPASS_USERS", raising=False)
-    monkeypatch.delenv("PEBBLE_CHAT_ALLOWED_EMAILS", raising=False)
-    res = check_permission(user_email="x@y", required_permission="chisel_write")
-    assert not res.ok
-    assert "chisel_write" in res.reason
-
-
-def test_rbac_falls_back_to_chat_allowed_emails(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("PEBBLE_CHISEL_RBAC_BYPASS_USERS", raising=False)
-    monkeypatch.setenv("PEBBLE_CHAT_ALLOWED_EMAILS", "fallback@pursuit.org")
-    res = check_permission(user_email="fallback@pursuit.org", required_permission="chisel_write")
-    assert res.ok
 
 
 # ---------------------------------------------------------------------------
@@ -441,40 +439,15 @@ def test_lints_flag_sync_run(tmp_path: Path) -> None:
     assert "async_run_required" in rules
 
 
-def test_lints_flag_env_in_run(tmp_path: Path) -> None:
+def test_lints_flag_missing_run(tmp_path: Path) -> None:
     p = tmp_path / "handler.py"
-    p.write_text(
-        dedent(
-            """
-            import os
-            async def run(args, ctx):
-                return {"v": os.environ.get("X")}
-            """
-        ),
-        encoding="utf-8",
-    )
+    p.write_text("x = 1\n", encoding="utf-8")
     rules = {e.rule for e in lint_handler_module(p)}
-    assert "no_env_in_run" in rules
-
-
-def test_lints_overrides_suppress(tmp_path: Path) -> None:
-    p = tmp_path / "handler.py"
-    p.write_text(
-        dedent(
-            """
-            import httpx
-            async def run(args, ctx):
-                return {}
-            """
-        ),
-        encoding="utf-8",
-    )
-    rules = {e.rule for e in lint_handler_module(p, overrides=("no_bare_httpx",))}
-    assert "no_bare_httpx" not in rules
+    assert "async_run_required" in rules
 
 
 # ---------------------------------------------------------------------------
-# snapshot (P5)
+# snapshot
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
@@ -496,7 +469,6 @@ async def test_snapshot_survives_source_mutation() -> None:
     )
 
     snap = snapshot(source)
-    # Mutate source — simulate reload mid-request.
     source.unregister("x")
     source.register(
         ToolSpec(

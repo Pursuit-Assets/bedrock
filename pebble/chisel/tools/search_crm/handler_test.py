@@ -57,7 +57,7 @@ async def test_happy_path_collects_citations_and_passes_params() -> None:
     assert out["total_count"] == 2
     assert out["backend_used"] == "postgres_fts"
     assert out["query"] == "acme"
-    assert hctx.collected_citations() == ("sf_account:001A", "sf_account:001B")
+    assert hctx.citations == ("sf_account:001A", "sf_account:001B")
     client.get.assert_awaited_once_with(
         "/api/search", params={"q": "acme", "limit": 10, "types": "sf_account"},
     )

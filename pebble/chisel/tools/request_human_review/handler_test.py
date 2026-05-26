@@ -46,15 +46,12 @@ def test_handler_rejects_empty_reason() -> None:
 def test_autoload_registers_tool() -> None:
     """Behavioural parity: autoload discovers this manifest + handler,
     registers a working ToolSpec with strict schema and requires_human=True."""
-    from pebble.chisel.schema import assert_strict
-
     reg = ToolRegistry()
     root = Path(__file__).resolve().parents[3] / "chisel"
-    # Load only this tool by passing the chisel root and filtering after.
     report = autoload(registry=reg, root=root)
     assert "request_human_review" not in (e[0] for e in report.errors)
     spec = reg.get("request_human_review")
     assert spec is not None
     assert spec.requires_human is True
-    assert_strict(spec.input_schema)
+    assert spec.input_schema["additionalProperties"] is False
     assert "reason" in spec.input_schema["properties"]
