@@ -20,7 +20,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { Plus, Trash2, X } from "lucide-react";
 
-import { useCreatePaymentSchedule, type PaymentScheduleItem } from "@/services/payments";
+import {
+  useCreatePaymentSchedule,
+  useCreateSinglePayment,
+  useDeletePayment,
+  useUpdatePayment,
+  type PaymentScheduleItem,
+} from "@/services/payments";
 import { fmtMoneyFull } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
@@ -73,6 +79,9 @@ export function PaymentScheduleBuilder({
   onClose,
 }: PaymentScheduleBuilderProps) {
   const create = useCreatePaymentSchedule(opportunityId);
+  const createSingle = useCreateSinglePayment(opportunityId);
+  const updateOne = useUpdatePayment(opportunityId);
+  const deleteOne = useDeletePayment(opportunityId);
 
   const hasExisting = existingPayments.length > 0;
 
@@ -125,6 +134,15 @@ export function PaymentScheduleBuilder({
   const diff = oppAmount != null ? round2(total - oppAmount) : 0;
   const balanced = oppAmount != null && Math.abs(diff) < 0.01;
 
+  // Diff-save: when editing an existing schedule (hasExisting + custom
+  // mode), dispatch per-row PUT / POST / DELETE so SF payment Ids
+  // survive unmodified rows. Linked Sage invoices, audit history, and
+  // any downstream system that pins to a payment Id stay intact.
+  // Falls back to the bulk delete-all+recreate path for the new-schedule
+  // case (no existing rows) and for the "even split" mode (which by
+  // design regenerates the whole schedule).
+  const isDiffSavePath = hasExisting && mode === "custom";
+
   const submit = async () => {
     if (!oppAmount) {
       setError("Set the opportunity Amount before creating a schedule.");
@@ -142,10 +160,66 @@ export function PaymentScheduleBuilder({
     }
     setError(null);
     try {
-      await create.mutateAsync({
-        payments: activeRows,
-        delete_existing: deleteExisting,
-      });
+      if (isDiffSavePath) {
+        // Group rows by (has existing SF id) and dispatch the right call.
+        // Indices into customRows align 1:1 with existingPayments for
+        // pre-populated rows; rows added via "Add payment" have no
+        // matching entry — those are creates.
+        const updates: { id: string; date: string; amount: number }[] = [];
+        const creates: PaymentScheduleItem[] = [];
+        for (let i = 0; i < customRows.length; i++) {
+          const row = customRows[i];
+          const sfId = existingIds[i];
+          if (sfId) {
+            // Existing row. Skip the PUT if nothing changed; saves an
+            // API call per cycle.
+            const orig = existingPayments[i];
+            const dateChanged = row.scheduled_date !== (orig.npe01__Scheduled_Date__c ?? "");
+            const amountChanged = Math.abs((orig.npe01__Payment_Amount__c ?? 0) - row.amount) >= 0.01;
+            if (dateChanged || amountChanged) {
+              updates.push({ id: sfId, date: row.scheduled_date, amount: row.amount });
+            }
+          } else {
+            creates.push(row);
+          }
+        }
+        // Existing rows the user removed (in customRows their index
+        // would be missing). Existing indexes 0..N-1 are 1:1 with
+        // customRows[0..N-1] until rows are removed; removed rows
+        // collapse the index, so we need a different detection.
+        const presentSfIds = new Set(
+          customRows
+            .map((_r, i) => existingIds[i])
+            .filter((id): id is string => !!id),
+        );
+        const deletes = existingPayments
+          .filter((p) => !presentSfIds.has(p.Id) && !p.npe01__Paid__c)
+          .map((p) => p.Id);
+
+        // Dispatch deletes first (so an outgoing row's amount frees up
+        // the cap), then updates, then creates. Sequential, not
+        // parallel — keeps the SF rate limit happy.
+        for (const id of deletes) {
+          await deleteOne.mutateAsync(id);
+        }
+        for (const u of updates) {
+          await updateOne.mutateAsync({
+            id: u.id,
+            patch: {
+              npe01__Payment_Amount__c: u.amount,
+              npe01__Scheduled_Date__c: u.date,
+            },
+          });
+        }
+        for (const c of creates) {
+          await createSingle.mutateAsync(c);
+        }
+      } else {
+        await create.mutateAsync({
+          payments: activeRows,
+          delete_existing: deleteExisting,
+        });
+      }
       onSaved?.();
       onClose();
     } catch (e) {

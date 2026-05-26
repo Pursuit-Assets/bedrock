@@ -155,6 +155,59 @@ export function useACVSummary(year: number, bucket: string = "all") {
   });
 }
 
+/**
+ * Delete a single payment by SF Id. Used by the builder's diff-save
+ * path to remove individual rows without blowing away the whole
+ * schedule. Backend cascades cache invalidation.
+ */
+export function useDeletePayment(opportunityId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (paymentId: string) => {
+      await api.delete(`/api/salesforce/payments/${encodeURIComponent(paymentId)}`);
+      return paymentId;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["opp-payments", opportunityId] });
+      qc.invalidateQueries({ queryKey: ["opportunity-payments", opportunityId] });
+      qc.invalidateQueries({ queryKey: ["opportunities"] });
+      qc.invalidateQueries({ queryKey: ["awards"] });
+      qc.invalidateQueries({ queryKey: ["payments"] });
+    },
+  });
+}
+
+/**
+ * Create one payment under an opportunity. Differs from
+ * useCreatePaymentSchedule (which bulk-creates and can wipe existing)
+ * — this hook is for adding a single row to an already-existing
+ * schedule without touching the others.
+ */
+export function useCreateSinglePayment(opportunityId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: PaymentScheduleItem) => {
+      // Reuse the bulk endpoint with a single-item payload + the
+      // delete_existing flag off so existing rows are preserved.
+      const { data } = await api.post<{ success: boolean; payments_created: number }>(
+        "/api/opportunities/create-payment-schedule",
+        {
+          opportunity_id: opportunityId,
+          payments: [input],
+          delete_existing: false,
+        },
+      );
+      return data;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["opp-payments", opportunityId] });
+      qc.invalidateQueries({ queryKey: ["opportunity-payments", opportunityId] });
+      qc.invalidateQueries({ queryKey: ["opportunities"] });
+      qc.invalidateQueries({ queryKey: ["awards"] });
+    },
+  });
+}
+
 export function useCreatePaymentSchedule(opportunityId: string) {
   const qc = useQueryClient();
   return useMutation({

@@ -7,7 +7,6 @@ import { DashboardPage } from "./pages/Dashboard";
 import { AccountsPage } from "./pages/Accounts";
 import { AccountDetailPage } from "./pages/AccountDetail";
 import { PipelinePage } from "./pages/Pipeline";
-import { PipelineReviewPage } from "./pages/PipelineReview";
 import { PaymentsPage } from "./pages/Payments";
 import { CleanupPage } from "./pages/Cleanup";
 import { OpportunityDetailPage } from "./pages/OpportunityDetail";
