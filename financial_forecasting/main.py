@@ -662,6 +662,13 @@ async def get_accounts(
     # `fields=light` returns only the ~17 fields the v2 frontend uses,
     # cutting SOQL payload ~70% vs the full 50-field default (kept for v1).
     fields: Optional[str] = Query(None),
+    # `active_only=true` narrows the SOQL to accounts touched in the
+    # last 6 months (LastActivityDate >= LAST_N_MONTHS:6) — ~370 rows
+    # vs ~20k total, fetched in ~200 ms vs ~5.6 s. Frontend uses this
+    # for the first-paint pass; the full set lands in a follow-up
+    # request. Active__c was tried as a filter but turns out 19.9k of
+    # 20.2k accounts have it set — not useful as a subset signal.
+    active_only: bool = Query(False),
     client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user = Depends(require_auth)
 ):
@@ -670,7 +677,11 @@ async def get_accounts(
         if "salesforce" not in (client.connected_services or []):
             return []
         use_light = fields == "light"
-        cache_key = f"accounts:{limit or 'all'}:{'light' if use_light else 'full'}"
+        cache_key = (
+            f"accounts:{limit or 'all'}:"
+            f"{'light' if use_light else 'full'}:"
+            f"{'active' if active_only else 'any'}"
+        )
         cached = cache.get(cache_key)
         if cached is not None:
             return cached
@@ -720,8 +731,27 @@ async def get_accounts(
         if limit is not None:
             query += f" LIMIT {limit}"
 
+        # Inject the active_only WHERE clause between FROM and ORDER BY.
+        # Both branches above are "SELECT ... FROM Account ORDER BY ..."
+        # — splice rather than re-quote the string to keep the field
+        # list untouched.
+        if active_only:
+            query = query.replace(
+                "FROM Account\n",
+                "FROM Account\n            WHERE LastActivityDate = LAST_N_MONTHS:6\n",
+            )
+
         result = await salesforce.query_all(query)
         records = result.get("records", [])
+        # Account-status derivation must see the FULL opportunity history
+        # of an account to classify it correctly. Skip it for the
+        # active_only pre-paint — the second (full) request attaches
+        # status to the same accounts on the follow-up.
+        if not active_only:
+            try:
+                await _attach_account_status(records, salesforce)
+            except Exception as ex:  # noqa: BLE001
+                logger.warning(f"Failed to derive account_status; serving without it: {ex}")
         cache.set(cache_key, records, CACHE_TTL_ACCOUNTS)
         return records
 

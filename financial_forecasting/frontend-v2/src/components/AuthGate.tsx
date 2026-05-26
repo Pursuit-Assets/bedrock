@@ -32,6 +32,17 @@ export function AuthGate({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!user || prefetchedRef.current) return;
     prefetchedRef.current = true;
+    // Two-phase accounts prefetch matching the useAccounts() hook —
+    // active-only resolves fast (~1.5 s) so the first page paint reads
+    // from cache; the full 20 k set lands in the background.
+    void qc.prefetchQuery({
+      queryKey: ["accounts", "active-only"],
+      queryFn: async () => {
+        const { data } = await api.get<SfAccount[]>("/api/salesforce/accounts?fields=light&active_only=true");
+        return data;
+      },
+      staleTime: 60_000,
+    });
     void qc.prefetchQuery({
       queryKey: ["accounts"],
       queryFn: async () => {
