@@ -1,5 +1,6 @@
 """Payment schedule CRUD endpoints."""
 
+import asyncio
 import logging
 from typing import List, Optional
 
@@ -147,20 +148,30 @@ async def create_payment_schedule(
         # Delete existing payments if requested. Skip rows that are
         # already paid — SF rejects DELETE on a paid OppPayment, and
         # we don't want to lose financial history anyway.
+        # Run deletes in parallel: the bottleneck was N sequential SF
+        # round-trips taking ~150–300ms each. Same for the creates
+        # below. SF tolerates a small concurrency burst — far cheaper
+        # than a 4-row schedule sitting on 8 sequential calls.
         if request.delete_existing:
             existing_result = await salesforce.query(
                 f"SELECT Id, npe01__Paid__c FROM npe01__OppPayment__c "
                 f"WHERE npe01__Opportunity__c = '{safe_id}'"
             )
-            for payment in existing_result.get("records", []):
-                if payment.get("npe01__Paid__c"):
-                    continue
-                await salesforce.delete_record("npe01__OppPayment__c", payment["Id"])
+            to_delete = [
+                p["Id"]
+                for p in existing_result.get("records", [])
+                if not p.get("npe01__Paid__c")
+            ]
+            if to_delete:
+                await asyncio.gather(*(
+                    salesforce.delete_record("npe01__OppPayment__c", pid)
+                    for pid in to_delete
+                ))
 
-        # Create new payments
-        created_payments = []
-        for i, payment in enumerate(request.payments):
-            result = await salesforce.create_record(
+        # Create new payments in parallel. Order is preserved by
+        # collecting in the same order as the input list.
+        async def _create(payment: PaymentScheduleItem):
+            return await salesforce.create_record(
                 "npe01__OppPayment__c",
                 {
                     "npe01__Opportunity__c": request.opportunity_id,
@@ -169,12 +180,17 @@ async def create_payment_schedule(
                     "npe01__Paid__c": False,
                 },
             )
-            created_payments.append({
+
+        results = await asyncio.gather(*(_create(p) for p in request.payments))
+        created_payments = [
+            {
                 "Id": result["id"],
                 "Amount": payment.amount,
                 "ScheduledDate": payment.scheduled_date,
                 "Number": i + 1,
-            })
+            }
+            for i, (payment, result) in enumerate(zip(request.payments, results))
+        ]
 
         # Bust backend payment caches so the next fetch sees the new schedule.
         cache.invalidate_prefix(f"opp-payments:{request.opportunity_id}")

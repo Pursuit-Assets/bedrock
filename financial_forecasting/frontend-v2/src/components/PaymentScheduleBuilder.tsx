@@ -202,24 +202,26 @@ export function PaymentScheduleBuilder({
           .filter((p) => !presentSfIds.has(p.Id) && !p.npe01__Paid__c)
           .map((p) => p.Id);
 
-        // Dispatch deletes first (so an outgoing row's amount frees up
-        // the cap), then updates, then creates. Sequential, not
-        // parallel — keeps the SF rate limit happy.
-        for (const id of deletes) {
-          await deleteOne.mutateAsync(id);
+        // Run deletes first (so a leaving row's amount frees the cap
+        // before updates/creates land), then fire updates + creates in
+        // parallel. Schedules are small (≤12 payments) so SF rate
+        // limits aren't a concern, and serial round-trips dominated
+        // save time.
+        if (deletes.length > 0) {
+          await Promise.all(deletes.map((id) => deleteOne.mutateAsync(id)));
         }
-        for (const u of updates) {
-          await updateOne.mutateAsync({
-            id: u.id,
-            patch: {
-              npe01__Payment_Amount__c: u.amount,
-              npe01__Scheduled_Date__c: u.date,
-            },
-          });
-        }
-        for (const c of creates) {
-          await createSingle.mutateAsync(c);
-        }
+        await Promise.all([
+          ...updates.map((u) =>
+            updateOne.mutateAsync({
+              id: u.id,
+              patch: {
+                npe01__Payment_Amount__c: u.amount,
+                npe01__Scheduled_Date__c: u.date,
+              },
+            }),
+          ),
+          ...creates.map((c) => createSingle.mutateAsync(c)),
+        ]);
       } else {
         await create.mutateAsync({
           payments: activeRows,
@@ -332,19 +334,32 @@ export function PaymentScheduleBuilder({
                 Set the opportunity Amount and configure the schedule above.
               </div>
             ) : (
-              <table className="w-full border-collapse">
-                <thead>
+              <table className="w-full table-fixed border-collapse">
+                {/* Explicit column widths so the date input + amount
+                    input don't push the headers and totals off-axis
+                    in custom mode. */}
+                <colgroup>
+                  <col className="w-[44px]" />
+                  <col />
+                  <col className="w-[120px]" />
+                  {mode === "custom" ? <col className="w-[40px]" /> : null}
+                </colgroup>
+                {/* Sticky header so it stays visible when the body
+                    scrolls past ~6 rows. */}
+                <thead className="sticky top-0 bg-surface-2">
                   <tr>
-                    <th className="border-b border-border-strong bg-surface-2 px-3 py-1.5 text-left text-[11px] font-semibold uppercase tracking-wider text-ink-3">
+                    <th className="border-b border-border-strong px-3 py-1.5 text-left text-[11px] font-semibold uppercase tracking-wider text-ink-3">
                       #
                     </th>
-                    <th className="border-b border-border-strong bg-surface-2 px-3 py-1.5 text-left text-[11px] font-semibold uppercase tracking-wider text-ink-3">
+                    <th className="border-b border-border-strong px-3 py-1.5 text-left text-[11px] font-semibold uppercase tracking-wider text-ink-3">
                       Scheduled
                     </th>
-                    <th className="border-b border-border-strong bg-surface-2 px-3 py-1.5 text-right text-[11px] font-semibold uppercase tracking-wider text-ink-3">
+                    <th className="border-b border-border-strong px-3 py-1.5 text-right text-[11px] font-semibold uppercase tracking-wider text-ink-3">
                       Amount
                     </th>
-                    {mode === "custom" ? <th aria-label="Remove" /> : null}
+                    {mode === "custom" ? (
+                      <th className="border-b border-border-strong px-2 py-1.5" aria-label="Remove" />
+                    ) : null}
                   </tr>
                 </thead>
                 <tbody>
@@ -396,7 +411,7 @@ export function PaymentScheduleBuilder({
                                   amount: Number(e.target.value) || 0,
                                 })
                               }
-                              className="w-28 bg-transparent text-right outline-none"
+                              className="w-full bg-transparent text-right text-[12.5px] tabular-nums outline-none"
                             />
                           )}
                         </td>
