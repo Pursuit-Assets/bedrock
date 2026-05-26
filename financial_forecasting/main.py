@@ -4,7 +4,13 @@ import os
 import asyncio
 import calendar
 from dotenv import load_dotenv
-load_dotenv(override=False)
+# override=True so .env is the single source of truth for the backend.
+# Without this, exported shell env vars (e.g. SLACK_BOT_TOKEN in
+# ~/.zshrc) silently shadow .env, which previously caused a Slack-bot
+# swap to be a no-op for hours of debugging — see 2026-05-20 commit
+# notes. Operators who need to override .env from the shell can
+# still do so per-process via `KEY=value ./main.py`.
+load_dotenv(override=True)
 from typing import Any, Dict, List, Optional
 from datetime import datetime, date, timedelta
 from decimal import Decimal
@@ -38,6 +44,7 @@ from data_sync import DataSyncService
 from db import init_db, close_db, get_db, get_db_status
 from routes.projects import router as projects_router
 from routes.comments import router as comments_router
+from routes.notifications import router as notifications_router
 from routes.auth import router as auth_router, get_google_credentials, PBD_CALENDAR_ID
 from routes.sf_dependencies import router as sf_deps_router
 from routes.permissions import router as permissions_router, opp_router as opp_lock_router, check_permission, check_permission_or_internal, resolve_task_lock
@@ -55,7 +62,6 @@ from routes.salesforce_schema import router as sf_schema_router
 from routes.admin_sf_drift import router as admin_sf_drift_router
 from routes.account_enrichment import router as account_enrichment_router
 from routes.admin_company_match import router as admin_company_match_router
-from routes.admin_contact_match import router as admin_contact_match_router
 from routes.activities import router as activities_router
 from routes.platform_intake import router as platform_intake_router
 from routes.awards import router as awards_router
@@ -63,7 +69,6 @@ from routes.saved_views import router as saved_views_router
 from routes.affiliations import router as affiliations_router
 from routes.airtable_jobs import router as airtable_jobs_router
 from routes.sputnik import router as sputnik_router
-from routes.admin_interaction_sync import router as admin_interaction_sync_router
 from auth import get_current_user_dep, require_auth, IS_PRODUCTION, JWT_SECRET_KEY
 from security import validate_salesforce_id, escape_soql_string
 from services.crm_parser import refresh_opp_cache as _refresh_opp_cache
@@ -121,6 +126,7 @@ app.add_middleware(
 # Routers
 app.include_router(projects_router)
 app.include_router(comments_router)
+app.include_router(notifications_router)
 app.include_router(auth_router)
 app.include_router(sf_deps_router)
 app.include_router(permissions_router)
@@ -139,8 +145,6 @@ app.include_router(sf_search_router)
 app.include_router(sf_schema_router)
 app.include_router(admin_sf_drift_router)
 app.include_router(admin_company_match_router)
-app.include_router(admin_contact_match_router)
-app.include_router(admin_interaction_sync_router)
 app.include_router(account_enrichment_router)
 app.include_router(activities_router)
 app.include_router(platform_intake_router)
@@ -206,6 +210,27 @@ async def startup_event():
         asyncio.create_task(background_award_reconciler_task())
         asyncio.create_task(background_interaction_sync_task())
 
+    # Cache the db pool on _services so background tasks (notification
+    # Slack dispatcher) can acquire connections without going through
+    # FastAPI's request-scoped get_db dependency.
+    try:
+        from db import get_pool
+        _services["db_pool"] = get_pool()
+    except Exception as e:
+        logger.warning(f"db_pool not registered on _services: {e}")
+
+    # SF-side notification poller — watches for new SF Tasks and
+    # OpportunityFieldHistory rows and fans out notifications. Only
+    # meaningful when SF is connected; the loop self-checks and no-ops
+    # otherwise.
+    if "salesforce" in client.connected_services:
+        try:
+            from services.sf_notification_poller import run_forever as _sf_notif_loop
+            asyncio.create_task(_sf_notif_loop())
+            logger.info("sf_notification_poller started")
+        except Exception as e:
+            logger.warning(f"sf_notification_poller failed to start: {e}")
+
     logger.info(f"API started — connected services: {client.connected_services or ['none']}")
 
 
@@ -223,19 +248,35 @@ async def shutdown_event():
 # Background tasks
 
 async def background_sync_task():
-    """Background task to sync data periodically."""
+    """Background task to sync data periodically.
+
+    Hard-capped at 10 minutes per cycle. If sync_all_data hangs (e.g.,
+    simple_salesforce stuck on a network read), the wait_for raises
+    TimeoutError, we release the lock, and the next cycle gets a fresh
+    shot. Without this cap, a hung SF call could hold the lock + the
+    event loop indefinitely — which was making the whole API stop
+    responding ("listens but doesn't respond" pattern observed in dev).
+    """
     while True:
         try:
             data_sync_service = _services.get("data_sync_service")
             if data_sync_service:
-                        # Non-blocking acquire — skip cycle if lock held
                 if _sync_lock.locked():
                     logger.warning("Sync already in progress, skipping cycle.")
                 else:
                     async with _sync_lock:
                         logger.info("Running background data sync...")
-                        await data_sync_service.sync_all_data()
+                        await asyncio.wait_for(
+                            data_sync_service.sync_all_data(),
+                            timeout=600.0,  # 10 minutes
+                        )
                         logger.info("Background data sync completed.")
+        except asyncio.TimeoutError:
+            logger.error(
+                "Background sync timed out after 600s — lock released; "
+                "next cycle will retry. If this fires repeatedly, a SF "
+                "or DB call is stuck and needs investigation."
+            )
         except Exception as e:
             logger.error(f"Background sync error: {e}")
 
@@ -262,8 +303,16 @@ async def background_award_reconciler_task():
                 pool = get_pool()
                 if pool is not None:
                     async with pool.acquire() as conn:
-                        summary = await reconcile_all(conn, client.salesforce)
+                        # Hard-cap at 5 min — same rationale as the
+                        # background sync wait_for: a stuck SF call
+                        # would otherwise hold the event loop.
+                        summary = await asyncio.wait_for(
+                            reconcile_all(conn, client.salesforce),
+                            timeout=300.0,
+                        )
                         logger.info("awards.reconcile summary: %s", summary)
+        except asyncio.TimeoutError:
+            logger.error("Award reconciler timed out after 300s — skipping cycle")
         except Exception as e:
             logger.error(f"Award reconciler error: {e}")
 
@@ -272,24 +321,36 @@ async def background_award_reconciler_task():
 
 
 async def background_interaction_sync_task():
-    """Sync Gmail + Calendar for all enabled sync_staff every 4 hours.
-
-    First run is delayed 2 minutes after startup to let pool + SF stabilize.
-    Skips silently if GOOGLE_SERVICE_ACCOUNT_JSON is not set.
+    """Nightly background task: sync Gmail + Calendar for all staff in
+    bedrock.sync_staff.  Runs once per day at 23:00 ET (04:00 UTC next day).
+    First run is delayed 180s after startup so the DB pool is ready.
     """
-    await asyncio.sleep(120)
+    import asyncio as _asyncio
+    from datetime import timezone as _tz, datetime as _dt, timedelta as _td
+    await _asyncio.sleep(180)
     while True:
+        # Sleep until next 04:00 UTC (= 23:00 ET / 00:00 ET summer)
+        now_utc = _dt.now(_tz.utc)
+        target = now_utc.replace(hour=4, minute=0, second=0, microsecond=0)
+        if target <= now_utc:
+            target += _td(days=1)
+        await _asyncio.sleep((target - now_utc).total_seconds())
+
         try:
-            from services.interaction_sync import run_interaction_sync
             from db import get_pool
+            from services.interaction_sync import run_interaction_sync
             pool = get_pool()
             if pool is not None:
-                async with pool.acquire() as conn:
-                    summary = await run_interaction_sync(conn)
-                    logger.info("interaction sync summary: %s", summary)
+                logger.info("interaction_sync: starting nightly run")
+                summary = await _asyncio.wait_for(
+                    run_interaction_sync(pool),
+                    timeout=7_200.0,  # 2h hard cap
+                )
+                logger.info("interaction_sync: done %s", summary)
+        except _asyncio.TimeoutError:
+            logger.error("interaction_sync timed out after 2h — skipping cycle")
         except Exception as e:
-            logger.error("interaction sync error: %s", e)
-        await asyncio.sleep(14_400)  # 4h
+            logger.error("interaction_sync error: %s", e)
 
 
 # Dependency functions — get_current_user is now cookie-based (see auth.py)
@@ -417,11 +478,17 @@ async def get_opportunities(
         # (verified via Tooling API describe — DataType Lookup(Contact),
         # label "Primary Contact"). Relationship fields pull the contact's
         # Name + Email for display without a second query.
+        # Field list trimmed 2026-05-25: dropped Description (long-text,
+        # unused in any list or detail view), Reporting_Method__c (unused),
+        # and npsp__Next_Grant_Deadline_Due_Date__c (unused). The previous
+        # list pulled ~625 ms; trimmed is ~50 % smaller payload and ~25 %
+        # faster SOQL on a 1242-row org. Add fields back here only if a
+        # consumer in frontend-v2 actually reads them.
         query = """
         SELECT Id, AccountId, Account.Name, Name, StageName, IsClosed, IsWon,
                Amount, Probability,
                CloseDate, ForecastCategory, LeadSource, NextStep,
-               Description, OwnerId, Owner.Name, CreatedDate, LastModifiedDate,
+               OwnerId, Owner.Name, CreatedDate, LastModifiedDate,
                npe01__Payments_Made__c, Outstanding_Payments__c,
                Number_of_Payments_Received__c, Most_Recent_Payment_Date__c,
                Last_Actual_Payment__c, npe01__Number_of_Payments__c,
@@ -430,7 +497,6 @@ async def get_opportunities(
                npsp__Primary_Contact__c,
                npsp__Primary_Contact__r.Name, npsp__Primary_Contact__r.Email,
                RecordTypeId, RecordType.Name, Active_Opportunity__c,
-               Reporting_Method__c, npsp__Next_Grant_Deadline_Due_Date__c,
                Ask_Amount_if_different_from_actual__c,
                Philanthropy_Type__c,
                Manager_Probability_Override__c,
@@ -743,21 +809,96 @@ async def get_accounts(
 
         result = await salesforce.query_all(query)
         records = result.get("records", [])
-        # Account-status derivation must see the FULL opportunity history
-        # of an account to classify it correctly. Skip it for the
-        # active_only pre-paint — the second (full) request attaches
-        # status to the same accounts on the follow-up.
+
+        # Derive playbook Account Status (Prospect / Pursuing /
+        # Stewarding / Re-activating / Dormant) per account. Pure
+        # derivation — see services/account_status.py. Skip on the
+        # active_only pre-paint because status derivation needs the
+        # FULL opportunity history of each account to classify
+        # Re-activating vs Dormant correctly; the follow-up full-set
+        # request attaches status to the same accounts.
         if not active_only:
             try:
                 await _attach_account_status(records, salesforce)
             except Exception as ex:  # noqa: BLE001
                 logger.warning(f"Failed to derive account_status; serving without it: {ex}")
+
         cache.set(cache_key, records, CACHE_TTL_ACCOUNTS)
         return records
 
     except Exception as e:
         logger.error(f"Error fetching accounts: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+async def _attach_account_status(accounts: list, salesforce) -> None:
+    """Compute and attach `account_status` to every account row.
+
+    Pulls the minimum data needed for the derivation:
+      - SF opportunities (Id, AccountId, StageName, IsClosed,
+        Active_Opportunity__c) via one SOQL.
+      - bedrock.award rows joined to opportunity_id via one SQL.
+      - bedrock.activity latest_date per account_id via one SQL.
+
+    All three queries fire in parallel. The compute is ~50 ms for
+    2 k accounts on the laptop; well within the existing endpoint
+    latency budget.
+    """
+    from datetime import datetime, timedelta, timezone as _tz
+
+    from db import get_pool
+    from services.account_status import (
+        build_lookups,
+        compute_account_status,
+    )
+
+    account_ids = [a.get("Id") for a in accounts if a.get("Id")]
+    if not account_ids:
+        return
+
+    # 1. SF opportunities — slim projection, no record-type filter so the
+    # status sees the full picture.
+    opp_query = (
+        "SELECT Id, AccountId, StageName, IsClosed, IsWon, "
+        "Active_Opportunity__c FROM Opportunity"
+    )
+    opp_result = await salesforce.query_all(opp_query)
+    opps = opp_result.get("records", [])
+
+    # 2 + 3. Awards + latest activity per account from bedrock.
+    # Scope activity to the 3-month window we actually care about
+    # (anything older means Dormant either way), with a small buffer
+    # for cron lag.
+    cutoff = datetime.now(_tz.utc) - timedelta(days=120)
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        award_rows = await conn.fetch(
+            "SELECT opportunity_id, award_status FROM bedrock.award"
+        )
+        act_rows = await conn.fetch(
+            "SELECT account_id, MAX(activity_date) AS activity_date "
+            "FROM bedrock.activity "
+            "WHERE account_id IS NOT NULL AND activity_date >= $1 "
+            "GROUP BY account_id",
+            cutoff,
+        )
+    awards = [dict(r) for r in award_rows]
+    activities = [dict(r) for r in act_rows]
+
+    opps_by_account, awards_by_opp, latest_activity_by_account = build_lookups(
+        opps, awards, activities,
+    )
+
+    for a in accounts:
+        aid = a.get("Id")
+        if not aid:
+            continue
+        a["account_status"] = compute_account_status(
+            aid,
+            opps_by_account,
+            awards_by_opp,
+            latest_activity_by_account,
+        )
 
 
 @app.post("/api/salesforce/accounts")
@@ -798,6 +939,12 @@ async def get_contacts(
     # the dominant cause of the contacts list feeling slow on cold
     # cache. Per-contact detail page still uses fields=full.
     fields: Optional[str] = Query(None),
+    # `active_only=true` narrows the SOQL to contacts touched in the
+    # last 6 months — same pattern as /accounts. Pursuit has ~15k
+    # total contacts; only ~311 have LastActivityDate in the window.
+    # First-paint fetch drops from ~1.4 s → ~100 ms backend. Full set
+    # arrives in a follow-up call.
+    active_only: bool = Query(False),
     client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user = Depends(require_auth)
 ):
@@ -806,7 +953,11 @@ async def get_contacts(
         if "salesforce" not in (client.connected_services or []):
             return []
         use_light = fields == "light"
-        cache_key = f"contacts:{account_id}:{limit or 'all'}:{'light' if use_light else 'full'}"
+        cache_key = (
+            f"contacts:{account_id}:{limit or 'all'}:"
+            f"{'light' if use_light else 'full'}:"
+            f"{'active' if active_only else 'any'}"
+        )
         cached = cache.get(cache_key)
         if cached is not None:
             return cached
@@ -847,9 +998,20 @@ async def get_contacts(
             FROM Contact
             """
 
+        # Build WHERE clauses. account_id and active_only stack with AND;
+        # an account-scoped fetch from the detail page doesn't apply
+        # active_only since the user wants every contact on the account.
+        wheres = []
         if account_id:
             validate_salesforce_id(account_id, "account_id")
-            query += f" WHERE AccountId = '{account_id}'"
+            wheres.append(f"AccountId = '{account_id}'")
+        elif active_only:
+            # SF date-literal — anchors the window relative to today
+            # without needing a server-side timestamp.
+            wheres.append("LastActivityDate = LAST_N_MONTHS:6")
+
+        if wheres:
+            query += " WHERE " + " AND ".join(wheres)
 
         query += " ORDER BY LastName ASC"
         if limit is not None:
@@ -2029,8 +2191,12 @@ class TaskCreateRequest(BaseModel):
     # contacts from the TaskPanel Contact autocomplete. SF Task has both
     # WhoId (Contact/Lead) and WhatId (parent entity — Opp/Account/etc.);
     # WhatId is set from the URL path in create_opportunity_task, WhoId
-    # from the body.
+    # from the body. The generic POST /api/salesforce/tasks endpoint
+    # accepts both from the body so the Tasks page (no parent context)
+    # and ContactExpandPanel (Contact-WhoId, optional opp/account WhatId)
+    # can use one endpoint.
     WhoId: Optional[str] = None
+    WhatId: Optional[str] = None
 
 
 class TaskUpdateRequest(BaseModel):
@@ -2544,6 +2710,56 @@ async def create_account_task(
         )
     except Exception as e:
         logger.error(f"Error creating account task: {e}")
+        raise HTTPException(status_code=500, detail="Failed to create task")
+
+
+@app.post("/api/salesforce/tasks")
+async def create_task(
+    task_data: TaskCreateRequest,
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
+    user=Depends(check_permission("create_tasks")),
+):
+    """Generic Task creation. Accepts WhoId (Contact/Lead) and/or WhatId
+    (Opportunity/Account/etc.) from the body — both optional, so this
+    can mint a parent-less "My Tasks" entry too. The opp- and account-
+    scoped POSTs above remain for path-driven creation; this endpoint
+    backs ContactExpandPanel's add-task row and the Home / My Tasks page
+    where the user picks the parent via UI rather than route.
+
+    Salesforce ID validation: only the fields actually present in the
+    body are validated. An empty / missing WhoId or WhatId is fine.
+    """
+    try:
+        salesforce = client.salesforce
+        fields = task_data.model_dump(exclude_none=True)
+        if fields.get("WhoId"):
+            validate_salesforce_id(fields["WhoId"], "WhoId")
+        if fields.get("WhatId"):
+            validate_salesforce_id(fields["WhatId"], "WhatId")
+        result = await salesforce.create_record("Task", fields)
+        task_id = result.get("id") or result.get("Id")
+        cache.invalidate_prefix("my-tasks:")
+        cache.invalidate_prefix("opportunity-tasks:")
+        cache.invalidate_prefix("account-tasks:")
+        cache.invalidate_prefix("contact-tasks:")
+        cache.invalidate_prefix("user-tasks:")
+
+        verify = await _verify_and_recover_task_fields(salesforce, task_id, fields)
+        return ApiResponse(
+            success=True,
+            data={
+                "id": task_id,
+                "message": "Task created",
+                "saved_subject": verify["saved"].get("Subject"),
+                "subject_clobbered": "Subject" in verify["clobbered"],
+                "clobbered_fields": list(verify["clobbered"].keys()),
+                "saved_values": verify["saved"],
+            },
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating task: {e}")
         raise HTTPException(status_code=500, detail="Failed to create task")
 
 
