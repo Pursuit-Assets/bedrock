@@ -6,7 +6,9 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { AccountAvatar } from "@/components/AccountAvatar";
 import { OpportunityExpandPanel, OPP_PANEL_HEIGHT } from "@/components/OpportunityExpandPanel";
 import { PageHeader } from "@/components/PageHeader";
+import { PaymentScheduleBuilder } from "@/components/PaymentScheduleBuilder";
 import { StageGateDialog } from "@/components/StageGateDialog";
+import { useProbabilityScheduleGate } from "@/lib/useProbabilityScheduleGate";
 import { useStageChangeGate } from "@/lib/useStageChangeGate";
 import { ColumnChooser } from "@/components/ui/ColumnChooser";
 import { InlineDate, InlineSelect, InlineText } from "@/components/ui/InlineEdit";
@@ -428,6 +430,7 @@ export function PipelinePage() {
   // prompt for the playbook's required fields before the mutation
   // fires. Unrestricted transitions still fire the mutation directly.
   const stageGate = useStageChangeGate();
+  const probGate = useProbabilityScheduleGate();
   const saveStage = useCallback(
     async (opp: SfOpportunity, stage: string) => {
       await stageGate.request(opp, stage);
@@ -456,6 +459,13 @@ export function PipelinePage() {
           throw new Error("0–100");
         }
       }
+      // Playbook rule: cannot raise probability from 0 → >0 without a
+      // payment schedule. The gate fetches the opp's payments; if none
+      // exist it opens PaymentScheduleBuilder and rejects this promise
+      // — InlineSelect catches and reverts the optimistic display. The
+      // promise resolves only after the user saves a schedule.
+      await probGate.request(opp, parsed);
+
       // Match what Salesforce does when you edit Mgr Prob in its UI:
       // it propagates the override into Probability so the two stay in
       // sync. We only co-write Probability when the user set a value —
@@ -463,23 +473,8 @@ export function PipelinePage() {
       const patch: Record<string, unknown> = { Manager_Probability_Override__c: parsed };
       if (parsed != null) patch.Probability = parsed;
       await updateOpp.mutateAsync({ id: opp.Id, patch });
-
-      // Playbook rule: when probability moves from 0 → >0 on an opp,
-      // the RM should set a payment schedule (signals the deal is
-      // becoming real money). Surface a toast with a navigation
-      // action — the full builder lives on the opp detail page.
-      const prev = opp.Manager_Probability_Override__c ?? opp.Probability ?? 0;
-      if (prev <= 0 && parsed != null && parsed > 0) {
-        toast.info("Probability is now > 0 — add a payment schedule for this opp", {
-          action: {
-            label: "Open opp",
-            onClick: () => navigate(`/opportunities/${opp.Id}`, { state: PIPELINE_REFERRER }),
-          },
-          duration: 8000,
-        });
-      }
     },
-    [updateOpp, navigate],
+    [updateOpp, probGate],
   );
 
   const saveOwner = useCallback(
@@ -834,6 +829,18 @@ export function PipelinePage() {
           toStage={stageGate.pending.toStage}
           onClose={stageGate.dismiss}
           onCompleted={stageGate.complete}
+        />
+      ) : null}
+
+      {probGate.pending ? (
+        <PaymentScheduleBuilder
+          opportunityId={probGate.pending.opp.Id}
+          oppAmount={probGate.pending.opp.Amount ?? null}
+          existingPayments={[]}
+          initialFirstDate={probGate.pending.opp.CloseDate ?? null}
+          prompt={`Raising probability to ${probGate.pending.nextProbability}% — set the expected payment schedule before continuing.`}
+          onClose={probGate.dismiss}
+          onSaved={probGate.complete}
         />
       ) : null}
     </div>

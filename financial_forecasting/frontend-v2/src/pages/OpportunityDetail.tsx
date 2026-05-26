@@ -22,6 +22,7 @@ import { StageChip } from "@/components/ui/StageChip";
 import { Tag } from "@/components/ui/Tag";
 import { fmtDate, fmtMoneyFull } from "@/lib/format";
 import { getStageGate } from "@/lib/stageGates";
+import { useProbabilityScheduleGate } from "@/lib/useProbabilityScheduleGate";
 import { useStageChangeGate } from "@/lib/useStageChangeGate";
 import { SF_STAGE_OPTIONS, stageStatus } from "@/lib/stages";
 import { cn } from "@/lib/utils";
@@ -71,6 +72,7 @@ export function OpportunityDetailPage() {
   const updateOpp = useUpdateOpportunity();
   const updateStage = useUpdateOpportunityStage();
   const stageGate = useStageChangeGate();
+  const probGate = useProbabilityScheduleGate();
   const createAccount = useCreateAccount();
   const createContact = useCreateContact();
 
@@ -286,6 +288,8 @@ export function OpportunityDetailPage() {
                 // Clearing the override (null) lets SF restore the
                 // stage-driven default — don't touch Probability then.
                 const next = v ? Number(v) : null;
+                // Playbook gate: 0 → >0 requires a payment schedule.
+                await probGate.request(opp, next);
                 const body: Record<string, unknown> = { Manager_Probability_Override__c: next };
                 if (next != null) body.Probability = next;
                 await updateOpp.mutateAsync({ id: opp.Id, patch: body });
@@ -446,6 +450,18 @@ export function OpportunityDetailPage() {
           toStage={stageGate.pending.toStage}
           onClose={stageGate.dismiss}
           onCompleted={stageGate.complete}
+        />
+      ) : null}
+
+      {probGate.pending ? (
+        <PaymentScheduleBuilder
+          opportunityId={probGate.pending.opp.Id}
+          oppAmount={probGate.pending.opp.Amount ?? null}
+          existingPayments={payments}
+          initialFirstDate={probGate.pending.opp.CloseDate ?? null}
+          prompt={`Raising probability to ${probGate.pending.nextProbability}% — set the expected payment schedule before continuing.`}
+          onClose={probGate.dismiss}
+          onSaved={probGate.complete}
         />
       ) : null}
 

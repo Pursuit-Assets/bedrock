@@ -14,6 +14,7 @@ import { Link } from "react-router-dom";
 import { ChevronDown, ChevronRight, ExternalLink } from "lucide-react";
 
 import { OpportunityExpandPanel } from "@/components/OpportunityExpandPanel";
+import { PaymentScheduleBuilder } from "@/components/PaymentScheduleBuilder";
 import { StageGateDialog } from "@/components/StageGateDialog";
 import { SectionCard, withReferrer } from "@/components/detail";
 import { StageChip } from "@/components/ui/StageChip";
@@ -24,6 +25,7 @@ import { fmtDate, fmtMoney } from "@/lib/format";
 import { riskForOpenOpp, riskTextClass } from "@/lib/risk";
 import { sortBy, useSort } from "@/lib/sort";
 import { isLost, isOpen, isWon, SF_STAGE_OPTIONS, stageStatus } from "@/lib/stages";
+import { useProbabilityScheduleGate } from "@/lib/useProbabilityScheduleGate";
 import { useStageChangeGate } from "@/lib/useStageChangeGate";
 import { useUpdateOpportunity } from "@/services/opportunities";
 import type { SfOpportunity } from "@/types/salesforce";
@@ -48,6 +50,7 @@ export function PortfolioOpportunities({
 }: PortfolioOpportunitiesProps) {
   const updateOpp = useUpdateOpportunity();
   const stageGate = useStageChangeGate();
+  const probGate = useProbabilityScheduleGate();
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<OppFilter>("open");
@@ -313,15 +316,17 @@ export function PortfolioOpportunities({
                                 ? String(o.Probability)
                                 : ""
                           }
-                          onSave={(v) => {
+                          onSave={async (v) => {
                             const n = v ? Number(v.replace(/[^\d.-]/g, "")) : null;
+                            // Block 0 → >0 raises that don't have a
+                            // payment schedule yet — opens the builder,
+                            // rejection here reverts the optimistic.
+                            await probGate.request(o, n);
                             // Mirror SF's UI: co-write Probability with the
                             // override when set. Clearing falls back to SF.
                             const patch: Record<string, unknown> = { Manager_Probability_Override__c: n };
                             if (n != null) patch.Probability = n;
-                            return Promise.resolve(
-                              updateOpp.mutate({ id: o.Id, patch }),
-                            );
+                            await updateOpp.mutateAsync({ id: o.Id, patch });
                           }}
                           formatDisplay={(raw) => {
                             const n = Number(raw.replace(/[^\d.-]/g, ""));
@@ -393,6 +398,17 @@ export function PortfolioOpportunities({
         toStage={stageGate.pending.toStage}
         onClose={stageGate.dismiss}
         onCompleted={stageGate.complete}
+      />
+    ) : null}
+    {probGate.pending ? (
+      <PaymentScheduleBuilder
+        opportunityId={probGate.pending.opp.Id}
+        oppAmount={probGate.pending.opp.Amount ?? null}
+        existingPayments={[]}
+        initialFirstDate={probGate.pending.opp.CloseDate ?? null}
+        prompt={`Raising probability to ${probGate.pending.nextProbability}% — set the expected payment schedule before continuing.`}
+        onClose={probGate.dismiss}
+        onSaved={probGate.complete}
       />
     ) : null}
     </>

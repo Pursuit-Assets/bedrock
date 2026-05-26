@@ -3,6 +3,7 @@ import { Loader2, X } from "lucide-react";
 import { toast } from "sonner";
 
 import { OpportunityFilesPicker } from "@/components/OpportunityFilesPicker";
+import { PaymentScheduleBuilder } from "@/components/PaymentScheduleBuilder";
 import { useUpdateOpportunity, useUpdateOpportunityStage } from "@/services/opportunities";
 import { useOpportunityPayments } from "@/services/payments";
 import { fmtMoney } from "@/lib/format";
@@ -52,6 +53,7 @@ export function StageGateDialog({
   const [closeReason, setCloseReason] = useState<string>("");
   const [fileSatisfied, setFileSatisfied] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [scheduleBuilderOpen, setScheduleBuilderOpen] = useState(false);
 
   // Payment schedule "satisfied" — at least one payment whose total
   // matches the opp amount (mirrors the backend check in
@@ -64,14 +66,16 @@ export function StageGateDialog({
   const paymentScheduleSatisfied =
     payments.length > 0 && Number.isFinite(amountNum) && Math.abs(paymentTotal - amountNum) < 0.01;
 
-  // Close on Esc.
+  // Close on Esc. Skip while the nested PaymentScheduleBuilder is open
+  // — that modal owns Esc until it closes, otherwise one keypress
+  // collapses both layers and loses the user's in-progress schedule.
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !submitting) onClose();
+      if (e.key === "Escape" && !submitting && !scheduleBuilderOpen) onClose();
     };
     document.addEventListener("keydown", h);
     return () => document.removeEventListener("keydown", h);
-  }, [onClose, submitting]);
+  }, [onClose, submitting, scheduleBuilderOpen]);
 
   // Validation — what's required for the primary button to enable.
   const errors: string[] = [];
@@ -216,10 +220,28 @@ export function StageGateDialog({
                         : `${fmtMoney(paymentTotal)} of ${fmtMoney(amountNum)} scheduled`}
                   </span>
                 </div>
-                <p className="mt-1 text-[11.5px] text-ink-3">
-                  Use the Payments page or this opportunity's row-expand panel to add/edit individual payments,
-                  then return here.
-                </p>
+                <div className="mt-2 flex items-center justify-between gap-2">
+                  <p className="text-[11.5px] text-ink-3">
+                    {payments.length === 0
+                      ? "Set up the schedule of payments expected for this award."
+                      : "Edit dates and amounts inline, then save to update the schedule."}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setScheduleBuilderOpen(true)}
+                    disabled={!Number.isFinite(amountNum) || amountNum <= 0}
+                    className="flex-shrink-0 rounded border border-border-strong bg-surface px-2.5 py-1 text-[11.5px] font-medium text-ink-2 hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-50"
+                    title={
+                      !Number.isFinite(amountNum) || amountNum <= 0
+                        ? "Set the Amount above first — the schedule total must match it"
+                        : payments.length === 0
+                          ? "Create payment schedule"
+                          : "Edit payment schedule"
+                    }
+                  >
+                    {payments.length === 0 ? "Create schedule" : "Edit schedule"}
+                  </button>
+                </div>
               </div>
             ) : null}
 
@@ -275,6 +297,26 @@ export function StageGateDialog({
           </button>
         </footer>
       </div>
+      {scheduleBuilderOpen ? (
+        <PaymentScheduleBuilder
+          opportunityId={opp.Id}
+          oppAmount={Number.isFinite(amountNum) && amountNum > 0 ? amountNum : opp.Amount ?? null}
+          existingPayments={payments}
+          initialFirstDate={closeDate || null}
+          prompt={
+            payments.length === 0
+              ? `Define the expected payment schedule for this ${spec.title.toLowerCase()}.`
+              : null
+          }
+          onClose={() => setScheduleBuilderOpen(false)}
+          onSaved={() => {
+            // useOpportunityPayments query invalidation handled inside
+            // the builder's hooks; the satisfied state recomputes on
+            // refetch. Toast for the user so they know the save landed.
+            toast.success("Payment schedule saved");
+          }}
+        />
+      ) : null}
     </div>
   );
 }

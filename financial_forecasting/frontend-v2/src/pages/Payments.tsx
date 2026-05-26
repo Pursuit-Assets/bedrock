@@ -25,7 +25,6 @@ import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } fro
 import { useNavigate } from "react-router-dom";
 import { ChevronDown, ChevronRight, Search } from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { toast } from "sonner";
 
 import { AccountAvatar } from "@/components/AccountAvatar";
 import { OpportunityExpandPanel, OPP_PANEL_HEIGHT } from "@/components/OpportunityExpandPanel";
@@ -45,8 +44,10 @@ import { fmtDate, fmtMoney, fmtMoneyFull } from "@/lib/format";
 import { sortBy, useSort } from "@/lib/sort";
 import { SF_STAGE_OPTIONS, stageStatus } from "@/lib/stages";
 import { useSessionState } from "@/lib/useSessionState";
+import { useProbabilityScheduleGate } from "@/lib/useProbabilityScheduleGate";
 import { useStageChangeGate } from "@/lib/useStageChangeGate";
 import { useUpdateOpportunity } from "@/services/opportunities";
+import { PaymentScheduleBuilder } from "@/components/PaymentScheduleBuilder";
 import { StageGateDialog } from "@/components/StageGateDialog";
 import type { SfOpportunity } from "@/types/salesforce";
 import {
@@ -401,6 +402,7 @@ export function PaymentsPage() {
   // auto-create handshake; useUpdateOpportunity is generic.
   const updateOpp = useUpdateOpportunity();
   const stageGate = useStageChangeGate();
+  const probGate = useProbabilityScheduleGate();
   const canEdit = usePerm("edit_all_opportunities");
 
   const payments = data ?? [];
@@ -543,31 +545,35 @@ export function PaymentsPage() {
   );
 
   const saveOppMgrProb = useCallback(
-    async (oppId: string, raw: string, prevProb: number) => {
-      // Empty input clears the override (null) so SF falls back to the
-      // stage-derived Probability. Otherwise coerce to a number; the
-      // backend's PUT accepts any number, no client-side range clamp.
-      // Mirror SF's UI behavior: when a value is set, write Probability
-      // alongside the override so the two fields stay in sync.
+    async (p: SfPayment, raw: string) => {
+      const oppId = p.npe01__Opportunity__c;
+      if (!oppId) return;
+      const joined = p.npe01__Opportunity__r ?? {};
       const trimmed = raw.trim();
       const next = trimmed === "" ? null : Number(trimmed.replace(/[^0-9.-]/g, ""));
+
+      // Build a minimal SfOpportunity for the playbook gate. The gate
+      // looks at Probability + override + Amount + Id; all are on the
+      // payment row's join.
+      const opp: SfOpportunity = {
+        Id: oppId,
+        Name: joined.Name ?? "",
+        StageName: joined.StageName ?? "",
+        Probability: joined.Probability ?? null,
+        Amount: joined.Amount ?? null,
+        Manager_Probability_Override__c: joined.Manager_Probability_Override__c ?? null,
+        CloseDate: joined.CloseDate ?? null,
+      } as SfOpportunity;
+      // Block 0 → >0 if no schedule exists; opens PaymentScheduleBuilder
+      // and resolves only after save. Rejection here reverts the
+      // InlineText's optimistic display via its own catch handler.
+      await probGate.request(opp, next);
+
       const patch: Record<string, unknown> = { Manager_Probability_Override__c: next };
       if (next != null) patch.Probability = next;
       await updateOpp.mutateAsync({ id: oppId, patch });
-
-      // 0 → >0 trigger: surface the payment-schedule prompt. Full
-      // builder lives on the opp detail page; toast with action.
-      if (prevProb <= 0 && next != null && next > 0) {
-        toast.info("Probability is now > 0 — add a payment schedule for this opp", {
-          action: {
-            label: "Open opp",
-            onClick: () => navigate(`/opportunities/${oppId}`, { state: PAYMENTS_REFERRER }),
-          },
-          duration: 8000,
-        });
-      }
     },
-    [updateOpp, navigate],
+    [updateOpp, probGate],
   );
 
   // ── Virtualization ─────────────────────────────────────────────────
@@ -808,6 +814,17 @@ export function PaymentsPage() {
           onCompleted={stageGate.complete}
         />
       ) : null}
+      {probGate.pending ? (
+        <PaymentScheduleBuilder
+          opportunityId={probGate.pending.opp.Id}
+          oppAmount={probGate.pending.opp.Amount ?? null}
+          existingPayments={[]}
+          initialFirstDate={probGate.pending.opp.CloseDate ?? null}
+          prompt={`Raising probability to ${probGate.pending.nextProbability}% — set the expected payment schedule before continuing.`}
+          onClose={probGate.dismiss}
+          onSaved={probGate.complete}
+        />
+      ) : null}
     </div>
   );
 }
@@ -822,7 +839,7 @@ interface RowProps {
   onToggleExpand: () => void;
   onSave: (id: string, patch: PaymentPatch) => Promise<void>;
   onSaveOppStage: (p: SfPayment, nextStage: string) => Promise<void>;
-  onSaveOppMgrProb: (oppId: string, raw: string, prevProb: number) => Promise<void>;
+  onSaveOppMgrProb: (p: SfPayment, raw: string) => Promise<void>;
   onOpenOpp: (oppId: string) => void;
 }
 
@@ -944,11 +961,7 @@ const PaymentRow = memo(function PaymentRow({
               ? String(opp.Probability)
               : ""
         }
-        onSave={(v) => onSaveOppMgrProb(
-          oppId,
-          v,
-          opp?.Manager_Probability_Override__c ?? opp?.Probability ?? 0,
-        )}
+        onSave={(v) => onSaveOppMgrProb(p, v)}
         formatDisplay={(raw) => {
           const n = Number(raw);
           return Number.isFinite(n) ? `${n}%` : raw;
