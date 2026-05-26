@@ -14,6 +14,7 @@ import { Link } from "react-router-dom";
 import { ChevronDown, ChevronRight, ExternalLink } from "lucide-react";
 
 import { OpportunityExpandPanel } from "@/components/OpportunityExpandPanel";
+import { StageGateDialog } from "@/components/StageGateDialog";
 import { SectionCard, withReferrer } from "@/components/detail";
 import { StageChip } from "@/components/ui/StageChip";
 import { Tag } from "@/components/ui/Tag";
@@ -23,10 +24,8 @@ import { fmtDate, fmtMoney } from "@/lib/format";
 import { riskForOpenOpp, riskTextClass } from "@/lib/risk";
 import { sortBy, useSort } from "@/lib/sort";
 import { isLost, isOpen, isWon, SF_STAGE_OPTIONS, stageStatus } from "@/lib/stages";
-import {
-  useUpdateOpportunity,
-  useUpdateOpportunityStage,
-} from "@/services/opportunities";
+import { useStageChangeGate } from "@/lib/useStageChangeGate";
+import { useUpdateOpportunity } from "@/services/opportunities";
 import type { SfOpportunity } from "@/types/salesforce";
 
 import { TableToolbar } from "./TableToolbar";
@@ -48,7 +47,7 @@ export function PortfolioOpportunities({
   canEdit,
 }: PortfolioOpportunitiesProps) {
   const updateOpp = useUpdateOpportunity();
-  const updateStage = useUpdateOpportunityStage();
+  const stageGate = useStageChangeGate();
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<OppFilter>("open");
@@ -105,6 +104,7 @@ export function PortfolioOpportunities({
   }, [opps, query, statusFilter, highPriorityOnly, sort]);
 
   return (
+    <>
     <SectionCard
       title={`Opportunities (${visible.length}${visible.length !== opps.length ? ` of ${opps.length}` : ""})`}
       storageScope="portfolio"
@@ -256,11 +256,7 @@ export function PortfolioOpportunities({
                         <InlineSelect
                           value={o.StageName}
                           options={SF_STAGE_OPTIONS}
-                          onSave={(stage) =>
-                            Promise.resolve(
-                              updateStage.mutate({ id: o.Id, newStage: stage }),
-                            )
-                          }
+                          onSave={(stage) => stageGate.request(o, stage)}
                           renderValue={(v) =>
                             v ? (
                               <StageChip stage={v} status={stageStatus(o)} />
@@ -390,6 +386,16 @@ export function PortfolioOpportunities({
         </table>
       )}
     </SectionCard>
+    {stageGate.pending ? (
+      <StageGateDialog
+        spec={stageGate.pending.spec}
+        opp={stageGate.pending.opp}
+        toStage={stageGate.pending.toStage}
+        onClose={stageGate.dismiss}
+        onCompleted={stageGate.complete}
+      />
+    ) : null}
+    </>
   );
 }
 

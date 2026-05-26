@@ -833,6 +833,7 @@ export function PipelinePage() {
           opp={stageGate.pending.opp}
           toStage={stageGate.pending.toStage}
           onClose={stageGate.dismiss}
+          onCompleted={stageGate.complete}
         />
       ) : null}
     </div>

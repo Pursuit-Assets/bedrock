@@ -45,7 +45,10 @@ import { fmtDate, fmtMoney, fmtMoneyFull } from "@/lib/format";
 import { sortBy, useSort } from "@/lib/sort";
 import { SF_STAGE_OPTIONS, stageStatus } from "@/lib/stages";
 import { useSessionState } from "@/lib/useSessionState";
-import { useUpdateOpportunity, useUpdateOpportunityStage } from "@/services/opportunities";
+import { useStageChangeGate } from "@/lib/useStageChangeGate";
+import { useUpdateOpportunity } from "@/services/opportunities";
+import { StageGateDialog } from "@/components/StageGateDialog";
+import type { SfOpportunity } from "@/types/salesforce";
 import {
   AddFilterButton,
   FilterChip,
@@ -397,7 +400,7 @@ export function PaymentsPage() {
   // useUpdateOpportunityStage handles the SF validate + award
   // auto-create handshake; useUpdateOpportunity is generic.
   const updateOpp = useUpdateOpportunity();
-  const updateStage = useUpdateOpportunityStage();
+  const stageGate = useStageChangeGate();
   const canEdit = usePerm("edit_all_opportunities");
 
   const payments = data ?? [];
@@ -513,10 +516,30 @@ export function PaymentsPage() {
   );
 
   const saveOppStage = useCallback(
-    async (oppId: string, nextStage: string) => {
-      await updateStage.mutateAsync({ id: oppId, newStage: nextStage });
+    async (p: SfPayment, nextStage: string) => {
+      const oppId = p.npe01__Opportunity__c;
+      if (!oppId) return;
+      const joined = p.npe01__Opportunity__r ?? {};
+      // Construct a minimal SfOpportunity from the join so the gate
+      // can introspect the current stage / amount / probability and
+      // seed the dialog. Fields the gate looks at are all present on
+      // the join (StageName, CloseDate, Amount, Probability, override).
+      const opp: SfOpportunity = {
+        Id: oppId,
+        Name: joined.Name ?? "",
+        StageName: joined.StageName ?? "",
+        IsClosed: null,
+        Probability: joined.Probability ?? null,
+        Amount: joined.Amount ?? null,
+        Manager_Probability_Override__c: joined.Manager_Probability_Override__c ?? null,
+        CloseDate: joined.CloseDate ?? null,
+        Active_Opportunity__c: joined.Active_Opportunity__c ?? null,
+        Account: joined.Account ? { Id: joined.AccountId ?? "", Name: joined.Account.Name ?? "" } : null,
+        AccountId: joined.AccountId ?? null,
+      } as SfOpportunity;
+      await stageGate.request(opp, nextStage);
     },
-    [updateStage],
+    [stageGate],
   );
 
   const saveOppMgrProb = useCallback(
@@ -776,6 +799,15 @@ export function PaymentsPage() {
           </tbody>
         </table>
       </div>
+      {stageGate.pending ? (
+        <StageGateDialog
+          spec={stageGate.pending.spec}
+          opp={stageGate.pending.opp}
+          toStage={stageGate.pending.toStage}
+          onClose={stageGate.dismiss}
+          onCompleted={stageGate.complete}
+        />
+      ) : null}
     </div>
   );
 }
@@ -789,7 +821,7 @@ interface RowProps {
   isExpanded: boolean;
   onToggleExpand: () => void;
   onSave: (id: string, patch: PaymentPatch) => Promise<void>;
-  onSaveOppStage: (oppId: string, nextStage: string) => Promise<void>;
+  onSaveOppStage: (p: SfPayment, nextStage: string) => Promise<void>;
   onSaveOppMgrProb: (oppId: string, raw: string, prevProb: number) => Promise<void>;
   onOpenOpp: (oppId: string) => void;
 }
@@ -876,7 +908,7 @@ const PaymentRow = memo(function PaymentRow({
       <InlineSelect
         value={opp?.StageName ?? ""}
         options={stageOpts}
-        onSave={(v) => onSaveOppStage(oppId, v)}
+        onSave={(v) => onSaveOppStage(p, v)}
         renderValue={(v) =>
           v
             ? <StageChip stage={v} status={stageStatus({ StageName: v, IsClosed: false })} />

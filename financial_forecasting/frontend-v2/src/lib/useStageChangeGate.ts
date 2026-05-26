@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 
 import { getStageGate, type StageGateSpec } from "@/lib/stageGates";
 import { useUpdateOpportunityStage } from "@/services/opportunities";
@@ -13,38 +13,64 @@ interface PendingGate {
 /**
  * Wraps a stage-change request with the playbook's gate checklist.
  *
- *   const { request, pending, dismiss } = useStageChangeGate();
- *   // In your inline-edit save: request(opp, newStage)
- *   // In the render tree: {pending && <StageGateDialog spec={pending.spec} ... />}
+ *   const { request, pending, dismiss, complete } = useStageChangeGate();
+ *   // In your inline-edit save: await request(opp, newStage)
+ *   // In the render tree: {pending && <StageGateDialog .../>}
  *
- * When `getStageGate(from, to)` returns null, this hook just fires
- * the underlying `useUpdateOpportunityStage` mutation directly —
- * unrestricted transitions don't pay the dialog overhead.
+ * Behavior:
+ * - When `getStageGate(from, to)` returns null, fires the mutation
+ *   directly and resolves on success.
+ * - When a gate exists, returns a Promise that RESOLVES when the
+ *   user confirms (and the stage update succeeds) and REJECTS when
+ *   the user cancels / closes the dialog. The rejection lets the
+ *   calling InlineSelect roll back its optimistic display so the
+ *   cell shows the original stage again — otherwise the cell would
+ *   look stuck on the new stage even though nothing was written.
  *
- * The dialog itself owns field updates + the stage change call
- * (StageGateDialog imports useUpdateOpportunityStage internally).
- * This hook is just the open / close state machine.
+ * StageGateDialog calls `complete()` after a successful submit and
+ * `dismiss()` on Cancel / Esc / backdrop click.
  */
 export function useStageChangeGate() {
   const [pending, setPending] = useState<PendingGate | null>(null);
   const updateStage = useUpdateOpportunityStage();
+  const resolverRef = useRef<{
+    resolve: () => void;
+    reject: (err: Error) => void;
+  } | null>(null);
 
   const request = useCallback(
-    async (opp: SfOpportunity, newStage: string) => {
+    (opp: SfOpportunity, newStage: string): Promise<void> => {
       const fromStage = opp.StageName ?? "";
       const spec = getStageGate(fromStage, newStage);
       if (!spec) {
         // No gate — fire the mutation directly. Existing optimistic
         // update + awards handshake apply.
-        await updateStage.mutateAsync({ id: opp.Id, newStage });
-        return;
+        return updateStage.mutateAsync({ id: opp.Id, newStage }).then(() => undefined);
       }
-      setPending({ opp, toStage: newStage, spec });
+      return new Promise<void>((resolve, reject) => {
+        resolverRef.current = { resolve, reject };
+        setPending({ opp, toStage: newStage, spec });
+      });
     },
     [updateStage],
   );
 
-  const dismiss = useCallback(() => setPending(null), []);
+  /** Called by StageGateDialog when the user successfully completes
+   *  the checklist + stage change. */
+  const complete = useCallback(() => {
+    resolverRef.current?.resolve();
+    resolverRef.current = null;
+    setPending(null);
+  }, []);
 
-  return { pending, request, dismiss };
+  /** Called on Cancel / Esc / backdrop click. Rejects the outer
+   *  promise so the caller (InlineSelect) reverts the optimistic
+   *  display. */
+  const dismiss = useCallback(() => {
+    resolverRef.current?.reject(new Error("Stage change cancelled"));
+    resolverRef.current = null;
+    setPending(null);
+  }, []);
+
+  return { pending, request, dismiss, complete };
 }

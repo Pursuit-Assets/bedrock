@@ -445,6 +445,7 @@ export function OpportunityDetailPage() {
           opp={stageGate.pending.opp}
           toStage={stageGate.pending.toStage}
           onClose={stageGate.dismiss}
+          onCompleted={stageGate.complete}
         />
       ) : null}
 
