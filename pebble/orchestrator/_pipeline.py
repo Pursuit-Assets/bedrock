@@ -387,20 +387,37 @@ def _rank_claims(claims: list[dict]) -> list[dict]:
 def _safe_truncate(records, max_chars: int = 2000) -> str:
     """Serialize records individually, stop when byte limit reached.
     Fail-soft per item: a non-JSON-serializable claim is dropped from
-    the output (with a log) rather than crashing the synthesis."""
+    the output (with a log) rather than crashing the synthesis.
+
+    Logs a warning if the byte-cap dropped any items so the operator
+    can see when the synth prompt is starving for evidence — a sign
+    that the truncation budget needs raising or the claim pool is
+    unusually verbose."""
     parts = []
     total = 2  # for "[]"
     items = records if isinstance(records, list) else [records]
+    items_total = len(items)
+    serialized = 0
+    skipped_unserializable = 0
     for r in items:
         try:
             s = json.dumps(r, default=str)
         except (TypeError, ValueError) as e:
             logger.warning("_safe_truncate: skipping unserializable item: %s", e)
+            skipped_unserializable += 1
             continue
         if total + len(s) + 2 > max_chars:
             break
         parts.append(s)
         total += len(s) + 2
+        serialized += 1
+    dropped = items_total - serialized - skipped_unserializable
+    if dropped > 0:
+        logger.warning(
+            "_safe_truncate: byte-cap dropped %d of %d items at max_chars=%d "
+            "(serialized=%d, unserializable=%d)",
+            dropped, items_total, max_chars, serialized, skipped_unserializable,
+        )
     return "[" + ", ".join(parts) + "]"
 
 
