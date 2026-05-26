@@ -57,7 +57,10 @@ export function StageGateDialog({
         : "",
   );
   const [closeReason, setCloseReason] = useState<string>("");
-  const [fileSatisfied, setFileSatisfied] = useState(false);
+  // Per-hint satisfied state — multi-stage jumps can require several
+  // attachments at once (proposal + signed contract, etc.). Keyed by
+  // the hint string so each picker tracks independently.
+  const [fileSatisfied, setFileSatisfied] = useState<Record<string, boolean>>({});
   // The dialog uses optimistic close + background SF writes, so
   // there's no "submitting" spinner state to track here. Kept as a
   // const for the disabled-guards below in case we ever need to
@@ -103,7 +106,9 @@ export function StageGateDialog({
         : `Payment schedule total (${fmtMoney(paymentTotal)}) must match amount (${fmtMoney(amountNum)})`,
     );
   }
-  if (spec.fileAttachment && !fileSatisfied) errors.push(`A ${spec.fileAttachment.label.toLowerCase()} must be attached`);
+  for (const f of spec.fileAttachments ?? []) {
+    if (!fileSatisfied[f.hint]) errors.push(`A ${f.label.toLowerCase()} must be attached`);
+  }
   if (spec.closeReason && !closeReason.trim()) errors.push("Close reason is required");
 
   const canSubmit = errors.length === 0 && !submitting;
@@ -313,14 +318,19 @@ export function StageGateDialog({
               />
             ) : null}
 
-            {spec.fileAttachment ? (
+            {(spec.fileAttachments ?? []).map((f) => (
               <OpportunityFilesPicker
+                key={f.hint}
                 opportunityId={opp.Id}
-                label={spec.fileAttachment.label}
-                filenameHint={spec.fileAttachment.hint}
-                onSatisfiedChange={setFileSatisfied}
+                label={f.label}
+                filenameHint={f.hint}
+                onSatisfiedChange={(sat) =>
+                  setFileSatisfied((prev) =>
+                    prev[f.hint] === sat ? prev : { ...prev, [f.hint]: sat },
+                  )
+                }
               />
-            ) : null}
+            ))}
 
             {spec.closeReason ? (
               <label className="flex flex-col gap-1">
