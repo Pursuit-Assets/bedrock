@@ -25,6 +25,7 @@ import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } fro
 import { useNavigate } from "react-router-dom";
 import { ChevronDown, ChevronRight, Search } from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
+import { toast } from "sonner";
 
 import { AccountAvatar } from "@/components/AccountAvatar";
 import { OpportunityExpandPanel, OPP_PANEL_HEIGHT } from "@/components/OpportunityExpandPanel";
@@ -519,7 +520,7 @@ export function PaymentsPage() {
   );
 
   const saveOppMgrProb = useCallback(
-    async (oppId: string, raw: string) => {
+    async (oppId: string, raw: string, prevProb: number) => {
       // Empty input clears the override (null) so SF falls back to the
       // stage-derived Probability. Otherwise coerce to a number; the
       // backend's PUT accepts any number, no client-side range clamp.
@@ -530,8 +531,20 @@ export function PaymentsPage() {
       const patch: Record<string, unknown> = { Manager_Probability_Override__c: next };
       if (next != null) patch.Probability = next;
       await updateOpp.mutateAsync({ id: oppId, patch });
+
+      // 0 → >0 trigger: surface the payment-schedule prompt. Full
+      // builder lives on the opp detail page; toast with action.
+      if (prevProb <= 0 && next != null && next > 0) {
+        toast.info("Probability is now > 0 — add a payment schedule for this opp", {
+          action: {
+            label: "Open opp",
+            onClick: () => navigate(`/opportunities/${oppId}`, { state: PAYMENTS_REFERRER }),
+          },
+          duration: 8000,
+        });
+      }
     },
-    [updateOpp],
+    [updateOpp, navigate],
   );
 
   // ── Virtualization ─────────────────────────────────────────────────
@@ -777,7 +790,7 @@ interface RowProps {
   onToggleExpand: () => void;
   onSave: (id: string, patch: PaymentPatch) => Promise<void>;
   onSaveOppStage: (oppId: string, nextStage: string) => Promise<void>;
-  onSaveOppMgrProb: (oppId: string, raw: string) => Promise<void>;
+  onSaveOppMgrProb: (oppId: string, raw: string, prevProb: number) => Promise<void>;
   onOpenOpp: (oppId: string) => void;
 }
 
@@ -899,7 +912,11 @@ const PaymentRow = memo(function PaymentRow({
               ? String(opp.Probability)
               : ""
         }
-        onSave={(v) => onSaveOppMgrProb(oppId, v)}
+        onSave={(v) => onSaveOppMgrProb(
+          oppId,
+          v,
+          opp?.Manager_Probability_Override__c ?? opp?.Probability ?? 0,
+        )}
         formatDisplay={(raw) => {
           const n = Number(raw);
           return Number.isFinite(n) ? `${n}%` : raw;

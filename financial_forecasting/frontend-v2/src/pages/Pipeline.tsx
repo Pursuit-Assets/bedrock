@@ -448,7 +448,7 @@ export function PipelinePage() {
   );
 
   const saveProbability = useCallback(
-    async (id: string, raw: string) => {
+    async (opp: SfOpportunity, raw: string) => {
       const cleaned = raw.replace(/[%\s]/g, "");
       const parsed = cleaned === "" ? null : Number.parseInt(cleaned, 10);
       if (parsed != null) {
@@ -462,9 +462,24 @@ export function PipelinePage() {
       // clearing the override falls back to SF's stage-driven default.
       const patch: Record<string, unknown> = { Manager_Probability_Override__c: parsed };
       if (parsed != null) patch.Probability = parsed;
-      await updateOpp.mutateAsync({ id, patch });
+      await updateOpp.mutateAsync({ id: opp.Id, patch });
+
+      // Playbook rule: when probability moves from 0 → >0 on an opp,
+      // the RM should set a payment schedule (signals the deal is
+      // becoming real money). Surface a toast with a navigation
+      // action — the full builder lives on the opp detail page.
+      const prev = opp.Manager_Probability_Override__c ?? opp.Probability ?? 0;
+      if (prev <= 0 && parsed != null && parsed > 0) {
+        toast.info("Probability is now > 0 — add a payment schedule for this opp", {
+          action: {
+            label: "Open opp",
+            onClick: () => navigate(`/opportunities/${opp.Id}`, { state: PIPELINE_REFERRER }),
+          },
+          duration: 8000,
+        });
+      }
     },
-    [updateOpp],
+    [updateOpp, navigate],
   );
 
   const saveOwner = useCallback(
@@ -745,7 +760,7 @@ export function PipelinePage() {
                         onOpen={() => navigate(`/opportunities/${o.Id}`, { state: PIPELINE_REFERRER })}
                         onSaveStage={(stage) => saveStage(o, stage)}
                         onSaveAmount={(raw) => saveAmount(o.Id, raw)}
-                        onSaveProbability={(raw) => saveProbability(o.Id, raw)}
+                        onSaveProbability={(raw) => saveProbability(o, raw)}
                         onSaveOwner={(ownerId) => saveOwner(o.Id, ownerId)}
                         onSavePaymentDate={(next) => savePaymentDate(o.Id, next)}
                         onSavePriority={(next) => savePriority(o.Id, next)}
