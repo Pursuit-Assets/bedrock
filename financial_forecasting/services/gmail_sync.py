@@ -342,8 +342,14 @@ async def sync_gmail_for_staff(
     conn,
     staff_email: str,
     days_back: int = 90,
+    override_since: datetime | None = None,
+    override_until: datetime | None = None,
 ) -> dict:
-    """Sync Gmail threads for one staff member. Returns summary dict."""
+    """Sync Gmail threads for one staff member. Returns summary dict.
+
+    override_since / override_until bypass the watermark for historical backfills.
+    When both are set, the watermark is not read or written.
+    """
     from services.google_dwd import is_dwd_configured
 
     if not is_dwd_configured():
@@ -351,11 +357,17 @@ async def sync_gmail_for_staff(
 
     service = _build_gmail_service(staff_email)
 
-    watermark = await _get_watermark(conn, staff_email)
-    since = watermark if watermark else datetime.now(timezone.utc) - timedelta(days=days_back)
+    backfill_mode = override_since is not None or override_until is not None
+    if backfill_mode:
+        since = override_since or (datetime.now(timezone.utc) - timedelta(days=days_back))
+    else:
+        watermark = await _get_watermark(conn, staff_email)
+        since = watermark if watermark else datetime.now(timezone.utc) - timedelta(days=days_back)
 
     date_str = since.strftime("%Y/%m/%d")
     query = f"after:{date_str} in:inbox"
+    if override_until:
+        query += f" before:{override_until.strftime('%Y/%m/%d')}"
 
     upserted = 0
     errors = 0
@@ -457,6 +469,7 @@ async def sync_gmail_for_staff(
         if not page_token:
             break
 
-    await _set_watermark(conn, staff_email, upserted)
+    if not backfill_mode:
+        await _set_watermark(conn, staff_email, upserted)
     logger.info("gmail sync %s: upserted=%d errors=%d", staff_email, upserted, errors)
     return {"staff_email": staff_email, "upserted": upserted, "errors": errors}

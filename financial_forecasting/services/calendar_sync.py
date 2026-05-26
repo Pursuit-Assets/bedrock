@@ -116,8 +116,13 @@ async def sync_calendar_for_staff(
     conn,
     staff_email: str,
     days_back: int = 90,
+    override_since: datetime | None = None,
+    override_until: datetime | None = None,
 ) -> dict:
-    """Sync Calendar events for one staff member. Returns summary dict."""
+    """Sync Calendar events for one staff member. Returns summary dict.
+
+    override_since / override_until bypass the watermark for historical backfills.
+    """
     from services.google_dwd import is_dwd_configured
 
     if not is_dwd_configured():
@@ -125,14 +130,15 @@ async def sync_calendar_for_staff(
 
     service = _build_calendar_service(staff_email)
 
-    watermark = await _get_watermark(conn, staff_email)
+    backfill_mode = override_since is not None or override_until is not None
     now = datetime.now(timezone.utc)
-    if watermark:
-        time_min = watermark
+    if backfill_mode:
+        time_min = override_since or (now - timedelta(days=days_back))
+        time_max = override_until or now
     else:
-        time_min = now - timedelta(days=days_back)
-
-    time_max = now + timedelta(days=7)
+        watermark = await _get_watermark(conn, staff_email)
+        time_min = watermark if watermark else now - timedelta(days=days_back)
+        time_max = now  # past meetings only
 
     upserted = 0
     errors = 0
@@ -239,6 +245,7 @@ async def sync_calendar_for_staff(
         if not page_token:
             break
 
-    await _set_watermark(conn, staff_email, upserted)
+    if not backfill_mode:
+        await _set_watermark(conn, staff_email, upserted)
     logger.info("calendar sync %s: upserted=%d errors=%d", staff_email, upserted, errors)
     return {"staff_email": staff_email, "upserted": upserted, "errors": errors}
