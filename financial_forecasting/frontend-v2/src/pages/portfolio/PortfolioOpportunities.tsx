@@ -13,6 +13,7 @@ import { Fragment, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { ChevronDown, ChevronRight, ExternalLink } from "lucide-react";
 
+import { AwardSetupDialog } from "@/components/AwardSetupDialog";
 import { OpportunityExpandPanel } from "@/components/OpportunityExpandPanel";
 import { PaymentScheduleBuilder } from "@/components/PaymentScheduleBuilder";
 import { StageGateDialog } from "@/components/StageGateDialog";
@@ -402,6 +403,14 @@ export function PortfolioOpportunities({
         toStage={stageGate.pending.toStage}
         onClose={stageGate.dismiss}
         onCompleted={stageGate.complete}
+        onAwardCreated={stageGate.openAwardSetup}
+      />
+    ) : null}
+    {stageGate.awardSetup ? (
+      <AwardSetupDialog
+        awardId={stageGate.awardSetup.awardId}
+        opportunityId={stageGate.awardSetup.opportunityId}
+        onClose={stageGate.dismissAwardSetup}
       />
     ) : null}
     {probGate.pending ? (

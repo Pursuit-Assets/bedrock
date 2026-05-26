@@ -2,7 +2,7 @@
 
 import re
 import logging
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -469,12 +469,17 @@ async def update_opportunity_stage(
         # reached an award-eligible stage. Idempotent. Best-effort —
         # never fails the SF write.
         award_created = False
+        award_id: Optional[str] = None
         try:
             award = await ensure_award_for_opp(
                 conn, salesforce, opp_id,
                 stage_name_hint=new_stage,
             )
             award_created = award is not None
+            if award is not None:
+                # Return the award id so the client can route the user
+                # into the post-stage award setup workflow.
+                award_id = str(award.get("id")) if isinstance(award, dict) else str(award.id)
         except Exception:
             logger.exception(
                 "awards.ensure_for_opp failed for opp=%s after stage update; "
@@ -488,6 +493,7 @@ async def update_opportunity_stage(
             "stage": new_stage,
             "validation": validation_result,
             "award_created": award_created,
+            "award_id": award_id,
         }
 
     except HTTPException:

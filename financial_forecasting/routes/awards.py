@@ -88,6 +88,7 @@ class AwardOut(BaseModel):
 
 class AwardUpdate(BaseModel):
     award_status: Optional[str] = Field(default=None)
+    award_date: Optional[str] = None
     period_end_date: Optional[str] = None
     notes: Optional[str] = None
     reporting_frequency: Optional[str] = None
@@ -276,6 +277,7 @@ async def update_award(
 
     for field, col in [
         ("award_status", "award_status"),
+        ("award_date", "award_date"),
         ("period_end_date", "period_end_date"),
         ("notes", "notes"),
         ("reporting_frequency", "reporting_frequency"),

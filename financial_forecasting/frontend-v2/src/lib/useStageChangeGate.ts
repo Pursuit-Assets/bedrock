@@ -30,8 +30,19 @@ interface PendingGate {
  * StageGateDialog calls `complete()` after a successful submit and
  * `dismiss()` on Cancel / Esc / backdrop click.
  */
+interface PendingAwardSetup {
+  awardId: string;
+  opportunityId: string;
+}
+
 export function useStageChangeGate() {
   const [pending, setPending] = useState<PendingGate | null>(null);
+  /** Set by the gate dialog when the background stage write returns
+   *  with `award_created: true`. The page renders AwardSetupDialog
+   *  from this state. Lives in the hook so it survives the
+   *  StageGateDialog unmount (which happens before the background
+   *  write completes — optimistic close). */
+  const [awardSetup, setAwardSetup] = useState<PendingAwardSetup | null>(null);
   const updateStage = useUpdateOpportunityStage();
   const resolverRef = useRef<{
     resolve: () => void;
@@ -72,5 +83,24 @@ export function useStageChangeGate() {
     setPending(null);
   }, []);
 
-  return { pending, request, dismiss, complete };
+  /** Called by StageGateDialog after a Contracting → Collecting / In
+   *  Effect stage change comes back with `award_created`. Surfaces
+   *  the follow-up award setup dialog. */
+  const openAwardSetup = useCallback((awardId: string, opportunityId: string) => {
+    setAwardSetup({ awardId, opportunityId });
+  }, []);
+
+  const dismissAwardSetup = useCallback(() => {
+    setAwardSetup(null);
+  }, []);
+
+  return {
+    pending,
+    request,
+    dismiss,
+    complete,
+    awardSetup,
+    openAwardSetup,
+    dismissAwardSetup,
+  };
 }

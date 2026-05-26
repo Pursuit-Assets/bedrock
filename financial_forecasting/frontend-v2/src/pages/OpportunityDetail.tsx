@@ -6,6 +6,7 @@ import { AccountAvatar } from "@/components/AccountAvatar";
 import { ActivityTimeline } from "@/components/ActivityTimeline";
 import { OppTasksSection } from "@/components/OppTasksSection";
 import { PaymentScheduleBuilder } from "@/components/PaymentScheduleBuilder";
+import { AwardSetupDialog } from "@/components/AwardSetupDialog";
 import { StageGateDialog } from "@/components/StageGateDialog";
 import { StageProgression } from "@/components/StageProgression";
 import {
@@ -450,6 +451,15 @@ export function OpportunityDetailPage() {
           toStage={stageGate.pending.toStage}
           onClose={stageGate.dismiss}
           onCompleted={stageGate.complete}
+          onAwardCreated={stageGate.openAwardSetup}
+        />
+      ) : null}
+
+      {stageGate.awardSetup ? (
+        <AwardSetupDialog
+          awardId={stageGate.awardSetup.awardId}
+          opportunityId={stageGate.awardSetup.opportunityId}
+          onClose={stageGate.dismissAwardSetup}
         />
       ) : null}
 

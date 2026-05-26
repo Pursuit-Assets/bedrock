@@ -6,6 +6,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { AccountAvatar } from "@/components/AccountAvatar";
 import { OpportunityExpandPanel, OPP_PANEL_HEIGHT } from "@/components/OpportunityExpandPanel";
 import { PageHeader } from "@/components/PageHeader";
+import { AwardSetupDialog } from "@/components/AwardSetupDialog";
 import { PaymentScheduleBuilder } from "@/components/PaymentScheduleBuilder";
 import { StageGateDialog } from "@/components/StageGateDialog";
 import { useProbabilityScheduleGate } from "@/lib/useProbabilityScheduleGate";
@@ -833,6 +834,15 @@ export function PipelinePage() {
           toStage={stageGate.pending.toStage}
           onClose={stageGate.dismiss}
           onCompleted={stageGate.complete}
+          onAwardCreated={stageGate.openAwardSetup}
+        />
+      ) : null}
+
+      {stageGate.awardSetup ? (
+        <AwardSetupDialog
+          awardId={stageGate.awardSetup.awardId}
+          opportunityId={stageGate.awardSetup.opportunityId}
+          onClose={stageGate.dismissAwardSetup}
         />
       ) : null}
 

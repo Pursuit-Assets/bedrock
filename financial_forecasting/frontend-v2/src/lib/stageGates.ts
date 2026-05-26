@@ -73,13 +73,17 @@ function stageAtRank(rank: number): string | null {
  *  aggregator below — not exported because callers should always go
  *  through getStageGate, which handles multi-stage jumps. */
 function singleStepGate(fromStage: string, toStage: string): StageGateSpec | null {
-  // Contracting → Collecting / In Effect — contract attachment.
+  // Contracting → Collecting / In Effect — final contract + finalize
+  // close date, amount, and payment schedule so the auto-generated
+  // award starts with the right financial picture.
   if (fromStage === "Contracting" && toStage === "Collecting / In Effect") {
     return {
       id: "contracting-to-collecting",
-      title: "Confirm signed contract before moving to Collecting / In Effect",
-      description: "Attach the executed contract so it's discoverable from the opportunity record. The payment schedule should already be in place from the earlier gate — surfaced here so you can verify it before delivery starts.",
+      title: "Finalize the deal before moving to Collecting / In Effect",
+      description: "Attach the executed contract and confirm the close date, amount, and payment schedule. The award record auto-generates on save — the values you confirm here become its starting state.",
       fileAttachments: [{ label: "Signed contract", hint: "contract" }],
+      confirmCloseDate: true,
+      confirmAmount: true,
       // Backend's _validate_stage_change_logic enforces a payment
       // schedule exists with matching total before this transition.
       // Surfacing it here lets the user verify in one place instead

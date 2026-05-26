@@ -35,12 +35,16 @@ export function StageGateDialog({
   toStage,
   onClose,
   onCompleted,
+  onAwardCreated,
 }: {
   spec: StageGateSpec;
   opp: SfOpportunity;
   toStage: string;
   onClose: () => void;
   onCompleted?: () => void;
+  /** Fired after the background stage write returns with
+   *  `award_created: true` — caller opens the award setup dialog. */
+  onAwardCreated?: (awardId: string, opportunityId: string) => void;
 }) {
   const updateOpp = useUpdateOpportunity();
   const updateStage = useUpdateOpportunityStage();
@@ -159,6 +163,12 @@ export function StageGateDialog({
           result?.award_created ? `Moved to ${toStage} · Award created` : `Moved to ${toStage}`,
           { id: toastId },
         );
+        // Trigger the post-stage award-setup workflow when the stage
+        // change auto-created an award (currently fires on the
+        // Contracting → Collecting / In Effect transition).
+        if (result?.award_created && result?.award_id) {
+          onAwardCreated?.(result.award_id as string, opp.Id);
+        }
       } catch (e) {
         const err = e as {
           response?: { data?: { detail?: string | { message?: string } } };

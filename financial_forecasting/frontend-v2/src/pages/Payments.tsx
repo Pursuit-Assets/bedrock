@@ -47,6 +47,7 @@ import { useSessionState } from "@/lib/useSessionState";
 import { useProbabilityScheduleGate } from "@/lib/useProbabilityScheduleGate";
 import { useStageChangeGate } from "@/lib/useStageChangeGate";
 import { useUpdateOpportunity } from "@/services/opportunities";
+import { AwardSetupDialog } from "@/components/AwardSetupDialog";
 import { PaymentScheduleBuilder } from "@/components/PaymentScheduleBuilder";
 import { StageGateDialog } from "@/components/StageGateDialog";
 import type { SfOpportunity } from "@/types/salesforce";
@@ -816,6 +817,14 @@ export function PaymentsPage() {
           toStage={stageGate.pending.toStage}
           onClose={stageGate.dismiss}
           onCompleted={stageGate.complete}
+          onAwardCreated={stageGate.openAwardSetup}
+        />
+      ) : null}
+      {stageGate.awardSetup ? (
+        <AwardSetupDialog
+          awardId={stageGate.awardSetup.awardId}
+          opportunityId={stageGate.awardSetup.opportunityId}
+          onClose={stageGate.dismissAwardSetup}
         />
       ) : null}
       {probGate.pending ? (
