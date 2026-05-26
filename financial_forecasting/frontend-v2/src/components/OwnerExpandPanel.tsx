@@ -8,6 +8,7 @@ import { RowExpandPanel, ROW_EXPAND_HEIGHT } from "@/components/RowExpandPanel";
 import { SortableHeader } from "@/components/ui/SortableHeader";
 import { StageChip } from "@/components/ui/StageChip";
 import { Tag } from "@/components/ui/Tag";
+import { accountStatusVariant } from "@/lib/accountStatus";
 import { fmtDate, fmtMoney } from "@/lib/format";
 import { sortBy, useSort } from "@/lib/sort";
 import { isOpen, isWon, stageStatus } from "@/lib/stages";
@@ -17,7 +18,7 @@ import {
   useOpportunities,
   useUserTasks,
 } from "@/services/opportunities";
-import type { SfOpportunity } from "@/types/salesforce";
+import type { AccountStatus, SfOpportunity } from "@/types/salesforce";
 
 // Record-type families surfaced as checkmarks on the Accounts tab so RMs
 // can see at a glance which types of business they've already won with a
@@ -113,6 +114,7 @@ function OwnerAccounts({ ownerId }: { ownerId: string }) {
   type AccountRow = {
     id: string;
     name: string;
+    status: AccountStatus | null;
     open: number;
     won: number;
     /** Record-type buckets the account has at least one won opp in. */
@@ -139,6 +141,7 @@ function OwnerAccounts({ ownerId }: { ownerId: string }) {
       return {
         id: a.Id,
         name: a.Name,
+        status: a.account_status ?? null,
         open: t?.open ?? 0,
         won: t?.won ?? 0,
         types: t?.types ?? new Set<RecordTypeBucket>(),
@@ -196,6 +199,9 @@ function OwnerAccounts({ ownerId }: { ownerId: string }) {
                 <th className="px-3 py-1.5 text-left font-semibold">
                   <SortableHeader label="Name" sortKey="name" sort={sort} onToggle={toggle} />
                 </th>
+                <th className="px-3 py-1.5 text-left font-semibold">
+                  Status
+                </th>
                 <th className="px-3 py-1.5 text-center font-semibold" colSpan={RECORD_TYPE_BUCKETS.length}>
                   History
                 </th>
@@ -207,6 +213,7 @@ function OwnerAccounts({ ownerId }: { ownerId: string }) {
                 </th>
               </tr>
               <tr>
+                <th></th>
                 <th></th>
                 {RECORD_TYPE_BUCKETS.map((b) => (
                   <th
@@ -231,6 +238,13 @@ function OwnerAccounts({ ownerId }: { ownerId: string }) {
                     >
                       {r.name}
                     </Link>
+                  </td>
+                  <td className="px-3 py-1.5">
+                    {r.status ? (
+                      <Tag variant={accountStatusVariant(r.status)}>{r.status}</Tag>
+                    ) : (
+                      <span className="text-ink-4">—</span>
+                    )}
                   </td>
                   {RECORD_TYPE_BUCKETS.map((b) => (
                     <td key={b} className="px-1 py-1.5 text-center">
