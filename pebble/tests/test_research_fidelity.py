@@ -646,6 +646,74 @@ def test_claims_from_fec_no_filter_when_prospect_name_omitted():
 # Synthesis citation invariants (F5)
 # ---------------------------------------------------------------------------
 
+def test_extract_proper_nouns_skips_sentence_initial():
+    from pebble.orchestrator._pipeline import _extract_proper_nouns
+    # Sentence-initial word is not flagged.
+    assert _extract_proper_nouns("Jane is the CEO.") == set()
+    # Mid-sentence proper noun IS flagged.
+    assert "Acme" in _extract_proper_nouns("She leads Acme.")
+
+
+def test_extract_proper_nouns_strips_titles_and_pronouns():
+    from pebble.orchestrator._pipeline import _extract_proper_nouns
+    nouns = _extract_proper_nouns("He met Mr Smith at Acme Corp on January 5.")
+    # "Mr" stripped; "Smith" and "Acme Corp" kept.
+    assert "Smith" in nouns or any("Smith" in n for n in nouns)
+    assert any("Acme" in n for n in nouns)
+    # "January" stripped as month name.
+    assert "January" not in nouns
+
+
+def test_check_proper_noun_grounding_accepts_grounded_sentence():
+    from pebble.orchestrator._pipeline import _check_proper_noun_grounding
+    parsed = {
+        "sentences": [
+            {"text": "Jane serves as CEO of Acme Corporation.",
+             "citations": ["c0"]},
+        ],
+    }
+    claims = {
+        "c0": {"claim_id": "c0",
+               "text": "Jane Smith is CEO of Acme Corporation since 2020"},
+    }
+    assert _check_proper_noun_grounding(parsed, claims) == []
+
+
+def test_check_proper_noun_grounding_flags_invented_entity():
+    """The LLM cites c0 but mentions a company name that doesn't
+    appear in any cited claim. F19 catches it."""
+    from pebble.orchestrator._pipeline import _check_proper_noun_grounding
+    parsed = {
+        "sentences": [
+            {"text": "Jane serves on the Foobar Industries board.",
+             "citations": ["c0"]},
+        ],
+    }
+    claims = {
+        "c0": {"claim_id": "c0",
+               "text": "Jane Smith is CEO of Acme Corporation"},
+    }
+    issues = _check_proper_noun_grounding(parsed, claims)
+    assert issues
+    assert any("Foobar" in i for i in issues)
+
+
+def test_check_proper_noun_grounding_substring_match_ok():
+    """A claim mentioning 'Acme Foundation' should ground a sentence
+    that references just 'Acme'."""
+    from pebble.orchestrator._pipeline import _check_proper_noun_grounding
+    parsed = {
+        "sentences": [
+            {"text": "She leads Acme.", "citations": ["c0"]},
+        ],
+    }
+    claims = {
+        "c0": {"claim_id": "c0",
+               "text": "Jane Smith is CEO of Acme Foundation"},
+    }
+    assert _check_proper_noun_grounding(parsed, claims) == []
+
+
 def test_validate_synthesis_output_happy():
     from pebble.orchestrator._pipeline import _validate_synthesis_output
     parsed = {
@@ -785,6 +853,8 @@ async def test_synthesize_profile_confidence_high_with_full_pool(monkeypatch):
     ]
     response = json.dumps({
         "sentences": [
+            # F19: every entity name in the sentence must appear in
+            # the cited claim's text.
             {"text": "Serves as CEO of Acme.", "citations": ["c0"]},
             {"text": "Also chairs the Beta board.", "citations": ["c1"]},
         ],
@@ -1818,6 +1888,8 @@ async def test_research_pipeline_high_quality_pool_earns_high_confidence(monkeyp
          "committee_name": "ActBlue",
          "contribution_receipt_date": "2024-06-15"},
     ]
+    # F19: synth response below mentions "Acme Foundation" + "HHS";
+    # the claim text must contain both so grounding check passes.
     usa_results = [
         {"recipient_name": "Acme Foundation",
          "award_amount": 5000000,
@@ -1882,8 +1954,16 @@ async def test_research_pipeline_high_quality_pool_earns_high_confidence(monkeyp
             outcome=AgentOutcome.SUCCESS,
             data={"content": json.dumps({
                 "sentences": [
-                    {"text": "Jane Smith leads Acme Foundation.", "citations": ["c0"]},
-                    {"text": "Foundation received $5M HHS award in 2024.", "citations": ["c1"]},
+                    # F19: each sentence's proper nouns must all appear
+                    # in its cited claim's text. The forager claim is
+                    # filtered by F12 (its URL didn't match the provided
+                    # ProPublica base), so the verified pool is only the
+                    # 2 template claims — FEC and USA Spending. Cite
+                    # both to ground everything.
+                    {"text": "Jane Smith contributed $25,000.00 to ActBlue.",
+                     "citations": ["c0", "c1"]},
+                    {"text": "Acme Foundation received $5,000,000.00 from HHS.",
+                     "citations": ["c0", "c1"]},
                 ],
                 "confidence_score": "high",
             })},

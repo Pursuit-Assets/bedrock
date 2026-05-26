@@ -56,6 +56,10 @@ test_research_fidelity.py):
          amounts. The brief must use the exact phrase from a cited
          claim, not an LLM-restated variant ("Acme Corporation" → not
          "Acme Inc.").
+    F19  Post-LLM proper-noun grounding check — every entity name in
+         a synth sentence must appear as a substring in one of its
+         cited claims' text. Catches hallucinated entities that pass
+         the citation-existence gate (F5).
 """
 
 import asyncio
@@ -96,7 +100,7 @@ PROSPECT_COST_CAP_USD = 0.50
 # the fidelity invariants. Stamped on every saved profile so
 # downstream consumers (export, GUI, audit) can tell which generation
 # produced a given record. Increment on every F-series addition.
-PIPELINE_VERSION = "fidelity-v1.19"
+PIPELINE_VERSION = "fidelity-v1.20"
 
 # Strip markdown fences that LLMs sometimes wrap around JSON
 _FENCE_RE = re.compile(r"^```(?:json)?\s*\n?(.*?)\n?```\s*$", re.DOTALL)
@@ -1185,6 +1189,84 @@ def _assign_claim_ids(claims: list[dict]) -> list[dict]:
     return claims
 
 
+# F19 — proper-noun phrases extracted from synthesis output. We require
+# each phrase to appear as a substring in at least one cited claim's
+# text, so the synth can't introduce entity names that aren't in the
+# evidence pool. Sentence-initial words are excluded (common false
+# positive: "Jane is..." capitalized only because it starts the
+# sentence). Single-letter / two-letter caps stripped (initials).
+_PROPER_NOUN_RE = re.compile(r"\b[A-Z][A-Za-z0-9&\-]{2,}(?:\s+[A-Z][A-Za-z0-9&\-]+)*\b")
+
+# Short capitalized tokens that aren't really entities — common
+# false-positive sources.
+_PROPER_NOUN_STOPWORDS = {
+    "I", "He", "She", "They", "We", "It",
+    "The", "This", "That", "These", "Those",
+    "Mr", "Mrs", "Ms", "Dr", "Prof",
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
+    "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday",
+    "USD", "US", "USA",
+}
+
+
+def _extract_proper_nouns(text: str) -> set[str]:
+    """Return the set of proper-noun-looking phrases in a sentence.
+    Excludes sentence-initial single words + common pronouns / titles /
+    month names that produce noise."""
+    if not text:
+        return set()
+    phrases: set[str] = set()
+    # Drop the sentence-initial word — it's capitalized by grammar.
+    # Find first whitespace boundary; restrict regex search to text
+    # after it.
+    stripped = text.lstrip()
+    first_space = stripped.find(" ")
+    if first_space > 0:
+        body = stripped[first_space + 1:]
+    else:
+        body = ""
+    for phrase in _PROPER_NOUN_RE.findall(body):
+        # Strip trailing possessives.
+        phrase = phrase.rstrip("'s").rstrip("'")
+        if not phrase:
+            continue
+        head = phrase.split()[0]
+        if head in _PROPER_NOUN_STOPWORDS:
+            continue
+        # Role-title abbreviations (CEO, CTO, …) read as caps but
+        # aren't entities — skip if the entire phrase is a role token.
+        if phrase.lower() in _ROLE_TOKENS:
+            continue
+        phrases.add(phrase)
+    return phrases
+
+
+def _check_proper_noun_grounding(
+    parsed: dict, claims_by_id: dict[str, dict],
+) -> list[str]:
+    """F19 — return a list of ungrounded proper-noun phrases. A phrase
+    is grounded if it appears as a (case-insensitive) substring in at
+    least one of its sentence's cited claims' text. Used after the
+    citation-existence validator passes."""
+    issues: list[str] = []
+    for idx, sent in enumerate(parsed.get("sentences", []) or []):
+        if not isinstance(sent, dict):
+            continue
+        text = sent.get("text") or ""
+        cites = sent.get("citations") or []
+        cited_corpus = " ".join(
+            claims_by_id.get(c, {}).get("text", "") for c in cites
+        ).lower()
+        for phrase in _extract_proper_nouns(text):
+            if phrase.lower() not in cited_corpus:
+                issues.append(
+                    f"sentence[{idx}] mentions {phrase!r} which doesn't "
+                    f"appear in any cited claim"
+                )
+    return issues
+
+
 def _validate_synthesis_output(
     parsed: dict, valid_claim_ids: set[str],
 ) -> tuple[bool, str]:
@@ -1375,13 +1457,31 @@ async def synthesize_profile(
             continue
 
         ok, err = _validate_synthesis_output(candidate, valid_claim_ids)
-        if ok:
-            parsed = candidate
-            break
-        last_error = err
-        logger.warning(
-            "Synthesizer attempt %d failed validation: %s", attempt + 1, err,
-        )
+        if not ok:
+            last_error = err
+            logger.warning(
+                "Synthesizer attempt %d failed citation validation: %s",
+                attempt + 1, err,
+            )
+            continue
+
+        # F19 — proper-noun grounding check. Even with citation IDs
+        # right, the LLM can introduce entity names that aren't in
+        # any cited claim. Reject + retry once.
+        claims_by_id = {c["claim_id"]: c for c in ranked if c.get("claim_id")}
+        grounding_issues = _check_proper_noun_grounding(candidate, claims_by_id)
+        if grounding_issues:
+            last_error = "ungrounded entity references: " + "; ".join(
+                grounding_issues[:3]
+            )
+            logger.warning(
+                "Synthesizer attempt %d failed grounding check: %s",
+                attempt + 1, last_error,
+            )
+            continue
+
+        parsed = candidate
+        break
 
     if parsed is None:
         # Both attempts failed — return partial with the verified claims
