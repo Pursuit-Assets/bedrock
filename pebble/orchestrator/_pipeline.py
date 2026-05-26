@@ -1017,20 +1017,35 @@ def detect_conflicts(claims: list[dict]) -> list[dict]:
             c_orgs = _extract_org_tokens(c.get("text", ""))
             c_roles = _extract_role_tokens(c.get("text", ""))
             shared_orgs = f_orgs & c_orgs
-            shared_roles = f_roles & c_roles
-            if not shared_orgs or not shared_roles:
+            # Both claims must have SOME role token, but not necessarily
+            # the same one — "Director" vs "CEO" at the same org is
+            # still a role-status conflict worth flagging (was Director,
+            # is now CEO? or stale OpenCorporates says still Director
+            # but a forager says CEO?). Requiring the same role missed
+            # this common case.
+            if not shared_orgs or not c_roles:
                 continue
             key = (f.get("claim_id", id(f)), c.get("claim_id", id(c)))
             if key in seen:
                 continue
             seen.add(key)
             org_name = sorted(shared_orgs)[0]
-            role_name = sorted(shared_roles)[0]
-            conflicts.append({
-                "description": (
+            shared_roles = f_roles & c_roles
+            if shared_roles:
+                role_name = sorted(shared_roles)[0]
+                desc = (
                     f"role at {org_name} disputed: one source says "
                     f"'{role_name}', another says 'former {role_name}'"
-                ),
+                )
+            else:
+                f_role = sorted(f_roles)[0]
+                c_role = sorted(c_roles)[0]
+                desc = (
+                    f"role at {org_name} disputed: one source says "
+                    f"former '{f_role}', another says current '{c_role}'"
+                )
+            conflicts.append({
+                "description": desc,
                 "claim_ids": [
                     f.get("claim_id", ""),
                     c.get("claim_id", ""),

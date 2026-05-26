@@ -1590,6 +1590,162 @@ async def test_pipeline_synthesis_partial_preserves_validation_error(monkeypatch
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
+async def test_research_pipeline_messy_prospect_resilience(monkeypatch):
+    """End-to-end resilience demonstration:
+      - 2 FEC results, one is a different "John Smith" → F4 drops the wrong one
+      - Forager emits "current CEO of Acme" + OpenCorporates emits
+        "formerly CEO of Acme" → F7 flags a conflict
+      - ProPublica fetch errors with TimeoutError → F14 records source error
+      - Synth runs; confidence rubric should NOT reach 'high' (conflict
+        present + tier mix)
+
+    Asserts the pipeline produces a saved profile that surfaces every
+    fidelity signal correctly — F4 filter + F7 conflict + F14 source_error
+    + deterministic confidence rubric all visible in the output."""
+    from pebble.orchestrator import _pipeline
+    import json
+
+    prospect = {
+        "id": "p-messy",
+        "first_name": "Jane",
+        "last_name": "Smith",
+        "organization": "Acme Foundation",
+    }
+
+    fec_results = [
+        {"contributor_name": "Jane Smith",
+         "contribution_receipt_amount": 1000,
+         "committee_name": "ActBlue",
+         "contribution_receipt_date": "2022-03-15"},
+        # Wrong person — F4 must drop this.
+        {"contributor_name": "John Smith",
+         "contribution_receipt_amount": 5000,
+         "committee_name": "Different PAC",
+         "contribution_receipt_date": "2024-01-01"},
+    ]
+
+    oc_results = [
+        {"name": "Jane Smith",
+         "position": "formerly Director",
+         "company_name": "Acme Foundation",
+         "opencorporates_url": "https://api.opencorporates.com/companies/x"},
+    ]
+
+    async def fake_fetch(_p, _c):
+        return {
+            "ein": None, "name": "Jane Smith",
+            "primary_org": "Acme Foundation",
+            "ein_orgs": None, "cik_result": None,
+            "fec_data": fec_results, "edgar_data": None,
+            "usa_data": None, "wiki_data": None,
+            "oc_data": oc_results,
+            "propublica_data": None, "sec_data": None,
+            # F14 — fetch error recorded.
+            "source_errors": {
+                "propublica_organization": "TimeoutError: 30s elapsed",
+            },
+        }
+
+    # Forager emits a "current CEO of Acme Foundation" claim that will
+    # conflict with the OpenCorporates "formerly Director" claim (F7).
+    forager_claim = {
+        "text": "Jane Smith currently serves as CEO of Acme Foundation",
+        "source_url": "https://projects.propublica.org/nonprofits/organizations/123",
+        "confidence": "high",
+        "data_as_of": "2024-06-01",
+    }
+
+    monkeypatch.setattr(_pipeline, "fetch_research_data", fake_fetch)
+    monkeypatch.setattr(_pipeline, "save_source_scores", AsyncMock())
+    monkeypatch.setattr(_pipeline, "save_profile", AsyncMock())
+    monkeypatch.setattr(_pipeline, "save_session", AsyncMock())
+    monkeypatch.setattr(_pipeline, "log_harness_outcome", AsyncMock())
+    monkeypatch.setattr(_pipeline, "get_source_reliability",
+                        AsyncMock(return_value=1.0))
+    # Force scores above the philanthropy threshold so the agent fires.
+    async def boosted_scores(*_args, **_kwargs):
+        return {
+            "propublica": 1.0, "sec": 0.0, "fec": 0.5, "edgar": 0.0,
+            "usaspending": 0.0, "opencorporates": 1.0, "wikipedia": 0.0,
+            "lda": 0.0, "finra": 0.0, "federal_register": 0.0,
+            "fec_committees": 0.0, "insider_transactions": 0.0,
+        }
+    monkeypatch.setattr(_pipeline, "score_source_richness", boosted_scores)
+
+    async def patched_verify(claims, *, client=None, timeout=5.0):
+        for c in claims:
+            c["url_verification_status"] = "verified"
+        return claims, []
+
+    monkeypatch.setattr(_pipeline, "verify_urls", patched_verify)
+
+    async def fake_to_thread(fn, *args, **kwargs):
+        if args and hasattr(args[0], "agent_name"):
+            an = args[0].agent_name
+            if an.startswith("verifier"):
+                return _verifier_success(list(range(20)))
+            if an == "philanthropy_agent":
+                return HarnessResult(
+                    outcome=AgentOutcome.SUCCESS,
+                    data={"content": json.dumps({"claims": [forager_claim]})},
+                    cost_usd=0.001,
+                )
+            return HarnessResult(outcome=AgentOutcome.SUCCESS,
+                                 data={"content": json.dumps({"claims": []})},
+                                 cost_usd=0.001)
+        return HarnessResult(
+            outcome=AgentOutcome.SUCCESS,
+            data={"content": json.dumps({
+                "sentences": [
+                    {"text": "Sources differ on Jane Smith's current role at Acme.",
+                     "citations": ["c0"]},
+                ],
+                "confidence_score": "medium",
+            })},
+            cost_usd=0.005,
+        )
+
+    monkeypatch.setattr(_pipeline.asyncio, "to_thread", fake_to_thread)
+
+    await _pipeline.research_single_prospect(
+        prospect, "p-messy", MagicMock(), lambda: False,
+    )
+
+    saved = _pipeline.save_profile.await_args.args[1]
+
+    # F4: the wrong-name FEC contribution must be filtered out.
+    contributor_texts = [c.get("text", "") for c in saved["claims"]
+                          if c.get("origin") == "template"]
+    assert not any("John Smith" in t or "Different PAC" in t for t in contributor_texts), (
+        f"F4 failed — John Smith leaked through name-match filter: {contributor_texts}"
+    )
+
+    # F7: at least one role conflict detected.
+    assert saved.get("conflicts"), "F7 conflict detection produced no entries"
+    assert any("Acme" in c["description"] for c in saved["conflicts"])
+
+    # F14: source_errors carried through.
+    assert "propublica_organization" in saved.get("source_errors", {})
+    assert "TimeoutError" in saved["source_errors"]["propublica_organization"]
+
+    # F8: confidence_score must NOT be high (conflict downgrades).
+    assert saved["confidence_score"] != "high"
+
+    # F5: every summary sentence has citations referencing real claim_ids.
+    valid_ids = {c["claim_id"] for c in saved["claims"]}
+    for sent in saved.get("summary_sentences", []):
+        assert sent["citations"], f"uncited sentence: {sent}"
+        for cite in sent["citations"]:
+            assert cite in valid_ids, f"orphan citation {cite}"
+
+    # F9: evidence fingerprint stamped.
+    assert saved.get("claim_pool_fingerprint")
+
+    # Pipeline-version + timestamp.
+    assert saved.get("pipeline_version", "").startswith("fidelity-v")
+
+
+@pytest.mark.asyncio
 async def test_research_pipeline_high_quality_pool_earns_high_confidence(monkeypatch):
     """A pool drawn from tier-0/1 sources with full 3-of-3 quorum +
     verified URLs + zero conflicts must reach the 'high' tier on the
