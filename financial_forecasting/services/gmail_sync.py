@@ -234,6 +234,7 @@ SKIP_SUBJECT_PREFIXES = (
     "accepted: ",
     "declined: ",
     "tentatively accepted: ",
+    "invitation: ",
     "updated invitation: ",
     "automatic reply: ",
     "auto-reply: ",
