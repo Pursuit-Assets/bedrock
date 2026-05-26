@@ -18,7 +18,9 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 
 import { AccountAvatar } from "@/components/AccountAvatar";
 import { ExportCsvButton } from "@/components/ui/ExportCsvButton";
+import { Tag } from "@/components/ui/Tag";
 import { Toolbar } from "@/components/ui/Toolbar";
+import { accountStatusVariant } from "@/lib/accountStatus";
 import type { CsvColumn } from "@/lib/csv";
 import {
   buildAccountMetricsMap,
@@ -103,6 +105,7 @@ const CLEANUP_REFERRER = {
 type ColKey =
   | "name"
   | "owner"
+  | "status"
   | "openPipeline"
   | "amountWon"
   | "wonPhilanthropy"
@@ -120,6 +123,7 @@ type ColKey =
 const COL_LABELS: Record<ColKey, string> = {
   name: "Account",
   owner: "Owner",
+  status: "Status",
   openPipeline: "Open pipeline",
   amountWon: "Lifetime won",
   wonPhilanthropy: "Won: Philanthropy",
@@ -138,6 +142,7 @@ const COL_LABELS: Record<ColKey, string> = {
 const COL_WIDTHS: Record<ColKey, number> = {
   name: 280,
   owner: 150,
+  status: 130,
   openPipeline: 130,
   amountWon: 130,
   wonPhilanthropy: 140,
@@ -156,6 +161,7 @@ const COL_WIDTHS: Record<ColKey, number> = {
 const COLUMN_ORDER: ColKey[] = [
   "name",
   "owner",
+  "status",
   "openPipeline",
   "amountWon",
   "wonPhilanthropy",
@@ -218,6 +224,7 @@ function extract(a: AccountWithMetrics, key: ColKey): unknown {
   switch (key) {
     case "name": return a.Name ?? "";
     case "owner": return a.Owner?.Name ?? "";
+    case "status": return a.account_status ?? "";
     case "openPipeline": return a._metrics.openPipeline;
     case "amountWon": return a._metrics.amountWon;
     case "wonPhilanthropy": return a._metrics.wonByRecordType["Philanthropy"] ?? 0;
@@ -731,6 +738,13 @@ const AccountRow = memo(function AccountRow({
       </td>
       <td className="px-3 py-1">
         <span className="truncate text-[12.5px] text-ink-2">{a.Owner?.Name ?? "—"}</span>
+      </td>
+      <td className="px-3 py-1">
+        {a.account_status ? (
+          <Tag variant={accountStatusVariant(a.account_status)}>{a.account_status}</Tag>
+        ) : (
+          <span className="text-ink-4">—</span>
+        )}
       </td>
       <MoneyCell value={m.openPipeline} />
       <MoneyCell value={m.amountWon} />

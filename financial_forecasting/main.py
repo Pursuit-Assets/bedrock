@@ -4,7 +4,13 @@ import os
 import asyncio
 import calendar
 from dotenv import load_dotenv
-load_dotenv(override=False)
+# override=True so .env is the single source of truth for the backend.
+# Without this, exported shell env vars (e.g. SLACK_BOT_TOKEN in
+# ~/.zshrc) silently shadow .env, which previously caused a Slack-bot
+# swap to be a no-op for hours of debugging — see 2026-05-20 commit
+# notes. Operators who need to override .env from the shell can
+# still do so per-process via `KEY=value ./main.py`.
+load_dotenv(override=True)
 from typing import Any, Dict, List, Optional
 from datetime import datetime, date, timedelta
 from decimal import Decimal
@@ -38,6 +44,7 @@ from data_sync import DataSyncService
 from db import init_db, close_db, get_db, get_db_status
 from routes.projects import router as projects_router
 from routes.comments import router as comments_router
+from routes.notifications import router as notifications_router
 from routes.auth import router as auth_router, get_google_credentials, PBD_CALENDAR_ID
 from routes.sf_dependencies import router as sf_deps_router
 from routes.permissions import router as permissions_router, opp_router as opp_lock_router, check_permission, check_permission_or_internal, resolve_task_lock
@@ -119,6 +126,7 @@ app.add_middleware(
 # Routers
 app.include_router(projects_router)
 app.include_router(comments_router)
+app.include_router(notifications_router)
 app.include_router(auth_router)
 app.include_router(sf_deps_router)
 app.include_router(permissions_router)
@@ -200,6 +208,27 @@ async def startup_event():
             _services["data_sync_service"] = DataSyncService(client)
         asyncio.create_task(background_sync_task())
         asyncio.create_task(background_award_reconciler_task())
+
+    # Cache the db pool on _services so background tasks (notification
+    # Slack dispatcher) can acquire connections without going through
+    # FastAPI's request-scoped get_db dependency.
+    try:
+        from db import get_pool
+        _services["db_pool"] = get_pool()
+    except Exception as e:
+        logger.warning(f"db_pool not registered on _services: {e}")
+
+    # SF-side notification poller — watches for new SF Tasks and
+    # OpportunityFieldHistory rows and fans out notifications. Only
+    # meaningful when SF is connected; the loop self-checks and no-ops
+    # otherwise.
+    if "salesforce" in client.connected_services:
+        try:
+            from services.sf_notification_poller import run_forever as _sf_notif_loop
+            asyncio.create_task(_sf_notif_loop())
+            logger.info("sf_notification_poller started")
+        except Exception as e:
+            logger.warning(f"sf_notification_poller failed to start: {e}")
 
     logger.info(f"API started — connected services: {client.connected_services or ['none']}")
 
@@ -391,11 +420,17 @@ async def get_opportunities(
         # (verified via Tooling API describe — DataType Lookup(Contact),
         # label "Primary Contact"). Relationship fields pull the contact's
         # Name + Email for display without a second query.
+        # Field list trimmed 2026-05-25: dropped Description (long-text,
+        # unused in any list or detail view), Reporting_Method__c (unused),
+        # and npsp__Next_Grant_Deadline_Due_Date__c (unused). The previous
+        # list pulled ~625 ms; trimmed is ~50 % smaller payload and ~25 %
+        # faster SOQL on a 1242-row org. Add fields back here only if a
+        # consumer in frontend-v2 actually reads them.
         query = """
         SELECT Id, AccountId, Account.Name, Name, StageName, IsClosed, IsWon,
                Amount, Probability,
                CloseDate, ForecastCategory, LeadSource, NextStep,
-               Description, OwnerId, Owner.Name, CreatedDate, LastModifiedDate,
+               OwnerId, Owner.Name, CreatedDate, LastModifiedDate,
                npe01__Payments_Made__c, Outstanding_Payments__c,
                Number_of_Payments_Received__c, Most_Recent_Payment_Date__c,
                Last_Actual_Payment__c, npe01__Number_of_Payments__c,
@@ -404,7 +439,6 @@ async def get_opportunities(
                npsp__Primary_Contact__c,
                npsp__Primary_Contact__r.Name, npsp__Primary_Contact__r.Email,
                RecordTypeId, RecordType.Name, Active_Opportunity__c,
-               Reporting_Method__c, npsp__Next_Grant_Deadline_Due_Date__c,
                Ask_Amount_if_different_from_actual__c,
                Philanthropy_Type__c,
                Manager_Probability_Override__c,
@@ -696,12 +730,91 @@ async def get_accounts(
 
         result = await salesforce.query_all(query)
         records = result.get("records", [])
+
+        # Derive playbook Account Status (Prospect / Pursuing /
+        # Stewarding / Re-activating / Dormant) per account. Pure
+        # derivation — see services/account_status.py for the rules.
+        try:
+            await _attach_account_status(records, salesforce)
+        except Exception as ex:  # noqa: BLE001
+            logger.warning(f"Failed to derive account_status; serving without it: {ex}")
+
         cache.set(cache_key, records, CACHE_TTL_ACCOUNTS)
         return records
 
     except Exception as e:
         logger.error(f"Error fetching accounts: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+async def _attach_account_status(accounts: list, salesforce) -> None:
+    """Compute and attach `account_status` to every account row.
+
+    Pulls the minimum data needed for the derivation:
+      - SF opportunities (Id, AccountId, StageName, IsClosed,
+        Active_Opportunity__c) via one SOQL.
+      - bedrock.award rows joined to opportunity_id via one SQL.
+      - bedrock.activity latest_date per account_id via one SQL.
+
+    All three queries fire in parallel. The compute is ~50 ms for
+    2 k accounts on the laptop; well within the existing endpoint
+    latency budget.
+    """
+    from datetime import datetime, timedelta, timezone as _tz
+
+    from db import get_pool
+    from services.account_status import (
+        build_lookups,
+        compute_account_status,
+    )
+
+    account_ids = [a.get("Id") for a in accounts if a.get("Id")]
+    if not account_ids:
+        return
+
+    # 1. SF opportunities — slim projection, no record-type filter so the
+    # status sees the full picture.
+    opp_query = (
+        "SELECT Id, AccountId, StageName, IsClosed, IsWon, "
+        "Active_Opportunity__c FROM Opportunity"
+    )
+    opp_result = await salesforce.query_all(opp_query)
+    opps = opp_result.get("records", [])
+
+    # 2 + 3. Awards + latest activity per account from bedrock.
+    # Scope activity to the 3-month window we actually care about
+    # (anything older means Dormant either way), with a small buffer
+    # for cron lag.
+    cutoff = datetime.now(_tz.utc) - timedelta(days=120)
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        award_rows = await conn.fetch(
+            "SELECT opportunity_id, award_status FROM bedrock.award"
+        )
+        act_rows = await conn.fetch(
+            "SELECT account_id, MAX(activity_date) AS activity_date "
+            "FROM bedrock.activity "
+            "WHERE account_id IS NOT NULL AND activity_date >= $1 "
+            "GROUP BY account_id",
+            cutoff,
+        )
+    awards = [dict(r) for r in award_rows]
+    activities = [dict(r) for r in act_rows]
+
+    opps_by_account, awards_by_opp, latest_activity_by_account = build_lookups(
+        opps, awards, activities,
+    )
+
+    for a in accounts:
+        aid = a.get("Id")
+        if not aid:
+            continue
+        a["account_status"] = compute_account_status(
+            aid,
+            opps_by_account,
+            awards_by_opp,
+            latest_activity_by_account,
+        )
 
 
 @app.post("/api/salesforce/accounts")
@@ -839,6 +952,17 @@ async def create_contact(
 PAYMENT_SOQL_FIELDS = """
     Id, Name, npe01__Opportunity__c, npe01__Opportunity__r.Name,
     npe01__Opportunity__r.Account.Name,
+    npe01__Opportunity__r.AccountId,
+    npe01__Opportunity__r.OwnerId,
+    npe01__Opportunity__r.Owner.Name,
+    npe01__Opportunity__r.StageName,
+    npe01__Opportunity__r.Amount,
+    npe01__Opportunity__r.Probability,
+    npe01__Opportunity__r.Manager_Probability_Override__c,
+    npe01__Opportunity__r.CloseDate,
+    npe01__Opportunity__r.RecordType.Name,
+    npe01__Opportunity__r.Active_Opportunity__c,
+    npe01__Opportunity__r.Philanthropy_Type__c,
     npe01__Payment_Amount__c, npe01__Scheduled_Date__c,
     npe01__Payment_Date__c, npe01__Paid__c,
     npe01__Payment_Method__c, npe01__Check_Reference_Number__c,
@@ -1962,8 +2086,12 @@ class TaskCreateRequest(BaseModel):
     # contacts from the TaskPanel Contact autocomplete. SF Task has both
     # WhoId (Contact/Lead) and WhatId (parent entity — Opp/Account/etc.);
     # WhatId is set from the URL path in create_opportunity_task, WhoId
-    # from the body.
+    # from the body. The generic POST /api/salesforce/tasks endpoint
+    # accepts both from the body so the Tasks page (no parent context)
+    # and ContactExpandPanel (Contact-WhoId, optional opp/account WhatId)
+    # can use one endpoint.
     WhoId: Optional[str] = None
+    WhatId: Optional[str] = None
 
 
 class TaskUpdateRequest(BaseModel):
@@ -2477,6 +2605,56 @@ async def create_account_task(
         )
     except Exception as e:
         logger.error(f"Error creating account task: {e}")
+        raise HTTPException(status_code=500, detail="Failed to create task")
+
+
+@app.post("/api/salesforce/tasks")
+async def create_task(
+    task_data: TaskCreateRequest,
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
+    user=Depends(check_permission("create_tasks")),
+):
+    """Generic Task creation. Accepts WhoId (Contact/Lead) and/or WhatId
+    (Opportunity/Account/etc.) from the body — both optional, so this
+    can mint a parent-less "My Tasks" entry too. The opp- and account-
+    scoped POSTs above remain for path-driven creation; this endpoint
+    backs ContactExpandPanel's add-task row and the Home / My Tasks page
+    where the user picks the parent via UI rather than route.
+
+    Salesforce ID validation: only the fields actually present in the
+    body are validated. An empty / missing WhoId or WhatId is fine.
+    """
+    try:
+        salesforce = client.salesforce
+        fields = task_data.model_dump(exclude_none=True)
+        if fields.get("WhoId"):
+            validate_salesforce_id(fields["WhoId"], "WhoId")
+        if fields.get("WhatId"):
+            validate_salesforce_id(fields["WhatId"], "WhatId")
+        result = await salesforce.create_record("Task", fields)
+        task_id = result.get("id") or result.get("Id")
+        cache.invalidate_prefix("my-tasks:")
+        cache.invalidate_prefix("opportunity-tasks:")
+        cache.invalidate_prefix("account-tasks:")
+        cache.invalidate_prefix("contact-tasks:")
+        cache.invalidate_prefix("user-tasks:")
+
+        verify = await _verify_and_recover_task_fields(salesforce, task_id, fields)
+        return ApiResponse(
+            success=True,
+            data={
+                "id": task_id,
+                "message": "Task created",
+                "saved_subject": verify["saved"].get("Subject"),
+                "subject_clobbered": "Subject" in verify["clobbered"],
+                "clobbered_fields": list(verify["clobbered"].keys()),
+                "saved_values": verify["saved"],
+            },
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating task: {e}")
         raise HTTPException(status_code=500, detail="Failed to create task")
 
 

@@ -14,6 +14,7 @@ import {
   useOpportunities,
 } from "@/services/opportunities";
 import { useAwards, type AwardStatus } from "@/services/awards";
+import { useActiveUsers } from "@/services/users";
 import type { SfTask } from "@/types/salesforce";
 
 export const ACCOUNT_PANEL_HEIGHT = ROW_EXPAND_HEIGHT;
@@ -59,6 +60,11 @@ export function AccountExpandPanel({ accountId }: { accountId: string }) {
 
 function AccountTasks({ accountId }: { accountId: string }) {
   const { data: tasks = [], isLoading } = useAccountTasks(accountId);
+  const usersQ = useActiveUsers();
+  const ownerOptions = useMemo(
+    () => (usersQ.data ?? []).map((u) => ({ value: u.Id, label: u.Name })),
+    [usersQ.data],
+  );
   const createTask = useCreateAccountTask();
 
   // Tasks filed directly on the account have WhatId === accountId; ones
@@ -73,8 +79,16 @@ function AccountTasks({ accountId }: { accountId: string }) {
       isLoading={isLoading}
       placeholder="Add an account-level task — press Enter to create"
       emptyMessage="No open tasks for this account."
-      onCreate={async (subject) => {
-        await createTask.mutateAsync({ accountId, body: { Subject: subject } });
+      ownerOptions={ownerOptions}
+      onCreate={async ({ subject, ownerId, activityDate }) => {
+        await createTask.mutateAsync({
+          accountId,
+          body: {
+            Subject: subject,
+            OwnerId: ownerId ?? undefined,
+            ActivityDate: activityDate ?? undefined,
+          },
+        });
       }}
       contextResolver={contextResolver}
     />

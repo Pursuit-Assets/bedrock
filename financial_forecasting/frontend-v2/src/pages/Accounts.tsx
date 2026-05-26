@@ -1,6 +1,6 @@
 import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { ChevronDown, ChevronRight, Plus, Search, Sparkles, X } from "lucide-react";
+import { ChevronDown, ChevronRight, Plus, Search, X } from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 
 import { AccountExpandPanel, ACCOUNT_PANEL_HEIGHT } from "@/components/AccountExpandPanel";
@@ -10,6 +10,7 @@ import { InlineSelect } from "@/components/ui/InlineEdit";
 import { ColGroup, ResizableTh } from "@/components/ui/ResizableTable";
 import { SavedViewsPicker } from "@/components/ui/SavedViewsPicker";
 import { SortableHeader } from "@/components/ui/SortableHeader";
+import { Tag } from "@/components/ui/Tag";
 import { ButtonGroup, Toolbar } from "@/components/ui/Toolbar";
 import {
   buildAccountMetricsMap,
@@ -41,6 +42,7 @@ import { useOpportunities } from "@/services/opportunities";
 import { usePerm } from "@/services/permissions";
 import { useActiveUsers, useUsers } from "@/services/users";
 import type { SfAccount } from "@/types/salesforce";
+import { accountStatusVariant } from "@/lib/accountStatus";
 import { toast } from "sonner";
 
 const TYPE_FILTERS = ["All", "Foundation", "Corporate", "Government", "Individual"] as const;
@@ -68,6 +70,7 @@ function matchesType(account: SfAccount, filter: TypeFilter): boolean {
 const ACCOUNTS_FILTERABLE_BASE = {
   name: { label: "Name", type: "text", getValue: (a: SfAccount) => a.Name ?? "" },
   owner: { label: "Owner", type: "select", getValue: (a: SfAccount) => a.OwnerId ?? "" },
+  status: { label: "Status", type: "select", getValue: (a: SfAccount) => a.account_status ?? "" },
   type: { label: "Type", type: "select", getValue: (a: SfAccount) => a.Type ?? "" },
   tier: { label: "Tier", type: "select", getValue: (a: SfAccount) => a.Account_Tier__c ?? "" },
   industry: { label: "Industry", type: "text", getValue: (a: SfAccount) => a.Industry ?? "" },
@@ -110,6 +113,7 @@ interface AccountsSavedView {
 type ColKey =
   | "name"
   | "owner"
+  | "status"
   | "openPipeline"
   | "amountWon"
   | "received"
@@ -125,6 +129,7 @@ type ColKey =
 const COLUMN_ORDER: ColKey[] = [
   "name",
   "owner",
+  "status",
   "openPipeline",
   "amountWon",
   "received",
@@ -138,6 +143,7 @@ const COLUMN_ORDER: ColKey[] = [
 const DEFAULT_VISIBLE: ColKey[] = [
   "name",
   "owner",
+  "status",
   "openPipeline",
   "amountWon",
   "received",
@@ -147,6 +153,7 @@ const DEFAULT_VISIBLE: ColKey[] = [
 const DEFAULT_WIDTHS: Record<ColKey, number> = {
   name: 280,
   owner: 160,
+  status: 130,
   openPipeline: 130,
   amountWon: 130,
   received: 120,
@@ -160,6 +167,7 @@ const DEFAULT_WIDTHS: Record<ColKey, number> = {
 const COL_LABELS: Record<ColKey, string> = {
   name: "Account",
   owner: "Account owner",
+  status: "Status",
   openPipeline: "Open pipeline",
   amountWon: "Amount won",
   received: "Received",
@@ -187,6 +195,7 @@ function extractAccount(
   switch (key) {
     case "name": return a.Name;
     case "owner": return a.Owner?.Name;
+    case "status": return a.account_status ?? "";
     case "openPipeline": return metrics.openPipeline;
     case "amountWon": return metrics.amountWon;
     case "received": return metrics.received;
@@ -358,8 +367,21 @@ export function AccountsPage() {
       { value: "Yes", label: "Yes" },
       { value: "No", label: "No" },
     ];
+    // Account status is a fixed enum from the playbook — surface all
+    // five values regardless of whether the current view has any of
+    // each, so users can filter to e.g. "Re-activating" even when the
+    // panel doesn't currently show any.
+    const status = [
+      { value: "Prospect", label: "Prospect" },
+      { value: "Pursuing", label: "Pursuing" },
+      { value: "Stewarding", label: "Stewarding" },
+      { value: "Re-activating", label: "Re-activating" },
+      { value: "Dormant", label: "Dormant" },
+    ];
+
     return {
       owner: ownerOptions,
+      status,
       type: Array.from(types).sort().map((v) => ({ value: v, label: v })),
       tier: Array.from(tiers).sort().map((v) => ({ value: v, label: v })),
       philanthropy: yesNo,
@@ -477,17 +499,12 @@ export function AccountsPage() {
             : `${accounts.length.toLocaleString()} funder organizations · ${fmtMoney(totals.openPipeline)} open pipeline · ${fmtMoney(totals.amountWon)} won`
         }
         actions={
-          <>
-            <button className="inline-flex h-[30px] items-center gap-1.5 rounded border border-border-strong bg-surface px-3 text-[13px] font-medium text-ink hover:bg-surface-2">
-              <Sparkles size={14} /> Enrich with Donor Atlas
-            </button>
-            <button
-              onClick={() => setShowCreate(true)}
-              className="inline-flex h-[30px] items-center gap-1.5 rounded border border-ink bg-ink px-3 text-[13px] font-medium text-surface hover:opacity-90"
-            >
-              <Plus size={14} /> New account
-            </button>
-          </>
+          <button
+            onClick={() => setShowCreate(true)}
+            className="inline-flex h-[30px] items-center gap-1.5 rounded border border-ink bg-ink px-3 text-[13px] font-medium text-surface hover:opacity-90"
+          >
+            <Plus size={14} /> New account
+          </button>
         }
       />
 
@@ -514,6 +531,7 @@ export function AccountsPage() {
           filterable={filterable as Record<AccountField, FieldMeta<unknown>>}
           selectOptions={{
             owner: chipFacets.owner,
+            status: chipFacets.status,
             type: chipFacets.type,
             tier: chipFacets.tier,
             philanthropy: chipFacets.philanthropy,
@@ -930,6 +948,9 @@ const AccountRow = memo(function AccountRow({
     ) : (
       <span className="truncate text-[12.5px] text-ink-2">{a.Owner?.Name ?? "—"}</span>
     ),
+    status: a.account_status ? (
+      <Tag variant={accountStatusVariant(a.account_status)}>{a.account_status}</Tag>
+    ) : dash,
     openPipeline: m.openPipeline > 0 ? fmtMoney(m.openPipeline) : dash,
     amountWon: m.amountWon > 0 ? fmtMoney(m.amountWon) : dash,
     received: m.received > 0 ? fmtMoney(m.received) : dash,
@@ -952,6 +973,7 @@ const AccountRow = memo(function AccountRow({
   const cellCls: Partial<Record<ColKey, string>> = {
     name: "overflow-hidden px-3 py-1 text-[13px]",
     owner: "overflow-hidden px-3 py-1 text-[12.5px] text-ink-2",
+    status: "overflow-hidden px-3 py-1",
     openPipeline: cn(numCell, m.openPipeline > 0 && "font-semibold text-accent-ink"),
     amountWon: cn(numCell, m.amountWon > 0 && "font-semibold text-green"),
     received: cn(numCell, m.received > 0 && "font-medium text-green"),

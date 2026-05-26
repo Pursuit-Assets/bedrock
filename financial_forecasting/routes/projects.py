@@ -14,6 +14,10 @@ from db import get_db
 from dependencies import get_mcp_client
 from routes.permissions import require_admin, check_permission
 from security import validate_salesforce_id
+from services.notifications import (
+    TYPE_PROJECT_TASK_ASSIGNED,
+    enqueue_notification,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["projects"])
@@ -1058,6 +1062,20 @@ async def create_project_task(milestone_id: str, body: ProjectTaskCreate, user=D
         mid, body.title, body.status, body.owner, owner_ids, deadline, start_date_val,
         body.description, body.updates, body.links, depends, body.sort_order,
     )
+
+    # Notify every owner that was set on creation. The creator is excluded
+    # by _notify_task_owners — no point pinging yourself for a task you
+    # just made.
+    if owner_ids:
+        await _notify_task_owners(
+            conn,
+            task_id=str(row["id"]),
+            milestone_id=str(mid),
+            title=body.title,
+            new_owner_ids=owner_ids,
+            actor_email=user.get("email"),
+        )
+
     return {"success": True, "data": {"id": str(row["id"])}}
 
 
@@ -1086,10 +1104,132 @@ async def update_project_task(task_id: str, body: ProjectTaskUpdate, user=Depend
     if "owner_ids" in fields:
         fields["owner_ids"] = [uuid.UUID(x) for x in fields["owner_ids"]]
 
+    # Snapshot pre-update state so we can diff owner_ids if it's part of
+    # this patch. The snapshot also gives us the canonical task title +
+    # milestone_id for the notification payload regardless of whether
+    # they were in the patch.
+    pre = await conn.fetchrow(
+        "SELECT title, milestone_id, owner_ids FROM bedrock.project_task "
+        "WHERE id = $1 AND deleted_at IS NULL",
+        tid,
+    )
+    if not pre:
+        raise HTTPException(status_code=404, detail="Task not found")
+
     sets = ", ".join(f"{k} = ${i+2}" for i, k in enumerate(fields))
     vals = [tid] + list(fields.values())
     await conn.execute(f"UPDATE bedrock.project_task SET {sets} WHERE id = $1 AND deleted_at IS NULL", *vals)
+
+    # Owner-diff notification fan-out. Only owners ADDED in this update
+    # receive a ping; removed owners get nothing (task-unassignment is
+    # not a notifiable event in this iteration).
+    if "owner_ids" in fields:
+        before = set(pre["owner_ids"] or [])
+        after = set(fields["owner_ids"])
+        newly_added = list(after - before)
+        if newly_added:
+            new_title = fields.get("title", pre["title"])
+            await _notify_task_owners(
+                conn,
+                task_id=str(tid),
+                milestone_id=str(pre["milestone_id"]),
+                title=new_title,
+                new_owner_ids=newly_added,
+                actor_email=user.get("email"),
+            )
+
     return {"success": True, "data": {"message": "Task updated"}}
+
+
+async def _notify_task_owners(
+    conn,
+    *,
+    task_id: str,
+    milestone_id: str,
+    title: str,
+    new_owner_ids: list,
+    actor_email: Optional[str],
+) -> None:
+    """Resolve org_users → recipient_email and enqueue one
+    project_task_assigned notification per added owner. Skips the
+    actor's own row so creators don't get notified about tasks they
+    assign to themselves."""
+    if not new_owner_ids:
+        return
+    rows = await conn.fetch(
+        "SELECT id, email, display_name FROM public.org_users "
+        "WHERE id = ANY($1::uuid[])",
+        new_owner_ids,
+    )
+    # Hierarchy lookup: project / workstream / milestone names for the
+    # rich notification body.
+    parent = await conn.fetchrow(
+        """SELECT p.id   AS project_id,    p.name  AS project_name,
+                  w.id   AS workstream_id, w.name  AS workstream_name,
+                  m.id   AS milestone_id,  m.title AS milestone_title
+           FROM bedrock.milestone m
+           JOIN bedrock.workstream w ON w.id = m.workstream_id
+           JOIN bedrock.project   p ON p.id = w.project_id
+           WHERE m.id = $1""",
+        uuid.UUID(milestone_id),
+    )
+    project_id = str(parent["project_id"]) if parent else None
+    project_name = parent["project_name"] if parent else None
+    workstream_name = parent["workstream_name"] if parent else None
+    milestone_title = parent["milestone_title"] if parent else None
+
+    # Resolve actor display_name once so the notification can say
+    # "Jacqueline Reverand assigned you a task" instead of "jac@pursuit.org…".
+    actor_display = await _lookup_display_name(conn, actor_email)
+    actor_lower = (actor_email or "").strip().lower()
+
+    for r in rows:
+        email = (r["email"] or "").strip()
+        if not email:
+            continue
+        # Suppress self-action pings: if you assigned a task to yourself,
+        # you already know — don't notify. (Product rule per 2026-05-20.)
+        if actor_lower and email.lower() == actor_lower:
+            continue
+        # target_url deep-links to the task drawer so the recipient lands
+        # directly on the task they were assigned, not the project root.
+        target_url = (
+            f"/projects/{project_id}?task={task_id}" if project_id else None
+        )
+        await enqueue_notification(
+            conn,
+            recipient_email=email,
+            type=TYPE_PROJECT_TASK_ASSIGNED,
+            payload={
+                "title": f"Task assigned: {title}",
+                "subtitle": title,
+                "task_id": task_id,
+                "task_title": title,
+                "project_id": project_id,
+                "project_name": project_name,
+                "workstream_name": workstream_name,
+                "milestone_title": milestone_title,
+                "actor_display_name": actor_display,
+                "target_url": target_url,
+            },
+            actor_email=actor_email,
+        )
+
+
+async def _lookup_display_name(conn, email: Optional[str]) -> Optional[str]:
+    """Resolve email -> display_name from public.org_users. Falls back
+    to the email itself when no row exists (gives the formatter
+    *something* sensible to use). Returns None for empty input."""
+    if not email:
+        return None
+    norm = email.strip().lower()
+    if not norm:
+        return None
+    row = await conn.fetchval(
+        "SELECT display_name FROM public.org_users WHERE LOWER(email) = LOWER($1) LIMIT 1",
+        norm,
+    )
+    return row or email
 
 
 @router.delete("/project-tasks/{task_id}")
