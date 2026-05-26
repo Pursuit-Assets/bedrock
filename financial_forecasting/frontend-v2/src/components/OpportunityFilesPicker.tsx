@@ -164,7 +164,9 @@ export function OpportunityFilesPicker({
           )}
         </button>
         {upload.isError ? (
-          <span className="text-[11px] text-red">Upload failed — try again</span>
+          <span className="text-[11px] text-red" title={uploadErrorMessage(upload.error)}>
+            Upload failed — {uploadErrorMessage(upload.error)}
+          </span>
         ) : null}
       </div>
     </div>
@@ -172,3 +174,10 @@ export function OpportunityFilesPicker({
 }
 
 export { Paperclip };
+
+function uploadErrorMessage(err: unknown): string {
+  if (!err) return "try again";
+  // Axios error: dig the FastAPI `detail` out of the response.
+  const e = err as { response?: { data?: { detail?: string } }; message?: string };
+  return e.response?.data?.detail ?? e.message ?? "try again";
+}

@@ -51,12 +51,15 @@ export function useUploadOpportunityFile(opportunityId: string) {
       const fd = new FormData();
       fd.append("file", file);
       if (title) fd.append("title", title);
-      // Axios sets the multipart Content-Type (with boundary) when the
-      // body is a FormData. We override the instance-level JSON header
-      // by handing it FormData directly — no config needed.
+      // The shared `api` instance defaults Content-Type to application/json.
+      // Axios does NOT auto-strip that for FormData bodies, which means
+      // the multipart boundary never makes it onto the request and the
+      // FastAPI File(...) parser 422s. Pass Content-Type undefined so
+      // the browser sets `multipart/form-data; boundary=…` itself.
       const { data } = await api.post<UploadResult>(
         `/api/salesforce/opportunities/${encodeURIComponent(opportunityId)}/files`,
         fd,
+        { headers: { "Content-Type": undefined } as never },
       );
       return data;
     },
