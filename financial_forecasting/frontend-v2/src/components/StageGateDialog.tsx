@@ -58,7 +58,11 @@ export function StageGateDialog({
   );
   const [closeReason, setCloseReason] = useState<string>("");
   const [fileSatisfied, setFileSatisfied] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
+  // The dialog uses optimistic close + background SF writes, so
+  // there's no "submitting" spinner state to track here. Kept as a
+  // const for the disabled-guards below in case we ever need to
+  // briefly block interaction (e.g. validating before close).
+  const submitting = false;
   const [scheduleBuilderOpen, setScheduleBuilderOpen] = useState(false);
 
   // Payment schedule "satisfied" — at least one payment whose total
@@ -104,42 +108,72 @@ export function StageGateDialog({
 
   const canSubmit = errors.length === 0 && !submitting;
 
-  const handleSubmit = async () => {
+  const handleSubmit = () => {
     if (!canSubmit) return;
-    setSubmitting(true);
-    try {
-      // 1. Patch any field deltas via the generic Opportunity PUT.
-      const patch: Record<string, unknown> = {};
-      if (spec.confirmCloseDate && closeDate !== opp.CloseDate) patch.CloseDate = closeDate;
-      if (spec.confirmAmount && amountNum !== opp.Amount) patch.Amount = amountNum;
-      if (spec.confirmProbability) {
-        const p = Number(probabilityStr);
-        // Mirror SF's UI: write Probability AND the manager override
-        // together so the two fields stay in sync. Same pattern as
-        // the inline Mgr Prob edit.
-        patch.Manager_Probability_Override__c = p;
-        patch.Probability = p;
-      }
-      if (spec.closeReason) {
-        patch.npsp__Closed_Lost_Reason__c = closeReason.trim();
-      }
-      if (Object.keys(patch).length > 0) {
-        await updateOpp.mutateAsync({ id: opp.Id, patch });
-      }
 
-      // 2. Run the stage change. Goes through the validate +
-      // awards-auto-create path on the backend.
-      await updateStage.mutateAsync({ id: opp.Id, newStage: toStage });
-
-      toast.success(`Moved to ${toStage}`);
-      onCompleted?.();
-      onClose();
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      toast.error(`Stage gate failed: ${msg}`);
-    } finally {
-      setSubmitting(false);
+    // Build the field-delta patch before closing so we don't depend
+    // on any local state during the background save.
+    const patch: Record<string, unknown> = {};
+    if (spec.confirmCloseDate && closeDate !== opp.CloseDate) patch.CloseDate = closeDate;
+    if (spec.confirmAmount && amountNum !== opp.Amount) patch.Amount = amountNum;
+    if (spec.confirmProbability) {
+      const p = Number(probabilityStr);
+      // Mirror SF's UI: write Probability AND the manager override
+      // together so the two fields stay in sync. Same pattern as the
+      // inline Mgr Prob edit.
+      patch.Manager_Probability_Override__c = p;
+      patch.Probability = p;
     }
+    if (spec.closeReason) {
+      patch.npsp__Closed_Lost_Reason__c = closeReason.trim();
+    }
+
+    // Optimistic close: dismiss the dialog immediately and run the
+    // SF writes in the background. The parent InlineSelect already
+    // shows the new stage from its own optimistic state, and the
+    // stage hook's onMutate writes the cache so every other surface
+    // (dashboards, expand panels, detail header) reflects the change
+    // the moment the mutation fires. onError rolls the cache back if
+    // SF rejects, and the toast surfaces the reason — UI self-heals.
+    const toastId = `stage-gate-${opp.Id}-${toStage}`;
+    toast.loading(`Moving to ${toStage}…`, { id: toastId });
+    onCompleted?.();
+    onClose();
+
+    // Field PATCH must run BEFORE the stage PATCH — the backend's
+    // stage-validate path checks current SF field values (Amount vs.
+    // payment schedule, etc.). Sequential here, but cheap because
+    // both hooks update the cache optimistically.
+    void (async () => {
+      try {
+        if (Object.keys(patch).length > 0) {
+          await updateOpp.mutateAsync({ id: opp.Id, patch });
+        }
+        const result = await updateStage.mutateAsync({ id: opp.Id, newStage: toStage });
+        toast.success(
+          result?.award_created ? `Moved to ${toStage} · Award created` : `Moved to ${toStage}`,
+          { id: toastId },
+        );
+      } catch (e) {
+        const err = e as {
+          response?: { data?: { detail?: string | { message?: string } } };
+          message?: string;
+        };
+        const detail = err.response?.data?.detail;
+        const msg =
+          typeof detail === "string"
+            ? detail
+            : detail?.message ?? err.message ?? String(e);
+        // Cache rollback is wired in the stage hook's onError. The
+        // toast tells the user what to fix; the inline stage chip
+        // will flip back to its previous value when React Query
+        // restores the snapshot.
+        toast.error(`Couldn't move to ${toStage}: ${msg}`, {
+          id: toastId,
+          duration: 8000,
+        });
+      }
+    })();
   };
 
   return (
