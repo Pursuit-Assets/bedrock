@@ -60,6 +60,15 @@ STAGE_RANK: Dict[str, int] = {
 }
 LATE_STAGE_RANK = 3  # strictly past Ask in Progress
 
+# Maximum stage rank that still counts as "in pursuit". Anything beyond
+# this is delivery / post-close work, even if SF's IsClosed flag is
+# still false. Contracting (rank 4) IS pursuit (the deal isn't won
+# until paper signs); Collecting / In Effect (rank 5) is delivery —
+# the money is committed, RM work has shifted from winning to
+# stewardship. Without this cap, accounts with a Collecting opp
+# misclassify as Pursuing instead of Stewarding.
+PURSUIT_STAGE_RANK_MAX = 4
+
 REACTIVATING_WINDOW_DAYS = 90  # "last 3 months"
 
 # Award statuses that count as "past" (i.e. eligible for the
@@ -75,10 +84,17 @@ def _is_late_stage(stage_name: Optional[str]) -> bool:
 
 
 def _is_open_active(opp: Dict[str, Any]) -> bool:
-    """An opportunity is "open and active" when SF marks it not-closed
-    and the Active_Opportunity__c custom flag is true. Both conditions
-    are required by the playbook ("open, active opportunity")."""
-    return (not opp.get("IsClosed")) and bool(opp.get("Active_Opportunity__c"))
+    """An opportunity is "open and active" when SF marks it not-closed,
+    the Active_Opportunity__c custom flag is true, AND its stage is
+    still in the pursuit phase (Contracting or earlier). Collecting /
+    In Effect onward is delivery, not pursuit — those opps belong to
+    Stewarding, gated on the award row instead."""
+    if opp.get("IsClosed"):
+        return False
+    if not opp.get("Active_Opportunity__c"):
+        return False
+    rank = STAGE_RANK.get(opp.get("StageName") or "", -1)
+    return rank >= 0 and rank <= PURSUIT_STAGE_RANK_MAX
 
 
 def compute_account_status(
