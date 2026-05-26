@@ -247,19 +247,35 @@ async def shutdown_event():
 # Background tasks
 
 async def background_sync_task():
-    """Background task to sync data periodically."""
+    """Background task to sync data periodically.
+
+    Hard-capped at 10 minutes per cycle. If sync_all_data hangs (e.g.,
+    simple_salesforce stuck on a network read), the wait_for raises
+    TimeoutError, we release the lock, and the next cycle gets a fresh
+    shot. Without this cap, a hung SF call could hold the lock + the
+    event loop indefinitely — which was making the whole API stop
+    responding ("listens but doesn't respond" pattern observed in dev).
+    """
     while True:
         try:
             data_sync_service = _services.get("data_sync_service")
             if data_sync_service:
-                        # Non-blocking acquire — skip cycle if lock held
                 if _sync_lock.locked():
                     logger.warning("Sync already in progress, skipping cycle.")
                 else:
                     async with _sync_lock:
                         logger.info("Running background data sync...")
-                        await data_sync_service.sync_all_data()
+                        await asyncio.wait_for(
+                            data_sync_service.sync_all_data(),
+                            timeout=600.0,  # 10 minutes
+                        )
                         logger.info("Background data sync completed.")
+        except asyncio.TimeoutError:
+            logger.error(
+                "Background sync timed out after 600s — lock released; "
+                "next cycle will retry. If this fires repeatedly, a SF "
+                "or DB call is stuck and needs investigation."
+            )
         except Exception as e:
             logger.error(f"Background sync error: {e}")
 
@@ -286,8 +302,16 @@ async def background_award_reconciler_task():
                 pool = get_pool()
                 if pool is not None:
                     async with pool.acquire() as conn:
-                        summary = await reconcile_all(conn, client.salesforce)
+                        # Hard-cap at 5 min — same rationale as the
+                        # background sync wait_for: a stuck SF call
+                        # would otherwise hold the event loop.
+                        summary = await asyncio.wait_for(
+                            reconcile_all(conn, client.salesforce),
+                            timeout=300.0,
+                        )
                         logger.info("awards.reconcile summary: %s", summary)
+        except asyncio.TimeoutError:
+            logger.error("Award reconciler timed out after 300s — skipping cycle")
         except Exception as e:
             logger.error(f"Award reconciler error: {e}")
 
