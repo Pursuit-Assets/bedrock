@@ -64,7 +64,7 @@ async def run_financial_cluster(
     # FEC Core
     if source_config.fec_core and not ctx.has_source("fec_data") and budget.can_call():
         fec_limit = limits.get("fec_core", 10)
-        phase1_tasks.append(asyncio.to_thread(search_contributions, name, fec_limit))
+        phase1_tasks.append(search_contributions(name, fec_limit))
         phase1_keys.append("fec_data")
 
     # USAspending ("yes" or "conditional" — conditional checks handled below)
@@ -81,7 +81,7 @@ async def run_financial_cluster(
     # EDGAR full-text search ("yes" = always, "conditional" = deferred to phase 2)
     if source_config.edgar_search == "yes" and not ctx.has_source("edgar_data") and budget.can_call():
         edgar_limit = limits.get("edgar_search", 10)
-        phase1_tasks.append(asyncio.to_thread(search_filings, name, edgar_limit))
+        phase1_tasks.append(search_filings(name, edgar_limit))
         phase1_keys.append("edgar_data")
 
     # ProPublica org search (to get EIN) — "yes" or "conditional"
