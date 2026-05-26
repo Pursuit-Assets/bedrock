@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
-import { CheckCircle2, Loader2, X } from "lucide-react";
+import { CheckCircle2, Loader2, Plus, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
 
 import {
   useAward,
-  useUpdateAward,
+  useAwardReports,
+  useCreateAwardReport,
 } from "@/services/awards";
-import { useCreateTask } from "@/services/opportunities";
+import { useCreateTask, useUpdateOpportunity } from "@/services/opportunities";
 import {
   useCreateProject,
   useLinkProjectToOpportunity,
@@ -38,47 +39,42 @@ export function AwardSetupDialog({
   opportunityId: string;
   onClose: () => void;
 }) {
-  const awardQ = useAward(awardId);
-  const updateAward = useUpdateAward();
   const createTask = useCreateTask();
+  const updateOpp = useUpdateOpportunity();
   const projectsQ = useProjects();
   const createProject = useCreateProject();
   const linkProject = useLinkProjectToOpportunity();
+  const createAwardReport = useCreateAwardReport(awardId);
+  // Existing reports list — surface in the deliverables editor so the
+  // user sees what's already on the award (e.g. from a prior session).
+  const reportsQ = useAwardReports(awardId);
+  // Keep award fetch for the close-out "all done" gate; we no longer
+  // write to it from this dialog (start/end live on SF).
+  useAward(awardId);
 
-  const award = awardQ.data;
-
-  // ── Section 1: Award dates ────────────────────────────────────────
+  // ── Section 1: Grant dates (writes to SF Opportunity) ─────────────
   const [startDate, setStartDate] = useState<string>("");
   const [endDate, setEndDate] = useState<string>("");
   const [datesSaved, setDatesSaved] = useState(false);
-
-  // Seed inputs once when the award row loads. Effect, not memo —
-  // setting state during render would loop.
-  const [datesSeeded, setDatesSeeded] = useState(false);
-  useEffect(() => {
-    if (!award || datesSeeded) return;
-    setStartDate(award.award_date ?? "");
-    setEndDate(award.period_end_date ?? "");
-    setDatesSeeded(true);
-  }, [award, datesSeeded]);
+  const [savingDates, setSavingDates] = useState(false);
 
   const saveDates = async () => {
     if (!startDate && !endDate) {
       toast.error("Set at least one date or use Remind me later");
       return;
     }
+    setSavingDates(true);
     try {
-      await updateAward.mutateAsync({
-        id: awardId,
-        patch: {
-          award_date: startDate || null,
-          period_end_date: endDate || null,
-        },
-      });
+      const patch: Record<string, unknown> = {};
+      if (startDate) patch.Grant_Start_Date__c = startDate;
+      if (endDate) patch.Grant_End_Date__c = endDate;
+      await updateOpp.mutateAsync({ id: opportunityId, patch });
       setDatesSaved(true);
-      toast.success("Award dates saved");
+      toast.success("Grant dates saved");
     } catch (e) {
       toast.error(`Couldn't save dates: ${errorMessage(e)}`);
+    } finally {
+      setSavingDates(false);
     }
   };
 
@@ -86,41 +82,79 @@ export function AwardSetupDialog({
     void createReminderTask(
       createTask,
       opportunityId,
-      "Confirm award start + end dates",
-      "Post-Collecting follow-up: set the award start date (award_date) and period end date so reporting + payment schedules align.",
+      "Confirm grant start + end dates",
+      "Post-Collecting follow-up: set Grant_Start_Date__c and Grant_End_Date__c on the opportunity so reporting + payment schedules align.",
     ).then(() => setDatesSaved(true));
   };
 
-  // ── Section 2: Reporting ──────────────────────────────────────────
-  const [reportingNotes, setReportingNotes] = useState<string>("");
-  const [reportingFrequency, setReportingFrequency] = useState<string>("");
+  // ── Section 2: Reporting deliverables (each with a due date) ──────
+  interface DeliverableRow {
+    id: string; // local id for React key + remove
+    title: string;
+    due_date: string;
+  }
+  const [deliverables, setDeliverables] = useState<DeliverableRow[]>([]);
   const [reportingSaved, setReportingSaved] = useState(false);
+  const [savingReporting, setSavingReporting] = useState(false);
 
+  // Seed from existing AwardReports on the award (so re-opening the
+  // dialog doesn't lose what was already entered).
   const [reportingSeeded, setReportingSeeded] = useState(false);
   useEffect(() => {
-    if (!award || reportingSeeded) return;
-    setReportingNotes(award.notes ?? "");
-    setReportingFrequency(award.reporting_frequency ?? "");
+    const data = reportsQ.data;
+    if (!data || reportingSeeded) return;
+    setDeliverables(
+      data.map((r) => ({
+        id: r.id,
+        title: r.notes || "Report",
+        due_date: r.due_date,
+      })),
+    );
     setReportingSeeded(true);
-  }, [award, reportingSeeded]);
+  }, [reportsQ.data, reportingSeeded]);
+
+  const addDeliverable = () => {
+    setDeliverables((prev) => [
+      ...prev,
+      { id: `new-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, title: "", due_date: "" },
+    ]);
+  };
+
+  const removeDeliverable = (id: string) => {
+    setDeliverables((prev) => prev.filter((d) => d.id !== id));
+  };
+
+  const updateDeliverable = (id: string, patch: Partial<DeliverableRow>) => {
+    setDeliverables((prev) => prev.map((d) => (d.id === id ? { ...d, ...patch } : d)));
+  };
 
   const saveReporting = async () => {
-    if (!reportingNotes.trim() && !reportingFrequency) {
-      toast.error("Enter reporting requirements or pick a cadence");
+    const existingIds = new Set((reportsQ.data ?? []).map((r) => r.id));
+    const toCreate = deliverables.filter(
+      (d) => !existingIds.has(d.id) && d.title.trim() && d.due_date,
+    );
+    if (toCreate.length === 0) {
+      toast.error("Add at least one deliverable with a title and due date");
       return;
     }
+    setSavingReporting(true);
     try {
-      await updateAward.mutateAsync({
-        id: awardId,
-        patch: {
-          notes: reportingNotes,
-          reporting_frequency: reportingFrequency || null,
-        },
-      });
+      // Run creates in parallel — the schedule is rarely large but
+      // sequential N round-trips would feel slow.
+      await Promise.all(
+        toCreate.map((d) =>
+          createAwardReport.mutateAsync({
+            due_date: d.due_date,
+            notes: d.title.trim(),
+          }),
+        ),
+      );
       setReportingSaved(true);
-      toast.success("Reporting requirements saved");
+      toast.success(`${toCreate.length} deliverable${toCreate.length === 1 ? "" : "s"} saved`);
     } catch (e) {
-      toast.error(`Couldn't save reporting: ${errorMessage(e)}`);
+      toast.error(`Couldn't save deliverables: ${errorMessage(e)}`);
+    } finally {
+      setSavingReporting(false);
     }
   };
 
@@ -128,8 +162,8 @@ export function AwardSetupDialog({
     void createReminderTask(
       createTask,
       opportunityId,
-      "Log reporting requirements + schedule",
-      "Post-Collecting follow-up: capture the funder's reporting requirements (deliverables, cadence, first-report due date) on the award.",
+      "Log reporting deliverables + due dates",
+      "Post-Collecting follow-up: capture the funder's required deliverables and the due date for each as AwardReport rows on the award.",
     ).then(() => setReportingSaved(true));
   };
 
@@ -216,16 +250,16 @@ export function AwardSetupDialog({
 
           <div className="flex flex-col gap-3">
             <SetupSection
-              label="1 · Award start + end dates"
+              label="1 · Grant start + end dates"
               saved={datesSaved}
-              saving={updateAward.isPending || createTask.isPending}
+              saving={savingDates || createTask.isPending}
               onSave={saveDates}
               onRemindLater={remindDates}
             >
               <div className="grid grid-cols-2 gap-3">
                 <label className="flex flex-col gap-1">
                   <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
-                    Start date
+                    Grant start date
                   </span>
                   <input
                     type="date"
@@ -236,7 +270,7 @@ export function AwardSetupDialog({
                 </label>
                 <label className="flex flex-col gap-1">
                   <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
-                    End date
+                    Grant end date
                   </span>
                   <input
                     type="date"
@@ -249,41 +283,94 @@ export function AwardSetupDialog({
             </SetupSection>
 
             <SetupSection
-              label="2 · Reporting requirements + schedule"
+              label="2 · Reporting deliverables"
               saved={reportingSaved}
-              saving={updateAward.isPending}
+              saving={savingReporting}
               onSave={saveReporting}
               onRemindLater={remindReporting}
             >
-              <label className="flex flex-col gap-1">
-                <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
-                  Reporting deliverables
-                </span>
-                <textarea
-                  value={reportingNotes}
-                  onChange={(e) => setReportingNotes(e.target.value)}
-                  rows={3}
-                  placeholder="Funder requirements — e.g. quarterly impact report, mid-year financial, annual narrative…"
-                  className="resize-y rounded border border-border-strong bg-surface px-2 py-1.5 text-[12.5px] outline-none focus:border-accent"
-                />
-              </label>
-              <label className="mt-2 flex flex-col gap-1">
-                <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
-                  Cadence
-                </span>
-                <select
-                  value={reportingFrequency}
-                  onChange={(e) => setReportingFrequency(e.target.value)}
-                  className={inputCls}
-                >
-                  <option value="">No set cadence</option>
-                  <option value="monthly">Monthly</option>
-                  <option value="quarterly">Quarterly</option>
-                  <option value="semiannual">Semi-annually</option>
-                  <option value="annual">Annually</option>
-                  <option value="custom">Custom — see notes</option>
-                </select>
-              </label>
+              <p className="mb-2 text-[11.5px] text-ink-3">
+                Add each deliverable the funder requires. Saved deliverables live on the award as scheduled reports.
+              </p>
+              {deliverables.length === 0 ? (
+                <div className="rounded border border-dashed border-border-strong px-3 py-3 text-center text-[11.5px] text-ink-3">
+                  No deliverables yet — click <strong>Add deliverable</strong> below to start.
+                </div>
+              ) : (
+                <table className="w-full table-fixed border-collapse text-[12.5px]">
+                  <colgroup>
+                    <col />
+                    <col className="w-[140px]" />
+                    <col className="w-[28px]" />
+                  </colgroup>
+                  <thead>
+                    <tr>
+                      <th className="border-b border-border-strong bg-surface-2 px-2 py-1.5 text-left text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
+                        Deliverable
+                      </th>
+                      <th className="border-b border-border-strong bg-surface-2 px-2 py-1.5 text-left text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
+                        Due date
+                      </th>
+                      <th className="border-b border-border-strong bg-surface-2 px-2 py-1.5" aria-label="Remove" />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {deliverables.map((d) => {
+                      const isExisting = !d.id.startsWith("new-");
+                      return (
+                        <tr key={d.id} className={isExisting ? "opacity-60" : ""}>
+                          <td className="px-1 py-1">
+                            {isExisting ? (
+                              <span className="text-[12.5px] text-ink-2">{d.title}</span>
+                            ) : (
+                              <input
+                                type="text"
+                                value={d.title}
+                                placeholder="e.g. Quarterly impact report"
+                                onChange={(e) => updateDeliverable(d.id, { title: e.target.value })}
+                                className="w-full rounded border border-border-strong bg-surface px-1.5 py-0.5 text-[12px] outline-none focus:border-accent"
+                              />
+                            )}
+                          </td>
+                          <td className="px-1 py-1">
+                            {isExisting ? (
+                              <span className="mono text-[12.5px] tabular-nums text-ink-2">{d.due_date}</span>
+                            ) : (
+                              <input
+                                type="date"
+                                value={d.due_date}
+                                onChange={(e) => updateDeliverable(d.id, { due_date: e.target.value })}
+                                className="w-full rounded border border-border-strong bg-surface px-1.5 py-0.5 text-[12px] outline-none focus:border-accent"
+                              />
+                            )}
+                          </td>
+                          <td className="px-1 py-1 text-right">
+                            {isExisting ? (
+                              <span className="text-[9px] uppercase tracking-wider text-green">saved</span>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => removeDeliverable(d.id)}
+                                className="rounded p-0.5 text-ink-3 hover:bg-surface hover:text-red"
+                                aria-label="Remove deliverable"
+                              >
+                                <Trash2 size={11} />
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              )}
+              <button
+                type="button"
+                onClick={addDeliverable}
+                className="mt-2 inline-flex items-center gap-1 self-start rounded border border-border-strong bg-surface px-2 py-0.5 text-[11px] font-medium text-ink-2 hover:bg-surface-2"
+              >
+                <Plus size={11} /> Add deliverable
+              </button>
             </SetupSection>
 
             <SetupSection
