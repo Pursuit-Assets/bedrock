@@ -1,0 +1,14 @@
+name: aggregate_pipeline_views
+description: |
+  Generate a three-view pipeline review: at-risk opportunities (close
+  date within N days), stale opportunities (no activity in M days), and
+  coverage by owner. Use for queries like 'weekly pipeline review',
+  "what's at risk", "who's carrying the most pipeline". One SF call;
+  returns a summary string + three chart specs the renderer embeds
+  inline.
+version: 1.0.0
+tags:
+  - workflow
+  - pipeline
+requires_human: false
+cost_estimate_usd: 0.0

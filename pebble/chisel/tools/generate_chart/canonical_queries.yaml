@@ -1,0 +1,10 @@
+queries:
+  # generate_chart is downstream of an aggregation step; planner-only
+  # eval can't fully verify its use without an upstream tool result.
+  # Skipped at plan-eval time; gated CI runs the full pipeline.
+  - id: skipped_generate_chart_smoke
+    user_query: "Plot pipeline by owner as a bar chart"
+    skip_reason: "downstream of search/aggregate — requires full pipeline (gated CI)"
+    expected_plan:
+      - tool: generate_chart
+    tags: [smoke, deferred]

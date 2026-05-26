@@ -10,6 +10,16 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 
+@pytest.fixture(autouse=True)
+def _chisel_real_autoload():
+    """Restore the chisel workflow maps to the real ``pebble/chisel/``
+    tree before each test. Framework tests in ``test_chisel_framework.py``
+    call ``autoload(root=tmp_path)`` which resets the maps to a temp
+    tree — without this fixture, the next test reads stale state."""
+    from pebble import chisel
+    chisel.autoload()
+
+
 @pytest.fixture
 def mock_pg_pool(monkeypatch):
     """Mock asyncpg connection pool for unit tests.

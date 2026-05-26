@@ -1,0 +1,25 @@
+{
+  "_cassette_metadata": {
+    "captured_at": "2026-05-08",
+    "scenario": "evaluator: clean draft answer with citations, judge verdicts PASS",
+    "model_requested": "claude-haiku-4-5-20251001"
+  },
+  "id": "msg_cassette_eval_pass",
+  "type": "message",
+  "role": "assistant",
+  "model": "claude-haiku-4-5-20251001",
+  "stop_reason": "end_turn",
+  "stop_sequence": null,
+  "content": [
+    {
+      "type": "text",
+      "text": "{\"factuality\":0.92,\"completeness\":0.85,\"harm\":\"none\",\"verdict\":\"pass\",\"rationale\":\"Draft cites the search result accurately; no unsupported claims.\",\"rejected_claims\":[]}"
+    }
+  ],
+  "usage": {
+    "input_tokens": 425,
+    "output_tokens": 78,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0
+  }
+}

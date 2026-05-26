@@ -1,0 +1,15 @@
+name: generate_chart
+description: |
+  Format an aggregated dataset as a chart spec the frontend renders via
+  Recharts. Use AFTER a search_crm / get_record / query_metric step has
+  produced the underlying data — pass the rows in via 'data' and pick a
+  kind that matches the data shape (bar for category counts, line for
+  time series, pie for parts of a whole). The planner is responsible for
+  choosing the right kind; this tool only validates the shape. Output
+  goes inline in the response — the user sees the chart rendered, not
+  raw JSON.
+version: 1.0.0
+tags:
+  - rendering
+requires_human: false
+cost_estimate_usd: 0.0

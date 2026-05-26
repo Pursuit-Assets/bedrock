@@ -22,9 +22,19 @@ logger = logging.getLogger("pebble.router")
 
 @dataclass
 class RouteResult:
-    """Classification result from the query router."""
-    level: int              # -1=redirect, 0=T0, 1=T0.5, 10=T1, 20=T2, 30=T3
-    intent: str             # e.g., "contact_field_lookup", "research_full"
+    """Classification result from the query router.
+
+    Levels:
+      -1 = redirect (out of scope: drafting, scheduling)
+       0 = CRM lookup (instant template, no LLM)
+       1 = CRM analysis (Haiku synthesis OR L1 ChatOrchestrator path)
+       2 = workflow short-circuit (slash command → pre-baked Plan)
+      10 = T1 prospect research (ID & Triage)
+      20 = T2 prospect research (Structured Intelligence)
+      30 = T3 prospect research (Full)
+    """
+    level: int
+    intent: str             # e.g., "contact_field_lookup", "workflow_weekly_pipeline_review"
     entities: dict = field(default_factory=dict)  # {person_name, org_name, field, ...}
     confidence: float = 1.0
     redirect_target: str | None = None   # "cowork", "bedrock_pipeline", etc.
@@ -69,6 +79,42 @@ def _check_redirect(query: str) -> RouteResult | None:
                 redirect_target=target, redirect_reason=reason,
             )
     return None
+
+
+# ---------------------------------------------------------------------------
+# Slash-command short-circuit — runs deterministic workflows.
+# ---------------------------------------------------------------------------
+
+# Slash commands resolve to Chisel-registered workflows. Adding a
+# workflow = drop a ``workflow.yaml`` under ``pebble/chisel/workflows/``
+# declaring ``slash_command:``. ``chisel.lookup_slash()`` picks it up
+# at request time without per-workflow router changes.
+
+from . import chisel as _chisel  # autoload runs on import
+
+
+def _check_slash_command(query: str) -> RouteResult | None:
+    """Detect a slash-command prefix and return a deterministic
+    workflow route. The dispatch_handler routes level=2 into the
+    pre-baked Plan path through the orchestrator's executor.
+
+    First-token-only matching: ``/pipeline this quarter`` and
+    ``/pipeline`` both fire the same workflow. Trailing args become
+    available to the workflow via ``RouteResult.entities['args']``
+    (currently unused; reserved for future enrichment).
+    """
+    stripped = (query or "").strip()
+    if not stripped or not stripped.startswith("/"):
+        return None
+    head, _, rest = stripped.partition(" ")
+    head_lower = head.lower()
+    entry = _chisel.lookup_slash(head_lower)
+    if entry is None:
+        return None
+    return RouteResult(
+        level=2, intent=entry.dispatch_intent, confidence=1.0,
+        entities={"slash_command": head_lower, "args": rest.strip()},
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -183,7 +229,14 @@ async def classify_query(
             mode_override=mode,
         )
 
-    # 2. Regex redirect fast-path (free, instant — saves LLM call)
+    # 2a. Slash command — deterministic workflow short-circuit. Runs
+    # before redirect/Haiku because slash commands are the user's
+    # explicit choice and bypass classification entirely.
+    slash = _check_slash_command(query)
+    if slash:
+        return slash
+
+    # 2b. Regex redirect fast-path (free, instant — saves LLM call)
     redirect = _check_redirect(query)
     if redirect:
         return redirect

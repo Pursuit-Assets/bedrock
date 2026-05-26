@@ -1,0 +1,8 @@
+name: weekly_pipeline_review
+description: |
+  Deterministic three-view pipeline review fired by the /pipeline slash
+  command or the planner picking aggregate_pipeline_views directly.
+version: 1.0.0
+slash_command: /pipeline
+has_custom_plan: true
+cost_estimate_usd: 0.0

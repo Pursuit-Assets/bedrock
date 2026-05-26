@@ -1,0 +1,18 @@
+queries:
+  - id: smoke_nl_weekly_review
+    user_query: "Show me the weekly pipeline review"
+    expected_plan:
+      - tool: aggregate_pipeline_views
+    tags: [smoke]
+
+  - id: smoke_nl_at_risk
+    user_query: "What deals are at risk this month?"
+    expected_plan:
+      - tool: aggregate_pipeline_views
+    tags: [smoke]
+
+  - id: smoke_nl_pipeline_coverage
+    user_query: "Who's carrying the most pipeline?"
+    expected_plan:
+      - tool: aggregate_pipeline_views
+    tags: [smoke]
