@@ -53,14 +53,23 @@ SOURCE_OPP_OWNER = "sf_opp_owner_history"
 
 async def run_forever() -> None:
     """Top-level entry — sleep-loop calling poll_once. Used by main.py's
-    startup hook so the poller lives inside the backend process."""
+    startup hook so the poller lives inside the backend process.
+
+    Each poll is hard-capped at 120 s so a stuck SF call can't block
+    the event loop forever (the underlying simple_salesforce client is
+    sync; a network stall would otherwise hang this coroutine
+    indefinitely). On timeout we log, advance to sleep, and retry next
+    cycle.
+    """
     # Stagger the first run so concurrent backend startups don't all
     # hit SF at the same instant. Trivially-randomized below 30s.
     import random
     await asyncio.sleep(random.uniform(5, 30))
     while True:
         try:
-            await poll_once()
+            await asyncio.wait_for(poll_once(), timeout=120.0)
+        except asyncio.TimeoutError:
+            logger.error("sf_notification_poller: poll_once timed out after 120s — skipping cycle")
         except Exception as e:
             logger.exception(f"sf_notification_poller crashed mid-cycle: {e}")
         await asyncio.sleep(POLL_INTERVAL_SEC)

@@ -247,19 +247,35 @@ async def shutdown_event():
 # Background tasks
 
 async def background_sync_task():
-    """Background task to sync data periodically."""
+    """Background task to sync data periodically.
+
+    Hard-capped at 10 minutes per cycle. If sync_all_data hangs (e.g.,
+    simple_salesforce stuck on a network read), the wait_for raises
+    TimeoutError, we release the lock, and the next cycle gets a fresh
+    shot. Without this cap, a hung SF call could hold the lock + the
+    event loop indefinitely — which was making the whole API stop
+    responding ("listens but doesn't respond" pattern observed in dev).
+    """
     while True:
         try:
             data_sync_service = _services.get("data_sync_service")
             if data_sync_service:
-                        # Non-blocking acquire — skip cycle if lock held
                 if _sync_lock.locked():
                     logger.warning("Sync already in progress, skipping cycle.")
                 else:
                     async with _sync_lock:
                         logger.info("Running background data sync...")
-                        await data_sync_service.sync_all_data()
+                        await asyncio.wait_for(
+                            data_sync_service.sync_all_data(),
+                            timeout=600.0,  # 10 minutes
+                        )
                         logger.info("Background data sync completed.")
+        except asyncio.TimeoutError:
+            logger.error(
+                "Background sync timed out after 600s — lock released; "
+                "next cycle will retry. If this fires repeatedly, a SF "
+                "or DB call is stuck and needs investigation."
+            )
         except Exception as e:
             logger.error(f"Background sync error: {e}")
 
@@ -286,8 +302,16 @@ async def background_award_reconciler_task():
                 pool = get_pool()
                 if pool is not None:
                     async with pool.acquire() as conn:
-                        summary = await reconcile_all(conn, client.salesforce)
+                        # Hard-cap at 5 min — same rationale as the
+                        # background sync wait_for: a stuck SF call
+                        # would otherwise hold the event loop.
+                        summary = await asyncio.wait_for(
+                            reconcile_all(conn, client.salesforce),
+                            timeout=300.0,
+                        )
                         logger.info("awards.reconcile summary: %s", summary)
+        except asyncio.TimeoutError:
+            logger.error("Award reconciler timed out after 300s — skipping cycle")
         except Exception as e:
             logger.error(f"Award reconciler error: {e}")
 
@@ -670,6 +694,13 @@ async def get_accounts(
     # `fields=light` returns only the ~17 fields the v2 frontend uses,
     # cutting SOQL payload ~70% vs the full 50-field default (kept for v1).
     fields: Optional[str] = Query(None),
+    # `active_only=true` narrows the SOQL to accounts touched in the
+    # last 6 months (LastActivityDate >= LAST_N_MONTHS:6) — ~370 rows
+    # vs ~20k total, fetched in ~200 ms vs ~5.6 s. Frontend uses this
+    # for the first-paint pass; the full set lands in a follow-up
+    # request. Active__c was tried as a filter but turns out 19.9k of
+    # 20.2k accounts have it set — not useful as a subset signal.
+    active_only: bool = Query(False),
     client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user = Depends(require_auth)
 ):
@@ -678,7 +709,11 @@ async def get_accounts(
         if "salesforce" not in (client.connected_services or []):
             return []
         use_light = fields == "light"
-        cache_key = f"accounts:{limit or 'all'}:{'light' if use_light else 'full'}"
+        cache_key = (
+            f"accounts:{limit or 'all'}:"
+            f"{'light' if use_light else 'full'}:"
+            f"{'active' if active_only else 'any'}"
+        )
         cached = cache.get(cache_key)
         if cached is not None:
             return cached
@@ -728,16 +763,31 @@ async def get_accounts(
         if limit is not None:
             query += f" LIMIT {limit}"
 
+        # Inject the active_only WHERE clause between FROM and ORDER BY.
+        # Both branches above are "SELECT ... FROM Account ORDER BY ..."
+        # — splice rather than re-quote the string to keep the field
+        # list untouched.
+        if active_only:
+            query = query.replace(
+                "FROM Account\n",
+                "FROM Account\n            WHERE LastActivityDate = LAST_N_MONTHS:6\n",
+            )
+
         result = await salesforce.query_all(query)
         records = result.get("records", [])
 
         # Derive playbook Account Status (Prospect / Pursuing /
         # Stewarding / Re-activating / Dormant) per account. Pure
-        # derivation — see services/account_status.py for the rules.
-        try:
-            await _attach_account_status(records, salesforce)
-        except Exception as ex:  # noqa: BLE001
-            logger.warning(f"Failed to derive account_status; serving without it: {ex}")
+        # derivation — see services/account_status.py. Skip on the
+        # active_only pre-paint because status derivation needs the
+        # FULL opportunity history of each account to classify
+        # Re-activating vs Dormant correctly; the follow-up full-set
+        # request attaches status to the same accounts.
+        if not active_only:
+            try:
+                await _attach_account_status(records, salesforce)
+            except Exception as ex:  # noqa: BLE001
+                logger.warning(f"Failed to derive account_status; serving without it: {ex}")
 
         cache.set(cache_key, records, CACHE_TTL_ACCOUNTS)
         return records
@@ -855,6 +905,12 @@ async def get_contacts(
     # the dominant cause of the contacts list feeling slow on cold
     # cache. Per-contact detail page still uses fields=full.
     fields: Optional[str] = Query(None),
+    # `active_only=true` narrows the SOQL to contacts touched in the
+    # last 6 months — same pattern as /accounts. Pursuit has ~15k
+    # total contacts; only ~311 have LastActivityDate in the window.
+    # First-paint fetch drops from ~1.4 s → ~100 ms backend. Full set
+    # arrives in a follow-up call.
+    active_only: bool = Query(False),
     client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user = Depends(require_auth)
 ):
@@ -863,7 +919,11 @@ async def get_contacts(
         if "salesforce" not in (client.connected_services or []):
             return []
         use_light = fields == "light"
-        cache_key = f"contacts:{account_id}:{limit or 'all'}:{'light' if use_light else 'full'}"
+        cache_key = (
+            f"contacts:{account_id}:{limit or 'all'}:"
+            f"{'light' if use_light else 'full'}:"
+            f"{'active' if active_only else 'any'}"
+        )
         cached = cache.get(cache_key)
         if cached is not None:
             return cached
@@ -904,9 +964,20 @@ async def get_contacts(
             FROM Contact
             """
 
+        # Build WHERE clauses. account_id and active_only stack with AND;
+        # an account-scoped fetch from the detail page doesn't apply
+        # active_only since the user wants every contact on the account.
+        wheres = []
         if account_id:
             validate_salesforce_id(account_id, "account_id")
-            query += f" WHERE AccountId = '{account_id}'"
+            wheres.append(f"AccountId = '{account_id}'")
+        elif active_only:
+            # SF date-literal — anchors the window relative to today
+            # without needing a server-side timestamp.
+            wheres.append("LastActivityDate = LAST_N_MONTHS:6")
+
+        if wheres:
+            query += " WHERE " + " AND ".join(wheres)
 
         query += " ORDER BY LastName ASC"
         if limit is not None:
