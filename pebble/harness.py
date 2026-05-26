@@ -198,8 +198,11 @@ def _tpl_verifier_source(data: dict, source_urls: list[str]) -> tuple[str, str]:
     claims_text = data["claims_text"]
     prompt = (
         f"Evaluate each claim's source credibility.\n\n{claims_text}\n\n"
-        f"For each claim: is the source_url a .gov database, major institution site, "
-        f"or unrecognizable/suspicious? Approve claims with credible institutional sources.\n\n"
+        f"Each claim is annotated with a tier (0=primary .gov/.edu, "
+        f"1=ProPublica/GuideStar, 2=Wikipedia, 3=general web). "
+        f"Approve tier 0–1 claims by default unless the URL is "
+        f"unrecognizable. For tier 2–3, require explicit corroboration "
+        f"or reject. Output JSON:\n"
         f'{{"approved": [0, 1, 3], "rejected": [{{"index": 2, "reason": "unverifiable source"}}]}}'
     )
     system = (

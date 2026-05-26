@@ -997,6 +997,19 @@ def test_forager_prompts_forbid_url_invention():
         )
 
 
+def test_verifier_source_prompt_uses_tier_annotations():
+    """The verifier_source prompt instructs the LLM to use the tier
+    annotation on each claim so it doesn't have to re-classify URLs
+    from scratch. Pairs with quorum_verify_claims passing tier:N in
+    the claims_text format."""
+    from pebble.harness import PROMPT_TEMPLATES
+    prompt, _ = PROMPT_TEMPLATES["verifier_source"](
+        {"claims_text": "[0] x (source: https://x, tier: 0, confidence: high)"}, [],
+    )
+    assert "tier" in prompt
+    assert "tier 0" in prompt.lower() or "tier 0–1" in prompt or "tier 0-1" in prompt
+
+
 def test_verifier_prompts_bias_toward_rejection():
     """The verifier system prompts must explicitly bias toward
     rejection when uncertain. Silently passing a wrong claim into a

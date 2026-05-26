@@ -810,13 +810,20 @@ async def quorum_verify_claims(
         )
         return []
 
-    # Build numbered claim list for verifier input
+    # Build numbered claim list for verifier input. Include source_tier
+    # (0=.gov/.edu, 1=ProPublica/GuideStar, 2=Wikipedia, 3=web) so the
+    # source-credibility verifier doesn't have to re-classify URLs.
     claim_lines = []
     for i, c in enumerate(claims):
         text = c.get("text", "")
         url = c.get("source_url", "")
         confidence = c.get("confidence", "medium")
-        claim_lines.append(f"[{i}] {text} (source: {url}, confidence: {confidence})")
+        tier = c.get("source_tier")
+        if not isinstance(tier, int):
+            tier = classify_source_tier(url)
+        claim_lines.append(
+            f"[{i}] {text} (source: {url}, tier: {tier}, confidence: {confidence})"
+        )
     claims_text = "\n".join(claim_lines)
 
     verifier_names = ["verifier_source", "verifier_consistency", "verifier_crossref"]
