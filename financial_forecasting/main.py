@@ -208,6 +208,28 @@ async def startup_event():
             _services["data_sync_service"] = DataSyncService(client)
         asyncio.create_task(background_sync_task())
         asyncio.create_task(background_award_reconciler_task())
+        asyncio.create_task(background_interaction_sync_task())
+
+    # Cache the db pool on _services so background tasks (notification
+    # Slack dispatcher) can acquire connections without going through
+    # FastAPI's request-scoped get_db dependency.
+    try:
+        from db import get_pool
+        _services["db_pool"] = get_pool()
+    except Exception as e:
+        logger.warning(f"db_pool not registered on _services: {e}")
+
+    # SF-side notification poller — watches for new SF Tasks and
+    # OpportunityFieldHistory rows and fans out notifications. Only
+    # meaningful when SF is connected; the loop self-checks and no-ops
+    # otherwise.
+    if "salesforce" in client.connected_services:
+        try:
+            from services.sf_notification_poller import run_forever as _sf_notif_loop
+            asyncio.create_task(_sf_notif_loop())
+            logger.info("sf_notification_poller started")
+        except Exception as e:
+            logger.warning(f"sf_notification_poller failed to start: {e}")
 
     # Cache the db pool on _services so background tasks (notification
     # Slack dispatcher) can acquire connections without going through
@@ -317,6 +339,39 @@ async def background_award_reconciler_task():
 
         # Wait 1h before next pass
         await asyncio.sleep(3_600)
+
+
+async def background_interaction_sync_task():
+    """Nightly background task: sync Gmail + Calendar for all staff in
+    bedrock.sync_staff.  Runs once per day at 23:00 ET (04:00 UTC next day).
+    First run is delayed 180s after startup so the DB pool is ready.
+    """
+    import asyncio as _asyncio
+    from datetime import timezone as _tz, datetime as _dt, timedelta as _td
+    await _asyncio.sleep(180)
+    while True:
+        # Sleep until next 04:00 UTC (= 23:00 ET / 00:00 ET summer)
+        now_utc = _dt.now(_tz.utc)
+        target = now_utc.replace(hour=4, minute=0, second=0, microsecond=0)
+        if target <= now_utc:
+            target += _td(days=1)
+        await _asyncio.sleep((target - now_utc).total_seconds())
+
+        try:
+            from db import get_pool
+            from services.interaction_sync import run_interaction_sync
+            pool = get_pool()
+            if pool is not None:
+                logger.info("interaction_sync: starting nightly run")
+                summary = await _asyncio.wait_for(
+                    run_interaction_sync(pool),
+                    timeout=7_200.0,  # 2h hard cap
+                )
+                logger.info("interaction_sync: done %s", summary)
+        except _asyncio.TimeoutError:
+            logger.error("interaction_sync timed out after 2h — skipping cycle")
+        except Exception as e:
+            logger.error("interaction_sync error: %s", e)
 
 
 # Dependency functions — get_current_user is now cookie-based (see auth.py)
