@@ -4,6 +4,7 @@ import {
   LayoutDashboard,
   Building2,
   Briefcase,
+  ClipboardCheck,
   GitBranch,
   Trophy,
   FolderOpen,
@@ -40,6 +41,7 @@ const NAV_GROUPS = [
       { to: "/accounts",  label: "Accounts", icon: Building2 },
       { to: "/contacts",  label: "Contacts", icon: Users },
       { to: "/pipeline",  label: "Pipeline", icon: GitBranch },
+      { to: "/pipeline-review", label: "Pipeline Review", icon: ClipboardCheck },
       { to: "/cleanup",   label: "Cleanup",  icon: Sparkles },
       // Tasks page hidden 2026-05-04 — pending a Salesforce data-hygiene
       // pass to close the years-old open-task backlog. Tasks remain

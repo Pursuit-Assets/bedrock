@@ -47,6 +47,41 @@ export function useActivities(filters: ActivityFilters) {
   });
 }
 
+// ── Pipeline Review feed ───────────────────────────────────────────────────
+// Unfiltered listing for the dashboard. Same /api/activities endpoint,
+// but exposes type + start/end date filters and is enabled by default
+// (no gate on owner/account/opp). Used by /pipeline-review.
+
+export interface ActivityFeedFilters {
+  ownerId?: string | null;
+  /** bedrock.activity.type — call/email/meeting/note/slack-message/calendar-event */
+  type?: string | null;
+  /** ISO 8601 inclusive lower bound on activity_date */
+  startDate?: string | null;
+  /** ISO 8601 inclusive upper bound on activity_date */
+  endDate?: string | null;
+  limit?: number;
+}
+
+export function useActivityFeed(filters: ActivityFeedFilters) {
+  return useQuery({
+    queryKey: ["activity-feed", filters],
+    queryFn: async () => {
+      const params = new URLSearchParams();
+      if (filters.ownerId) params.set("owner_id", filters.ownerId);
+      if (filters.type) params.set("type", filters.type);
+      if (filters.startDate) params.set("start_date", filters.startDate);
+      if (filters.endDate) params.set("end_date", filters.endDate);
+      params.set("limit", String(filters.limit ?? 100));
+      const { data } = await api.get<ActivitiesResponse>(
+        `/api/activities/?${params.toString()}`,
+      );
+      return data.data ?? [];
+    },
+    staleTime: 30_000,
+  });
+}
+
 async function fetchAccountFullActivities(
   accountId: string,
   limit: number,
