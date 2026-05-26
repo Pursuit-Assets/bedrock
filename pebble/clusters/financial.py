@@ -149,9 +149,7 @@ async def run_financial_cluster(
     ):
         if not ctx.has_source("fec_committees_data") and person_name and budget.can_call():
             fec_ext_limit = limits.get("fec_extended", 5)
-            phase2_tasks.append(asyncio.to_thread(
-                search_committees, None, person_name, fec_ext_limit
-            ))
+            phase2_tasks.append(search_committees(None, person_name, fec_ext_limit))
             phase2_keys.append("fec_committees_data")
 
     if phase2_tasks:

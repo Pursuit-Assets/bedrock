@@ -1650,7 +1650,8 @@ async def fetch_research_data(
     phase1 = await asyncio.gather(
         asyncio.to_thread(search_organizations, primary_org) if primary_org and not ein else _noop(),
         asyncio.to_thread(search_cik, primary_org) if primary_org else _noop(),
-        asyncio.to_thread(search_contributions, name, 10) if name else _noop(),
+        # P1: FEC is async-native; direct await.
+        search_contributions(name, 10) if name else _noop(),
         asyncio.to_thread(search_filings, name) if name else _noop(),
         asyncio.to_thread(search_awards, name) if name else _noop(),
         asyncio.to_thread(fetch_full_profile, name) if name else _noop(),

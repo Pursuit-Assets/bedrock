@@ -97,7 +97,7 @@ async def handle_t1(
         _timed_fetch("web_search", asyncio.to_thread(search_person, name, org_name) if name else _noop()),
         _timed_fetch("wikipedia", asyncio.to_thread(fetch_full_profile, name) if name else _noop()),
         _timed_fetch("opencorporates", asyncio.to_thread(search_officers, name) if name else _noop()),
-        _timed_fetch("fec", asyncio.to_thread(search_contributions, name, 3) if name else _noop()),
+        _timed_fetch("fec", search_contributions(name, 3) if name else _noop()),
     )
     web_results = web_results or []
 
