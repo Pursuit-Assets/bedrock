@@ -166,7 +166,10 @@ async def sync_calendar_for_staff(
             all_emails = [
                 a["email"].lower()
                 for a in attendees
-                if a.get("email") and a.get("responseStatus") != "declined"
+                if a.get("email")
+                and a.get("responseStatus") != "declined"
+                and "resource.calendar.google.com" not in a.get("email", "")
+                and "groups.outlook.com" not in a.get("email", "")
             ]
             external_emails = [e for e in all_emails if PURSUIT_DOMAIN not in e]
 

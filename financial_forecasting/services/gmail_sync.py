@@ -276,6 +276,9 @@ def _extract_thread_meta(service, thread_id: str) -> dict[str, Any] | None:
     if subject.lower().startswith(SKIP_SUBJECT_PREFIXES):
         return None
 
+    # Noise email suffixes — distro lists and room resources that can't map to contacts
+    _NOISE_EMAIL_SUFFIXES = ("groups.outlook.com", "resource.calendar.google.com")
+
     # Collect all participant emails across all messages
     all_emails: set[str] = set()
     for msg in messages:
@@ -285,7 +288,7 @@ def _extract_thread_meta(service, thread_id: str) -> dict[str, Any] | None:
                     part = part.strip()
                     if "@" in part:
                         email = part.split("<")[-1].strip("> ")
-                        if email:
+                        if email and not any(email.endswith(sfx) for sfx in _NOISE_EMAIL_SUFFIXES):
                             all_emails.add(email.lower())
 
     # Parse date from first message
