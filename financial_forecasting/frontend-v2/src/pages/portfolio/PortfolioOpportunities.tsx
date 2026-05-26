@@ -370,7 +370,11 @@ export function PortfolioOpportunities({
                   {isExpanded ? (
                     <tr>
                       <td colSpan={7} className="p-0">
-                        <OpportunityExpandPanel opportunityId={o.Id} />
+                        <OpportunityExpandPanel
+                          opportunityId={o.Id}
+                          oppAmount={o.Amount ?? null}
+                          oppCloseDate={o.CloseDate ?? null}
+                        />
                       </td>
                     </tr>
                   ) : null}

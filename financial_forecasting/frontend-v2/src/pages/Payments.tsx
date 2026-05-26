@@ -788,7 +788,11 @@ export function PaymentsPage() {
                       {isExpanded && oppId ? (
                         <tr>
                           <td colSpan={visibleCols.length} className="p-0">
-                            <OpportunityExpandPanel opportunityId={oppId} />
+                            <OpportunityExpandPanel
+                              opportunityId={oppId}
+                              oppAmount={p.npe01__Opportunity__r?.Amount ?? null}
+                              oppCloseDate={p.npe01__Opportunity__r?.CloseDate ?? null}
+                            />
                           </td>
                         </tr>
                       ) : null}

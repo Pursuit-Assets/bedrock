@@ -768,7 +768,11 @@ export function PipelinePage() {
                       {isExpanded ? (
                         <tr>
                           <td colSpan={visibleCols.length} className="p-0">
-                            <OpportunityExpandPanel opportunityId={o.Id} />
+                            <OpportunityExpandPanel
+                              opportunityId={o.Id}
+                              oppAmount={o.Amount ?? null}
+                              oppCloseDate={o.CloseDate ?? null}
+                            />
                           </td>
                         </tr>
                       ) : null}
