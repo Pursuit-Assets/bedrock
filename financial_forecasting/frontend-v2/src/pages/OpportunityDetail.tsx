@@ -6,6 +6,7 @@ import { AccountAvatar } from "@/components/AccountAvatar";
 import { ActivityTimeline } from "@/components/ActivityTimeline";
 import { OppTasksSection } from "@/components/OppTasksSection";
 import { PaymentScheduleBuilder } from "@/components/PaymentScheduleBuilder";
+import { StageGateDialog } from "@/components/StageGateDialog";
 import { StageProgression } from "@/components/StageProgression";
 import {
   BackLink as SharedBackLink,
@@ -20,6 +21,8 @@ import { InlineDate, InlineSelect, InlineText } from "@/components/ui/InlineEdit
 import { StageChip } from "@/components/ui/StageChip";
 import { Tag } from "@/components/ui/Tag";
 import { fmtDate, fmtMoneyFull } from "@/lib/format";
+import { getStageGate } from "@/lib/stageGates";
+import { useStageChangeGate } from "@/lib/useStageChangeGate";
 import { SF_STAGE_OPTIONS, stageStatus } from "@/lib/stages";
 import { cn } from "@/lib/utils";
 import {
@@ -67,6 +70,7 @@ export function OpportunityDetailPage() {
 
   const updateOpp = useUpdateOpportunity();
   const updateStage = useUpdateOpportunityStage();
+  const stageGate = useStageChangeGate();
   const createAccount = useCreateAccount();
   const createContact = useCreateContact();
 
@@ -132,10 +136,20 @@ export function OpportunityDetailPage() {
   const [pendingStage, setPendingStage] = useState<string | null>(null);
 
   const handleStageChange = async (newStage: string) => {
-    // Moving to "Collecting / In Effect" always requires the user to
-    // review and confirm the payment schedule first. Open the builder
-    // modal and store the intended stage; the stage mutation fires after
-    // the user saves the schedule via onSaved.
+    // First: does the playbook require a gate for this transition?
+    // Withdrawn / Closed Lost ask for close reason; Ask-in-progress
+    // exit and Proposal → Contracting ask for the full checklist;
+    // Contracting → Collecting asks for the signed contract.
+    const spec = opp ? getStageGate(opp.StageName, newStage) : null;
+    if (spec) {
+      stageGate.request(opp!, newStage);
+      return;
+    }
+
+    // Legacy fallback: Collecting / In Effect from anywhere *other
+    // than* Contracting (e.g. someone skipping straight from Proposal
+    // Submitted) still needs the payment-schedule modal. Once every
+    // path has a gate, this branch will be dead.
     if (newStage === "Collecting / In Effect") {
       setPendingStage(newStage);
       setScheduleModalOpen(true);
@@ -422,6 +436,15 @@ export function OpportunityDetailPage() {
             setScheduleModalOpen(false);
             setPendingStage(null);
           }}
+        />
+      ) : null}
+
+      {stageGate.pending ? (
+        <StageGateDialog
+          spec={stageGate.pending.spec}
+          opp={stageGate.pending.opp}
+          toStage={stageGate.pending.toStage}
+          onClose={stageGate.dismiss}
         />
       ) : null}
 

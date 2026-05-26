@@ -45,6 +45,7 @@ from db import init_db, close_db, get_db, get_db_status
 from routes.projects import router as projects_router
 from routes.comments import router as comments_router
 from routes.notifications import router as notifications_router
+from routes.pipeline_review import router as pipeline_review_router
 from routes.auth import router as auth_router, get_google_credentials, PBD_CALENDAR_ID
 from routes.sf_dependencies import router as sf_deps_router
 from routes.permissions import router as permissions_router, opp_router as opp_lock_router, check_permission, check_permission_or_internal, resolve_task_lock
@@ -127,6 +128,7 @@ app.add_middleware(
 app.include_router(projects_router)
 app.include_router(comments_router)
 app.include_router(notifications_router)
+app.include_router(pipeline_review_router)
 app.include_router(auth_router)
 app.include_router(sf_deps_router)
 app.include_router(permissions_router)

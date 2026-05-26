@@ -78,8 +78,13 @@ export function getStageGate(fromStage: string | null | undefined, toStage: stri
     return {
       id: "contracting-to-collecting",
       title: "Confirm signed contract before moving to Collecting / In Effect",
-      description: "Attach the executed contract so it's discoverable from the opportunity record.",
+      description: "Attach the executed contract so it's discoverable from the opportunity record. The payment schedule should already be in place from the earlier gate — surfaced here so you can verify it before delivery starts.",
       fileAttachment: { label: "Signed contract", hint: "contract" },
+      // Backend's _validate_stage_change_logic enforces a payment
+      // schedule exists with matching total before this transition.
+      // Surfacing it here lets the user verify in one place instead
+      // of failing the gate, fixing the schedule, then retrying.
+      confirmPaymentSchedule: true,
     };
   }
 

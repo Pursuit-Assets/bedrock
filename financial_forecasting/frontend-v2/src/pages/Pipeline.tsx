@@ -6,6 +6,8 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { AccountAvatar } from "@/components/AccountAvatar";
 import { OpportunityExpandPanel, OPP_PANEL_HEIGHT } from "@/components/OpportunityExpandPanel";
 import { PageHeader } from "@/components/PageHeader";
+import { StageGateDialog } from "@/components/StageGateDialog";
+import { useStageChangeGate } from "@/lib/useStageChangeGate";
 import { ColumnChooser } from "@/components/ui/ColumnChooser";
 import { InlineDate, InlineSelect, InlineText } from "@/components/ui/InlineEdit";
 import { ColGroup, ResizableTh } from "@/components/ui/ResizableTable";
@@ -40,7 +42,6 @@ import {
   useOppRecordTypes,
   useOpportunities,
   useUpdateOpportunity,
-  useUpdateOpportunityStage,
 } from "@/services/opportunities";
 import { usePerm } from "@/services/permissions";
 import { useActiveUsers, useUsers } from "@/services/users";
@@ -239,7 +240,9 @@ export function PipelinePage() {
   // filtered for. Write-side owner pickers stay on `usersQ` (active).
   const allUsersQ = useUsers();
   const updateOpp = useUpdateOpportunity();
-  const updateStage = useUpdateOpportunityStage();
+  // updateStage is now consumed inside useStageChangeGate — Pipeline
+  // routes every save through stageGate.request(opp, stage) so the
+  // playbook checklists fire when needed. Direct calls are gone.
 
   const opps = data ?? [];
 
@@ -420,11 +423,16 @@ export function PipelinePage() {
     [filtered],
   );
 
+  // Route stage changes through the gate so transitions like
+  // "Ask in Progress → Proposal Submitted" or "→ Withdrawn" can
+  // prompt for the playbook's required fields before the mutation
+  // fires. Unrestricted transitions still fire the mutation directly.
+  const stageGate = useStageChangeGate();
   const saveStage = useCallback(
-    async (id: string, stage: string) => {
-      await updateStage.mutateAsync({ id, newStage: stage });
+    async (opp: SfOpportunity, stage: string) => {
+      await stageGate.request(opp, stage);
     },
-    [updateStage],
+    [stageGate],
   );
 
   const saveAmount = useCallback(
@@ -735,7 +743,7 @@ export function PipelinePage() {
                         stageOptions={stageOptions}
                         ownerOptions={ownerOptions}
                         onOpen={() => navigate(`/opportunities/${o.Id}`, { state: PIPELINE_REFERRER })}
-                        onSaveStage={(stage) => saveStage(o.Id, stage)}
+                        onSaveStage={(stage) => saveStage(o, stage)}
                         onSaveAmount={(raw) => saveAmount(o.Id, raw)}
                         onSaveProbability={(raw) => saveProbability(o.Id, raw)}
                         onSaveOwner={(ownerId) => saveOwner(o.Id, ownerId)}
@@ -801,6 +809,15 @@ export function PipelinePage() {
             toast.success("Opportunity created");
             navigate(`/opportunities/${id}`, { state: PIPELINE_REFERRER });
           }}
+        />
+      ) : null}
+
+      {stageGate.pending ? (
+        <StageGateDialog
+          spec={stageGate.pending.spec}
+          opp={stageGate.pending.opp}
+          toStage={stageGate.pending.toStage}
+          onClose={stageGate.dismiss}
         />
       ) : null}
     </div>
@@ -1067,7 +1084,7 @@ interface RowProps {
   stageOptions: { value: string; label: string }[];
   ownerOptions: { value: string; label: string }[];
   onOpen: () => void;
-  onSaveStage: (stage: string) => Promise<void>;
+  onSaveStage: (stage: string) => void | Promise<void>;
   onSaveAmount: (raw: string) => Promise<void>;
   onSaveProbability: (raw: string) => Promise<void>;
   onSaveOwner: (ownerId: string) => Promise<void>;
