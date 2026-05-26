@@ -41,7 +41,10 @@ export function OpportunityFilesPicker({
   const upload = useUploadOpportunityFile(opportunityId);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [pendingName, setPendingName] = useState<string | null>(null);
-  const [filterToHint, setFilterToHint] = useState(Boolean(filenameHint));
+  // Default OFF — RMs want to see every file on the opp without
+  // hunting for the filter toggle when their proposal filename
+  // doesn't happen to contain the word "proposal" / "contract".
+  const [filterToHint, setFilterToHint] = useState(false);
 
   const allFiles = filesQ.data ?? [];
   const filtered = filterToHint && filenameHint

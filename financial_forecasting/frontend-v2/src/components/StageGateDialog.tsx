@@ -1,12 +1,18 @@
-import { useEffect, useState } from "react";
-import { ArrowLeft, Loader2, X } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { ArrowLeft, Loader2, Plus, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
 
 import { OpportunityFilesPicker } from "@/components/OpportunityFilesPicker";
 import { PaymentScheduleBuilder } from "@/components/PaymentScheduleBuilder";
 import { useUpdateOpportunity, useUpdateOpportunityStage } from "@/services/opportunities";
-import { useOpportunityPayments } from "@/services/payments";
-import { fmtMoney } from "@/lib/format";
+import {
+  useCreateSinglePayment,
+  useDeletePayment,
+  useOpportunityPayments,
+  useUpdatePayment,
+  type SfPayment,
+} from "@/services/payments";
+import { fmtMoney, fmtMoneyFull } from "@/lib/format";
 import type { StageGateSpec } from "@/lib/stageGates";
 import { cn } from "@/lib/utils";
 import type { SfOpportunity } from "@/types/salesforce";
@@ -250,65 +256,27 @@ export function StageGateDialog({
             ) : null}
 
             {spec.confirmPaymentSchedule ? (
-              <div className="rounded border border-border-strong bg-surface-2/40 px-3 py-2">
-                <div className="flex items-center justify-between">
-                  <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">Payment schedule</span>
-                  <span className={cn(
-                    "text-[11px]",
-                    paymentScheduleSatisfied ? "text-green" : "text-amber",
-                  )}>
-                    {paymentScheduleSatisfied
-                      ? `✓ ${payments.length} payment${payments.length === 1 ? "" : "s"} totaling ${fmtMoney(paymentTotal)}`
-                      : payments.length === 0
-                        ? "No payments scheduled yet"
-                        : `${fmtMoney(paymentTotal)} of ${fmtMoney(amountNum)} scheduled`}
-                  </span>
-                </div>
-                <div className="mt-2 flex items-center justify-between gap-2">
-                  <p className="text-[11.5px] text-ink-3">
-                    {payments.length === 0
-                      ? "Set up the schedule of payments expected for this award."
-                      : "Edit dates and amounts inline, then save to update the schedule."}
-                  </p>
-                  <button
-                    type="button"
-                    onClick={async () => {
-                      // The backend's create-payment-schedule endpoint
-                      // validates the payment total against opp.Amount
-                      // as it stands in SF. If the user just typed a
-                      // new Amount in the gate but hasn't submitted
-                      // yet, persist it FIRST — otherwise the next
-                      // schedule POST will 400 with "total doesn't
-                      // match" (the SF Amount is still the old one).
-                      if (
-                        spec.confirmAmount &&
-                        Number.isFinite(amountNum) &&
-                        amountNum > 0 &&
-                        amountNum !== opp.Amount
-                      ) {
-                        try {
-                          await updateOpp.mutateAsync({ id: opp.Id, patch: { Amount: amountNum } });
-                        } catch (e) {
-                          toast.error(`Couldn't save Amount: ${e instanceof Error ? e.message : String(e)}`);
-                          return;
-                        }
-                      }
-                      setScheduleBuilderOpen(true);
-                    }}
-                    disabled={!Number.isFinite(amountNum) || amountNum <= 0 || updateOpp.isPending}
-                    className="flex-shrink-0 rounded border border-border-strong bg-surface px-2.5 py-1 text-[11.5px] font-medium text-ink-2 hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-50"
-                    title={
-                      !Number.isFinite(amountNum) || amountNum <= 0
-                        ? "Set the Amount above first — the schedule total must match it"
-                        : payments.length === 0
-                          ? "Create payment schedule"
-                          : "Edit payment schedule"
+              <InlinePaymentScheduleEditor
+                opportunityId={opp.Id}
+                oppAmount={Number.isFinite(amountNum) && amountNum > 0 ? amountNum : opp.Amount ?? null}
+                payments={payments}
+                onRequestFullBuilder={async () => {
+                  if (
+                    spec.confirmAmount &&
+                    Number.isFinite(amountNum) &&
+                    amountNum > 0 &&
+                    amountNum !== opp.Amount
+                  ) {
+                    try {
+                      await updateOpp.mutateAsync({ id: opp.Id, patch: { Amount: amountNum } });
+                    } catch (e) {
+                      toast.error(`Couldn't save Amount: ${e instanceof Error ? e.message : String(e)}`);
+                      return;
                     }
-                  >
-                    {updateOpp.isPending ? "Saving Amount…" : payments.length === 0 ? "Create schedule" : "Edit schedule"}
-                  </button>
-                </div>
-              </div>
+                  }
+                  setScheduleBuilderOpen(true);
+                }}
+              />
             ) : null}
 
             {spec.fileAttachment ? (
@@ -364,6 +332,301 @@ export function StageGateDialog({
         </footer>
           </>
         )}
+      </div>
+    </div>
+  );
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// Inline schedule editor — lives directly in the gate body so an RM
+// can scan + tweak dates and amounts in one view without opening a
+// second dialog. The "Edit in builder" affordance still launches the
+// full PaymentScheduleBuilder for even-split presets or bulk creates.
+// ──────────────────────────────────────────────────────────────────────
+
+interface InlineRow {
+  /** Present when this row came from SF; absent for newly added rows. */
+  sfId?: string;
+  scheduled_date: string;
+  amount: number;
+  paid: boolean;
+}
+
+function paymentsToRows(payments: SfPayment[]): InlineRow[] {
+  return payments.map((p) => ({
+    sfId: p.Id,
+    scheduled_date: p.npe01__Scheduled_Date__c ?? "",
+    amount: p.npe01__Payment_Amount__c ?? 0,
+    paid: Boolean(p.npe01__Paid__c),
+  }));
+}
+
+function InlinePaymentScheduleEditor({
+  opportunityId,
+  oppAmount,
+  payments,
+  onRequestFullBuilder,
+}: {
+  opportunityId: string;
+  oppAmount: number | null;
+  payments: SfPayment[];
+  onRequestFullBuilder: () => void;
+}) {
+  const updatePayment = useUpdatePayment(opportunityId);
+  const deletePayment = useDeletePayment(opportunityId);
+  const createSingle = useCreateSinglePayment(opportunityId);
+
+  // Local mirror of the existing payment list. Edits here don't hit
+  // SF until the user clicks Save changes — gives them room to drag
+  // amounts around in the inline editor before committing.
+  const [rows, setRows] = useState<InlineRow[]>(() => paymentsToRows(payments));
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  // Re-seed from props when the upstream list refetches (e.g. after a
+  // schedule was just created via the full builder).
+  useEffect(() => {
+    setRows(paymentsToRows(payments));
+    setSaveError(null);
+  }, [payments]);
+
+  const total = useMemo(
+    () => rows.reduce((s, r) => s + (Number.isFinite(r.amount) ? r.amount : 0), 0),
+    [rows],
+  );
+  const diff = oppAmount != null ? Math.round((total - oppAmount) * 100) / 100 : 0;
+  const balanced = oppAmount != null && Math.abs(diff) < 0.01;
+
+  // Dirty diff vs. SF: row count differs, OR any non-paid row's date
+  // / amount has changed from its SF original.
+  const dirty = useMemo(() => {
+    const originals = paymentsToRows(payments);
+    if (originals.length !== rows.length) return true;
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i];
+      const orig = originals.find((o) => o.sfId && o.sfId === r.sfId);
+      if (!r.sfId) return true; // new row
+      if (!orig) return true; // row's sfId no longer matches anything
+      if (orig.scheduled_date !== r.scheduled_date) return true;
+      if (Math.abs(orig.amount - r.amount) >= 0.01) return true;
+    }
+    return false;
+  }, [rows, payments]);
+
+  const canSave = dirty && balanced && rows.length > 0 && !saving;
+
+  const addRow = () => {
+    setRows((prev) => [
+      ...prev,
+      {
+        scheduled_date: prev.at(-1)?.scheduled_date ?? new Date().toISOString().slice(0, 10),
+        amount: 0,
+        paid: false,
+      },
+    ]);
+  };
+
+  const removeRow = (i: number) => {
+    setRows((prev) => prev.filter((_, idx) => idx !== i));
+  };
+
+  const updateRow = (i: number, patch: Partial<InlineRow>) => {
+    setRows((prev) => prev.map((r, idx) => (idx === i ? { ...r, ...patch } : r)));
+  };
+
+  const handleSave = async () => {
+    if (!canSave) return;
+    setSaving(true);
+    setSaveError(null);
+    try {
+      const originalIds = new Set(
+        payments.filter((p) => !p.npe01__Paid__c).map((p) => p.Id),
+      );
+      const presentIds = new Set(
+        rows.map((r) => r.sfId).filter((id): id is string => Boolean(id)),
+      );
+
+      const toDelete = [...originalIds].filter((id) => !presentIds.has(id));
+      const toUpdate: { id: string; date: string; amount: number }[] = [];
+      const toCreate: { scheduled_date: string; amount: number }[] = [];
+
+      for (const r of rows) {
+        if (r.paid) continue; // Don't touch paid rows.
+        if (r.sfId) {
+          const orig = payments.find((p) => p.Id === r.sfId);
+          if (!orig) continue;
+          const dateChanged = (orig.npe01__Scheduled_Date__c ?? "") !== r.scheduled_date;
+          const amountChanged = Math.abs((orig.npe01__Payment_Amount__c ?? 0) - r.amount) >= 0.01;
+          if (dateChanged || amountChanged) {
+            toUpdate.push({ id: r.sfId, date: r.scheduled_date, amount: r.amount });
+          }
+        } else {
+          toCreate.push({ scheduled_date: r.scheduled_date, amount: r.amount });
+        }
+      }
+
+      if (toDelete.length > 0) {
+        await Promise.all(toDelete.map((id) => deletePayment.mutateAsync(id)));
+      }
+      await Promise.all([
+        ...toUpdate.map((u) =>
+          updatePayment.mutateAsync({
+            id: u.id,
+            patch: {
+              npe01__Payment_Amount__c: u.amount,
+              npe01__Scheduled_Date__c: u.date,
+            },
+          }),
+        ),
+        ...toCreate.map((c) => createSingle.mutateAsync(c)),
+      ]);
+      toast.success("Payment schedule saved");
+    } catch (e) {
+      const err = e as {
+        response?: { data?: { detail?: string | { message?: string; error?: string } } };
+        message?: string;
+      };
+      const detail = err.response?.data?.detail;
+      const msg =
+        typeof detail === "string"
+          ? detail
+          : detail?.message ?? detail?.error ?? err.message ?? "Failed to save schedule";
+      setSaveError(msg);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="rounded border border-border-strong bg-surface-2/40 px-3 py-2">
+      <div className="flex items-center justify-between">
+        <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
+          Payment schedule
+        </span>
+        <span
+          className={cn(
+            "text-[11px] mono tabular-nums",
+            balanced ? "text-green" : "text-amber",
+          )}
+        >
+          {rows.length === 0
+            ? "No payments scheduled"
+            : balanced
+              ? `✓ ${rows.length} payment${rows.length === 1 ? "" : "s"} totaling ${fmtMoneyFull(total, true)}`
+              : `${fmtMoneyFull(total, true)} of ${oppAmount != null ? fmtMoneyFull(oppAmount, true) : "—"}`}
+        </span>
+      </div>
+
+      {rows.length > 0 ? (
+        <table className="mt-2 w-full table-fixed border-collapse text-[12.5px]">
+          <colgroup>
+            <col className="w-[28px]" />
+            <col />
+            <col className="w-[110px]" />
+            <col className="w-[28px]" />
+          </colgroup>
+          <tbody>
+            {rows.map((r, i) => (
+              <tr key={r.sfId ?? `new-${i}`} className={cn(r.paid && "opacity-50")}>
+                <td className="px-1 py-1 text-[11px] text-ink-3">{i + 1}</td>
+                <td className="px-1 py-1">
+                  {r.paid ? (
+                    <span className="mono text-ink-2 tabular-nums">{r.scheduled_date}</span>
+                  ) : (
+                    <input
+                      type="date"
+                      value={r.scheduled_date}
+                      onChange={(e) => updateRow(i, { scheduled_date: e.target.value })}
+                      className="w-full rounded border border-border-strong bg-surface px-1.5 py-0.5 text-[12px] outline-none focus:border-accent"
+                    />
+                  )}
+                </td>
+                <td className="px-1 py-1 text-right">
+                  {r.paid ? (
+                    <span className="mono text-ink-2 tabular-nums">{fmtMoneyFull(r.amount, true)}</span>
+                  ) : (
+                    <input
+                      type="number"
+                      step="0.01"
+                      value={r.amount}
+                      onChange={(e) => updateRow(i, { amount: Number(e.target.value) || 0 })}
+                      className="w-full rounded border border-border-strong bg-surface px-1.5 py-0.5 text-right text-[12px] tabular-nums outline-none focus:border-accent"
+                    />
+                  )}
+                </td>
+                <td className="px-1 py-1 text-right">
+                  {r.paid ? (
+                    <span className="text-[9px] uppercase tracking-wider text-green">paid</span>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => removeRow(i)}
+                      className="rounded p-0.5 text-ink-3 hover:bg-surface hover:text-red"
+                      aria-label="Remove payment"
+                    >
+                      <Trash2 size={11} />
+                    </button>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      ) : null}
+
+      {!balanced && oppAmount != null && rows.length > 0 ? (
+        <p className="mt-2 text-[11px] text-red">
+          {diff > 0
+            ? `Over by ${fmtMoneyFull(diff, true)} — adjust an amount or remove a row.`
+            : `Short by ${fmtMoneyFull(Math.abs(diff), true)} — adjust an amount or add a row.`}
+        </p>
+      ) : null}
+
+      {saveError ? (
+        <p className="mt-2 rounded border border-red/40 bg-red/5 px-2 py-1 text-[11px] text-red">
+          {saveError}
+        </p>
+      ) : null}
+
+      <div className="mt-2 flex items-center justify-between gap-2">
+        <div className="flex items-center gap-3">
+          {rows.length > 0 ? (
+            <button
+              type="button"
+              onClick={addRow}
+              disabled={saving}
+              className="inline-flex items-center gap-1 rounded border border-border-strong bg-surface px-2 py-0.5 text-[11px] font-medium text-ink-2 hover:bg-surface-2 disabled:opacity-50"
+            >
+              <Plus size={11} /> Add payment
+            </button>
+          ) : null}
+          <button
+            type="button"
+            onClick={onRequestFullBuilder}
+            disabled={saving || oppAmount == null || oppAmount <= 0}
+            className="text-[11px] text-ink-3 underline-offset-2 hover:underline disabled:cursor-not-allowed disabled:opacity-50"
+            title={
+              oppAmount == null || oppAmount <= 0
+                ? "Set the Amount above first — the schedule total must match it"
+                : rows.length === 0
+                  ? "Open the full builder to create the schedule"
+                  : "Open the full builder for even-split / advanced edits"
+            }
+          >
+            {rows.length === 0 ? "Create schedule…" : "Open in full builder…"}
+          </button>
+        </div>
+        {dirty ? (
+          <button
+            type="button"
+            onClick={() => void handleSave()}
+            disabled={!canSave}
+            className="inline-flex h-7 items-center gap-1.5 rounded bg-ink px-2.5 text-[11.5px] font-medium text-surface hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            {saving ? <Loader2 size={11} className="animate-spin" /> : null}
+            Save changes
+          </button>
+        ) : null}
       </div>
     </div>
   );
