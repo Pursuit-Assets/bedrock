@@ -3,7 +3,7 @@
 For each staff email:
   1. Build impersonated DWD credentials
   2. Read watermark → compute timeMin
-  3. Fetch events (90d back + 7d ahead on first run; watermark-based after)
+  3. Fetch events (90d back to now on first run; watermark to now after)
   4. Filter to events with at least one external (@not pursuit.org) attendee
   5. Resolve attendees → public.contacts + sf_contact_link
   6. Upsert bedrock.activity (ON CONFLICT source + source_thread_id)
@@ -138,7 +138,7 @@ async def sync_calendar_for_staff(
     else:
         watermark = await _get_watermark(conn, staff_email)
         time_min = watermark if watermark else now - timedelta(days=days_back)
-        time_max = now  # past meetings only
+        time_max = now  # past meetings only — future events may be cancelled/moved
 
     upserted = 0
     errors = 0

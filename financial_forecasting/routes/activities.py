@@ -34,6 +34,52 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 
 
 # ---------------------------------------------------------------------------
+# Cross-source deduplication
+# ---------------------------------------------------------------------------
+# Pursuit's RMs sometimes log an email as a SF Task AND the gmail-sync
+# pipeline picks up the same email. Result: two rows in bedrock.activity
+# describing the same touchpoint. Audit showed 12 such groups today.
+#
+# Soft dedup at read time: a CTE windows email rows by
+# (account_id, DATE(activity_date), LOWER(subject), email_from). Within
+# each window we keep one row, preferring `gmail-sync` (has full body +
+# message headers) over `salesforce` (logged metadata only) over
+# everything else.
+#
+# Non-email rows partition by their own id, so they always survive
+# (window count = 1 per row). This keeps meetings, calls, notes etc.
+# untouched — the dupe pattern only shows up for emails.
+#
+# Inserted via _DEDUP_CTE_TEMPLATE.format(where=...) — callers append
+# their own WHERE clause.
+_DEDUP_CTE_TEMPLATE = """
+WITH ranked AS (
+    SELECT *,
+        ROW_NUMBER() OVER (
+            PARTITION BY
+                CASE WHEN type = 'email' AND account_id IS NOT NULL
+                     THEN account_id ELSE id::text END,
+                CASE WHEN type = 'email' AND account_id IS NOT NULL
+                     THEN DATE(activity_date) ELSE NULL END,
+                CASE WHEN type = 'email' AND account_id IS NOT NULL
+                     THEN LOWER(subject) ELSE NULL END,
+                CASE WHEN type = 'email' AND account_id IS NOT NULL
+                     THEN LOWER(COALESCE(email_from, '')) ELSE NULL END
+            ORDER BY
+                CASE source
+                    WHEN 'gmail-sync' THEN 1
+                    WHEN 'salesforce' THEN 2
+                    ELSE 3
+                END,
+                activity_date DESC
+        ) AS _dedup_rn
+    FROM bedrock.activity
+    WHERE {where}
+)
+"""
+
+
+# ---------------------------------------------------------------------------
 # Helper: convert asyncpg Record to Activity-compatible dict
 # ---------------------------------------------------------------------------
 
@@ -521,10 +567,12 @@ async def list_account_activities_full(
         where_clause = f"deleted_at IS NULL AND ({' OR '.join(or_parts)})"
         count_params = list(params)
 
+        cte = _DEDUP_CTE_TEMPLATE.format(where=where_clause)
         rows = await conn.fetch(
             f"""
-            SELECT * FROM bedrock.activity
-            WHERE {where_clause}
+            {cte}
+            SELECT * FROM ranked
+            WHERE _dedup_rn = 1
             ORDER BY activity_date DESC
             LIMIT ${idx} OFFSET ${idx + 1}
             """,
@@ -626,19 +674,26 @@ async def list_activities(
 
         where_clause = " AND ".join(where_parts)
 
+        cte = _DEDUP_CTE_TEMPLATE.format(where=where_clause)
         rows = await conn.fetch(
             f"""
-            SELECT * FROM bedrock.activity
-            WHERE {where_clause}
+            {cte}
+            SELECT * FROM ranked
+            WHERE _dedup_rn = 1
             ORDER BY activity_date DESC
             LIMIT ${idx} OFFSET ${idx + 1}
             """,
             *params, limit, offset,
         )
 
-        # Get total count for pagination metadata
+        # Total count must match the deduped result set, not the raw row
+        # count — otherwise the frontend pager would show a phantom page
+        # for the suppressed dupes.
         total = await conn.fetchval(
-            f"SELECT COUNT(*) FROM bedrock.activity WHERE {where_clause}",
+            f"""
+            {cte}
+            SELECT COUNT(*) FROM ranked WHERE _dedup_rn = 1
+            """,
             *params,
         )
 

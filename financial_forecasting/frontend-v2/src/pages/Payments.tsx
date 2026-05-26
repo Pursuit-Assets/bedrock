@@ -523,12 +523,13 @@ export function PaymentsPage() {
       // Empty input clears the override (null) so SF falls back to the
       // stage-derived Probability. Otherwise coerce to a number; the
       // backend's PUT accepts any number, no client-side range clamp.
+      // Mirror SF's UI behavior: when a value is set, write Probability
+      // alongside the override so the two fields stay in sync.
       const trimmed = raw.trim();
       const next = trimmed === "" ? null : Number(trimmed.replace(/[^0-9.-]/g, ""));
-      await updateOpp.mutateAsync({
-        id: oppId,
-        patch: { Manager_Probability_Override__c: next },
-      });
+      const patch: Record<string, unknown> = { Manager_Probability_Override__c: next };
+      if (next != null) patch.Probability = next;
+      await updateOpp.mutateAsync({ id: oppId, patch });
     },
     [updateOpp],
   );

@@ -271,6 +271,7 @@ interface TaskCreateBody {
   Description?: string | null;
   OwnerId?: string | null;
   WhoId?: string | null;
+  WhatId?: string | null;
 }
 
 interface TaskUpdateBody {
@@ -585,6 +586,81 @@ export function useCreateAccountTask() {
     },
     onSettled: (_data, _err, vars) => {
       qc.invalidateQueries({ queryKey: ["account-tasks", vars.accountId] });
+    },
+  });
+}
+
+/**
+ * Generic Task creation against `POST /api/salesforce/tasks`. Use this
+ * when the parent record is set via UI (Contact expand panel, Tasks
+ * page link-picker) rather than fixed by the URL route. The body's
+ * WhoId / WhatId / OwnerId / ActivityDate are all optional, so this
+ * also covers ownerless "My Tasks" entries.
+ *
+ * Optimistic insert: drops the new row into the matching cache list
+ * (contact-tasks if WhoId present, my-tasks otherwise). The temp Id
+ * is replaced when the cache refetches onSettled.
+ */
+export function useCreateGenericTask() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (body: TaskCreateBody) => {
+      const { data } = await api.post<TaskCreateResult>("/api/salesforce/tasks", body);
+      return data;
+    },
+    onMutate: async (body) => {
+      // Primary cache list: contact-tasks if WhoId, opp-tasks if WhatId,
+      // my-tasks otherwise. Snapshot for rollback.
+      const targetKey: readonly unknown[] = body.WhoId
+        ? (["contact-tasks", body.WhoId] as const)
+        : body.WhatId
+          ? (["opportunity-tasks", body.WhatId] as const)
+          : (["my-tasks"] as const);
+      await qc.cancelQueries({ queryKey: targetKey });
+      const prev = qc.getQueryData<SfTask[]>(targetKey);
+      const optimistic = buildOptimisticTask(body, body.WhatId ?? body.WhoId ?? "");
+      qc.setQueryData<SfTask[]>(targetKey, (old) => [optimistic, ...(old ?? [])]);
+
+      // ALSO push the optimistic row into every cached `user-tasks`
+      // list whose ownerId matches this task's OwnerId. PortfolioTasks
+      // (My Tasks panel on /portfolio) reads from `["user-tasks",
+      // ownerId, includeClosed]` — without this insert it'd wait for
+      // the server roundtrip + invalidate before the new row appears.
+      const userTaskSnapshots: { key: readonly unknown[]; data: SfTask[] | undefined }[] = [];
+      if (body.OwnerId) {
+        const matches = qc.getQueryCache().findAll({
+          predicate: (q) => {
+            const k = q.queryKey;
+            return Array.isArray(k) && k[0] === "user-tasks" && k[1] === body.OwnerId;
+          },
+        });
+        for (const m of matches) {
+          const previous = qc.getQueryData<SfTask[]>(m.queryKey);
+          userTaskSnapshots.push({ key: m.queryKey, data: previous });
+          qc.setQueryData<SfTask[]>(m.queryKey, (old) => [optimistic, ...(old ?? [])]);
+        }
+      }
+
+      return { targetKey, prev, userTaskSnapshots };
+    },
+    onError: (_err, _vars, ctx) => {
+      if (ctx?.prev !== undefined && ctx.targetKey) {
+        qc.setQueryData(ctx.targetKey, ctx.prev);
+      }
+      ctx?.userTaskSnapshots?.forEach(({ key, data }) => qc.setQueryData(key, data));
+    },
+    onSettled: (_data, _err, body) => {
+      // Invalidate every list this task could surface in so the
+      // temp-id optimistic row reconciles with the real server task.
+      if (body.WhoId) {
+        qc.invalidateQueries({ queryKey: ["contact-tasks", body.WhoId] });
+      }
+      if (body.WhatId) {
+        qc.invalidateQueries({ queryKey: ["opportunity-tasks", body.WhatId] });
+        qc.invalidateQueries({ queryKey: ["account-tasks", body.WhatId] });
+      }
+      qc.invalidateQueries({ queryKey: ["my-tasks"] });
+      qc.invalidateQueries({ queryKey: ["user-tasks"] });
     },
   });
 }

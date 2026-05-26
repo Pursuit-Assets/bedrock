@@ -319,11 +319,12 @@ export function PortfolioOpportunities({
                           }
                           onSave={(v) => {
                             const n = v ? Number(v.replace(/[^\d.-]/g, "")) : null;
+                            // Mirror SF's UI: co-write Probability with the
+                            // override when set. Clearing falls back to SF.
+                            const patch: Record<string, unknown> = { Manager_Probability_Override__c: n };
+                            if (n != null) patch.Probability = n;
                             return Promise.resolve(
-                              updateOpp.mutate({
-                                id: o.Id,
-                                patch: { Manager_Probability_Override__c: n },
-                              }),
+                              updateOpp.mutate({ id: o.Id, patch }),
                             );
                           }}
                           formatDisplay={(raw) => {

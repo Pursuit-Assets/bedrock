@@ -17,6 +17,8 @@ import { AccountAvatar } from "@/components/AccountAvatar";
 import { JobsAccountExpandPanel } from "@/components/jobs/JobsAccountExpandPanel";
 import { SectionCard, withReferrer } from "@/components/detail";
 import { SortableHeader } from "@/components/ui/SortableHeader";
+import { Tag } from "@/components/ui/Tag";
+import { accountStatusVariant } from "@/lib/accountStatus";
 import { sortBy, useSort } from "@/lib/sort";
 import { useAccountsEnrichment, useAccounts } from "@/services/accounts";
 import { useAccountsWithFellows } from "@/services/affiliations";
@@ -140,6 +142,9 @@ export function JobsAccounts() {
               <th className="w-[160px] px-3 py-1.5 text-left font-semibold">
                 <SortableHeader label="Type" sortKey="type" sort={sort} onToggle={toggle} />
               </th>
+              <th className="w-[120px] px-3 py-1.5 text-left font-semibold">
+                Status
+              </th>
               <th className="w-[150px] px-3 py-1.5 text-left font-semibold">
                 <SortableHeader label="City" sortKey="city" sort={sort} onToggle={toggle} />
               </th>
@@ -189,6 +194,13 @@ export function JobsAccounts() {
                     <td className="px-3 py-1.5 align-middle text-[12px] text-ink-2">
                       {a.Type ?? "—"}
                     </td>
+                    <td className="px-3 py-1.5 align-middle">
+                      {a.account_status ? (
+                        <Tag variant={accountStatusVariant(a.account_status)}>{a.account_status}</Tag>
+                      ) : (
+                        <span className="text-ink-4">—</span>
+                      )}
+                    </td>
                     <td className="px-3 py-1.5 align-middle text-[12px] text-ink-2">
                       {a.BillingCity ?? "—"}
                     </td>
@@ -205,7 +217,7 @@ export function JobsAccounts() {
                   </tr>
                   {isExpanded ? (
                     <tr>
-                      <td colSpan={7} className="p-0">
+                      <td colSpan={8} className="p-0">
                         <JobsAccountExpandPanel accountId={a.Id} />
                       </td>
                     </tr>

@@ -21,9 +21,21 @@ export interface SfUser {
   IsActive?: boolean | null;
 }
 
+/** Playbook-defined Account Status, derived server-side. Values come
+ *  from services/account_status.py — kept in sync there. */
+export type AccountStatus =
+  | "Prospect"
+  | "Pursuing"
+  | "Stewarding"
+  | "Re-activating"
+  | "Dormant";
+
 export interface SfAccount {
   Id: string;
   Name: string;
+  /** Playbook Account Status. Derived field, not stored on the SF
+   *  record — see services/account_status.py for the rules. */
+  account_status?: AccountStatus;
   Type?: string | null;
   Industry?: string | null;
   Phone?: string | null;

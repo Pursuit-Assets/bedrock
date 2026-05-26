@@ -13,6 +13,7 @@ import { ActivityTimeline } from "@/components/ActivityTimeline";
 import { InlineSelect, InlineText } from "@/components/ui/InlineEdit";
 import { StageChip } from "@/components/ui/StageChip";
 import { Tag } from "@/components/ui/Tag";
+import { accountStatusVariant } from "@/lib/accountStatus";
 import { fmtDate, fmtMoney, fmtMoneyFull, initials } from "@/lib/format";
 import { useCollapsible } from "@/lib/collapsible";
 import { isLost, isOpen, isWon, SF_STAGE_OPTIONS, stageStatus } from "@/lib/stages";
@@ -166,6 +167,9 @@ export function AccountDetailPage() {
             className="text-[24px] font-bold leading-tight tracking-tight text-ink py-0"
           />
           <div className="mt-1 flex flex-wrap items-center gap-2 text-[12.5px] text-ink-3">
+            {account.account_status ? (
+              <Tag variant={accountStatusVariant(account.account_status)}>{account.account_status}</Tag>
+            ) : null}
             {account.Type ? <Tag>{account.Type}</Tag> : null}
           </div>
         </div>
