@@ -218,7 +218,30 @@ export function useCreateOpportunity() {
       // Backend wraps response in ApiResponse envelope: { success, data: { id, message } }
       return data.data;
     },
-    onSuccess: () => {
+    // Insert a synthesized opp into the cache immediately so the
+    // detail page can render instantly when the user navigates to
+    // /opportunities/<id>. OpportunityDetail finds its opp by
+    // scanning the cached useOpportunities list — without this, the
+    // page sits empty until the next refetch lands.
+    onSuccess: (created, body) => {
+      const synth: SfOpportunity = {
+        Id: created.id,
+        Name: body.Name,
+        StageName: body.StageName,
+        CloseDate: body.CloseDate ?? null,
+        Amount: body.Amount ?? null,
+        AccountId: body.AccountId,
+        OwnerId: body.OwnerId ?? null,
+        RecordTypeId: body.RecordTypeId ?? null,
+        Description: body.Description ?? null,
+        IsClosed: false,
+        IsWon: false,
+      } as SfOpportunity;
+      qc.setQueriesData<SfOpportunity[]>({ queryKey: ["opportunities"] }, (old) =>
+        old ? [synth, ...old] : old,
+      );
+      // Background refresh so the next refetch pulls the full SF
+      // record (with the joined Account, Owner, RecordType, etc.).
       qc.invalidateQueries({ queryKey: ["opportunities"] });
     },
   });
