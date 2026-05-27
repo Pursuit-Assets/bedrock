@@ -1661,24 +1661,37 @@ function CreateOpportunityForAccountModal({
     (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
       setForm((f) => ({ ...f, [key]: e.target.value }));
 
-  const submit = async (e: React.FormEvent) => {
+  const submit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!form.Name.trim() || !form.CloseDate) return;
     setError(null);
-    try {
-      const result = await createOpp.mutateAsync({
-        Name: form.Name.trim(),
-        StageName: form.StageName,
-        CloseDate: form.CloseDate,
-        AccountId: accountId,
-        Amount: form.Amount ? Number(form.Amount.replace(/[^0-9.]/g, "")) : undefined,
-        OwnerId: form.OwnerId || undefined,
-        RecordTypeId: form.RecordTypeId || undefined,
-      });
-      onCreated(result.id);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to create opportunity.");
-    }
+    // Optimistic close: dismiss the modal immediately, fire the
+    // mutation in the background, toast progress + nav once we have
+    // the SF id. The new opp is also inserted into the opportunities
+    // cache via useCreateOpportunity.onSuccess so the detail page
+    // renders without waiting on a refetch.
+    const body = {
+      Name: form.Name.trim(),
+      StageName: form.StageName,
+      CloseDate: form.CloseDate,
+      AccountId: accountId,
+      Amount: form.Amount ? Number(form.Amount.replace(/[^0-9.]/g, "")) : undefined,
+      OwnerId: form.OwnerId || undefined,
+      RecordTypeId: form.RecordTypeId || undefined,
+    };
+    const toastId = `opp-create-${Date.now()}`;
+    toast.loading(`Creating ${body.Name}…`, { id: toastId });
+    onClose();
+    void (async () => {
+      try {
+        const result = await createOpp.mutateAsync(body);
+        toast.success(`Created ${body.Name}`, { id: toastId });
+        onCreated(result.id);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "Failed to create opportunity.";
+        toast.error(`Couldn't create: ${msg}`, { id: toastId, duration: 8000 });
+      }
+    })();
   };
 
   return (
