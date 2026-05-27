@@ -71,7 +71,22 @@ const ACCOUNTS_FILTERABLE_BASE = {
   name: { label: "Name", type: "text", getValue: (a: SfAccount) => a.Name ?? "" },
   owner: { label: "Owner", type: "select", getValue: (a: SfAccount) => a.OwnerId ?? "" },
   status: { label: "Status", type: "select", getValue: (a: SfAccount) => a.account_status ?? "" },
-  type: { label: "Type", type: "select", getValue: (a: SfAccount) => a.Type ?? "" },
+  type: {
+    label: "Type",
+    type: "select",
+    // Households live on a separate NPSP record type ("HH Account")
+    // and often have an empty SF Type field, so a filter like
+    // "Type is not Household" was leaking them through. Coalesce
+    // record-type-driven Household identity into the Type bucket so
+    // the filter actually catches every household account.
+    getValue: (a: SfAccount) => {
+      if (a.Type) return a.Type;
+      const rt = (a.RecordType?.Name ?? "").toLowerCase();
+      if (rt.includes("household") || rt === "hh account") return "Household";
+      if ((a.Name ?? "").toLowerCase().endsWith("household")) return "Household";
+      return "";
+    },
+  },
   tier: { label: "Tier", type: "select", getValue: (a: SfAccount) => a.Account_Tier__c ?? "" },
   industry: { label: "Industry", type: "text", getValue: (a: SfAccount) => a.Industry ?? "" },
   state: { label: "State", type: "text", getValue: (a: SfAccount) => a.BillingState ?? "" },
@@ -223,6 +238,19 @@ export function AccountsPage() {
   const [rules, setRules] = useState<FilterRule<AccountField>[]>([]);
   const [showCreate, setShowCreate] = useState(false);
   const [expandedId, setExpandedId] = useSessionState<string | null>("accounts:expandedId", null);
+  // Optional group-by — when non-empty, the visible rows are bucketed
+  // under a sticky group header per distinct value of this field.
+  // Persisted per session so navigating away + back keeps the view.
+  const [groupBy, setGroupBy] = useSessionState<string>("accounts:groupBy", "");
+  const [collapsedGroups, setCollapsedGroups] = useSessionState<string[]>("accounts:groupCollapsed", []);
+  const collapsedSet = useMemo(() => new Set(collapsedGroups), [collapsedGroups]);
+  const toggleGroup = useCallback(
+    (key: string) =>
+      setCollapsedGroups((prev) =>
+        prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key],
+      ),
+    [setCollapsedGroups],
+  );
 
   const { visible: visibleCols, toggle: toggleCol, replaceAll: replaceVisibleCols } =
     useColumnVisibility("bedrock-v2:vis:accounts", COLUMN_ORDER, DEFAULT_VISIBLE);
@@ -420,6 +448,48 @@ export function AccountsPage() {
     );
   }, [accounts, filter, q, rules, filterable, sort, metricsByAccount]);
 
+  // Group-by: build a flat list of {kind:'header', ...} and
+  // {kind:'row', a} items so the virtualizer can render mixed
+  // shapes. When groupBy is empty the list is just rows.
+  type DisplayRow =
+    | { kind: "row"; account: SfAccount }
+    | { kind: "header"; key: string; label: string; count: number; collapsed: boolean };
+  const displayRows: DisplayRow[] = useMemo(() => {
+    if (!groupBy) return filtered.map((a) => ({ kind: "row", account: a }));
+    const field = filterable[groupBy as keyof typeof filterable];
+    if (!field) return filtered.map((a) => ({ kind: "row", account: a }));
+    const buckets = new Map<string, SfAccount[]>();
+    for (const a of filtered) {
+      const raw = field.getValue(a);
+      const k = raw == null || raw === "" ? "" : String(raw);
+      const list = buckets.get(k);
+      if (list) list.push(a);
+      else buckets.set(k, [a]);
+    }
+    const labelFor = (k: string) => {
+      if (k === "") return "—";
+      if (groupBy === "owner") return ownerLabelLookup(k);
+      return k;
+    };
+    const sortedKeys = [...buckets.keys()].sort((a, b) => labelFor(a).localeCompare(labelFor(b)));
+    const out: DisplayRow[] = [];
+    for (const k of sortedKeys) {
+      const list = buckets.get(k) ?? [];
+      const collapsed = collapsedSet.has(k);
+      out.push({
+        kind: "header",
+        key: k,
+        label: labelFor(k),
+        count: list.length,
+        collapsed,
+      });
+      if (!collapsed) {
+        for (const a of list) out.push({ kind: "row", account: a });
+      }
+    }
+    return out;
+  }, [filtered, groupBy, filterable, collapsedSet, ownerLabelLookup]);
+
   const totals = useMemo(
     () =>
       filtered.reduce<AccountMetrics>(
@@ -475,14 +545,21 @@ export function AccountsPage() {
 
   // ── Virtualization ─────────────────────────────────────────────────
   const scrollRef = useRef<HTMLDivElement>(null);
+  const GROUP_HEADER_HEIGHT = 30;
   const virtualizer = useVirtualizer({
-    count: filtered.length,
+    count: displayRows.length,
     getScrollElement: () => scrollRef.current,
-    estimateSize: (i) =>
-      filtered[i]?.Id === expandedId ? ROW_HEIGHT + ACCOUNT_PANEL_HEIGHT : ROW_HEIGHT,
+    estimateSize: (i) => {
+      const item = displayRows[i];
+      if (!item) return ROW_HEIGHT;
+      if (item.kind === "header") return GROUP_HEADER_HEIGHT;
+      return item.account.Id === expandedId
+        ? ROW_HEIGHT + ACCOUNT_PANEL_HEIGHT
+        : ROW_HEIGHT;
+    },
     overscan: 8,
   });
-  useEffect(() => { virtualizer.measure(); }, [expandedId, virtualizer]);
+  useEffect(() => { virtualizer.measure(); }, [expandedId, displayRows, virtualizer]);
   const virtualItems = virtualizer.getVirtualItems();
   const totalSize = virtualizer.getTotalSize();
   const paddingTop = virtualItems[0]?.start ?? 0;
@@ -540,6 +617,23 @@ export function AccountsPage() {
           onAdd={(r) => setRules((prev) => [...prev, r])}
           buttonLabel="Filter"
         />
+        <select
+          value={groupBy}
+          onChange={(e) => {
+            setGroupBy(e.target.value);
+            setCollapsedGroups([]);
+          }}
+          title="Group rows by a field"
+          className="h-7 rounded border border-border-strong bg-surface px-2 text-[12.5px] text-ink-2 outline-none focus:border-accent"
+        >
+          <option value="">No grouping</option>
+          <option value="owner">Group by Owner</option>
+          <option value="status">Group by Status</option>
+          <option value="type">Group by Type</option>
+          <option value="tier">Group by Tier</option>
+          <option value="state">Group by State</option>
+          <option value="industry">Group by Industry</option>
+        </select>
         <div className="ml-auto flex items-center gap-2">
           <ColumnChooser
             allColumns={COLUMN_ORDER}
@@ -660,7 +754,31 @@ export function AccountsPage() {
                   </tr>
                 ) : null}
                 {virtualItems.map((vi) => {
-                  const a = filtered[vi.index];
+                  const item = displayRows[vi.index];
+                  if (!item) return null;
+                  if (item.kind === "header") {
+                    return (
+                      <tr
+                        key={`grp-${item.key}`}
+                        className="cursor-pointer border-y border-border-strong bg-surface-2/70 hover:bg-surface-2"
+                        onClick={() => toggleGroup(item.key)}
+                      >
+                        <td
+                          colSpan={visibleCols.length}
+                          className="px-3 py-1.5 text-[11.5px] font-semibold uppercase tracking-wider text-ink-2"
+                        >
+                          <span className="inline-block w-3 text-ink-3">
+                            {item.collapsed ? "▸" : "▾"}
+                          </span>
+                          {item.label}
+                          <span className="ml-2 normal-case tracking-normal text-ink-3">
+                            {item.count}
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  }
+                  const a = item.account;
                   const isExpanded = a.Id === expandedId;
                   return (
                     <Fragment key={a.Id}>

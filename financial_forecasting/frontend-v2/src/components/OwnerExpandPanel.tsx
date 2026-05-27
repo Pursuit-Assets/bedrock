@@ -196,7 +196,7 @@ function OwnerAccounts({ ownerId }: { ownerId: string }) {
           No accounts match.
         </div>
       ) : (
-        <div className="overflow-hidden rounded border border-border-strong bg-surface">
+        <div>
           <table className="w-full text-[12px]">
             <thead className="bg-surface-2 text-[10.5px] uppercase tracking-wider text-ink-3">
               <tr>
@@ -417,7 +417,7 @@ function OwnerOpps({ ownerId }: { ownerId: string }) {
           No opportunities match.
         </div>
       ) : (
-        <div className="overflow-hidden rounded border border-border-strong bg-surface">
+        <div>
           <table className="w-full text-[12px]">
             <thead className="bg-surface-2 text-[10.5px] uppercase tracking-wider text-ink-3">
               <tr>
@@ -649,7 +649,7 @@ function OwnerAwards({ ownerId }: { ownerId: string }) {
           No awards owned by this user.
         </div>
       ) : (
-        <div className="overflow-hidden rounded border border-border-strong bg-surface">
+        <div>
           <table className="w-full text-[12px]">
             <thead className="bg-surface-2 text-[10.5px] uppercase tracking-wider text-ink-3">
               <tr>

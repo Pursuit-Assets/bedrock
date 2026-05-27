@@ -62,13 +62,13 @@ export function DashboardPage() {
           ))}
         </div>
         <CurrentFYOverview opps={filteredOpps} fy={fy} bucket={bucket} />
+        <PipelineFunnel opps={filteredOpps} />
         <IndividualGoals
           opps={filteredOpps}
           fy={fy}
           ownerGoals={ownerGoals}
           activeUsers={activeUsers}
         />
-        <PipelineFunnel opps={filteredOpps} />
       </div>
     </div>
   );
