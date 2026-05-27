@@ -41,14 +41,26 @@ export function useAccountEnrichment(sfAccountId: string | null | undefined) {
 const ENRICH_CHUNK = 200;
 
 export function useAccountsEnrichment(sfAccountIds: string[]) {
-  const stableKey = useMemo(() => [...sfAccountIds].sort(), [sfAccountIds]);
+  // React Query compares queryKey deeply on every cache lookup. With
+  // 20k+ account ids passed straight in, the compare was bogging down
+  // every Accounts page render and freezing navigation. Collapse the
+  // key into a short fingerprint (count + first/last id) — duplicates
+  // share a cache entry because the upstream set is deterministic
+  // (same accounts query → same ordering).
+  const stableKey = useMemo(
+    () => `${sfAccountIds.length}:${sfAccountIds[0] ?? ""}:${sfAccountIds[sfAccountIds.length - 1] ?? ""}`,
+    [sfAccountIds],
+  );
+  // The actual id list used for fetching — we still need them, just
+  // not as the queryKey. Sorted once for stable chunking.
+  const sortedIds = useMemo(() => [...sfAccountIds].sort(), [sfAccountIds]);
   return useQuery({
     queryKey: ["accounts-enrichment", stableKey],
     queryFn: async (): Promise<Record<string, AccountEnrichment | null>> => {
-      if (stableKey.length === 0) return {};
+      if (sortedIds.length === 0) return {};
       const chunks: string[][] = [];
-      for (let i = 0; i < stableKey.length; i += ENRICH_CHUNK) {
-        chunks.push(stableKey.slice(i, i + ENRICH_CHUNK));
+      for (let i = 0; i < sortedIds.length; i += ENRICH_CHUNK) {
+        chunks.push(sortedIds.slice(i, i + ENRICH_CHUNK));
       }
       const results = await Promise.all(
         chunks.map((c) =>
@@ -61,7 +73,7 @@ export function useAccountsEnrichment(sfAccountIds: string[]) {
       );
       return Object.assign({}, ...results);
     },
-    enabled: stableKey.length > 0,
+    enabled: sortedIds.length > 0,
     staleTime: 5 * 60_000,
   });
 }

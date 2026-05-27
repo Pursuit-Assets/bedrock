@@ -820,8 +820,9 @@ export function PipelinePage() {
           accountOptions={accountOptions}
           onClose={() => setShowCreate(false)}
           onCreated={(id) => {
-            setShowCreate(false);
-            toast.success("Opportunity created");
+            // Modal already closed itself optimistically; toast is
+            // handled inside the modal's submit. Just navigate to the
+            // detail page now that we have the real SF id.
             navigate(`/opportunities/${id}`, { state: PIPELINE_REFERRER });
           }}
         />
@@ -895,24 +896,37 @@ function CreateOpportunityModal({
     return accountOptions.filter((a) => a.label.toLowerCase().includes(q)).slice(0, 50);
   }, [accountOptions, accountQ]);
 
-  const submit = async (e: React.FormEvent) => {
+  const submit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!form.Name.trim() || !form.CloseDate || !form.AccountId) return;
     setError(null);
-    try {
-      const result = await createOpp.mutateAsync({
-        Name: form.Name.trim(),
-        StageName: form.StageName,
-        CloseDate: form.CloseDate,
-        AccountId: form.AccountId,
-        Amount: form.Amount ? Number(form.Amount.replace(/[^0-9.]/g, "")) : undefined,
-        OwnerId: form.OwnerId || undefined,
-        RecordTypeId: form.RecordTypeId || undefined,
-      });
-      onCreated(result.id);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to create opportunity.");
-    }
+    // Optimistic close: dismiss the modal immediately and toast the
+    // background save. Once the SF id arrives, navigate to the detail
+    // page (the new opp is already inserted into the opportunities
+    // cache in useCreateOpportunity.onSuccess, so the detail page
+    // renders instantly).
+    const body = {
+      Name: form.Name.trim(),
+      StageName: form.StageName,
+      CloseDate: form.CloseDate,
+      AccountId: form.AccountId,
+      Amount: form.Amount ? Number(form.Amount.replace(/[^0-9.]/g, "")) : undefined,
+      OwnerId: form.OwnerId || undefined,
+      RecordTypeId: form.RecordTypeId || undefined,
+    };
+    const toastId = `opp-create-${Date.now()}`;
+    toast.loading(`Creating ${body.Name}…`, { id: toastId });
+    onClose();
+    void (async () => {
+      try {
+        const result = await createOpp.mutateAsync(body);
+        toast.success(`Created ${body.Name}`, { id: toastId });
+        onCreated(result.id);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "Failed to create opportunity.";
+        toast.error(`Couldn't create: ${msg}`, { id: toastId, duration: 8000 });
+      }
+    })();
   };
 
   return (

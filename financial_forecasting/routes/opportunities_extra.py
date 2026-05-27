@@ -321,6 +321,7 @@ async def bulk_update_opportunities(
 
         cache.invalidate_prefix("opps:")
         cache.invalidate_prefix("stage_history")
+        cache.invalidate_prefix("accounts:")
 
         return {
             "success": True,
@@ -464,6 +465,10 @@ async def update_opportunity_stage(
         await salesforce.update_record("Opportunity", opp_id, {"StageName": new_stage})
         cache.invalidate_prefix("opps:")
         cache.invalidate_prefix("stage_history")
+        # Account status (Prospect/Pursuing/Stewarding) is derived
+        # from the opp's stage — bust the accounts cache so the new
+        # status is visible without waiting for the 10-min TTL.
+        cache.invalidate_prefix("accounts:")
 
         # Side effect: auto-create Award row for eligible opps that have
         # reached an award-eligible stage. Idempotent. Best-effort —

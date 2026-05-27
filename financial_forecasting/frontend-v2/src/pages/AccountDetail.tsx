@@ -54,50 +54,23 @@ export function AccountDetailPage() {
   const [showAddOpp, setShowAddOpp] = useState(false);
   const navigate = useNavigate();
 
-  if (!account) {
-    return (
-      <div className="mx-auto max-w-[1320px] px-7 py-6">
-        <BackLink />
-        <div className="mt-6 rounded-lg border border-border-strong bg-surface p-10 text-center text-[13px] text-ink-3 shadow-sm">
-          Loading account…
-        </div>
-      </div>
-    );
-  }
+  // ── All useMemo / useQuery hooks below MUST be declared before the
+  //   `if (!account) return ...` block below them — React's Rules of
+  //   Hooks require a stable hook order across renders, and an
+  //   early-return that ran before these hooks would skip them on the
+  //   first render and then "discover" them on the second, crashing
+  //   the page with "Rendered more hooks than during the previous
+  //   render" on /accounts/:id refresh.
 
-  const patch = (field: string, val: unknown) =>
-    updateAccount.mutateAsync({ id: account.Id, patch: { [field]: val } }).then(() => undefined);
-
-  const saveOwner = async (ownerId: string) => {
-    const ownerName = (usersQ.data ?? []).find((u) => u.Id === ownerId)?.Name ?? null;
-    await updateAccount.mutateAsync({
-      id: account.Id,
-      patch: { OwnerId: ownerId },
-      displayPatch: { Owner: { Name: ownerName } },
-    });
-  };
-
-  const closedCount = account.npo02__NumberOfClosedOpps__c ?? 0;
-  const lastActivity = account.Last_Activity_Date__c ?? account.LastActivityDate ?? null;
-
-  const openOpps = opps.filter(isOpen);
-  const wonOpps = opps.filter(isWon);
-  const lostOpps = opps.filter(isLost);
-
-  // Lifetime is computed from wonOpps so it matches the History chart
-  // and "Awarded" section line-by-line. (NPSP's roll-up
-  // npo02__TotalOppAmount__c uses SF's strict "IsWon" picklist values,
-  // which differs from our award-eligibility set — using NPSP here led
-  // to the headline disagreeing with the chart.)
-  const lifetime = wonOpps.reduce((s, o) => s + (o.Amount ?? 0), 0);
+  // Derive open/won/lost lists from opps so the hooks below can
+  // depend on them without referencing post-return locals.
+  const openOpps = useMemo(() => opps.filter(isOpen), [opps]);
+  const wonOpps = useMemo(() => opps.filter(isWon), [opps]);
+  const lostOpps = useMemo(() => opps.filter(isLost), [opps]);
 
   // Engagement types — derived from RecordType.Name across the
-  // account's opportunity history. Each type gets a status:
-  //   won  (green)  — at least one opp of this type closed-won
-  //   open (grey)   — currently in flight, no win yet
-  //   lost (red)    — all opps of this type closed lost / withdrawn
-  // Captures the actual relationship shape rather than user-set
-  // checkboxes that often go stale.
+  // account's opportunity history. Each type gets a status: won,
+  // open, or lost depending on which opps of that type ever closed.
   const engagementTypes = useMemo<{ name: string; status: "won" | "open" | "lost" }[]>(() => {
     const m = new Map<string, { won: boolean; open: boolean; lost: boolean }>();
     for (const o of opps) {
@@ -131,7 +104,6 @@ export function AccountDetailPage() {
   // see at what funnel position the opp was withdrawn / lost.
   const lostOppIds = useMemo(() => lostOpps.map((o) => o.Id), [lostOpps]);
   const priorStagesQ = useOpportunityPriorStages(lostOppIds);
-  const priorStages = priorStagesQ.data ?? {};
 
   // Awards are the SoT for "what we've won" — they layer payment status
   // and reporting lifecycle onto closed-won opps. Filter to awards
@@ -141,11 +113,44 @@ export function AccountDetailPage() {
     const oppIds = new Set(opps.map((o) => o.Id));
     return (awardsQ.data ?? []).filter((a) => oppIds.has(a.opportunity_id));
   }, [awardsQ.data, opps]);
-  const hasActiveAwards = accountAwards.some((a) => a.award_status === "Active");
 
-  // Logo / domain / industry from public.companies via the
-  // sf_account_company_map bridge. Null if not yet matched.
-  const enrichmentQ = useAccountEnrichment(account.Id);
+  // Logo / domain / industry. Keyed on the URL id (not account.Id)
+  // so the hook fires the same way on every render — including the
+  // first when `account` is still loading.
+  const enrichmentQ = useAccountEnrichment(id);
+
+  if (!account) {
+    return (
+      <div className="mx-auto max-w-[1320px] px-7 py-6">
+        <BackLink />
+        <div className="mt-6 rounded-lg border border-border-strong bg-surface p-10 text-center text-[13px] text-ink-3 shadow-sm">
+          Loading account…
+        </div>
+      </div>
+    );
+  }
+
+  const patch = (field: string, val: unknown) =>
+    updateAccount.mutateAsync({ id: account.Id, patch: { [field]: val } }).then(() => undefined);
+
+  const saveOwner = async (ownerId: string) => {
+    const ownerName = (usersQ.data ?? []).find((u) => u.Id === ownerId)?.Name ?? null;
+    await updateAccount.mutateAsync({
+      id: account.Id,
+      patch: { OwnerId: ownerId },
+      displayPatch: { Owner: { Name: ownerName } },
+    });
+  };
+
+  const closedCount = account.npo02__NumberOfClosedOpps__c ?? 0;
+  const lastActivity = account.Last_Activity_Date__c ?? account.LastActivityDate ?? null;
+
+  // Lifetime is computed from wonOpps so it matches the History chart
+  // and "Awarded" section line-by-line.
+  const lifetime = wonOpps.reduce((s, o) => s + (o.Amount ?? 0), 0);
+
+  const priorStages = priorStagesQ.data ?? {};
+  const hasActiveAwards = accountAwards.some((a) => a.award_status === "Active");
   const enrichment = enrichmentQ.data ?? null;
 
   return (
@@ -1661,24 +1666,37 @@ function CreateOpportunityForAccountModal({
     (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
       setForm((f) => ({ ...f, [key]: e.target.value }));
 
-  const submit = async (e: React.FormEvent) => {
+  const submit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!form.Name.trim() || !form.CloseDate) return;
     setError(null);
-    try {
-      const result = await createOpp.mutateAsync({
-        Name: form.Name.trim(),
-        StageName: form.StageName,
-        CloseDate: form.CloseDate,
-        AccountId: accountId,
-        Amount: form.Amount ? Number(form.Amount.replace(/[^0-9.]/g, "")) : undefined,
-        OwnerId: form.OwnerId || undefined,
-        RecordTypeId: form.RecordTypeId || undefined,
-      });
-      onCreated(result.id);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to create opportunity.");
-    }
+    // Optimistic close: dismiss the modal immediately, fire the
+    // mutation in the background, toast progress + nav once we have
+    // the SF id. The new opp is also inserted into the opportunities
+    // cache via useCreateOpportunity.onSuccess so the detail page
+    // renders without waiting on a refetch.
+    const body = {
+      Name: form.Name.trim(),
+      StageName: form.StageName,
+      CloseDate: form.CloseDate,
+      AccountId: accountId,
+      Amount: form.Amount ? Number(form.Amount.replace(/[^0-9.]/g, "")) : undefined,
+      OwnerId: form.OwnerId || undefined,
+      RecordTypeId: form.RecordTypeId || undefined,
+    };
+    const toastId = `opp-create-${Date.now()}`;
+    toast.loading(`Creating ${body.Name}…`, { id: toastId });
+    onClose();
+    void (async () => {
+      try {
+        const result = await createOpp.mutateAsync(body);
+        toast.success(`Created ${body.Name}`, { id: toastId });
+        onCreated(result.id);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "Failed to create opportunity.";
+        toast.error(`Couldn't create: ${msg}`, { id: toastId, duration: 8000 });
+      }
+    })();
   };
 
   return (
