@@ -5,17 +5,21 @@ import { Check, Search, X } from "lucide-react";
 import { ActivityTab } from "@/components/expand/ActivityTab";
 import { TaskListTab } from "@/components/expand/TaskListTab";
 import { RowExpandPanel, ROW_EXPAND_HEIGHT } from "@/components/RowExpandPanel";
+import { StageGateDialog } from "@/components/StageGateDialog";
+import { InlineDate, InlineSelect, InlineText } from "@/components/ui/InlineEdit";
 import { SortableHeader } from "@/components/ui/SortableHeader";
 import { StageChip } from "@/components/ui/StageChip";
 import { Tag } from "@/components/ui/Tag";
 import { accountStatusVariant } from "@/lib/accountStatus";
-import { fmtDate, fmtMoney } from "@/lib/format";
+import { fmtMoney } from "@/lib/format";
 import { sortBy, useSort } from "@/lib/sort";
-import { isOpen, isWon, stageStatus } from "@/lib/stages";
+import { isOpen, isWon, SF_STAGE_OPTIONS, stageStatus } from "@/lib/stages";
+import { useStageChangeGate } from "@/lib/useStageChangeGate";
 import { useAccounts } from "@/services/accounts";
-import { useAwards, type AwardStatus } from "@/services/awards";
+import { useAwards, useUpdateAward, type AwardStatus } from "@/services/awards";
 import {
   useOpportunities,
+  useUpdateOpportunity,
   useUserTasks,
 } from "@/services/opportunities";
 import type { AccountStatus, SfOpportunity } from "@/types/salesforce";
@@ -308,6 +312,8 @@ function OwnerOpps({ ownerId }: { ownerId: string }) {
   // Default: open opps only. Toggle expands to include closed (any age).
   const [showClosed, setShowClosed] = useState(false);
   const { sort, toggle } = useSort<OppSortKey>();
+  const updateOpp = useUpdateOpportunity();
+  const stageGate = useStageChangeGate();
 
   const ownedAll = useMemo(
     () => opps.filter((o) => o.OwnerId === ownerId),
@@ -447,13 +453,48 @@ function OwnerOpps({ ownerId }: { ownerId: string }) {
                     ) : null}
                   </td>
                   <td className="px-3 py-1.5">
-                    <StageChip stage={o.StageName} status={stageStatus(o)} />
+                    <InlineSelect
+                      value={o.StageName}
+                      options={SF_STAGE_OPTIONS}
+                      onSave={(stage) => stageGate.request(o, stage)}
+                      renderValue={(v) =>
+                        v ? (
+                          <StageChip stage={v} status={stageStatus(o)} />
+                        ) : (
+                          <span className="text-ink-4">—</span>
+                        )
+                      }
+                    />
                   </td>
                   <td className="mono px-3 py-1.5 text-[11.5px] text-ink-2">
-                    {fmtDate(o.CloseDate)}
+                    <InlineDate
+                      value={o.CloseDate}
+                      onSave={(d) =>
+                        Promise.resolve(
+                          updateOpp.mutate({ id: o.Id, patch: { CloseDate: d } }),
+                        )
+                      }
+                      placeholder="—"
+                    />
                   </td>
                   <td className="mono px-3 py-1.5 text-right font-medium tabular-nums">
-                    {o.Amount ? fmtMoney(o.Amount) : "—"}
+                    <InlineText
+                      value={o.Amount != null ? String(o.Amount) : ""}
+                      onSave={(v) =>
+                        Promise.resolve(
+                          updateOpp.mutate({
+                            id: o.Id,
+                            patch: { Amount: v ? Number(v.replace(/[^\d.-]/g, "")) : null },
+                          }),
+                        )
+                      }
+                      formatDisplay={(raw) => {
+                        const n = Number(raw.replace(/[^\d.-]/g, ""));
+                        return Number.isFinite(n) && n !== 0 ? fmtMoney(n) : "—";
+                      }}
+                      placeholder="—"
+                      className="justify-end text-right"
+                    />
                   </td>
                 </tr>
               ))}
@@ -461,6 +502,16 @@ function OwnerOpps({ ownerId }: { ownerId: string }) {
           </table>
         </div>
       )}
+      {stageGate.pending ? (
+        <StageGateDialog
+          spec={stageGate.pending.spec}
+          opp={stageGate.pending.opp}
+          toStage={stageGate.pending.toStage}
+          onClose={stageGate.dismiss}
+          onCompleted={stageGate.complete}
+          onAwardCreated={stageGate.openAwardSetup}
+        />
+      ) : null}
     </div>
   );
 }
@@ -483,12 +534,20 @@ const AWARD_STATUS_ORDER: Record<AwardStatus, number> = {
 
 type AwardSortKey = "name" | "status" | "awarded" | "total" | "collected" | "pending";
 
+const AWARD_STATUS_OPTIONS = [
+  { value: "Active", label: "Active" },
+  { value: "Closing", label: "Closing" },
+  { value: "Closed", label: "Closed" },
+  { value: "Did Not Fulfill", label: "Did Not Fulfill" },
+];
+
 function OwnerAwards({ ownerId }: { ownerId: string }) {
   const { data: opps = [] } = useOpportunities();
   const { data: awards = [], isLoading } = useAwards();
   const [showAll, setShowAll] = useState(false);
   const [query, setQuery] = useState("");
   const { sort, toggle } = useSort<AwardSortKey>();
+  const updateAward = useUpdateAward();
 
   const rows = useMemo(() => {
     const ownedOppIds = new Set(
@@ -631,12 +690,36 @@ function OwnerAwards({ ownerId }: { ownerId: string }) {
                     </Link>
                   </td>
                   <td className="px-3 py-1.5">
-                    <Tag variant={statusVariant(award.award_status)}>
-                      {award.award_status}
-                    </Tag>
+                    <InlineSelect
+                      value={award.award_status}
+                      options={AWARD_STATUS_OPTIONS}
+                      onSave={(v) =>
+                        Promise.resolve(
+                          updateAward.mutate({
+                            id: award.id,
+                            patch: { award_status: v as AwardStatus },
+                          }),
+                        )
+                      }
+                      renderValue={(v) =>
+                        v ? (
+                          <Tag variant={statusVariant(v as AwardStatus)}>{v}</Tag>
+                        ) : (
+                          <span className="text-ink-4">—</span>
+                        )
+                      }
+                    />
                   </td>
                   <td className="mono px-3 py-1.5 text-[11.5px] text-ink-2">
-                    {fmtDate(award.award_date)}
+                    <InlineDate
+                      value={award.award_date}
+                      onSave={(d) =>
+                        Promise.resolve(
+                          updateAward.mutate({ id: award.id, patch: { award_date: d } }),
+                        )
+                      }
+                      placeholder="—"
+                    />
                   </td>
                   <td className="mono px-3 py-1.5 text-right font-medium tabular-nums">
                     {total > 0 ? fmtMoney(total) : "—"}
