@@ -600,6 +600,14 @@ async def create_opportunity(
         if result and (result.get("id") or result.get("Id")):
             new_id = result.get("id") or result.get("Id")
             cache.invalidate_prefix("opps:")
+            # Account playbook status (Prospect/Pursuing/...) is
+            # derived inside the /api/salesforce/accounts response and
+            # the response is cached for CACHE_TTL_ACCOUNTS (10 min).
+            # Without busting it here, an account stays Prospect on
+            # the UI until the cache expires even though a new open
+            # opp now exists. Same reasoning for the stage update +
+            # delete paths below.
+            cache.invalidate_prefix("accounts:")
             logger.info(f"Opportunity created: {new_id} by {user.get('email', 'unknown')}")
             return ApiResponse(success=True, data={"id": new_id, "message": "Opportunity created"})
         raise HTTPException(400, "Failed to create opportunity — no ID returned")
@@ -665,6 +673,10 @@ async def update_opportunity(
         if success:
             cache.invalidate_prefix("opps:")
             cache.invalidate("stage_history:30")
+            # Stage / Amount / Active_Opportunity__c flips can move
+            # the account between Prospect/Pursuing/Stewarding —
+            # bust the accounts cache so the derived status refreshes.
+            cache.invalidate_prefix("accounts:")
             logger.info(f"Opportunity {opportunity_id} updated by {user['user_id']}")
             return ApiResponse(success=True, data={"id": opportunity_id, "message": "Opportunity updated successfully"})
         else:
@@ -718,6 +730,8 @@ async def delete_opportunity(
         # opp-payments: / payments: — child payments now orphaned.
         cache.invalidate_prefix("opp-payments:")
         cache.invalidate_prefix("payments:")
+        # Bust the derived account status (which reads opp lists).
+        cache.invalidate_prefix("accounts:")
         # my-tasks: / contact-tasks: — child Tasks still have WhatId pointing
         # at the deleted opp; cached entries would render with a stale parent.
         cache.invalidate_prefix("my-tasks:")
