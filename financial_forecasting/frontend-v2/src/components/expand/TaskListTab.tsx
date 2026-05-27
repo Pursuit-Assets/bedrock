@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Plus, Search, Trash2, X } from "lucide-react";
 
 import { InlineDate, InlineSelect, InlineText } from "@/components/ui/InlineEdit";
@@ -368,11 +368,17 @@ function NewTaskRow({
   const [subject, setSubject] = useState("");
   const [ownerId, setOwnerId] = useState("");
   const [dueDate, setDueDate] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
 
   // Reset the row the instant Enter is pressed so the user can keep
   // typing more tasks without waiting for the server. The mutation
   // runs in the background; React Query's optimistic insert on
   // useCreateTask makes the new row appear in the list immediately.
+  //
+  // Also schedule a focus on the next frame: the optimistic insert
+  // triggers a parent re-render that can briefly steal focus on slow
+  // hardware. Re-focusing after the commit keeps the input live so
+  // the user can keep typing without grabbing the mouse.
   const submit = () => {
     const trimmed = subject.trim();
     if (!trimmed) return;
@@ -385,12 +391,16 @@ function NewTaskRow({
     setOwnerId("");
     setDueDate("");
     void onCreate(payload);
+    requestAnimationFrame(() => {
+      inputRef.current?.focus();
+    });
   };
 
   return (
     <div className="flex flex-wrap items-center gap-2 border-t border-border-strong bg-surface-2/40 px-4 py-1.5">
       <Plus size={13} className="flex-shrink-0 text-ink-3" />
       <input
+        ref={inputRef}
         value={subject}
         onChange={(e) => setSubject(e.target.value)}
         onKeyDown={(e) => {
