@@ -88,6 +88,7 @@ class AwardOut(BaseModel):
 
 class AwardUpdate(BaseModel):
     award_status: Optional[str] = Field(default=None)
+    award_date: Optional[str] = None
     period_end_date: Optional[str] = None
     notes: Optional[str] = None
     reporting_frequency: Optional[str] = None
@@ -274,8 +275,15 @@ async def update_award(
     sets: List[str] = []
     vals: List[Any] = []
 
+    # asyncpg needs datetime.date for DATE columns. Convert ISO date
+    # strings ("YYYY-MM-DD") on the way in; non-date columns pass
+    # through untouched.
+    DATE_FIELDS = {"award_date", "period_end_date", "next_report_due"}
+    from datetime import date as _date  # local import to avoid module-level churn
+
     for field, col in [
         ("award_status", "award_status"),
+        ("award_date", "award_date"),
         ("period_end_date", "period_end_date"),
         ("notes", "notes"),
         ("reporting_frequency", "reporting_frequency"),
@@ -283,6 +291,14 @@ async def update_award(
     ]:
         v = getattr(payload, field)
         if v is not None:
+            if field in DATE_FIELDS and isinstance(v, str):
+                try:
+                    v = _date.fromisoformat(v)
+                except ValueError:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Invalid {field}: expected YYYY-MM-DD, got {v!r}",
+                    )
             sets.append(f"{col} = ${len(vals) + 2}")
             vals.append(v)
 

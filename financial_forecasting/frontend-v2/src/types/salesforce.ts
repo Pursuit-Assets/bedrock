@@ -106,6 +106,10 @@ export interface SfOpportunity {
    *  SF API name is intentionally awkward (`..._if_different_...`)
    *  but the picklist label is just "Ask Amount". */
   Ask_Amount_if_different_from_actual__c?: number | null;
+  /** Grant period — set during the post-Collecting award setup
+   *  workflow. Source of truth for the award's active window. */
+  Grant_Start_Date__c?: string | null;
+  Grant_End_Date__c?: string | null;
   Philanthropy_Type__c?: string | null;
   Manager_Probability_Override__c?: number | null;
   /** SF picklist: "Low" | "Medium" | "High" (or null). Surfaced as a

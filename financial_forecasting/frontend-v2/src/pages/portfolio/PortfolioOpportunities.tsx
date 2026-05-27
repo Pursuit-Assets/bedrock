@@ -13,7 +13,10 @@ import { Fragment, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { ChevronDown, ChevronRight, ExternalLink } from "lucide-react";
 
+import { AwardSetupDialog } from "@/components/AwardSetupDialog";
 import { OpportunityExpandPanel } from "@/components/OpportunityExpandPanel";
+import { PaymentScheduleBuilder } from "@/components/PaymentScheduleBuilder";
+import { StageGateDialog } from "@/components/StageGateDialog";
 import { SectionCard, withReferrer } from "@/components/detail";
 import { StageChip } from "@/components/ui/StageChip";
 import { Tag } from "@/components/ui/Tag";
@@ -23,10 +26,9 @@ import { fmtDate, fmtMoney } from "@/lib/format";
 import { riskForOpenOpp, riskTextClass } from "@/lib/risk";
 import { sortBy, useSort } from "@/lib/sort";
 import { isLost, isOpen, isWon, SF_STAGE_OPTIONS, stageStatus } from "@/lib/stages";
-import {
-  useUpdateOpportunity,
-  useUpdateOpportunityStage,
-} from "@/services/opportunities";
+import { useProbabilityScheduleGate } from "@/lib/useProbabilityScheduleGate";
+import { useStageChangeGate } from "@/lib/useStageChangeGate";
+import { useUpdateOpportunity } from "@/services/opportunities";
 import type { SfOpportunity } from "@/types/salesforce";
 
 import { TableToolbar } from "./TableToolbar";
@@ -48,7 +50,8 @@ export function PortfolioOpportunities({
   canEdit,
 }: PortfolioOpportunitiesProps) {
   const updateOpp = useUpdateOpportunity();
-  const updateStage = useUpdateOpportunityStage();
+  const stageGate = useStageChangeGate();
+  const probGate = useProbabilityScheduleGate();
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<OppFilter>("open");
@@ -105,6 +108,7 @@ export function PortfolioOpportunities({
   }, [opps, query, statusFilter, highPriorityOnly, sort]);
 
   return (
+    <>
     <SectionCard
       title={`Opportunities (${visible.length}${visible.length !== opps.length ? ` of ${opps.length}` : ""})`}
       storageScope="portfolio"
@@ -256,11 +260,7 @@ export function PortfolioOpportunities({
                         <InlineSelect
                           value={o.StageName}
                           options={SF_STAGE_OPTIONS}
-                          onSave={(stage) =>
-                            Promise.resolve(
-                              updateStage.mutate({ id: o.Id, newStage: stage }),
-                            )
-                          }
+                          onSave={(stage) => stageGate.request(o, stage)}
                           renderValue={(v) =>
                             v ? (
                               <StageChip stage={v} status={stageStatus(o)} />
@@ -317,15 +317,17 @@ export function PortfolioOpportunities({
                                 ? String(o.Probability)
                                 : ""
                           }
-                          onSave={(v) => {
+                          onSave={async (v) => {
                             const n = v ? Number(v.replace(/[^\d.-]/g, "")) : null;
+                            // Block 0 → >0 raises that don't have a
+                            // payment schedule yet — opens the builder,
+                            // rejection here reverts the optimistic.
+                            await probGate.request(o, n);
                             // Mirror SF's UI: co-write Probability with the
                             // override when set. Clearing falls back to SF.
                             const patch: Record<string, unknown> = { Manager_Probability_Override__c: n };
                             if (n != null) patch.Probability = n;
-                            return Promise.resolve(
-                              updateOpp.mutate({ id: o.Id, patch }),
-                            );
+                            await updateOpp.mutateAsync({ id: o.Id, patch });
                           }}
                           formatDisplay={(raw) => {
                             const n = Number(raw.replace(/[^\d.-]/g, ""));
@@ -369,7 +371,11 @@ export function PortfolioOpportunities({
                   {isExpanded ? (
                     <tr>
                       <td colSpan={7} className="p-0">
-                        <OpportunityExpandPanel opportunityId={o.Id} />
+                        <OpportunityExpandPanel
+                          opportunityId={o.Id}
+                          oppAmount={o.Amount ?? null}
+                          oppCloseDate={o.CloseDate ?? null}
+                        />
                       </td>
                     </tr>
                   ) : null}
@@ -390,6 +396,35 @@ export function PortfolioOpportunities({
         </table>
       )}
     </SectionCard>
+    {stageGate.pending ? (
+      <StageGateDialog
+        spec={stageGate.pending.spec}
+        opp={stageGate.pending.opp}
+        toStage={stageGate.pending.toStage}
+        onClose={stageGate.dismiss}
+        onCompleted={stageGate.complete}
+        onAwardCreated={stageGate.openAwardSetup}
+      />
+    ) : null}
+    {stageGate.awardSetup ? (
+      <AwardSetupDialog
+        awardId={stageGate.awardSetup.awardId}
+        opportunityId={stageGate.awardSetup.opportunityId}
+        onClose={stageGate.dismissAwardSetup}
+      />
+    ) : null}
+    {probGate.pending ? (
+      <PaymentScheduleBuilder
+        opportunityId={probGate.pending.opp.Id}
+        oppAmount={probGate.pending.opp.Amount ?? null}
+        existingPayments={[]}
+        initialFirstDate={probGate.pending.opp.CloseDate ?? null}
+        prompt={`Raising probability to ${probGate.pending.nextProbability}% — set the expected payment schedule before continuing.`}
+        onClose={probGate.dismiss}
+        onSaved={probGate.complete}
+      />
+    ) : null}
+    </>
   );
 }
 

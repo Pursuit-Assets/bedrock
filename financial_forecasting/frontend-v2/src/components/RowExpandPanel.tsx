@@ -2,7 +2,7 @@ import { useState } from "react";
 
 import { cn } from "@/lib/utils";
 
-export const ROW_EXPAND_HEIGHT = 320;
+export const ROW_EXPAND_HEIGHT = 520;
 
 export interface ExpandTab {
   id: string;

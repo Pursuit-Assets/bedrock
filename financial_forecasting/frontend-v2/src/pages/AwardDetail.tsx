@@ -227,7 +227,7 @@ function Loaded({ award, opp }: { award: Award; opp: SfOpportunity | undefined }
             <PaymentsDetail opportunityId={award.opportunity_id} canEdit={canEdit} />
           </Section>
 
-          <Section title="Tasks">
+          <Section title="Tasks" flush>
             <TasksDetail opportunityId={award.opportunity_id} />
           </Section>
         </div>
@@ -276,7 +276,18 @@ function BackLink() {
   return <SharedBackLink defaultTo="/awards" defaultLabel="Awards" />;
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function Section({
+  title,
+  children,
+  flush = false,
+}: {
+  title: string;
+  children: React.ReactNode;
+  /** When true, drop the inner padding + horizontal pad and let the
+   *  child render edge-to-edge. Useful when the child is itself a
+   *  bordered table (so the page isn't a card-in-a-card-in-a-card). */
+  flush?: boolean;
+}) {
   return (
     <section className="rounded-lg border border-border-strong bg-surface shadow-sm">
       <header className="border-b border-border-strong px-4 py-2">
@@ -284,7 +295,7 @@ function Section({ title, children }: { title: string; children: React.ReactNode
           {title}
         </h2>
       </header>
-      <div className="px-4 py-3">{children}</div>
+      <div className={flush ? "" : "px-4 py-3"}>{children}</div>
     </section>
   );
 }
@@ -419,7 +430,11 @@ function ReportingDetail({
               type="button"
               onClick={() => {
                 const today = new Date().toISOString().slice(0, 10);
-                createReport.mutate({ due_date: today, status: "Pending" });
+                createReport.mutate({
+                  due_date: today,
+                  status: "Pending",
+                  notes: "New deliverable",
+                });
               }}
               className="flex items-center gap-1 rounded bg-accent px-2 py-0.5 text-[11.5px] text-surface hover:opacity-90"
             >
@@ -451,6 +466,9 @@ function ReportingDetail({
               onUpdateDate={(d) =>
                 updateReport.mutateAsync({ id: r.id, patch: { due_date: d ?? r.due_date } }).then(() => undefined)
               }
+              onUpdateNotes={(n) =>
+                updateReport.mutateAsync({ id: r.id, patch: { notes: n } }).then(() => undefined)
+              }
               onDelete={() => deleteReport.mutate(r.id)}
             />
           ))}
@@ -465,12 +483,14 @@ function ReportRow({
   canEdit,
   onUpdateStatus,
   onUpdateDate,
+  onUpdateNotes,
   onDelete,
 }: {
   report: AwardReport;
   canEdit: boolean;
   onUpdateStatus: (s: AwardReportStatus) => Promise<void>;
   onUpdateDate: (d: string | null) => Promise<void>;
+  onUpdateNotes: (n: string) => Promise<void>;
   onDelete: () => void;
 }) {
   const variant = reportTagVariant(report.status, report.due_date);
@@ -482,7 +502,7 @@ function ReportRow({
         onClick={() => onUpdateStatus(isDone ? "Pending" : "Submitted")}
         disabled={!canEdit}
         className={cn(
-          "grid h-4 w-4 place-items-center rounded border transition-colors",
+          "grid h-4 w-4 flex-shrink-0 place-items-center rounded border transition-colors",
           isDone
             ? "border-green-500 bg-green-500 text-surface"
             : "border-border-strong hover:border-accent",
@@ -493,13 +513,27 @@ function ReportRow({
         {isDone ? <Check size={10} strokeWidth={3} /> : null}
       </button>
 
-      {canEdit ? (
-        <InlineDate value={report.due_date} onSave={onUpdateDate} />
-      ) : (
-        <span className="mono text-[12px] text-ink-2">{fmtDate(report.due_date)}</span>
-      )}
+      <div className="min-w-0 flex-1">
+        {canEdit ? (
+          <InlineText
+            value={report.notes ?? ""}
+            placeholder="Untitled deliverable"
+            onSave={onUpdateNotes}
+            className="text-[12.5px] font-medium text-ink"
+          />
+        ) : (
+          <span className="block truncate text-[12.5px] font-medium text-ink">
+            {report.notes || "Untitled deliverable"}
+          </span>
+        )}
+      </div>
 
-      <div className="ml-auto flex items-center gap-2">
+      <div className="flex flex-shrink-0 items-center gap-2">
+        {canEdit ? (
+          <InlineDate value={report.due_date} onSave={onUpdateDate} />
+        ) : (
+          <span className="mono text-[12px] text-ink-2">{fmtDate(report.due_date)}</span>
+        )}
         {canEdit ? (
           <InlineSelect
             value={report.status}
@@ -709,6 +743,7 @@ function TasksDetail({ opportunityId }: { opportunityId: string }) {
   // award's underlying opportunity.
   return (
     <TaskListTab
+      unstyled
       tasks={tasks}
       isLoading={isLoading}
       placeholder="Add a task — press Enter to create"

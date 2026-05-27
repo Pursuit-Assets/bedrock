@@ -44,7 +44,13 @@ import { fmtDate, fmtMoney, fmtMoneyFull } from "@/lib/format";
 import { sortBy, useSort } from "@/lib/sort";
 import { SF_STAGE_OPTIONS, stageStatus } from "@/lib/stages";
 import { useSessionState } from "@/lib/useSessionState";
-import { useUpdateOpportunity, useUpdateOpportunityStage } from "@/services/opportunities";
+import { useProbabilityScheduleGate } from "@/lib/useProbabilityScheduleGate";
+import { useStageChangeGate } from "@/lib/useStageChangeGate";
+import { useUpdateOpportunity } from "@/services/opportunities";
+import { AwardSetupDialog } from "@/components/AwardSetupDialog";
+import { PaymentScheduleBuilder } from "@/components/PaymentScheduleBuilder";
+import { StageGateDialog } from "@/components/StageGateDialog";
+import type { SfOpportunity } from "@/types/salesforce";
 import {
   AddFilterButton,
   FilterChip,
@@ -396,7 +402,8 @@ export function PaymentsPage() {
   // useUpdateOpportunityStage handles the SF validate + award
   // auto-create handshake; useUpdateOpportunity is generic.
   const updateOpp = useUpdateOpportunity();
-  const updateStage = useUpdateOpportunityStage();
+  const stageGate = useStageChangeGate();
+  const probGate = useProbabilityScheduleGate();
   const canEdit = usePerm("edit_all_opportunities");
 
   const payments = data ?? [];
@@ -512,26 +519,62 @@ export function PaymentsPage() {
   );
 
   const saveOppStage = useCallback(
-    async (oppId: string, nextStage: string) => {
-      await updateStage.mutateAsync({ id: oppId, newStage: nextStage });
+    async (p: SfPayment, nextStage: string) => {
+      const oppId = p.npe01__Opportunity__c;
+      if (!oppId) return;
+      const joined = p.npe01__Opportunity__r ?? {};
+      // Construct a minimal SfOpportunity from the join so the gate
+      // can introspect the current stage / amount / probability and
+      // seed the dialog. Fields the gate looks at are all present on
+      // the join (StageName, CloseDate, Amount, Probability, override).
+      const opp: SfOpportunity = {
+        Id: oppId,
+        Name: joined.Name ?? "",
+        StageName: joined.StageName ?? "",
+        IsClosed: null,
+        Probability: joined.Probability ?? null,
+        Amount: joined.Amount ?? null,
+        Manager_Probability_Override__c: joined.Manager_Probability_Override__c ?? null,
+        CloseDate: joined.CloseDate ?? null,
+        Active_Opportunity__c: joined.Active_Opportunity__c ?? null,
+        Account: joined.Account ? { Id: joined.AccountId ?? "", Name: joined.Account.Name ?? "" } : null,
+        AccountId: joined.AccountId ?? null,
+      } as SfOpportunity;
+      await stageGate.request(opp, nextStage);
     },
-    [updateStage],
+    [stageGate],
   );
 
   const saveOppMgrProb = useCallback(
-    async (oppId: string, raw: string) => {
-      // Empty input clears the override (null) so SF falls back to the
-      // stage-derived Probability. Otherwise coerce to a number; the
-      // backend's PUT accepts any number, no client-side range clamp.
-      // Mirror SF's UI behavior: when a value is set, write Probability
-      // alongside the override so the two fields stay in sync.
+    async (p: SfPayment, raw: string) => {
+      const oppId = p.npe01__Opportunity__c;
+      if (!oppId) return;
+      const joined = p.npe01__Opportunity__r ?? {};
       const trimmed = raw.trim();
       const next = trimmed === "" ? null : Number(trimmed.replace(/[^0-9.-]/g, ""));
+
+      // Build a minimal SfOpportunity for the playbook gate. The gate
+      // looks at Probability + override + Amount + Id; all are on the
+      // payment row's join.
+      const opp: SfOpportunity = {
+        Id: oppId,
+        Name: joined.Name ?? "",
+        StageName: joined.StageName ?? "",
+        Probability: joined.Probability ?? null,
+        Amount: joined.Amount ?? null,
+        Manager_Probability_Override__c: joined.Manager_Probability_Override__c ?? null,
+        CloseDate: joined.CloseDate ?? null,
+      } as SfOpportunity;
+      // Block 0 → >0 if no schedule exists; opens PaymentScheduleBuilder
+      // and resolves only after save. Rejection here reverts the
+      // InlineText's optimistic display via its own catch handler.
+      await probGate.request(opp, next);
+
       const patch: Record<string, unknown> = { Manager_Probability_Override__c: next };
       if (next != null) patch.Probability = next;
       await updateOpp.mutateAsync({ id: oppId, patch });
     },
-    [updateOpp],
+    [updateOpp, probGate],
   );
 
   // ── Virtualization ─────────────────────────────────────────────────
@@ -746,7 +789,11 @@ export function PaymentsPage() {
                       {isExpanded && oppId ? (
                         <tr>
                           <td colSpan={visibleCols.length} className="p-0">
-                            <OpportunityExpandPanel opportunityId={oppId} />
+                            <OpportunityExpandPanel
+                              opportunityId={oppId}
+                              oppAmount={p.npe01__Opportunity__r?.Amount ?? null}
+                              oppCloseDate={p.npe01__Opportunity__r?.CloseDate ?? null}
+                            />
                           </td>
                         </tr>
                       ) : null}
@@ -763,6 +810,34 @@ export function PaymentsPage() {
           </tbody>
         </table>
       </div>
+      {stageGate.pending ? (
+        <StageGateDialog
+          spec={stageGate.pending.spec}
+          opp={stageGate.pending.opp}
+          toStage={stageGate.pending.toStage}
+          onClose={stageGate.dismiss}
+          onCompleted={stageGate.complete}
+          onAwardCreated={stageGate.openAwardSetup}
+        />
+      ) : null}
+      {stageGate.awardSetup ? (
+        <AwardSetupDialog
+          awardId={stageGate.awardSetup.awardId}
+          opportunityId={stageGate.awardSetup.opportunityId}
+          onClose={stageGate.dismissAwardSetup}
+        />
+      ) : null}
+      {probGate.pending ? (
+        <PaymentScheduleBuilder
+          opportunityId={probGate.pending.opp.Id}
+          oppAmount={probGate.pending.opp.Amount ?? null}
+          existingPayments={[]}
+          initialFirstDate={probGate.pending.opp.CloseDate ?? null}
+          prompt={`Raising probability to ${probGate.pending.nextProbability}% — set the expected payment schedule before continuing.`}
+          onClose={probGate.dismiss}
+          onSaved={probGate.complete}
+        />
+      ) : null}
     </div>
   );
 }
@@ -776,8 +851,8 @@ interface RowProps {
   isExpanded: boolean;
   onToggleExpand: () => void;
   onSave: (id: string, patch: PaymentPatch) => Promise<void>;
-  onSaveOppStage: (oppId: string, nextStage: string) => Promise<void>;
-  onSaveOppMgrProb: (oppId: string, raw: string) => Promise<void>;
+  onSaveOppStage: (p: SfPayment, nextStage: string) => Promise<void>;
+  onSaveOppMgrProb: (p: SfPayment, raw: string) => Promise<void>;
   onOpenOpp: (oppId: string) => void;
 }
 
@@ -863,7 +938,7 @@ const PaymentRow = memo(function PaymentRow({
       <InlineSelect
         value={opp?.StageName ?? ""}
         options={stageOpts}
-        onSave={(v) => onSaveOppStage(oppId, v)}
+        onSave={(v) => onSaveOppStage(p, v)}
         renderValue={(v) =>
           v
             ? <StageChip stage={v} status={stageStatus({ StageName: v, IsClosed: false })} />
@@ -899,7 +974,7 @@ const PaymentRow = memo(function PaymentRow({
               ? String(opp.Probability)
               : ""
         }
-        onSave={(v) => onSaveOppMgrProb(oppId, v)}
+        onSave={(v) => onSaveOppMgrProb(p, v)}
         formatDisplay={(raw) => {
           const n = Number(raw);
           return Number.isFinite(n) ? `${n}%` : raw;

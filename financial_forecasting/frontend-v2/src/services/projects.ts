@@ -372,7 +372,15 @@ export function useCreateProject() {
       );
       return data.data;
     },
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["projects"] }); },
+    onSuccess: (_data, body) => {
+      qc.invalidateQueries({ queryKey: ["projects"] });
+      if (body.opportunity_id) {
+        // Same reverse-lookup invalidations as useLinkProjectToOpportunity
+        // so the LinkedProjectsCard etc. pick up the new project.
+        qc.invalidateQueries({ queryKey: ["linked-projects", "opportunity", body.opportunity_id] });
+        qc.invalidateQueries({ queryKey: ["opportunity-projects", body.opportunity_id] });
+      }
+    },
   });
 }
 
@@ -382,6 +390,19 @@ export function useLinkProjectToOpportunity() {
     mutationFn: async ({ projectId, opportunityId }: { projectId: string; opportunityId: string }) => {
       await api.put(`/api/projects/${projectId}`, { opportunity_id: opportunityId });
     },
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["projects"] }); },
+    // Invalidate every cache that reads project↔opportunity linkage.
+    // Without this, the LinkedProjectsCard (and ProjectDrawer) keep
+    // their stale "no linked project" view — the PUT actually
+    // persists but the UI looks like the save was lost.
+    onSuccess: (_data, { projectId, opportunityId }) => {
+      qc.invalidateQueries({ queryKey: ["projects"] });
+      qc.invalidateQueries({ queryKey: ["project-detail", projectId] });
+      // LinkedProjectsCard's reverse lookup key.
+      qc.invalidateQueries({ queryKey: ["linked-projects", "opportunity", opportunityId] });
+      // ProjectDrawer's reverse lookup.
+      qc.invalidateQueries({ queryKey: ["project-opportunities", projectId] });
+      // useOpportunityProjects readers (e.g. AwardDrawer).
+      qc.invalidateQueries({ queryKey: ["opportunity-projects", opportunityId] });
+    },
   });
 }

@@ -84,14 +84,18 @@ def _is_late_stage(stage_name: Optional[str]) -> bool:
 
 
 def _is_open_active(opp: Dict[str, Any]) -> bool:
-    """An opportunity is "open and active" when SF marks it not-closed,
-    the Active_Opportunity__c custom flag is true, AND its stage is
-    still in the pursuit phase (Contracting or earlier). Collecting /
-    In Effect onward is delivery, not pursuit — those opps belong to
-    Stewarding, gated on the award row instead."""
+    """An opportunity counts toward "Pursuing" when SF marks it
+    not-closed AND its stage is still in the pursuit phase
+    (Contracting or earlier). Collecting / In Effect onward is
+    delivery, not pursuit — those opps belong to Stewarding, gated on
+    the award row instead.
+
+    The previously-required Active_Opportunity__c flag was dropped:
+    RMs were leaving open opps with that flag set to false and not
+    seeing them reflect in the account's Pursuing status. Any open
+    opp now counts so the user-visible signal matches what they see
+    on the opp itself."""
     if opp.get("IsClosed"):
-        return False
-    if not opp.get("Active_Opportunity__c"):
         return False
     rank = STAGE_RANK.get(opp.get("StageName") or "", -1)
     return rank >= 0 and rank <= PURSUIT_STAGE_RANK_MAX
@@ -109,7 +113,7 @@ def compute_account_status(
     Args:
         account_id: SF Account Id.
         opps_by_account: AccountId → list of SfOpportunity dicts. Each
-            dict needs Id, IsClosed, IsWon, StageName, Active_Opportunity__c.
+            dict needs Id, IsClosed, IsWon, StageName.
         awards_by_opp: opportunity_id → list of bedrock award dicts.
             Each dict needs award_status.
         latest_activity_by_account: AccountId → most recent activity_date
