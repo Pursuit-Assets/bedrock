@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { CheckCircle2, Loader2, Plus, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
 
@@ -48,42 +48,46 @@ export function AwardSetupDialog({
   // Existing reports list — surface in the deliverables editor so the
   // user sees what's already on the award (e.g. from a prior session).
   const reportsQ = useAwardReports(awardId);
-  // Keep award fetch for the close-out "all done" gate; we no longer
-  // write to it from this dialog (start/end live on SF).
-  useAward(awardId);
+  // Award row carries the linked opportunity name + account name —
+  // used to give the dialog a clear "this is for X" context line.
+  const awardQ = useAward(awardId);
+  const award = awardQ.data;
 
   // ── Section 1: Grant dates (writes to SF Opportunity) ─────────────
   const [startDate, setStartDate] = useState<string>("");
   const [endDate, setEndDate] = useState<string>("");
   const [datesSaved, setDatesSaved] = useState(false);
-  const [savingDates, setSavingDates] = useState(false);
 
-  const saveDates = async () => {
+  const saveDates = () => {
     if (!startDate && !endDate) {
       toast.error("Set at least one date or use Remind me later");
       return;
     }
-    setSavingDates(true);
-    try {
-      const patch: Record<string, unknown> = {};
-      if (startDate) patch.Grant_Start_Date__c = startDate;
-      if (endDate) patch.Grant_End_Date__c = endDate;
-      await updateOpp.mutateAsync({ id: opportunityId, patch });
-      setDatesSaved(true);
-      toast.success("Grant dates saved");
-    } catch (e) {
-      toast.error(`Couldn't save dates: ${errorMessage(e)}`);
-    } finally {
-      setSavingDates(false);
-    }
+    // Optimistic: mark this section done immediately. The SF write
+    // happens in the background with a sonner toast for progress.
+    const patch: Record<string, unknown> = {};
+    if (startDate) patch.Grant_Start_Date__c = startDate;
+    if (endDate) patch.Grant_End_Date__c = endDate;
+    const toastId = `grant-dates-${opportunityId}-${Date.now()}`;
+    toast.loading("Saving grant dates…", { id: toastId });
+    setDatesSaved(true);
+    void (async () => {
+      try {
+        await updateOpp.mutateAsync({ id: opportunityId, patch });
+        toast.success("Grant dates saved", { id: toastId });
+      } catch (e) {
+        toast.error(`Couldn't save dates: ${errorMessage(e)}`, { id: toastId, duration: 8000 });
+        setDatesSaved(false);
+      }
+    })();
   };
 
   const remindDates = () => {
     void createReminderTask(
       createTask,
       opportunityId,
-      "Confirm grant start + end dates",
-      "Post-Collecting follow-up: set Grant_Start_Date__c and Grant_End_Date__c on the opportunity so reporting + payment schedules align.",
+      "[Award setup] Confirm grant start + end dates",
+      `Post-Collecting follow-up: set Grant_Start_Date__c and Grant_End_Date__c on the opportunity so reporting + payment schedules align. Award id: ${awardId}`,
     ).then(() => setDatesSaved(true));
   };
 
@@ -95,7 +99,6 @@ export function AwardSetupDialog({
   }
   const [deliverables, setDeliverables] = useState<DeliverableRow[]>([]);
   const [reportingSaved, setReportingSaved] = useState(false);
-  const [savingReporting, setSavingReporting] = useState(false);
 
   // Seed from existing AwardReports on the award (so re-opening the
   // dialog doesn't lose what was already entered).
@@ -128,7 +131,7 @@ export function AwardSetupDialog({
     setDeliverables((prev) => prev.map((d) => (d.id === id ? { ...d, ...patch } : d)));
   };
 
-  const saveReporting = async () => {
+  const saveReporting = () => {
     const existingIds = new Set((reportsQ.data ?? []).map((r) => r.id));
     const toCreate = deliverables.filter(
       (d) => !existingIds.has(d.id) && d.title.trim() && d.due_date,
@@ -137,33 +140,32 @@ export function AwardSetupDialog({
       toast.error("Add at least one deliverable with a title and due date");
       return;
     }
-    setSavingReporting(true);
-    try {
-      // Run creates in parallel — the schedule is rarely large but
-      // sequential N round-trips would feel slow.
-      await Promise.all(
-        toCreate.map((d) =>
-          createAwardReport.mutateAsync({
+    const toastId = `deliverables-${awardId}-${Date.now()}`;
+    toast.loading(`Saving ${toCreate.length} deliverable${toCreate.length === 1 ? "" : "s"}…`, { id: toastId });
+    setReportingSaved(true);
+    void (async () => {
+      try {
+        // Sequential to avoid hammering bedrock.award_report inserts.
+        for (const d of toCreate) {
+          await createAwardReport.mutateAsync({
             due_date: d.due_date,
             notes: d.title.trim(),
-          }),
-        ),
-      );
-      setReportingSaved(true);
-      toast.success(`${toCreate.length} deliverable${toCreate.length === 1 ? "" : "s"} saved`);
-    } catch (e) {
-      toast.error(`Couldn't save deliverables: ${errorMessage(e)}`);
-    } finally {
-      setSavingReporting(false);
-    }
+          });
+        }
+        toast.success(`${toCreate.length} deliverable${toCreate.length === 1 ? "" : "s"} saved`, { id: toastId });
+      } catch (e) {
+        toast.error(`Couldn't save deliverables: ${errorMessage(e)}`, { id: toastId, duration: 8000 });
+        setReportingSaved(false);
+      }
+    })();
   };
 
   const remindReporting = () => {
     void createReminderTask(
       createTask,
       opportunityId,
-      "Log reporting deliverables + due dates",
-      "Post-Collecting follow-up: capture the funder's required deliverables and the due date for each as AwardReport rows on the award.",
+      "[Award setup] Log reporting deliverables + due dates",
+      `Post-Collecting follow-up: capture the funder's required deliverables and the due date for each as AwardReport rows on the award. Award id: ${awardId}`,
     ).then(() => setReportingSaved(true));
   };
 
@@ -173,43 +175,52 @@ export function AwardSetupDialog({
   const [newProjectName, setNewProjectName] = useState<string>("");
   const [projectSaved, setProjectSaved] = useState(false);
 
-  const eligibleProjects = useMemo(
-    () => (projectsQ.data ?? []).filter((p) => !p.opportunity_id || p.opportunity_id === opportunityId),
-    [projectsQ.data, opportunityId],
-  );
+  // Show every project the user has access to. Filtering out projects
+  // already linked to other opps would hide most of the catalog
+  // (most projects are scoped to an opp), making the picker look
+  // empty even when there's plenty to choose from. If the user picks
+  // one that's already on another opp, useLinkProjectToOpportunity
+  // will reassign it — which is the right behavior for moving a
+  // project to a new award.
+  const eligibleProjects = projectsQ.data ?? [];
 
-  const saveProject = async () => {
-    try {
-      if (projectMode === "link") {
-        if (!selectedProjectId) {
-          toast.error("Pick a project to link");
-          return;
-        }
-        await linkProject.mutateAsync({ projectId: selectedProjectId, opportunityId });
-        toast.success("Project linked");
-      } else if (projectMode === "create") {
-        if (!newProjectName.trim()) {
-          toast.error("Give the new project a name");
-          return;
-        }
-        await createProject.mutateAsync({
-          name: newProjectName.trim(),
-          opportunity_id: opportunityId,
-        });
-        toast.success("Project created and linked");
-      }
-      setProjectSaved(true);
-    } catch (e) {
-      toast.error(`Couldn't save project: ${errorMessage(e)}`);
+  const saveProject = () => {
+    if (projectMode === "link" && !selectedProjectId) {
+      toast.error("Pick a project to link");
+      return;
     }
+    if (projectMode === "create" && !newProjectName.trim()) {
+      toast.error("Give the new project a name");
+      return;
+    }
+    const toastId = `project-link-${opportunityId}-${Date.now()}`;
+    toast.loading(projectMode === "link" ? "Linking project…" : "Creating project…", { id: toastId });
+    setProjectSaved(true);
+    void (async () => {
+      try {
+        if (projectMode === "link") {
+          await linkProject.mutateAsync({ projectId: selectedProjectId, opportunityId });
+          toast.success("Project linked", { id: toastId });
+        } else if (projectMode === "create") {
+          await createProject.mutateAsync({
+            name: newProjectName.trim(),
+            opportunity_id: opportunityId,
+          });
+          toast.success("Project created and linked", { id: toastId });
+        }
+      } catch (e) {
+        toast.error(`Couldn't save project: ${errorMessage(e)}`, { id: toastId, duration: 8000 });
+        setProjectSaved(false);
+      }
+    })();
   };
 
   const remindProject = () => {
     void createReminderTask(
       createTask,
       opportunityId,
-      "Create or link implementation project",
-      "Post-Collecting follow-up: if this award requires implementation, create or link a project so the team has a working space for deliverables.",
+      "[Award setup] Create or link implementation project",
+      `Post-Collecting follow-up: if this award requires implementation, create or link a project so the team has a working space for deliverables. Award id: ${awardId}`,
     ).then(() => setProjectSaved(true));
   };
 
@@ -228,9 +239,14 @@ export function AwardSetupDialog({
             <div className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
               Award setup
             </div>
-            <h2 className="mt-0.5 text-[15px] font-semibold text-ink">
-              Set up the new award
+            <h2 className="mt-0.5 truncate text-[15px] font-semibold text-ink">
+              {award?.opportunity_name ?? "Set up the new award"}
             </h2>
+            {award?.account_name ? (
+              <div className="mt-0.5 truncate text-[11.5px] text-ink-3">
+                {award.account_name}
+              </div>
+            ) : null}
           </div>
           <button
             type="button"
@@ -252,7 +268,7 @@ export function AwardSetupDialog({
             <SetupSection
               label="1 · Grant start + end dates"
               saved={datesSaved}
-              saving={savingDates || createTask.isPending}
+              saving={createTask.isPending}
               onSave={saveDates}
               onRemindLater={remindDates}
             >
@@ -285,7 +301,7 @@ export function AwardSetupDialog({
             <SetupSection
               label="2 · Reporting deliverables"
               saved={reportingSaved}
-              saving={savingReporting}
+              saving={false}
               onSave={saveReporting}
               onRemindLater={remindReporting}
             >
@@ -547,6 +563,10 @@ async function createReminderTask(
   const due = new Date();
   due.setDate(due.getDate() + 7);
   const dueIso = due.toISOString().slice(0, 10);
+  // Identify the section in the toast so misfires (e.g. wrong button
+  // wired up) are obvious to the user — they'll see the actual subject
+  // we sent, not a generic "Reminder created".
+  const label = subject.replace(/^\[Award setup\]\s*/, "");
   try {
     await createTask.mutateAsync({
       opportunityId,
@@ -556,7 +576,7 @@ async function createReminderTask(
         Description: description,
       },
     });
-    toast.success(`Reminder created — due ${dueIso}`);
+    toast.success(`Reminder created: "${label}" — due ${dueIso}`);
   } catch (e) {
     toast.error(`Couldn't create reminder: ${errorMessage(e)}`);
   }

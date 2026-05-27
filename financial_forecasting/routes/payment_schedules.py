@@ -2,10 +2,42 @@
 
 import asyncio
 import logging
-from typing import List, Optional
+import random
+from typing import Any, Callable, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
+
+
+async def _with_lock_retry(coro_fn: Callable[[], Any], retries: int = 3) -> Any:
+    """Retry an SF write that may hit UNABLE_TO_LOCK_ROW.
+
+    The NPSP "[Payment] Payment Received" Flow updates the parent
+    Opportunity from a Payment trigger. Parallel writes to several
+    payments on the same opp race for the parent's exclusive lock —
+    SF surfaces this as ``CANNOT_EXECUTE_FLOW_TRIGGER ... UNABLE_TO_LOCK_ROW``.
+    Retrying with a tiny jittered backoff almost always wins on the
+    second try; SF's lock is held for the duration of the Flow which
+    is sub-second.
+
+    Retries are independent of higher-level concurrency control. We
+    pass a callable (not a coroutine) so the second attempt creates a
+    fresh awaitable — an awaited coroutine can't be re-awaited.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(retries):
+        try:
+            return await coro_fn()
+        except Exception as e:
+            msg = str(e)
+            if "UNABLE_TO_LOCK_ROW" not in msg and "CANNOT_EXECUTE_FLOW_TRIGGER" not in msg:
+                raise
+            last_exc = e
+            if attempt < retries - 1:
+                # 80–240ms, 200–600ms, ... exponential with jitter.
+                await asyncio.sleep((0.08 + random.random() * 0.16) * (2.5 ** attempt))
+    assert last_exc is not None
+    raise last_exc
 
 from auth import require_auth
 from dependencies import get_mcp_client, require_sf_mcp_client
@@ -145,13 +177,8 @@ async def create_payment_schedule(
                 },
             )
 
-        # Delete existing payments if requested. Skip rows that are
-        # already paid — SF rejects DELETE on a paid OppPayment, and
-        # we don't want to lose financial history anyway.
-        # Run deletes in parallel: the bottleneck was N sequential SF
-        # round-trips taking ~150–300ms each. Same for the creates
-        # below. SF tolerates a small concurrency burst — far cheaper
-        # than a 4-row schedule sitting on 8 sequential calls.
+        # Delete existing (unpaid) payments first. Parallel here is
+        # safe — DELETE doesn't fire the Payment Received Flow.
         if request.delete_existing:
             existing_result = await salesforce.query(
                 f"SELECT Id, npe01__Paid__c FROM npe01__OppPayment__c "
@@ -164,14 +191,19 @@ async def create_payment_schedule(
             ]
             if to_delete:
                 await asyncio.gather(*(
-                    salesforce.delete_record("npe01__OppPayment__c", pid)
+                    _with_lock_retry(
+                        lambda pid=pid: salesforce.delete_record("npe01__OppPayment__c", pid),
+                    )
                     for pid in to_delete
                 ))
 
-        # Create new payments in parallel. Order is preserved by
-        # collecting in the same order as the input list.
-        async def _create(payment: PaymentScheduleItem):
-            return await salesforce.create_record(
+        # Create payments SEQUENTIALLY. The NPSP "[Payment] Payment
+        # Received" Flow updates the parent Opportunity on insert, and
+        # parallel inserts on the same parent deadlock the row. With
+        # optimistic-close on the frontend the user doesn't perceive
+        # the small extra latency, and we avoid UNABLE_TO_LOCK_ROW.
+        def _create_fn(payment: PaymentScheduleItem):
+            return lambda: salesforce.create_record(
                 "npe01__OppPayment__c",
                 {
                     "npe01__Opportunity__c": request.opportunity_id,
@@ -181,7 +213,9 @@ async def create_payment_schedule(
                 },
             )
 
-        results = await asyncio.gather(*(_create(p) for p in request.payments))
+        results = []
+        for p in request.payments:
+            results.append(await _with_lock_retry(_create_fn(p)))
         created_payments = [
             {
                 "Id": result["id"],
@@ -268,7 +302,11 @@ async def update_payment(
         if not update_fields:
             raise HTTPException(status_code=400, detail="No fields to update")
 
-        await salesforce.update_record("npe01__OppPayment__c", payment_id, update_fields)
+        # Wrap with lock-retry — the same NPSP Flow that bites parallel
+        # inserts can also fire on update when ``npe01__Paid__c`` flips.
+        await _with_lock_retry(
+            lambda: salesforce.update_record("npe01__OppPayment__c", payment_id, update_fields),
+        )
 
         # Check if all payments are now received → auto-advance opportunity
         all_payments_received = False
@@ -322,7 +360,9 @@ async def delete_payment(
     validate_salesforce_id(payment_id, "payment_id")
     try:
         salesforce = client.salesforce
-        await salesforce.delete_record("npe01__OppPayment__c", payment_id)
+        await _with_lock_retry(
+            lambda: salesforce.delete_record("npe01__OppPayment__c", payment_id),
+        )
         return {"success": True, "message": "Payment deleted"}
     except HTTPException:
         raise

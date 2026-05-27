@@ -19,6 +19,7 @@
  */
 import { useEffect, useMemo, useState } from "react";
 import { Plus, Trash2, X } from "lucide-react";
+import { toast } from "sonner";
 
 import {
   useCreatePaymentSchedule,
@@ -165,6 +166,11 @@ export function PaymentScheduleBuilder({
       return;
     }
     setError(null);
+    // Optimistic close: dismiss + toast immediately. Errors surface
+    // through the toast and the next refetch reconciles cache.
+    const toastId = `payment-schedule-${opportunityId}-${Date.now()}`;
+    toast.loading("Saving payment schedule…", { id: toastId });
+    onClose();
     try {
       if (isDiffSavePath) {
         // Group rows by (has existing SF id) and dispatch the right call.
@@ -203,25 +209,29 @@ export function PaymentScheduleBuilder({
           .map((p) => p.Id);
 
         // Run deletes first (so a leaving row's amount frees the cap
-        // before updates/creates land), then fire updates + creates in
-        // parallel. Schedules are small (≤12 payments) so SF rate
-        // limits aren't a concern, and serial round-trips dominated
-        // save time.
+        // before updates land). Then updates (parallel — safe). Then
+        // creates SEQUENTIALLY — parallel inserts trigger the NPSP
+        // [Payment] Payment Received Flow on the parent opp and race
+        // for its lock (UNABLE_TO_LOCK_ROW).
         if (deletes.length > 0) {
           await Promise.all(deletes.map((id) => deleteOne.mutateAsync(id)));
         }
-        await Promise.all([
-          ...updates.map((u) =>
-            updateOne.mutateAsync({
-              id: u.id,
-              patch: {
-                npe01__Payment_Amount__c: u.amount,
-                npe01__Scheduled_Date__c: u.date,
-              },
-            }),
-          ),
-          ...creates.map((c) => createSingle.mutateAsync(c)),
-        ]);
+        if (updates.length > 0) {
+          await Promise.all(
+            updates.map((u) =>
+              updateOne.mutateAsync({
+                id: u.id,
+                patch: {
+                  npe01__Payment_Amount__c: u.amount,
+                  npe01__Scheduled_Date__c: u.date,
+                },
+              }),
+            ),
+          );
+        }
+        for (const c of creates) {
+          await createSingle.mutateAsync(c);
+        }
       } else {
         await create.mutateAsync({
           payments: activeRows,
@@ -229,12 +239,8 @@ export function PaymentScheduleBuilder({
         });
       }
       onSaved?.();
-      onClose();
+      toast.success("Payment schedule saved", { id: toastId });
     } catch (e) {
-      // Prefer the structured FastAPI detail (which now carries the
-      // underlying SF error or the validation reason) over the bare
-      // axios message ("Request failed with status code 400"). Detail
-      // can be a string or an object with {error, message}.
       const err = e as {
         response?: { data?: { detail?: string | { message?: string; error?: string } } };
         message?: string;
@@ -244,7 +250,7 @@ export function PaymentScheduleBuilder({
         typeof detail === "string"
           ? detail
           : detail?.message ?? detail?.error ?? err.message ?? "Failed to save schedule";
-      setError(msg);
+      toast.error(`Couldn't save schedule: ${msg}`, { id: toastId, duration: 8000 });
     }
   };
 

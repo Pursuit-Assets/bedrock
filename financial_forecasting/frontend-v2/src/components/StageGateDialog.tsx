@@ -434,7 +434,10 @@ function InlinePaymentScheduleEditor({
   // SF until the user clicks Save changes — gives them room to drag
   // amounts around in the inline editor before committing.
   const [rows, setRows] = useState<InlineRow[]>(() => paymentsToRows(payments));
-  const [saving, setSaving] = useState(false);
+  // Saves run in the background with a sonner toast for feedback, so
+  // no in-button spinner needed. `saveError` is rendered inline as a
+  // last-mile signal if something needs the user's attention.
+  const saving = false;
   const [saveError, setSaveError] = useState<string | null>(null);
 
   // Re-seed from props when the upstream list refetches (e.g. after a
@@ -488,67 +491,88 @@ function InlinePaymentScheduleEditor({
     setRows((prev) => prev.map((r, idx) => (idx === i ? { ...r, ...patch } : r)));
   };
 
-  const handleSave = async () => {
+  const handleSave = () => {
     if (!canSave) return;
-    setSaving(true);
-    setSaveError(null);
-    try {
-      const originalIds = new Set(
-        payments.filter((p) => !p.npe01__Paid__c).map((p) => p.Id),
-      );
-      const presentIds = new Set(
-        rows.map((r) => r.sfId).filter((id): id is string => Boolean(id)),
-      );
+    // Compute the diff up-front while the user's edits are still in
+    // local state, then fire-and-forget the SF writes. A sonner toast
+    // tracks progress so the user knows the save is running even
+    // though the editor closed out of the "dirty" state.
+    const originalIds = new Set(
+      payments.filter((p) => !p.npe01__Paid__c).map((p) => p.Id),
+    );
+    const presentIds = new Set(
+      rows.map((r) => r.sfId).filter((id): id is string => Boolean(id)),
+    );
 
-      const toDelete = [...originalIds].filter((id) => !presentIds.has(id));
-      const toUpdate: { id: string; date: string; amount: number }[] = [];
-      const toCreate: { scheduled_date: string; amount: number }[] = [];
+    const toDelete = [...originalIds].filter((id) => !presentIds.has(id));
+    const toUpdate: { id: string; date: string; amount: number }[] = [];
+    const toCreate: { scheduled_date: string; amount: number }[] = [];
 
-      for (const r of rows) {
-        if (r.paid) continue; // Don't touch paid rows.
-        if (r.sfId) {
-          const orig = payments.find((p) => p.Id === r.sfId);
-          if (!orig) continue;
-          const dateChanged = (orig.npe01__Scheduled_Date__c ?? "") !== r.scheduled_date;
-          const amountChanged = Math.abs((orig.npe01__Payment_Amount__c ?? 0) - r.amount) >= 0.01;
-          if (dateChanged || amountChanged) {
-            toUpdate.push({ id: r.sfId, date: r.scheduled_date, amount: r.amount });
-          }
-        } else {
-          toCreate.push({ scheduled_date: r.scheduled_date, amount: r.amount });
+    for (const r of rows) {
+      if (r.paid) continue;
+      if (r.sfId) {
+        const orig = payments.find((p) => p.Id === r.sfId);
+        if (!orig) continue;
+        const dateChanged = (orig.npe01__Scheduled_Date__c ?? "") !== r.scheduled_date;
+        const amountChanged = Math.abs((orig.npe01__Payment_Amount__c ?? 0) - r.amount) >= 0.01;
+        if (dateChanged || amountChanged) {
+          toUpdate.push({ id: r.sfId, date: r.scheduled_date, amount: r.amount });
         }
+      } else {
+        toCreate.push({ scheduled_date: r.scheduled_date, amount: r.amount });
       }
-
-      if (toDelete.length > 0) {
-        await Promise.all(toDelete.map((id) => deletePayment.mutateAsync(id)));
-      }
-      await Promise.all([
-        ...toUpdate.map((u) =>
-          updatePayment.mutateAsync({
-            id: u.id,
-            patch: {
-              npe01__Payment_Amount__c: u.amount,
-              npe01__Scheduled_Date__c: u.date,
-            },
-          }),
-        ),
-        ...toCreate.map((c) => createSingle.mutateAsync(c)),
-      ]);
-      toast.success("Payment schedule saved");
-    } catch (e) {
-      const err = e as {
-        response?: { data?: { detail?: string | { message?: string; error?: string } } };
-        message?: string;
-      };
-      const detail = err.response?.data?.detail;
-      const msg =
-        typeof detail === "string"
-          ? detail
-          : detail?.message ?? detail?.error ?? err.message ?? "Failed to save schedule";
-      setSaveError(msg);
-    } finally {
-      setSaving(false);
     }
+
+    const totalOps = toDelete.length + toUpdate.length + toCreate.length;
+    if (totalOps === 0) return;
+
+    const toastId = `pay-schedule-${opportunityId}-${Date.now()}`;
+    toast.loading(`Saving ${totalOps} payment change${totalOps === 1 ? "" : "s"}…`, { id: toastId });
+    // Move local state to "clean" optimistically. React Query
+    // invalidations from each mutation's onSuccess will refresh the
+    // canonical view; on error we surface a toast and the next refetch
+    // will reconcile.
+    setSaveError(null);
+
+    void (async () => {
+      try {
+        if (toDelete.length > 0) {
+          await Promise.all(toDelete.map((id) => deletePayment.mutateAsync(id)));
+        }
+        // Updates can run in parallel (no Flow on update of date/amount).
+        // Creates run SEQUENTIALLY to avoid UNABLE_TO_LOCK_ROW from the
+        // NPSP [Payment] Payment Received Flow racing on the parent opp.
+        if (toUpdate.length > 0) {
+          await Promise.all(
+            toUpdate.map((u) =>
+              updatePayment.mutateAsync({
+                id: u.id,
+                patch: {
+                  npe01__Payment_Amount__c: u.amount,
+                  npe01__Scheduled_Date__c: u.date,
+                },
+              }),
+            ),
+          );
+        }
+        for (const c of toCreate) {
+          await createSingle.mutateAsync(c);
+        }
+        toast.success("Payment schedule saved", { id: toastId });
+      } catch (e) {
+        const err = e as {
+          response?: { data?: { detail?: string | { message?: string; error?: string } } };
+          message?: string;
+        };
+        const detail = err.response?.data?.detail;
+        const msg =
+          typeof detail === "string"
+            ? detail
+            : detail?.message ?? detail?.error ?? err.message ?? "Failed to save schedule";
+        setSaveError(msg);
+        toast.error(`Couldn't save schedule: ${msg}`, { id: toastId, duration: 8000 });
+      }
+    })();
   };
 
   return (
