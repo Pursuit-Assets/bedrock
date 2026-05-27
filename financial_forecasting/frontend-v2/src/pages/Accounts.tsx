@@ -46,6 +46,10 @@ import { accountStatusVariant } from "@/lib/accountStatus";
 import { toast } from "sonner";
 
 const TYPE_FILTERS = ["All", "Foundation", "Corporate", "Government", "Individual"] as const;
+// Stable empty-array reference for the default of the
+// collapsedGroups useSessionState. See note on useSessionState
+// dep-stability where this is used.
+const EMPTY_COLLAPSED: string[] = [];
 type TypeFilter = (typeof TYPE_FILTERS)[number];
 
 function matchesType(account: SfAccount, filter: TypeFilter): boolean {
@@ -241,8 +245,14 @@ export function AccountsPage() {
   // Optional group-by — when non-empty, the visible rows are bucketed
   // under a sticky group header per distinct value of this field.
   // Persisted per session so navigating away + back keeps the view.
+  // EMPTY_COLLAPSED is a stable reference so useSessionState's setter
+  // identity doesn't churn every render — a new `[]` literal in the
+  // call site would make the setter dep unstable.
   const [groupBy, setGroupBy] = useSessionState<string>("accounts:groupBy", "");
-  const [collapsedGroups, setCollapsedGroups] = useSessionState<string[]>("accounts:groupCollapsed", []);
+  const [collapsedGroups, setCollapsedGroups] = useSessionState<string[]>(
+    "accounts:groupCollapsed",
+    EMPTY_COLLAPSED,
+  );
   const collapsedSet = useMemo(() => new Set(collapsedGroups), [collapsedGroups]);
   const toggleGroup = useCallback(
     (key: string) =>
@@ -450,14 +460,16 @@ export function AccountsPage() {
 
   // Group-by: build a flat list of {kind:'header', ...} and
   // {kind:'row', a} items so the virtualizer can render mixed
-  // shapes. When groupBy is empty the list is just rows.
+  // shapes. When groupBy is empty we short-circuit to `null` and the
+  // body iterates `filtered` directly — avoids allocating a 25k-item
+  // wrapped array on every React Query refetch.
   type DisplayRow =
     | { kind: "row"; account: SfAccount }
     | { kind: "header"; key: string; label: string; count: number; collapsed: boolean };
-  const displayRows: DisplayRow[] = useMemo(() => {
-    if (!groupBy) return filtered.map((a) => ({ kind: "row", account: a }));
+  const groupedRows: DisplayRow[] | null = useMemo(() => {
+    if (!groupBy) return null;
     const field = filterable[groupBy as keyof typeof filterable];
-    if (!field) return filtered.map((a) => ({ kind: "row", account: a }));
+    if (!field) return null;
     const buckets = new Map<string, SfAccount[]>();
     for (const a of filtered) {
       const raw = field.getValue(a);
@@ -489,6 +501,7 @@ export function AccountsPage() {
     }
     return out;
   }, [filtered, groupBy, filterable, collapsedSet, ownerLabelLookup]);
+  const rowCount = groupedRows?.length ?? filtered.length;
 
   const totals = useMemo(
     () =>
@@ -547,19 +560,28 @@ export function AccountsPage() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const GROUP_HEADER_HEIGHT = 30;
   const virtualizer = useVirtualizer({
-    count: displayRows.length,
+    count: rowCount,
     getScrollElement: () => scrollRef.current,
     estimateSize: (i) => {
-      const item = displayRows[i];
-      if (!item) return ROW_HEIGHT;
-      if (item.kind === "header") return GROUP_HEADER_HEIGHT;
-      return item.account.Id === expandedId
+      if (groupedRows) {
+        const item = groupedRows[i];
+        if (!item) return ROW_HEIGHT;
+        if (item.kind === "header") return GROUP_HEADER_HEIGHT;
+        return item.account.Id === expandedId
+          ? ROW_HEIGHT + ACCOUNT_PANEL_HEIGHT
+          : ROW_HEIGHT;
+      }
+      return filtered[i]?.Id === expandedId
         ? ROW_HEIGHT + ACCOUNT_PANEL_HEIGHT
         : ROW_HEIGHT;
     },
     overscan: 8,
   });
-  useEffect(() => { virtualizer.measure(); }, [expandedId, displayRows, virtualizer]);
+  // Only remeasure when the expand toggles — count changes are already
+  // picked up by the virtualizer via its `count` prop, and including
+  // the full row list in deps thrashed the main thread on every
+  // refetch.
+  useEffect(() => { virtualizer.measure(); }, [expandedId, virtualizer]);
   const virtualItems = virtualizer.getVirtualItems();
   const totalSize = virtualizer.getTotalSize();
   const paddingTop = virtualItems[0]?.start ?? 0;
@@ -754,31 +776,40 @@ export function AccountsPage() {
                   </tr>
                 ) : null}
                 {virtualItems.map((vi) => {
-                  const item = displayRows[vi.index];
-                  if (!item) return null;
-                  if (item.kind === "header") {
-                    return (
-                      <tr
-                        key={`grp-${item.key}`}
-                        className="cursor-pointer border-y border-border-strong bg-surface-2/70 hover:bg-surface-2"
-                        onClick={() => toggleGroup(item.key)}
-                      >
-                        <td
-                          colSpan={visibleCols.length}
-                          className="px-3 py-1.5 text-[11.5px] font-semibold uppercase tracking-wider text-ink-2"
+                  // Two iteration shapes: grouped (with header rows
+                  // mixed in) or plain (just account rows). Pick the
+                  // current item based on which mode we're in.
+                  let a: SfAccount | undefined;
+                  if (groupedRows) {
+                    const item = groupedRows[vi.index];
+                    if (!item) return null;
+                    if (item.kind === "header") {
+                      return (
+                        <tr
+                          key={`grp-${item.key}`}
+                          className="cursor-pointer border-y border-border-strong bg-surface-2/70 hover:bg-surface-2"
+                          onClick={() => toggleGroup(item.key)}
                         >
-                          <span className="inline-block w-3 text-ink-3">
-                            {item.collapsed ? "▸" : "▾"}
-                          </span>
-                          {item.label}
-                          <span className="ml-2 normal-case tracking-normal text-ink-3">
-                            {item.count}
-                          </span>
-                        </td>
-                      </tr>
-                    );
+                          <td
+                            colSpan={visibleCols.length}
+                            className="px-3 py-1.5 text-[11.5px] font-semibold uppercase tracking-wider text-ink-2"
+                          >
+                            <span className="inline-block w-3 text-ink-3">
+                              {item.collapsed ? "▸" : "▾"}
+                            </span>
+                            {item.label}
+                            <span className="ml-2 normal-case tracking-normal text-ink-3">
+                              {item.count}
+                            </span>
+                          </td>
+                        </tr>
+                      );
+                    }
+                    a = item.account;
+                  } else {
+                    a = filtered[vi.index];
                   }
-                  const a = item.account;
+                  if (!a) return null;
                   const isExpanded = a.Id === expandedId;
                   return (
                     <Fragment key={a.Id}>

@@ -328,25 +328,33 @@ export function useCreateTask() {
       return data;
     },
     // Optimistic insert so the new row shows up the instant the user
-    // hits Enter — without waiting for the SF roundtrip. The temp Id
-    // is replaced when the cache refetches onSuccess.
+    // hits Enter. We deliberately do NOT invalidate the query on
+    // settled — Salesforce's read-after-write isn't always consistent
+    // (a refetch fired right after the POST can come back without the
+    // new task and the row briefly disappears + reappears, which felt
+    // glitchy to RMs). Instead, on success we swap the optimistic
+    // row's temp id for the SF id in-place, leaving the cache
+    // correct without another round-trip.
     onMutate: async ({ opportunityId, body }) => {
       const key = ["opportunity-tasks", opportunityId] as const;
       await qc.cancelQueries({ queryKey: key });
       const prev = qc.getQueryData<SfTask[]>(key);
       const optimistic = buildOptimisticTask(body, opportunityId);
       qc.setQueryData<SfTask[]>(key, (old) => [optimistic, ...(old ?? [])]);
-      return { key, prev };
+      return { key, prev, optimisticId: optimistic.Id };
     },
     onError: (_err, _vars, ctx) => {
       if (ctx?.prev !== undefined && ctx.key) {
         qc.setQueryData(ctx.key, ctx.prev);
       }
     },
-    onSettled: (_data, _err, vars) => {
-      qc.invalidateQueries({
-        queryKey: ["opportunity-tasks", vars.opportunityId],
-      });
+    onSuccess: (data, vars, ctx) => {
+      const newId = data?.data?.id;
+      if (!newId || !ctx?.optimisticId) return;
+      const key = ["opportunity-tasks", vars.opportunityId] as const;
+      qc.setQueryData<SfTask[]>(key, (old) =>
+        old?.map((t) => (t.Id === ctx.optimisticId ? { ...t, Id: newId } : t)),
+      );
     },
   });
 }
@@ -577,15 +585,24 @@ export function useCreateAccountTask() {
       const prev = qc.getQueryData<SfTask[]>(key);
       const optimistic = buildOptimisticTask(body, accountId);
       qc.setQueryData<SfTask[]>(key, (old) => [optimistic, ...(old ?? [])]);
-      return { key, prev };
+      return { key, prev, optimisticId: optimistic.Id };
     },
     onError: (_err, _vars, ctx) => {
       if (ctx?.prev !== undefined && ctx.key) {
         qc.setQueryData(ctx.key, ctx.prev);
       }
     },
-    onSettled: (_data, _err, vars) => {
-      qc.invalidateQueries({ queryKey: ["account-tasks", vars.accountId] });
+    onSuccess: (data, vars, ctx) => {
+      // Swap the optimistic temp Id for the SF id in-place. See note
+      // on useCreateTask — invalidating + refetching here would fight
+      // SF's read-after-write delay and the new row would flash out
+      // and back in.
+      const newId = data?.data?.id;
+      if (!newId || !ctx?.optimisticId) return;
+      const key = ["account-tasks", vars.accountId] as const;
+      qc.setQueryData<SfTask[]>(key, (old) =>
+        old?.map((t) => (t.Id === ctx.optimisticId ? { ...t, Id: newId } : t)),
+      );
     },
   });
 }
@@ -641,7 +658,7 @@ export function useCreateGenericTask() {
         }
       }
 
-      return { targetKey, prev, userTaskSnapshots };
+      return { targetKey, prev, userTaskSnapshots, optimisticId: optimistic.Id };
     },
     onError: (_err, _vars, ctx) => {
       if (ctx?.prev !== undefined && ctx.targetKey) {
@@ -649,18 +666,21 @@ export function useCreateGenericTask() {
       }
       ctx?.userTaskSnapshots?.forEach(({ key, data }) => qc.setQueryData(key, data));
     },
-    onSettled: (_data, _err, body) => {
-      // Invalidate every list this task could surface in so the
-      // temp-id optimistic row reconciles with the real server task.
-      if (body.WhoId) {
-        qc.invalidateQueries({ queryKey: ["contact-tasks", body.WhoId] });
-      }
-      if (body.WhatId) {
-        qc.invalidateQueries({ queryKey: ["opportunity-tasks", body.WhatId] });
-        qc.invalidateQueries({ queryKey: ["account-tasks", body.WhatId] });
-      }
-      qc.invalidateQueries({ queryKey: ["my-tasks"] });
-      qc.invalidateQueries({ queryKey: ["user-tasks"] });
+    onSuccess: (data, _body, ctx) => {
+      // Swap temp Id for the real SF id across every cache the
+      // optimistic row landed in. We deliberately do NOT invalidate
+      // here — SF's read-after-write isn't consistent and a refetch
+      // can come back without the new task, flashing the row out and
+      // back in. The in-place Id swap leaves every cache correct
+      // without another round-trip.
+      const newId = data?.data?.id;
+      if (!newId || !ctx?.optimisticId) return;
+      const swap = (old: SfTask[] | undefined) =>
+        old?.map((t) => (t.Id === ctx.optimisticId ? { ...t, Id: newId } : t));
+      qc.setQueryData<SfTask[]>(ctx.targetKey, swap);
+      ctx.userTaskSnapshots?.forEach(({ key }) => {
+        qc.setQueryData<SfTask[]>(key, swap);
+      });
     },
   });
 }
