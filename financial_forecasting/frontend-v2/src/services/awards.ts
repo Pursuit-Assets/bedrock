@@ -84,6 +84,7 @@ export function useAward(awardId: string | null | undefined) {
 
 export interface AwardPatch {
   award_status?: AwardStatus;
+  award_date?: string | null;
   period_end_date?: string | null;
   notes?: string;
   reporting_frequency?: string | null;

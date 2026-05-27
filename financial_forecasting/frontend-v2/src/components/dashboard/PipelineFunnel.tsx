@@ -440,16 +440,6 @@ export function PipelineFunnel({ opps }: { opps: SfOpportunity[] }) {
 
 // ── Per-stage expand ─────────────────────────────────────────────────────
 
-const STAGNANT_DAYS = 30;
-
-function isStagnantOpp(opp: SfOpportunity): boolean {
-  const lastMod = opp.LastModifiedDate ?? opp.CreatedDate;
-  if (!lastMod) return false;
-  const t = new Date(lastMod).getTime();
-  if (Number.isNaN(t)) return false;
-  return (Date.now() - t) / 86_400_000 > STAGNANT_DAYS;
-}
-
 interface FlowRow {
   opportunityId: string;
   opportunityName: string;
@@ -537,9 +527,14 @@ function StageFlowDetail({
   rangeLabel,
 }: {
   layer: FunnelLayer;
+  // oppsInStage was used to render an "In this stage" inventory
+  // table; kept on the prop so callers don't need to change, but no
+  // longer rendered — the four movement tables (progressing / wins /
+  // setbacks / losses) are what's actionable on the dashboard.
   oppsInStage: SfOpportunity[];
   rangeLabel: string;
 }) {
+  void oppsInStage;
   const progressing = buildProgressingRows(layer);
   const setbacks = buildSetbackRows(layer);
   const wins = buildWinRows(layer);
@@ -547,75 +542,6 @@ function StageFlowDetail({
 
   return (
     <div className="border-t border-border-strong bg-surface-2/30 px-5 py-3">
-      {/* In-stage inventory */}
-      <div className="mb-3 overflow-hidden rounded border border-border-strong bg-surface">
-        <div className="flex items-center justify-between border-b border-border-strong bg-surface-2 px-3 py-1.5 text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
-          <span>In this stage ({oppsInStage.length})</span>
-          <span className="normal-case tracking-normal text-ink-3">
-            Stagnant = no update in {STAGNANT_DAYS}+ days
-          </span>
-        </div>
-        {oppsInStage.length === 0 ? (
-          <div className="px-3 py-2 text-[12px] text-ink-3">
-            No open opportunities in this stage.
-          </div>
-        ) : (
-          <table className="w-full text-[12px]">
-            <thead className="bg-surface-2 text-[10.5px] uppercase tracking-wider text-ink-3">
-              <tr>
-                <th className="px-3 py-1.5 text-left font-semibold">Name</th>
-                <th className="px-3 py-1.5 text-left font-semibold">Owner</th>
-                <th className="px-3 py-1.5 text-right font-semibold">Amount</th>
-                <th className="px-3 py-1.5 text-right font-semibold">Last update</th>
-              </tr>
-            </thead>
-            <tbody>
-              {oppsInStage
-                .slice()
-                .sort((a, b) => (b.Amount ?? 0) - (a.Amount ?? 0))
-                .map((o) => {
-                  const stagnant = isStagnantOpp(o);
-                  const lastMod = o.LastModifiedDate ?? o.CreatedDate ?? null;
-                  return (
-                    <tr key={o.Id} className="border-t border-border-strong">
-                      <td className="px-3 py-1.5">
-                        <Link
-                          to={`/opportunities/${o.Id}`}
-                          className="block truncate font-medium text-ink hover:underline"
-                          title={o.Name}
-                        >
-                          {o.Name}
-                        </Link>
-                      </td>
-                      <td className="px-3 py-1.5 text-ink-2">
-                        {o.Owner?.Name ?? "—"}
-                      </td>
-                      <td className="mono px-3 py-1.5 text-right tabular-nums">
-                        {o.Amount ? fmtMoney(o.Amount) : "—"}
-                      </td>
-                      <td
-                        className={cn(
-                          "mono px-3 py-1.5 text-right text-[11px] tabular-nums",
-                          stagnant ? "text-amber-700" : "text-ink-3",
-                        )}
-                        title={
-                          lastMod
-                            ? `Last modified ${lastMod}${stagnant ? ` · stagnant (>${STAGNANT_DAYS}d)` : ""}`
-                            : undefined
-                        }
-                      >
-                        {lastMod ? relativeDays(lastMod) : "—"}
-                        {stagnant ? " ⚠" : ""}
-                      </td>
-                    </tr>
-                  );
-                })}
-            </tbody>
-          </table>
-        )}
-      </div>
-
-      {/* Movements within lookback */}
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
         <FlowTable
           title={`Progressing (${progressing.length}) · ${rangeLabel}`}

@@ -19,8 +19,15 @@
  */
 import { useEffect, useMemo, useState } from "react";
 import { Plus, Trash2, X } from "lucide-react";
+import { toast } from "sonner";
 
-import { useCreatePaymentSchedule, type PaymentScheduleItem } from "@/services/payments";
+import {
+  useCreatePaymentSchedule,
+  useCreateSinglePayment,
+  useDeletePayment,
+  useUpdatePayment,
+  type PaymentScheduleItem,
+} from "@/services/payments";
 import { fmtMoneyFull } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
@@ -61,6 +68,11 @@ export interface PaymentScheduleBuilderProps {
   /** Called after a schedule is successfully saved, before onClose. */
   onSaved?: () => void;
   onClose: () => void;
+  /** When true, skip the modal wrapper (backdrop + card) and render
+   *  the body + actions as a fragment so the caller can drop the
+   *  editor straight into another dialog's body. The Cancel button
+   *  reads "Back" instead of "Cancel" in this mode. */
+  inline?: boolean;
 }
 
 export function PaymentScheduleBuilder({
@@ -71,8 +83,12 @@ export function PaymentScheduleBuilder({
   prompt,
   onSaved,
   onClose,
+  inline = false,
 }: PaymentScheduleBuilderProps) {
   const create = useCreatePaymentSchedule(opportunityId);
+  const createSingle = useCreateSinglePayment(opportunityId);
+  const updateOne = useUpdatePayment(opportunityId);
+  const deleteOne = useDeletePayment(opportunityId);
 
   const hasExisting = existingPayments.length > 0;
 
@@ -125,6 +141,15 @@ export function PaymentScheduleBuilder({
   const diff = oppAmount != null ? round2(total - oppAmount) : 0;
   const balanced = oppAmount != null && Math.abs(diff) < 0.01;
 
+  // Diff-save: when editing an existing schedule (hasExisting + custom
+  // mode), dispatch per-row PUT / POST / DELETE so SF payment Ids
+  // survive unmodified rows. Linked Sage invoices, audit history, and
+  // any downstream system that pins to a payment Id stay intact.
+  // Falls back to the bulk delete-all+recreate path for the new-schedule
+  // case (no existing rows) and for the "even split" mode (which by
+  // design regenerates the whole schedule).
+  const isDiffSavePath = hasExisting && mode === "custom";
+
   const submit = async () => {
     if (!oppAmount) {
       setError("Set the opportunity Amount before creating a schedule.");
@@ -141,41 +166,96 @@ export function PaymentScheduleBuilder({
       return;
     }
     setError(null);
+    // Optimistic close: dismiss + toast immediately. Errors surface
+    // through the toast and the next refetch reconciles cache.
+    const toastId = `payment-schedule-${opportunityId}-${Date.now()}`;
+    toast.loading("Saving payment schedule…", { id: toastId });
+    onClose();
     try {
-      await create.mutateAsync({
-        payments: activeRows,
-        delete_existing: deleteExisting,
-      });
+      if (isDiffSavePath) {
+        // Group rows by (has existing SF id) and dispatch the right call.
+        // Indices into customRows align 1:1 with existingPayments for
+        // pre-populated rows; rows added via "Add payment" have no
+        // matching entry — those are creates.
+        const updates: { id: string; date: string; amount: number }[] = [];
+        const creates: PaymentScheduleItem[] = [];
+        for (let i = 0; i < customRows.length; i++) {
+          const row = customRows[i];
+          const sfId = existingIds[i];
+          if (sfId) {
+            // Existing row. Skip the PUT if nothing changed; saves an
+            // API call per cycle.
+            const orig = existingPayments[i];
+            const dateChanged = row.scheduled_date !== (orig.npe01__Scheduled_Date__c ?? "");
+            const amountChanged = Math.abs((orig.npe01__Payment_Amount__c ?? 0) - row.amount) >= 0.01;
+            if (dateChanged || amountChanged) {
+              updates.push({ id: sfId, date: row.scheduled_date, amount: row.amount });
+            }
+          } else {
+            creates.push(row);
+          }
+        }
+        // Existing rows the user removed (in customRows their index
+        // would be missing). Existing indexes 0..N-1 are 1:1 with
+        // customRows[0..N-1] until rows are removed; removed rows
+        // collapse the index, so we need a different detection.
+        const presentSfIds = new Set(
+          customRows
+            .map((_r, i) => existingIds[i])
+            .filter((id): id is string => !!id),
+        );
+        const deletes = existingPayments
+          .filter((p) => !presentSfIds.has(p.Id) && !p.npe01__Paid__c)
+          .map((p) => p.Id);
+
+        // Run deletes first (so a leaving row's amount frees the cap
+        // before updates land). Then updates (parallel — safe). Then
+        // creates SEQUENTIALLY — parallel inserts trigger the NPSP
+        // [Payment] Payment Received Flow on the parent opp and race
+        // for its lock (UNABLE_TO_LOCK_ROW).
+        if (deletes.length > 0) {
+          await Promise.all(deletes.map((id) => deleteOne.mutateAsync(id)));
+        }
+        if (updates.length > 0) {
+          await Promise.all(
+            updates.map((u) =>
+              updateOne.mutateAsync({
+                id: u.id,
+                patch: {
+                  npe01__Payment_Amount__c: u.amount,
+                  npe01__Scheduled_Date__c: u.date,
+                },
+              }),
+            ),
+          );
+        }
+        for (const c of creates) {
+          await createSingle.mutateAsync(c);
+        }
+      } else {
+        await create.mutateAsync({
+          payments: activeRows,
+          delete_existing: deleteExisting,
+        });
+      }
       onSaved?.();
-      onClose();
+      toast.success("Payment schedule saved", { id: toastId });
     } catch (e) {
-      const msg = e instanceof Error ? e.message : "Failed to save schedule";
-      setError(msg);
+      const err = e as {
+        response?: { data?: { detail?: string | { message?: string; error?: string } } };
+        message?: string;
+      };
+      const detail = err.response?.data?.detail;
+      const msg =
+        typeof detail === "string"
+          ? detail
+          : detail?.message ?? detail?.error ?? err.message ?? "Failed to save schedule";
+      toast.error(`Couldn't save schedule: ${msg}`, { id: toastId, duration: 8000 });
     }
   };
 
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
-      <div className="w-full max-w-xl rounded-lg bg-surface shadow-xl">
-        <header className="flex items-center justify-between border-b border-border-strong px-5 py-3">
-          <h2 className="text-[15px] font-semibold text-ink">
-            {hasExisting ? "Review payment schedule" : "Create payment schedule"}
-          </h2>
-          <button
-            onClick={onClose}
-            className="text-ink-3 hover:text-ink"
-            aria-label="Close"
-          >
-            <X size={16} />
-          </button>
-        </header>
-
-        <div className="px-5 py-4">
+  const body = (
+    <div className="flex-1 overflow-y-auto px-5 py-4">
           {prompt ? (
             <div className="mb-3 rounded border border-accent/30 bg-accent/5 px-3 py-2 text-[12.5px] text-ink-2">
               {prompt}
@@ -260,19 +340,32 @@ export function PaymentScheduleBuilder({
                 Set the opportunity Amount and configure the schedule above.
               </div>
             ) : (
-              <table className="w-full border-collapse">
-                <thead>
+              <table className="w-full table-fixed border-collapse">
+                {/* Explicit column widths so the date input + amount
+                    input don't push the headers and totals off-axis
+                    in custom mode. */}
+                <colgroup>
+                  <col className="w-[44px]" />
+                  <col />
+                  <col className="w-[120px]" />
+                  {mode === "custom" ? <col className="w-[40px]" /> : null}
+                </colgroup>
+                {/* Sticky header so it stays visible when the body
+                    scrolls past ~6 rows. */}
+                <thead className="sticky top-0 bg-surface-2">
                   <tr>
-                    <th className="border-b border-border-strong bg-surface-2 px-3 py-1.5 text-left text-[11px] font-semibold uppercase tracking-wider text-ink-3">
+                    <th className="border-b border-border-strong px-3 py-1.5 text-left text-[11px] font-semibold uppercase tracking-wider text-ink-3">
                       #
                     </th>
-                    <th className="border-b border-border-strong bg-surface-2 px-3 py-1.5 text-left text-[11px] font-semibold uppercase tracking-wider text-ink-3">
+                    <th className="border-b border-border-strong px-3 py-1.5 text-left text-[11px] font-semibold uppercase tracking-wider text-ink-3">
                       Scheduled
                     </th>
-                    <th className="border-b border-border-strong bg-surface-2 px-3 py-1.5 text-right text-[11px] font-semibold uppercase tracking-wider text-ink-3">
+                    <th className="border-b border-border-strong px-3 py-1.5 text-right text-[11px] font-semibold uppercase tracking-wider text-ink-3">
                       Amount
                     </th>
-                    {mode === "custom" ? <th aria-label="Remove" /> : null}
+                    {mode === "custom" ? (
+                      <th className="border-b border-border-strong px-2 py-1.5" aria-label="Remove" />
+                    ) : null}
                   </tr>
                 </thead>
                 <tbody>
@@ -324,7 +417,7 @@ export function PaymentScheduleBuilder({
                                   amount: Number(e.target.value) || 0,
                                 })
                               }
-                              className="w-28 bg-transparent text-right outline-none"
+                              className="w-full bg-transparent text-right text-[12.5px] tabular-nums outline-none"
                             />
                           )}
                         </td>
@@ -390,29 +483,67 @@ export function PaymentScheduleBuilder({
               {error}
             </div>
           ) : null}
-        </div>
+    </div>
+  );
 
-        <footer className="flex items-center justify-end gap-2 border-t border-border-strong px-5 py-3">
+  const actions = (
+    <footer className="flex items-center justify-end gap-2 border-t border-border-strong bg-surface-2/40 px-5 py-3">
+      <button
+        type="button"
+        onClick={onClose}
+        className="rounded border border-border-strong bg-surface px-3 py-1.5 text-[12.5px] text-ink-2 hover:bg-surface-2"
+      >
+        {inline ? "Back" : "Cancel"}
+      </button>
+      <button
+        type="button"
+        onClick={() => void submit()}
+        disabled={!balanced || activeRows.length === 0 || create.isPending}
+        className="rounded bg-ink px-3 py-1.5 text-[12.5px] font-medium text-surface hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+      >
+        {create.isPending
+          ? "Saving…"
+          : hasExisting
+            ? `Save ${activeRows.length} payment${activeRows.length === 1 ? "" : "s"}`
+            : `Create ${activeRows.length} payment${activeRows.length === 1 ? "" : "s"}`}
+      </button>
+    </footer>
+  );
+
+  // Inline mode: skip backdrop + card. Caller drops {body}{actions}
+  // straight into its own dialog body, so clicks bubble naturally
+  // and there's no nested-modal click-through trap.
+  if (inline) {
+    return (
+      <>
+        {body}
+        {actions}
+      </>
+    );
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div className="flex max-h-[90vh] w-full max-w-xl flex-col overflow-hidden rounded-lg bg-surface shadow-xl">
+        <header className="flex items-center justify-between border-b border-border-strong px-5 py-3">
+          <h2 className="text-[15px] font-semibold text-ink">
+            {hasExisting ? "Review payment schedule" : "Create payment schedule"}
+          </h2>
           <button
-            type="button"
             onClick={onClose}
-            className="rounded border border-border-strong bg-surface px-3 py-1.5 text-[12.5px] text-ink-2 hover:bg-surface-2"
+            className="text-ink-3 hover:text-ink"
+            aria-label="Close"
           >
-            Cancel
+            <X size={16} />
           </button>
-          <button
-            type="button"
-            onClick={() => void submit()}
-            disabled={!balanced || activeRows.length === 0 || create.isPending}
-            className="rounded bg-ink px-3 py-1.5 text-[12.5px] font-medium text-surface hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            {create.isPending
-              ? "Saving…"
-              : hasExisting
-                ? `Save ${activeRows.length} payment${activeRows.length === 1 ? "" : "s"}`
-                : `Create ${activeRows.length} payment${activeRows.length === 1 ? "" : "s"}`}
-          </button>
-        </footer>
+        </header>
+        {body}
+        {actions}
       </div>
     </div>
   );

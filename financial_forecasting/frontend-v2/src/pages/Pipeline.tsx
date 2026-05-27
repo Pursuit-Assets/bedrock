@@ -6,6 +6,11 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { AccountAvatar } from "@/components/AccountAvatar";
 import { OpportunityExpandPanel, OPP_PANEL_HEIGHT } from "@/components/OpportunityExpandPanel";
 import { PageHeader } from "@/components/PageHeader";
+import { AwardSetupDialog } from "@/components/AwardSetupDialog";
+import { PaymentScheduleBuilder } from "@/components/PaymentScheduleBuilder";
+import { StageGateDialog } from "@/components/StageGateDialog";
+import { useProbabilityScheduleGate } from "@/lib/useProbabilityScheduleGate";
+import { useStageChangeGate } from "@/lib/useStageChangeGate";
 import { ColumnChooser } from "@/components/ui/ColumnChooser";
 import { InlineDate, InlineSelect, InlineText } from "@/components/ui/InlineEdit";
 import { ColGroup, ResizableTh } from "@/components/ui/ResizableTable";
@@ -40,7 +45,6 @@ import {
   useOppRecordTypes,
   useOpportunities,
   useUpdateOpportunity,
-  useUpdateOpportunityStage,
 } from "@/services/opportunities";
 import { usePerm } from "@/services/permissions";
 import { useActiveUsers, useUsers } from "@/services/users";
@@ -239,7 +243,9 @@ export function PipelinePage() {
   // filtered for. Write-side owner pickers stay on `usersQ` (active).
   const allUsersQ = useUsers();
   const updateOpp = useUpdateOpportunity();
-  const updateStage = useUpdateOpportunityStage();
+  // updateStage is now consumed inside useStageChangeGate — Pipeline
+  // routes every save through stageGate.request(opp, stage) so the
+  // playbook checklists fire when needed. Direct calls are gone.
 
   const opps = data ?? [];
 
@@ -420,11 +426,17 @@ export function PipelinePage() {
     [filtered],
   );
 
+  // Route stage changes through the gate so transitions like
+  // "Ask in Progress → Proposal Submitted" or "→ Withdrawn" can
+  // prompt for the playbook's required fields before the mutation
+  // fires. Unrestricted transitions still fire the mutation directly.
+  const stageGate = useStageChangeGate();
+  const probGate = useProbabilityScheduleGate();
   const saveStage = useCallback(
-    async (id: string, stage: string) => {
-      await updateStage.mutateAsync({ id, newStage: stage });
+    async (opp: SfOpportunity, stage: string) => {
+      await stageGate.request(opp, stage);
     },
-    [updateStage],
+    [stageGate],
   );
 
   const saveAmount = useCallback(
@@ -440,7 +452,7 @@ export function PipelinePage() {
   );
 
   const saveProbability = useCallback(
-    async (id: string, raw: string) => {
+    async (opp: SfOpportunity, raw: string) => {
       const cleaned = raw.replace(/[%\s]/g, "");
       const parsed = cleaned === "" ? null : Number.parseInt(cleaned, 10);
       if (parsed != null) {
@@ -448,15 +460,22 @@ export function PipelinePage() {
           throw new Error("0–100");
         }
       }
+      // Playbook rule: cannot raise probability from 0 → >0 without a
+      // payment schedule. The gate fetches the opp's payments; if none
+      // exist it opens PaymentScheduleBuilder and rejects this promise
+      // — InlineSelect catches and reverts the optimistic display. The
+      // promise resolves only after the user saves a schedule.
+      await probGate.request(opp, parsed);
+
       // Match what Salesforce does when you edit Mgr Prob in its UI:
       // it propagates the override into Probability so the two stay in
       // sync. We only co-write Probability when the user set a value —
       // clearing the override falls back to SF's stage-driven default.
       const patch: Record<string, unknown> = { Manager_Probability_Override__c: parsed };
       if (parsed != null) patch.Probability = parsed;
-      await updateOpp.mutateAsync({ id, patch });
+      await updateOpp.mutateAsync({ id: opp.Id, patch });
     },
-    [updateOpp],
+    [updateOpp, probGate],
   );
 
   const saveOwner = useCallback(
@@ -735,9 +754,9 @@ export function PipelinePage() {
                         stageOptions={stageOptions}
                         ownerOptions={ownerOptions}
                         onOpen={() => navigate(`/opportunities/${o.Id}`, { state: PIPELINE_REFERRER })}
-                        onSaveStage={(stage) => saveStage(o.Id, stage)}
+                        onSaveStage={(stage) => saveStage(o, stage)}
                         onSaveAmount={(raw) => saveAmount(o.Id, raw)}
-                        onSaveProbability={(raw) => saveProbability(o.Id, raw)}
+                        onSaveProbability={(raw) => saveProbability(o, raw)}
                         onSaveOwner={(ownerId) => saveOwner(o.Id, ownerId)}
                         onSavePaymentDate={(next) => savePaymentDate(o.Id, next)}
                         onSavePriority={(next) => savePriority(o.Id, next)}
@@ -750,7 +769,11 @@ export function PipelinePage() {
                       {isExpanded ? (
                         <tr>
                           <td colSpan={visibleCols.length} className="p-0">
-                            <OpportunityExpandPanel opportunityId={o.Id} />
+                            <OpportunityExpandPanel
+                              opportunityId={o.Id}
+                              oppAmount={o.Amount ?? null}
+                              oppCloseDate={o.CloseDate ?? null}
+                            />
                           </td>
                         </tr>
                       ) : null}
@@ -801,6 +824,37 @@ export function PipelinePage() {
             toast.success("Opportunity created");
             navigate(`/opportunities/${id}`, { state: PIPELINE_REFERRER });
           }}
+        />
+      ) : null}
+
+      {stageGate.pending ? (
+        <StageGateDialog
+          spec={stageGate.pending.spec}
+          opp={stageGate.pending.opp}
+          toStage={stageGate.pending.toStage}
+          onClose={stageGate.dismiss}
+          onCompleted={stageGate.complete}
+          onAwardCreated={stageGate.openAwardSetup}
+        />
+      ) : null}
+
+      {stageGate.awardSetup ? (
+        <AwardSetupDialog
+          awardId={stageGate.awardSetup.awardId}
+          opportunityId={stageGate.awardSetup.opportunityId}
+          onClose={stageGate.dismissAwardSetup}
+        />
+      ) : null}
+
+      {probGate.pending ? (
+        <PaymentScheduleBuilder
+          opportunityId={probGate.pending.opp.Id}
+          oppAmount={probGate.pending.opp.Amount ?? null}
+          existingPayments={[]}
+          initialFirstDate={probGate.pending.opp.CloseDate ?? null}
+          prompt={`Raising probability to ${probGate.pending.nextProbability}% — set the expected payment schedule before continuing.`}
+          onClose={probGate.dismiss}
+          onSaved={probGate.complete}
         />
       ) : null}
     </div>
@@ -1067,7 +1121,7 @@ interface RowProps {
   stageOptions: { value: string; label: string }[];
   ownerOptions: { value: string; label: string }[];
   onOpen: () => void;
-  onSaveStage: (stage: string) => Promise<void>;
+  onSaveStage: (stage: string) => void | Promise<void>;
   onSaveAmount: (raw: string) => Promise<void>;
   onSaveProbability: (raw: string) => Promise<void>;
   onSaveOwner: (ownerId: string) => Promise<void>;

@@ -1,7 +1,8 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 
 import { ActivityTab } from "@/components/expand/ActivityTab";
 import { TaskListTab } from "@/components/expand/TaskListTab";
+import { PaymentScheduleBuilder } from "@/components/PaymentScheduleBuilder";
 import { RowExpandPanel, ROW_EXPAND_HEIGHT } from "@/components/RowExpandPanel";
 import { Tag } from "@/components/ui/Tag";
 import { fmtDate, fmtMoney } from "@/lib/format";
@@ -16,8 +17,16 @@ export const OPP_PANEL_HEIGHT = ROW_EXPAND_HEIGHT;
 
 export function OpportunityExpandPanel({
   opportunityId,
+  oppAmount,
+  oppCloseDate,
 }: {
   opportunityId: string;
+  /** Used as the cap when creating/editing the payment schedule from
+   *  the Payments tab. Required to enable the schedule editor — when
+   *  absent, the Payments tab stays read-only. */
+  oppAmount?: number | null;
+  /** Default first-payment date seed when creating a new schedule. */
+  oppCloseDate?: string | null;
 }) {
   return (
     <RowExpandPanel
@@ -30,7 +39,13 @@ export function OpportunityExpandPanel({
         {
           id: "payments",
           label: "Payments",
-          render: () => <OppPayments opportunityId={opportunityId} />,
+          render: () => (
+            <OppPayments
+              opportunityId={opportunityId}
+              oppAmount={oppAmount ?? null}
+              oppCloseDate={oppCloseDate ?? null}
+            />
+          ),
         },
         {
           id: "activity",
@@ -101,8 +116,17 @@ function paymentStatusVariant(p: SfPayment): "green" | "amber" | "red" | "defaul
   return "default";
 }
 
-function OppPayments({ opportunityId }: { opportunityId: string }) {
+function OppPayments({
+  opportunityId,
+  oppAmount,
+  oppCloseDate,
+}: {
+  opportunityId: string;
+  oppAmount: number | null;
+  oppCloseDate: string | null;
+}) {
   const { data: payments = [], isLoading } = useOpportunityPayments(opportunityId);
+  const [builderOpen, setBuilderOpen] = useState(false);
 
   const totals = useMemo(() => {
     let scheduled = 0;
@@ -117,18 +141,39 @@ function OppPayments({ opportunityId }: { opportunityId: string }) {
     return { scheduled, paid, written, count: payments.length };
   }, [payments]);
 
+  // Editor is gated on having an opp Amount — the schedule total has
+  // to match it or the backend POST is rejected. Without Amount we
+  // can't show a sensible cap, so leave the tab read-only.
+  const canEdit = oppAmount != null && oppAmount > 0;
+
   return (
     <div className="px-4 py-3">
       <div className="mb-2 flex items-center justify-between text-[11px] uppercase tracking-wider text-ink-3">
         <span>
           {isLoading ? "…" : `${totals.count} payment${totals.count === 1 ? "" : "s"}`}
         </span>
-        {totals.count > 0 ? (
-          <span className="mono">
-            {fmtMoney(totals.paid)} paid · {fmtMoney(totals.scheduled)} scheduled
-            {totals.written > 0 ? <> · {fmtMoney(totals.written)} written off</> : null}
-          </span>
-        ) : null}
+        <div className="flex items-center gap-3">
+          {totals.count > 0 ? (
+            <span className="mono">
+              {fmtMoney(totals.paid)} paid · {fmtMoney(totals.scheduled)} scheduled
+              {totals.written > 0 ? <> · {fmtMoney(totals.written)} written off</> : null}
+            </span>
+          ) : null}
+          {canEdit ? (
+            <button
+              type="button"
+              onClick={() => setBuilderOpen(true)}
+              className="rounded border border-border-strong bg-surface px-2 py-0.5 text-[11px] font-medium normal-case tracking-normal text-ink-2 hover:bg-surface-2"
+              title={
+                payments.length === 0
+                  ? "Create the payment schedule for this opportunity"
+                  : "Edit dates and amounts for this opportunity's payment schedule"
+              }
+            >
+              {payments.length === 0 ? "Create schedule" : "Edit schedule"}
+            </button>
+          ) : null}
+        </div>
       </div>
 
       {isLoading ? (
@@ -191,6 +236,16 @@ function OppPayments({ opportunityId }: { opportunityId: string }) {
           </table>
         </div>
       )}
+
+      {builderOpen ? (
+        <PaymentScheduleBuilder
+          opportunityId={opportunityId}
+          oppAmount={oppAmount}
+          existingPayments={payments}
+          initialFirstDate={oppCloseDate}
+          onClose={() => setBuilderOpen(false)}
+        />
+      ) : null}
     </div>
   );
 }

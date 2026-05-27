@@ -17,7 +17,7 @@ from decimal import Decimal
 from difflib import SequenceMatcher
 import logging
 
-from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, Query, Request
+from fastapi import FastAPI, File, Form, HTTPException, Depends, BackgroundTasks, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 from pydantic import BaseModel, validator
@@ -1133,6 +1133,132 @@ async def get_payments(
     except Exception as e:
         logger.error(f"Error fetching payments: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ---------------------------------------------------------------------------
+# Salesforce Files (ContentDocument / ContentDocumentLink) on Opportunity
+# ---------------------------------------------------------------------------
+# SF Files attach to records via ContentDocumentLink (LinkedEntityId).
+# We expose two endpoints scoped to a parent Opportunity:
+#   GET  list — fetches every file currently linked to the opp via SOQL on
+#         ContentDocumentLink, joined to ContentDocument for filename + size
+#   POST upload — multipart/form-data; creates a ContentVersion with
+#         FirstPublishLocationId set to the opp id, which auto-creates the
+#         ContentDocumentLink in one server-side step (no extra round-trip
+#         needed). Returns the new ContentDocument id + metadata.
+
+
+@app.get("/api/salesforce/opportunities/{opportunity_id}/files")
+async def list_opportunity_files(
+    opportunity_id: str,
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
+    user=Depends(require_auth),
+):
+    """List SF Files attached to an Opportunity via ContentDocumentLink."""
+    validate_salesforce_id(opportunity_id, "opportunity_id")
+    try:
+        salesforce = client.salesforce
+        soql = (
+            "SELECT ContentDocumentId, ContentDocument.Title, "
+            "ContentDocument.FileExtension, ContentDocument.ContentSize, "
+            "ContentDocument.LatestPublishedVersionId, "
+            "ContentDocument.CreatedDate, ContentDocument.CreatedBy.Name "
+            "FROM ContentDocumentLink "
+            f"WHERE LinkedEntityId = '{escape_soql_string(opportunity_id)}' "
+            "ORDER BY ContentDocument.CreatedDate DESC"
+        )
+        result = await salesforce.query(soql)
+        records = result.get("records", []) or []
+        return [
+            {
+                "content_document_id": r.get("ContentDocumentId"),
+                "title": (r.get("ContentDocument") or {}).get("Title"),
+                "extension": (r.get("ContentDocument") or {}).get("FileExtension"),
+                "size_bytes": (r.get("ContentDocument") or {}).get("ContentSize"),
+                "latest_version_id": (r.get("ContentDocument") or {}).get("LatestPublishedVersionId"),
+                "created_date": (r.get("ContentDocument") or {}).get("CreatedDate"),
+                "created_by": ((r.get("ContentDocument") or {}).get("CreatedBy") or {}).get("Name"),
+            }
+            for r in records
+        ]
+    except Exception as e:
+        logger.error(f"Error listing files for opp {opportunity_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to list files")
+
+
+# Max upload size — SF REST API ContentVersion handles up to ~37 MB
+# synchronously. Cap below that to leave headroom for base64 overhead.
+_MAX_FILE_BYTES = 25 * 1024 * 1024  # 25 MB
+
+
+@app.post("/api/salesforce/opportunities/{opportunity_id}/files")
+async def upload_opportunity_file(
+    opportunity_id: str,
+    file: UploadFile = File(...),
+    title: Optional[str] = Form(None),
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
+    user=Depends(require_auth),
+):
+    """Upload a file and attach it to an Opportunity.
+
+    Creates a ContentVersion with FirstPublishLocationId = opportunity_id.
+    SF handles the ContentDocument + ContentDocumentLink creation
+    server-side, so this is a single API call.
+    """
+    import base64
+    validate_salesforce_id(opportunity_id, "opportunity_id")
+    try:
+        body = await file.read()
+        if len(body) > _MAX_FILE_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"File too large ({len(body)} bytes; max {_MAX_FILE_BYTES})",
+            )
+        if len(body) == 0:
+            raise HTTPException(status_code=400, detail="Empty file")
+
+        # PathOnClient is what SF uses to infer extension + MIME. Pass the
+        # original filename verbatim so e.g. "proposal.pdf" -> .pdf.
+        path_on_client = file.filename or "file"
+        # Title shown in SF Files UI. Strip the extension for display
+        # cleanliness — SF re-derives the extension from PathOnClient.
+        display_title = title or (path_on_client.rsplit(".", 1)[0] if "." in path_on_client else path_on_client)
+
+        salesforce = client.salesforce
+        result = await salesforce.create_record(
+            "ContentVersion",
+            {
+                "Title": display_title,
+                "PathOnClient": path_on_client,
+                "VersionData": base64.b64encode(body).decode("ascii"),
+                "FirstPublishLocationId": opportunity_id,
+            },
+        )
+        content_version_id = result.get("id") or result.get("Id")
+
+        # Look up the resulting ContentDocumentId so callers can show /
+        # link to the file immediately without a second list-call.
+        version_q = await salesforce.query(
+            f"SELECT ContentDocumentId FROM ContentVersion WHERE Id = '{escape_soql_string(content_version_id)}'"
+        )
+        records = version_q.get("records", []) or []
+        content_document_id = records[0].get("ContentDocumentId") if records else None
+
+        return ApiResponse(
+            success=True,
+            data={
+                "content_version_id": content_version_id,
+                "content_document_id": content_document_id,
+                "title": display_title,
+                "size_bytes": len(body),
+                "filename": path_on_client,
+            },
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error uploading file to opp {opportunity_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to upload file")
 
 
 @app.get("/api/salesforce/opportunities/{opportunity_id}/payments")

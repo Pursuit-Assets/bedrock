@@ -4,18 +4,33 @@ import { Link } from "react-router-dom";
 import { ActivityTab } from "@/components/expand/ActivityTab";
 import { TaskListTab } from "@/components/expand/TaskListTab";
 import { RowExpandPanel, ROW_EXPAND_HEIGHT } from "@/components/RowExpandPanel";
+import { StageGateDialog } from "@/components/StageGateDialog";
+import { InlineDate, InlineSelect, InlineText } from "@/components/ui/InlineEdit";
+import { SortableHeader } from "@/components/ui/SortableHeader";
 import { StageChip } from "@/components/ui/StageChip";
 import { Tag } from "@/components/ui/Tag";
-import { fmtDate, fmtMoney } from "@/lib/format";
-import { stageStatus } from "@/lib/stages";
+import { fmtMoney } from "@/lib/format";
+import { sortBy, useSort } from "@/lib/sort";
+import { SF_STAGE_OPTIONS, stageStatus } from "@/lib/stages";
+import { useStageChangeGate } from "@/lib/useStageChangeGate";
 import {
   useAccountTasks,
   useCreateAccountTask,
   useOpportunities,
+  useUpdateOpportunity,
 } from "@/services/opportunities";
-import { useAwards, type AwardStatus } from "@/services/awards";
+import { useAwards, useUpdateAward, type AwardStatus } from "@/services/awards";
 import { useActiveUsers } from "@/services/users";
 import type { SfTask } from "@/types/salesforce";
+
+type AccountOppSortKey = "name" | "stage" | "close" | "amount";
+
+const AWARD_STATUS_OPTIONS = [
+  { value: "Active", label: "Active" },
+  { value: "Closing", label: "Closing" },
+  { value: "Closed", label: "Closed" },
+  { value: "Did Not Fulfill", label: "Did Not Fulfill" },
+];
 
 export const ACCOUNT_PANEL_HEIGHT = ROW_EXPAND_HEIGHT;
 
@@ -97,10 +112,24 @@ function AccountTasks({ accountId }: { accountId: string }) {
 
 function AccountOpps({ accountId }: { accountId: string }) {
   const { data: opps = [], isLoading } = useOpportunities();
-  const filtered = useMemo(
+  const updateOpp = useUpdateOpportunity();
+  const stageGate = useStageChangeGate();
+  const { sort, toggle } = useSort<AccountOppSortKey>();
+  const allFiltered = useMemo(
     () => opps.filter((o) => o.AccountId === accountId),
     [opps, accountId],
   );
+  const filtered = useMemo(() => {
+    if (sort.key == null) return allFiltered;
+    return sortBy(allFiltered, sort, (o, key) => {
+      switch (key) {
+        case "name": return o.Name ?? "";
+        case "stage": return o.StageName ?? "";
+        case "close": return o.CloseDate ?? "";
+        case "amount": return o.Amount ?? 0;
+      }
+    });
+  }, [allFiltered, sort]);
 
   // Header aggregate mirrors PaymentsTab's "X paid · Y pending":
   // total open pipeline + amount won, scoped to this account.
@@ -139,10 +168,18 @@ function AccountOpps({ accountId }: { accountId: string }) {
           <table className="w-full text-[12px]">
             <thead className="bg-surface-2 text-[10.5px] uppercase tracking-wider text-ink-3">
               <tr>
-                <th className="px-3 py-1.5 text-left font-semibold">Name</th>
-                <th className="px-3 py-1.5 text-left font-semibold">Stage</th>
-                <th className="px-3 py-1.5 text-left font-semibold">Close</th>
-                <th className="px-3 py-1.5 text-right font-semibold">Amount</th>
+                <th className="px-3 py-1.5 text-left font-semibold">
+                  <SortableHeader label="Name" sortKey="name" sort={sort} onToggle={toggle} />
+                </th>
+                <th className="px-3 py-1.5 text-left font-semibold">
+                  <SortableHeader label="Stage" sortKey="stage" sort={sort} onToggle={toggle} />
+                </th>
+                <th className="px-3 py-1.5 text-left font-semibold">
+                  <SortableHeader label="Close" sortKey="close" sort={sort} onToggle={toggle} />
+                </th>
+                <th className="px-3 py-1.5 text-right font-semibold">
+                  <SortableHeader label="Amount" sortKey="amount" sort={sort} onToggle={toggle} align="right" />
+                </th>
               </tr>
             </thead>
             <tbody>
@@ -158,13 +195,42 @@ function AccountOpps({ accountId }: { accountId: string }) {
                     </Link>
                   </td>
                   <td className="px-3 py-1.5">
-                    <StageChip stage={o.StageName} status={stageStatus(o)} />
+                    <InlineSelect
+                      value={o.StageName}
+                      options={SF_STAGE_OPTIONS}
+                      onSave={(stage) => stageGate.request(o, stage)}
+                      renderValue={(v) =>
+                        v ? <StageChip stage={v} status={stageStatus(o)} /> : <span className="text-ink-4">—</span>
+                      }
+                    />
                   </td>
                   <td className="mono px-3 py-1.5 text-[11.5px] text-ink-2">
-                    {fmtDate(o.CloseDate)}
+                    <InlineDate
+                      value={o.CloseDate}
+                      onSave={(d) =>
+                        Promise.resolve(updateOpp.mutate({ id: o.Id, patch: { CloseDate: d } }))
+                      }
+                      placeholder="—"
+                    />
                   </td>
                   <td className="mono px-3 py-1.5 text-right font-medium tabular-nums">
-                    {o.Amount ? fmtMoney(o.Amount) : "—"}
+                    <InlineText
+                      value={o.Amount != null ? String(o.Amount) : ""}
+                      onSave={(v) =>
+                        Promise.resolve(
+                          updateOpp.mutate({
+                            id: o.Id,
+                            patch: { Amount: v ? Number(v.replace(/[^\d.-]/g, "")) : null },
+                          }),
+                        )
+                      }
+                      formatDisplay={(raw) => {
+                        const n = Number(raw.replace(/[^\d.-]/g, ""));
+                        return Number.isFinite(n) && n !== 0 ? fmtMoney(n) : "—";
+                      }}
+                      placeholder="—"
+                      className="justify-end text-right"
+                    />
                   </td>
                 </tr>
               ))}
@@ -172,15 +238,29 @@ function AccountOpps({ accountId }: { accountId: string }) {
           </table>
         </div>
       )}
+      {stageGate.pending ? (
+        <StageGateDialog
+          spec={stageGate.pending.spec}
+          opp={stageGate.pending.opp}
+          toStage={stageGate.pending.toStage}
+          onClose={stageGate.dismiss}
+          onCompleted={stageGate.complete}
+          onAwardCreated={stageGate.openAwardSetup}
+        />
+      ) : null}
     </div>
   );
 }
 
+type AwardSortKey = "name" | "status" | "awarded" | "total";
+
 function AccountAwards({ accountId }: { accountId: string }) {
   const { data: opps = [] } = useOpportunities();
   const { data: awards = [], isLoading } = useAwards();
+  const updateAward = useUpdateAward();
+  const { sort, toggle } = useSort<AwardSortKey>();
 
-  const filtered = useMemo(() => {
+  const allFiltered = useMemo(() => {
     const accountOppIds = new Set(
       opps.filter((o) => o.AccountId === accountId).map((o) => o.Id),
     );
@@ -189,6 +269,18 @@ function AccountAwards({ accountId }: { accountId: string }) {
       .filter((a) => accountOppIds.has(a.opportunity_id))
       .map((a) => ({ award: a, opp: oppById.get(a.opportunity_id) ?? null }));
   }, [awards, opps, accountId]);
+
+  const filtered = useMemo(() => {
+    if (sort.key == null) return allFiltered;
+    return sortBy(allFiltered, sort, ({ award, opp }, key) => {
+      switch (key) {
+        case "name": return opp?.Name ?? award.opportunity_id;
+        case "status": return award.award_status;
+        case "awarded": return award.award_date ?? "";
+        case "total": return opp?.Amount ?? 0;
+      }
+    });
+  }, [allFiltered, sort]);
 
   // Aggregate: total awarded vs total paid, mirroring PaymentsTab.
   const totals = useMemo(() => {
@@ -225,10 +317,18 @@ function AccountAwards({ accountId }: { accountId: string }) {
           <table className="w-full text-[12px]">
             <thead className="bg-surface-2 text-[10.5px] uppercase tracking-wider text-ink-3">
               <tr>
-                <th className="px-3 py-1.5 text-left font-semibold">Name</th>
-                <th className="px-3 py-1.5 text-left font-semibold">Status</th>
-                <th className="px-3 py-1.5 text-left font-semibold">Awarded</th>
-                <th className="px-3 py-1.5 text-right font-semibold">Total</th>
+                <th className="px-3 py-1.5 text-left font-semibold">
+                  <SortableHeader label="Name" sortKey="name" sort={sort} onToggle={toggle} />
+                </th>
+                <th className="px-3 py-1.5 text-left font-semibold">
+                  <SortableHeader label="Status" sortKey="status" sort={sort} onToggle={toggle} />
+                </th>
+                <th className="px-3 py-1.5 text-left font-semibold">
+                  <SortableHeader label="Awarded" sortKey="awarded" sort={sort} onToggle={toggle} />
+                </th>
+                <th className="px-3 py-1.5 text-right font-semibold">
+                  <SortableHeader label="Total" sortKey="total" sort={sort} onToggle={toggle} align="right" />
+                </th>
               </tr>
             </thead>
             <tbody>
@@ -244,12 +344,30 @@ function AccountAwards({ accountId }: { accountId: string }) {
                     </Link>
                   </td>
                   <td className="px-3 py-1.5">
-                    <Tag variant={statusVariant(award.award_status)}>
-                      {award.award_status}
-                    </Tag>
+                    <InlineSelect
+                      value={award.award_status}
+                      options={AWARD_STATUS_OPTIONS}
+                      onSave={(v) =>
+                        Promise.resolve(
+                          updateAward.mutate({
+                            id: award.id,
+                            patch: { award_status: v as AwardStatus },
+                          }),
+                        )
+                      }
+                      renderValue={(v) =>
+                        v ? <Tag variant={statusVariant(v as AwardStatus)}>{v}</Tag> : <span className="text-ink-4">—</span>
+                      }
+                    />
                   </td>
                   <td className="mono px-3 py-1.5 text-[11.5px] text-ink-2">
-                    {fmtDate(award.award_date)}
+                    <InlineDate
+                      value={award.award_date}
+                      onSave={(d) =>
+                        Promise.resolve(updateAward.mutate({ id: award.id, patch: { award_date: d } }))
+                      }
+                      placeholder="—"
+                    />
                   </td>
                   <td className="mono px-3 py-1.5 text-right font-medium tabular-nums">
                     {opp?.Amount ? fmtMoney(opp.Amount) : "—"}
