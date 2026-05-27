@@ -149,3 +149,20 @@ export const SF_STAGE_OPTIONS: { value: string; label: string }[] = [
   { value: "Closed Lost", label: "Closed Lost" },
   { value: "Withdrawn", label: "Withdrawn" },
 ];
+
+/** SF's stage-driven default Probability values. Mirrors what SF
+ *  applies server-side when a stage is set without explicit Probability.
+ *  Used by the stage-gate dialog to pre-fill the Probability field for
+ *  the TARGET stage rather than showing the source-stage value (which
+ *  would always be lower and trigger needless edits). */
+export const STAGE_DEFAULT_PROBABILITY: Record<string, number> = {
+  "New Lead": 5,
+  "Qualifying": 15,
+  "Ask in Progress": 30,
+  "Proposal Submitted": 50,
+  "Contracting": 80,
+  "Collecting / In Effect": 100,
+  "Closed / Completed": 100,
+  "Closed Lost": 0,
+  "Withdrawn": 0,
+};

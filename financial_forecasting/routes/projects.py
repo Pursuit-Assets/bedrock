@@ -450,7 +450,15 @@ async def update_project(project_id: str, body: ProjectUpdate, user=Depends(chec
         validate_salesforce_id(fields["opportunity_id"], "opportunity_id")
     sets = ", ".join(f"{k} = ${i+2}" for i, k in enumerate(fields))
     vals = [pid] + list(fields.values())
-    await conn.execute(f"UPDATE bedrock.project SET {sets} WHERE id = $1 AND deleted_at IS NULL", *vals)
+    result = await conn.execute(
+        f"UPDATE bedrock.project SET {sets} WHERE id = $1 AND deleted_at IS NULL",
+        *vals,
+    )
+    # asyncpg returns the command tag, e.g. "UPDATE 1" / "UPDATE 0".
+    # Earlier the endpoint returned success on UPDATE 0 (no-op), which
+    # is what made "didn't save" look like a silent bug.
+    if isinstance(result, str) and result.endswith("UPDATE 0"):
+        raise HTTPException(status_code=404, detail="Project not found or already deleted")
     return {"success": True, "data": {"message": "Project updated"}}
 
 

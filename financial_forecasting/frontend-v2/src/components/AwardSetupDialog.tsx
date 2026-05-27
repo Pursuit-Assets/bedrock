@@ -175,6 +175,22 @@ export function AwardSetupDialog({
   const [newProjectName, setNewProjectName] = useState<string>("");
   const [projectSaved, setProjectSaved] = useState(false);
 
+  // Seed from any project already linked to this opp so the picker
+  // shows the existing selection (and "saved" state). Runs once when
+  // projects list arrives so the user's in-flight choices stick.
+  const [projectSeeded, setProjectSeeded] = useState(false);
+  useEffect(() => {
+    const data = projectsQ.data;
+    if (!data || projectSeeded) return;
+    const existing = data.find((p) => p.opportunity_id === opportunityId);
+    if (existing) {
+      setProjectMode("link");
+      setSelectedProjectId(existing.id);
+      setProjectSaved(true);
+    }
+    setProjectSeeded(true);
+  }, [projectsQ.data, opportunityId, projectSeeded]);
+
   // Show every project the user has access to. Filtering out projects
   // already linked to other opps would hide most of the catalog
   // (most projects are scoped to an opp), making the picker look

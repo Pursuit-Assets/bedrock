@@ -96,8 +96,26 @@ export function useUpdatePayment(opportunityId: string) {
       const { data } = await api.put(`/api/salesforce/payments/${id}`, { updates: patch });
       return data;
     },
-    onSuccess: () => {
+    onMutate: async ({ id, patch }) => {
+      const keys = [
+        ["opp-payments", opportunityId],
+        ["opportunity-payments", opportunityId],
+      ] as const;
+      await Promise.all(keys.map((key) => qc.cancelQueries({ queryKey: key })));
+      const snapshots = keys.map((key) => ({ key, data: qc.getQueryData<SfPayment[]>(key) }));
+      for (const key of keys) {
+        qc.setQueryData<SfPayment[]>(key, (old) =>
+          old?.map((p) => (p.Id === id ? { ...p, ...patch } : p)),
+        );
+      }
+      return { snapshots };
+    },
+    onError: (_err, _vars, ctx) => {
+      ctx?.snapshots.forEach(({ key, data }) => qc.setQueryData(key, data));
+    },
+    onSettled: () => {
       qc.invalidateQueries({ queryKey: ["opp-payments", opportunityId] });
+      qc.invalidateQueries({ queryKey: ["opportunity-payments", opportunityId] });
       qc.invalidateQueries({ queryKey: ["opportunities"] });
       qc.invalidateQueries({ queryKey: ["awards"] });
       qc.invalidateQueries({ queryKey: ["payments"] });
@@ -167,7 +185,22 @@ export function useDeletePayment(opportunityId: string) {
       await api.delete(`/api/salesforce/payments/${encodeURIComponent(paymentId)}`);
       return paymentId;
     },
-    onSuccess: () => {
+    onMutate: async (paymentId) => {
+      const keys = [
+        ["opp-payments", opportunityId],
+        ["opportunity-payments", opportunityId],
+      ] as const;
+      await Promise.all(keys.map((key) => qc.cancelQueries({ queryKey: key })));
+      const snapshots = keys.map((key) => ({ key, data: qc.getQueryData<SfPayment[]>(key) }));
+      for (const key of keys) {
+        qc.setQueryData<SfPayment[]>(key, (old) => old?.filter((p) => p.Id !== paymentId));
+      }
+      return { snapshots };
+    },
+    onError: (_err, _vars, ctx) => {
+      ctx?.snapshots.forEach(({ key, data }) => qc.setQueryData(key, data));
+    },
+    onSettled: () => {
       qc.invalidateQueries({ queryKey: ["opp-payments", opportunityId] });
       qc.invalidateQueries({ queryKey: ["opportunity-payments", opportunityId] });
       qc.invalidateQueries({ queryKey: ["opportunities"] });
@@ -199,7 +232,30 @@ export function useCreateSinglePayment(opportunityId: string) {
       );
       return data;
     },
-    onSuccess: () => {
+    onMutate: async (input) => {
+      const keys = [
+        ["opp-payments", opportunityId],
+        ["opportunity-payments", opportunityId],
+      ] as const;
+      await Promise.all(keys.map((key) => qc.cancelQueries({ queryKey: key })));
+      const snapshots = keys.map((key) => ({ key, data: qc.getQueryData<SfPayment[]>(key) }));
+      const tempRow: SfPayment = {
+        Id: `temp-${Date.now()}`,
+        npe01__Opportunity__c: opportunityId,
+        npe01__Payment_Amount__c: input.amount,
+        npe01__Scheduled_Date__c: input.scheduled_date,
+        npe01__Payment_Date__c: null,
+        npe01__Paid__c: false,
+      };
+      for (const key of keys) {
+        qc.setQueryData<SfPayment[]>(key, (old) => [...(old ?? []), tempRow]);
+      }
+      return { snapshots };
+    },
+    onError: (_err, _vars, ctx) => {
+      ctx?.snapshots.forEach(({ key, data }) => qc.setQueryData(key, data));
+    },
+    onSettled: () => {
       qc.invalidateQueries({ queryKey: ["opp-payments", opportunityId] });
       qc.invalidateQueries({ queryKey: ["opportunity-payments", opportunityId] });
       qc.invalidateQueries({ queryKey: ["opportunities"] });
@@ -225,9 +281,39 @@ export function useCreatePaymentSchedule(opportunityId: string) {
       );
       return data;
     },
-    onSuccess: () => {
-      // Invalidate both query keys — the expand panels use "opp-payments"
-      // while OpportunityDetail uses "opportunity-payments".
+    // Optimistic: drop synthetic rows into the payments cache so the
+    // schedule appears the instant the user clicks Create, instead of
+    // waiting on N sequential SF round-trips. Real Ids come in via
+    // the refetch from onSettled below.
+    onMutate: async (input) => {
+      const keys = [
+        ["opp-payments", opportunityId],
+        ["opportunity-payments", opportunityId],
+      ] as const;
+      await Promise.all(keys.map((key) => qc.cancelQueries({ queryKey: key })));
+      const snapshots = keys.map((key) => ({ key, data: qc.getQueryData<SfPayment[]>(key) }));
+      const tempRows: SfPayment[] = input.payments.map((p, i) => ({
+        Id: `temp-${Date.now()}-${i}`,
+        npe01__Opportunity__c: opportunityId,
+        npe01__Payment_Amount__c: p.amount,
+        npe01__Scheduled_Date__c: p.scheduled_date,
+        npe01__Payment_Date__c: null,
+        npe01__Paid__c: false,
+      }));
+      for (const key of keys) {
+        qc.setQueryData<SfPayment[]>(key, (old) =>
+          input.delete_existing === false
+            ? [...(old ?? []), ...tempRows]
+            : tempRows,
+        );
+      }
+      return { snapshots };
+    },
+    onError: (_err, _vars, ctx) => {
+      ctx?.snapshots.forEach(({ key, data }) => qc.setQueryData(key, data));
+    },
+    onSettled: () => {
+      // Always refetch so temp Ids get replaced with real SF Ids.
       qc.invalidateQueries({ queryKey: ["opp-payments", opportunityId] });
       qc.invalidateQueries({ queryKey: ["opportunity-payments", opportunityId] });
       qc.invalidateQueries({ queryKey: ["opportunities"] });

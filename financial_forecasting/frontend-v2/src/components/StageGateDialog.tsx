@@ -13,6 +13,7 @@ import {
   type SfPayment,
 } from "@/services/payments";
 import { fmtMoney, fmtMoneyFull } from "@/lib/format";
+import { STAGE_DEFAULT_PROBABILITY } from "@/lib/stages";
 import type { StageGateSpec } from "@/lib/stageGates";
 import { cn } from "@/lib/utils";
 import type { SfOpportunity } from "@/types/salesforce";
@@ -50,16 +51,23 @@ export function StageGateDialog({
   const updateStage = useUpdateOpportunityStage();
   const paymentsQ = useOpportunityPayments(opp.Id);
 
-  // Field state — seeded from the current opp values.
+  // Field state — seeded from the current opp values, EXCEPT for
+  // probability where we prefer the SF default for the TARGET stage.
+  // The current opp's probability is tied to its current (lower)
+  // stage; showing it would mean every user has to manually re-set
+  // probability to the new stage's default. Use stage-default as the
+  // seed; the manager override still wins if one is set.
   const [closeDate, setCloseDate] = useState<string>(opp.CloseDate ?? "");
   const [amountStr, setAmountStr] = useState<string>(opp.Amount != null ? String(opp.Amount) : "");
-  const [probabilityStr, setProbabilityStr] = useState<string>(
-    opp.Manager_Probability_Override__c != null
-      ? String(opp.Manager_Probability_Override__c)
-      : opp.Probability != null
-        ? String(opp.Probability)
-        : "",
-  );
+  const [probabilityStr, setProbabilityStr] = useState<string>(() => {
+    if (opp.Manager_Probability_Override__c != null) {
+      return String(opp.Manager_Probability_Override__c);
+    }
+    const stageDefault = STAGE_DEFAULT_PROBABILITY[toStage];
+    if (stageDefault != null) return String(stageDefault);
+    if (opp.Probability != null) return String(opp.Probability);
+    return "";
+  });
   const [closeReason, setCloseReason] = useState<string>("");
   // Per-hint satisfied state — multi-stage jumps can require several
   // attachments at once (proposal + signed contract, etc.). Keyed by
@@ -439,6 +447,9 @@ function InlinePaymentScheduleEditor({
   // last-mile signal if something needs the user's attention.
   const saving = false;
   const [saveError, setSaveError] = useState<string | null>(null);
+  // Index of the most recently added row — used to autofocus its
+  // date input so the user can keep typing without clicking again.
+  const [focusIndex, setFocusIndex] = useState<number | null>(null);
 
   // Re-seed from props when the upstream list refetches (e.g. after a
   // schedule was just created via the full builder).
@@ -473,14 +484,21 @@ function InlinePaymentScheduleEditor({
   const canSave = dirty && balanced && rows.length > 0 && !saving;
 
   const addRow = () => {
-    setRows((prev) => [
-      ...prev,
-      {
+    setRows((prev) => {
+      // Seed the new row with the leftover unbalanced amount (or 0 if
+      // already balanced) so the user lands in a typeable state without
+      // having to clear a 0 placeholder.
+      const seed = oppAmount != null
+        ? Math.max(0, Math.round((oppAmount - prev.reduce((s, r) => s + r.amount, 0)) * 100) / 100)
+        : 0;
+      const next: InlineRow = {
         scheduled_date: prev.at(-1)?.scheduled_date ?? new Date().toISOString().slice(0, 10),
-        amount: 0,
+        amount: seed,
         paid: false,
-      },
-    ]);
+      };
+      setFocusIndex(prev.length);
+      return [...prev, next];
+    });
   };
 
   const removeRow = (i: number) => {
@@ -614,6 +632,7 @@ function InlinePaymentScheduleEditor({
                     <input
                       type="date"
                       value={r.scheduled_date}
+                      autoFocus={focusIndex === i}
                       onChange={(e) => updateRow(i, { scheduled_date: e.target.value })}
                       className="w-full rounded border border-border-strong bg-surface px-1.5 py-0.5 text-[12px] outline-none focus:border-accent"
                     />
@@ -628,6 +647,7 @@ function InlinePaymentScheduleEditor({
                       step="0.01"
                       value={r.amount}
                       onChange={(e) => updateRow(i, { amount: Number(e.target.value) || 0 })}
+                      onFocus={(e) => e.currentTarget.select()}
                       className="w-full rounded border border-border-strong bg-surface px-1.5 py-0.5 text-right text-[12px] tabular-nums outline-none focus:border-accent"
                     />
                   )}
