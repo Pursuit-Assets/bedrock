@@ -42,9 +42,40 @@ export interface JobsOpportunity {
   activity_count?: number;
 }
 
+export interface JobContact {
+  contact_id: number;
+  first_name: string | null;
+  last_name: string | null;
+  full_name: string | null;
+  email: string | null;
+  current_title: string | null;
+  current_company: string | null;
+  contact_stage: string | null;
+  linkedin_url: string | null;
+  notes: string | null;
+}
+
+export interface ContactsSummary {
+  contacts: {
+    total: number;
+    engaged: number;
+    by_stage: { stage: string; count: number }[];
+  };
+  activity: {
+    outreach_this_week: number;
+    calls_this_week: number;
+    outreach_this_month: number;
+    total_engagements: number;
+    total_calls: number;
+    active_owners: number;
+  };
+  active_companies: number;
+}
+
 export interface JobsOpportunityDetail extends JobsOpportunity {
   stage_history: StageHistoryEntry[];
   activity: ActivityEntry[];
+  contacts: JobContact[];
 }
 
 export interface StageHistoryEntry {
@@ -134,6 +165,17 @@ export const ACTIVE_STAGES: JobStage[] = [
 
 interface ApiResponse<T> { success: boolean; data: T }
 interface ListResponse<T> { success: boolean; data: T[]; total: number }
+
+export function useContactsSummary() {
+  return useQuery<ContactsSummary>({
+    queryKey: ["jobs", "contacts-summary"],
+    queryFn: async () => {
+      const { data } = await api.get<ApiResponse<ContactsSummary>>("/api/jobs/contacts/summary");
+      return data.data;
+    },
+    staleTime: 60_000,
+  });
+}
 
 export function useJobsPipeline() {
   return useQuery<PipelineStageSummary[]>({

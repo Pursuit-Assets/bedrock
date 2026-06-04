@@ -77,6 +77,76 @@ class OpportunityUpdate(BaseModel):
     note: Optional[str] = None  # optional note when changing stage
 
 
+@router.get("/contacts/summary")
+async def get_contacts_summary(user=Depends(require_auth), conn=Depends(get_db)):
+    """Contacts & outreach metrics for the leadership dashboard."""
+    # Stage breakdown
+    stages = await conn.fetch("""
+        SELECT contact_stage, count(*) AS count
+        FROM public.contacts WHERE airtable_id IS NOT NULL
+        GROUP BY contact_stage ORDER BY count DESC
+    """)
+    total     = sum(r["count"] for r in stages)
+    engaged   = sum(r["count"] for r in stages if r["contact_stage"] in ("initial_outreach", "active", "on_hold"))
+
+    # Weekly & total activity
+    activity = await conn.fetchrow("""
+        SELECT
+            count(*) FILTER (WHERE a.activity_date >= now() - interval '7 days') AS outreach_this_week,
+            count(*) FILTER (WHERE a.type='call' AND a.activity_date >= now() - interval '7 days') AS calls_this_week,
+            count(*) FILTER (WHERE a.activity_date >= now() - interval '30 days') AS outreach_this_month,
+            count(*) AS total_engagements,
+            count(*) FILTER (WHERE a.type='call') AS total_calls,
+            count(DISTINCT a.logged_by) AS active_owners
+        FROM bedrock.activity a
+        WHERE a.jobs_opportunity_id IS NOT NULL
+    """)
+
+    # Active companies (deals in active_* stages)
+    active_companies = await conn.fetchval("""
+        SELECT count(*) FROM bedrock.jobs_opportunity
+        WHERE deleted_at IS NULL AND stage LIKE 'active_%'
+    """)
+
+    return {
+        "success": True,
+        "data": {
+            "contacts": {
+                "total":   total,
+                "engaged": engaged,
+                "by_stage": [{"stage": r["contact_stage"] or "none", "count": r["count"]} for r in stages],
+            },
+            "activity": dict(activity),
+            "active_companies": active_companies,
+        },
+    }
+
+
+async def _resolve_contacts(conn, sf_contact_ids: list[str]) -> list[dict]:
+    """Resolve airtable:recXXX refs and SF IDs to contact records."""
+    if not sf_contact_ids:
+        return []
+    airtable_ids = [cid.replace("airtable:", "") for cid in sf_contact_ids if cid.startswith("airtable:")]
+    sf_ids       = [cid for cid in sf_contact_ids if not cid.startswith("airtable:")]
+    contacts = []
+    if airtable_ids:
+        rows = await conn.fetch(
+            "SELECT contact_id, first_name, last_name, full_name, email, current_title, current_company, contact_stage, linkedin_url, notes FROM public.contacts WHERE airtable_id = ANY($1::text[])",
+            airtable_ids,
+        )
+        contacts.extend([dict(r) for r in rows])
+    if sf_ids:
+        rows = await conn.fetch(
+            """SELECT c.contact_id, c.first_name, c.last_name, c.full_name, c.email, c.current_title, c.current_company, c.contact_stage, c.linkedin_url, c.notes
+               FROM public.contacts c
+               JOIN bedrock.sf_contact_link scl ON scl.public_contact_id = c.contact_id
+               WHERE scl.sf_contact_id = ANY($1::text[])""",
+            sf_ids,
+        )
+        contacts.extend([dict(r) for r in rows])
+    return contacts
+
+
 @router.get("/opportunities/pipeline")
 async def get_pipeline_summary(user=Depends(require_auth), conn=Depends(get_db)):
     """Stage counts + deal-type breakdown for the pipeline dashboard."""
@@ -228,6 +298,8 @@ async def get_opportunity(
         """,
         opp_id,
     )
+    contacts = await _resolve_contacts(conn, list(row["sf_contact_ids"] or []))
+
     activity = await conn.fetch(
         """
         SELECT id, type, subject, description, activity_date, source, logged_by, synced_at
@@ -243,7 +315,8 @@ async def get_opportunity(
         "data": {
             **dict(row),
             "stage_history": [dict(h) for h in history],
-            "activity": [dict(a) for a in activity],
+            "activity":      [dict(a) for a in activity],
+            "contacts":      contacts,
         },
     }
 

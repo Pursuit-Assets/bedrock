@@ -10,9 +10,10 @@ import {
   type JobStage,
   type DealType,
   type JobsOpportunity,
+  type JobContact,
 } from "@/services/jobs";
 import { JobStageChip, DealTypeChip } from "@/components/jobs/JobStageChip";
-import { ChevronDown, ChevronRight, Building2, Users, Activity, Clock } from "lucide-react";
+import { ChevronDown, ChevronRight, Building2, Users, Activity, Clock, Mail, Linkedin } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { format, formatDistanceToNow } from "date-fns";
 
@@ -164,7 +165,7 @@ function Spinner() {
 // ── Expanded detail panel ────────────────────────────────────────────────────
 
 function DealDetailPanel({ deal }: { deal: JobsOpportunity }) {
-  const [activeTab, setActiveTab] = useState<"activity" | "history">("activity");
+  const [activeTab, setActiveTab] = useState<"activity" | "history" | "contacts">("activity");
   const detailQ = useJobsOpportunity(deal.id);
   const updateOpp = useUpdateOpportunity();
 
@@ -280,19 +281,30 @@ function DealDetailPanel({ deal }: { deal: JobsOpportunity }) {
       {/* Right — tabs */}
       <div className="flex flex-col">
         <div className="flex border-b border-border-strong bg-surface px-3 pt-2">
-          {(["activity", "history"] as const).map((tab) => (
+          {(["activity", "history", "contacts"] as const).map((tab) => (
             <button
               key={tab}
               type="button"
               onClick={() => setActiveTab(tab)}
               className={cn(
-                "border-b-2 px-3 pb-1.5 pt-1 text-[12px] font-medium transition-colors capitalize",
+                "border-b-2 px-3 pb-1.5 pt-1 text-[12px] font-medium transition-colors",
                 activeTab === tab
                   ? "border-accent text-ink"
                   : "border-transparent text-ink-3 hover:text-ink-2",
               )}
             >
-              {tab === "activity" ? "Activity" : "History"}
+              {tab === "activity" && "Activity"}
+              {tab === "history" && "History"}
+              {tab === "contacts" && (
+                <>
+                  Contacts
+                  {(detail?.contacts?.length ?? 0) > 0 && (
+                    <span className="ml-1 text-[10.5px] text-ink-4">
+                      ({detail!.contacts.length})
+                    </span>
+                  )}
+                </>
+              )}
             </button>
           ))}
         </div>
@@ -304,8 +316,10 @@ function DealDetailPanel({ deal }: { deal: JobsOpportunity }) {
             </div>
           ) : activeTab === "activity" ? (
             <ActivityTab entries={detail?.activity ?? []} />
-          ) : (
+          ) : activeTab === "history" ? (
             <HistoryTab entries={detail?.stage_history ?? []} />
+          ) : (
+            <ContactsTab contacts={detail?.contacts ?? []} />
           )}
         </div>
       </div>
@@ -405,6 +419,109 @@ function HistoryTab({
             <span className="shrink-0 font-mono text-[10.5px] text-ink-4">
               {format(new Date(e.changed_at), "MMM d")}
             </span>
+          </div>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+// ── Contact stage pill ────────────────────────────────────────────────────────
+
+const CONTACT_STAGE_STYLES: Record<
+  string,
+  { label: string; className: string }
+> = {
+  active:           { label: "Active",           className: "bg-green-50 text-green-700" },
+  initial_outreach: { label: "Initial Outreach", className: "bg-accent-soft text-accent-ink" },
+  lead:             { label: "Lead",             className: "bg-stone-100 text-stone-500" },
+  on_hold:          { label: "On Hold",          className: "bg-amber-50 text-amber-600" },
+};
+
+function ContactStagePill({ stage }: { stage: string | null }) {
+  if (!stage) return null;
+  const style = CONTACT_STAGE_STYLES[stage];
+  if (!style) return null;
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium leading-none",
+        style.className,
+      )}
+    >
+      {style.label}
+    </span>
+  );
+}
+
+function contactInitials(contact: JobContact): string {
+  if (contact.first_name && contact.last_name) {
+    return (contact.first_name[0] + contact.last_name[0]).toUpperCase();
+  }
+  if (contact.full_name) {
+    const parts = contact.full_name.trim().split(/\s+/);
+    if (parts.length >= 2) {
+      return (parts[0][0]! + parts[parts.length - 1][0]!).toUpperCase();
+    }
+    return contact.full_name.slice(0, 2).toUpperCase();
+  }
+  return "??";
+}
+
+function ContactsTab({ contacts }: { contacts: JobContact[] }) {
+  if (contacts.length === 0) {
+    return (
+      <div className="px-4 py-6 text-center text-[12px] text-ink-3">
+        No contacts linked to this deal.
+      </div>
+    );
+  }
+  return (
+    <ul className="divide-y divide-border-strong">
+      {contacts.map((c) => (
+        <li key={c.contact_id} className="flex items-center gap-3 px-4 py-2.5">
+          {/* Initials avatar */}
+          <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-accent-soft text-[11px] font-semibold leading-none text-accent-ink">
+            {contactInitials(c)}
+          </span>
+
+          {/* Middle — name / title / stage */}
+          <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+            <span className="truncate text-[13px] font-semibold text-ink">
+              {c.full_name ?? (`${c.first_name ?? ""} ${c.last_name ?? ""}`.trim() || "—")}
+            </span>
+            {(c.current_title || c.current_company) ? (
+              <span className="truncate text-[12px] text-ink-3">
+                {[c.current_title, c.current_company].filter(Boolean).join(" @ ")}
+              </span>
+            ) : null}
+            <ContactStagePill stage={c.contact_stage} />
+          </div>
+
+          {/* Right — email + LinkedIn */}
+          <div className="flex shrink-0 items-center gap-2">
+            {c.email ? (
+              <a
+                href={`mailto:${c.email}`}
+                title={c.email}
+                className="text-ink-3 transition-colors hover:text-accent"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <Mail size={14} />
+              </a>
+            ) : null}
+            {c.linkedin_url ? (
+              <a
+                href={c.linkedin_url}
+                target="_blank"
+                rel="noreferrer"
+                title="LinkedIn"
+                className="text-ink-3 transition-colors hover:text-accent"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <Linkedin size={14} />
+              </a>
+            ) : null}
           </div>
         </li>
       ))}

@@ -4,6 +4,7 @@ import { Users, Target, DollarSign, Building2, ArrowRight } from "lucide-react";
 import {
   useJobsPipeline,
   useJobsOpportunities,
+  useContactsSummary,
   ACTIVE_STAGES,
   STAGE_LABELS,
   DEAL_TYPE_LABELS,
@@ -186,6 +187,7 @@ function stageLabelClass(stage: JobStage): string {
 export function JobsLeadership() {
   const pipelineQ = useJobsPipeline();
   const oppsQ = useJobsOpportunities({ limit: 500 });
+  const contactsQ = useContactsSummary();
 
   const isLoading = pipelineQ.isLoading || oppsQ.isLoading;
 
@@ -284,6 +286,19 @@ export function JobsLeadership() {
 
   const dealTypeOrder: DealType[] = ["ft", "pt_contract", "capstone", "volunteer"];
 
+  // ── Contacts & Outreach derived values ─────────────────────────────────
+
+  const contactsLoading = contactsQ.isLoading;
+  const totalContacts = contactsQ.data?.contacts.total ?? null;
+  const engagedContacts = contactsQ.data?.contacts.engaged ?? null;
+  const outreachThisWeek = contactsQ.data?.activity.outreach_this_week ?? null;
+  const callsThisWeek = contactsQ.data?.activity.calls_this_week ?? null;
+  const totalEngagements = contactsQ.data?.activity.total_engagements ?? null;
+  const totalCalls = contactsQ.data?.activity.total_calls ?? null;
+
+  const activeInDiscussions = stageMap.get("active_in_discussions")?.total ?? 0;
+  const activeBuilderInterview = stageMap.get("active_builder_interview")?.total ?? 0;
+
   // ── Salary color ────────────────────────────────────────────────────────
 
   const salaryColor =
@@ -297,6 +312,98 @@ export function JobsLeadership() {
 
   return (
     <div className="flex flex-col gap-8">
+      {/* ── Contacts & Outreach ───────────────────────────────────────── */}
+      <div className="flex flex-col gap-3">
+        <div className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">
+          Contacts &amp; Outreach
+        </div>
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+          {/* Contacts & Leads */}
+          <div className="flex flex-col gap-2">
+            <div className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-4">
+              Contacts &amp; Leads
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="flex flex-col gap-2 rounded-[8px] border border-border-strong bg-surface p-4 shadow-[var(--shadow-sm)]">
+                <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
+                  Total Contacts
+                </span>
+                <span className="font-mono text-[28px] font-semibold leading-none tabular-nums text-ink">
+                  {contactsLoading ? "—" : (totalContacts ?? "—")}
+                </span>
+              </div>
+              <div className="flex flex-col gap-2 rounded-[8px] border border-border-strong bg-surface p-4 shadow-[var(--shadow-sm)]">
+                <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
+                  Engaged
+                </span>
+                <span className="font-mono text-[28px] font-semibold leading-none tabular-nums text-ink">
+                  {contactsLoading ? "—" : (engagedContacts ?? "—")}
+                </span>
+                <span className="text-[10.5px] text-ink-4">
+                  Outreach sent or beyond
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* Outreach Activity */}
+          <div className="flex flex-col gap-2">
+            <div className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-4">
+              Outreach Activity
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="flex flex-col gap-2 rounded-[8px] border border-border-strong bg-surface p-4 shadow-[var(--shadow-sm)]">
+                <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
+                  This Week
+                </span>
+                <span className="font-mono text-[28px] font-semibold leading-none tabular-nums text-ink">
+                  {contactsLoading ? "—" : (outreachThisWeek ?? "—")}
+                </span>
+                <span className="text-[10.5px] text-ink-4">
+                  {contactsLoading ? "— alltime" : `${totalEngagements ?? "—"} alltime`}
+                </span>
+              </div>
+              <div className="flex flex-col gap-2 rounded-[8px] border border-border-strong bg-surface p-4 shadow-[var(--shadow-sm)]">
+                <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
+                  Calls This Week
+                </span>
+                <span className="font-mono text-[28px] font-semibold leading-none tabular-nums text-ink">
+                  {contactsLoading ? "—" : (callsThisWeek ?? "—")}
+                </span>
+                <span className="text-[10.5px] text-ink-4">
+                  {contactsLoading ? "— alltime" : `${totalCalls ?? "—"} alltime`}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* Active Pipeline */}
+          <div className="flex flex-col gap-2">
+            <div className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-4">
+              Active Pipeline
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="flex flex-col gap-2 rounded-[8px] border border-border-strong bg-surface p-4 shadow-[var(--shadow-sm)]">
+                <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
+                  In Discussions
+                </span>
+                <span className="font-mono text-[28px] font-semibold leading-none tabular-nums text-ink">
+                  {isLoading ? "—" : activeInDiscussions}
+                </span>
+              </div>
+              <div className="flex flex-col gap-2 rounded-[8px] border border-border-strong bg-surface p-4 shadow-[var(--shadow-sm)]">
+                <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
+                  Builder Interview
+                </span>
+                <span className="font-mono text-[28px] font-semibold leading-none tabular-nums text-ink">
+                  {isLoading ? "—" : activeBuilderInterview}
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
       {/* ── KPI cards ─────────────────────────────────────────────────── */}
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <MetricCard
