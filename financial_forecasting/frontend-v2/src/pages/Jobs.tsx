@@ -1,15 +1,17 @@
 import { useState } from "react";
-import { BarChart3, Kanban } from "lucide-react";
+import { BarChart3, Kanban, Users } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { cn } from "@/lib/utils";
 import { JobsTeam } from "./jobs/JobsTeam";
 import { JobsLeadership } from "./jobs/JobsLeadership";
+import { JobsContacts } from "./jobs/JobsContacts";
 
-type View = "team" | "leadership";
+type View = "team" | "leadership" | "contacts";
 
 const VIEWS = [
-  { id: "team" as View,       label: "Team View",       icon: Kanban,   desc: "Day-to-day deal management" },
-  { id: "leadership" as View, label: "Leadership",      icon: BarChart3, desc: "Pipeline health & metrics" },
+  { id: "team" as View,       label: "Deals",      icon: Kanban,   desc: "Day-to-day deal management" },
+  { id: "contacts" as View,   label: "Contacts",   icon: Users,    desc: "All employer contacts" },
+  { id: "leadership" as View, label: "Leadership", icon: BarChart3, desc: "Pipeline health & metrics" },
 ];
 
 export function JobsPage() {
@@ -46,6 +48,7 @@ export function JobsPage() {
 
       <div className="mt-2">
         {view === "team"       && <JobsTeam />}
+        {view === "contacts"   && <JobsContacts />}
         {view === "leadership" && <JobsLeadership />}
       </div>
     </div>

@@ -166,6 +166,37 @@ export const ACTIVE_STAGES: JobStage[] = [
 interface ApiResponse<T> { success: boolean; data: T }
 interface ListResponse<T> { success: boolean; data: T[]; total: number }
 
+export interface JobContactWithDeal extends JobContact {
+  airtable_id: string | null;
+  deal: { id: string; account_name: string; stage: JobStage } | null;
+}
+
+export interface ContactFilters {
+  stage?: string;
+  search?: string;
+  company?: string;
+  limit?: number;
+}
+
+export function useJobsContacts(filters: ContactFilters = {}) {
+  const params = new URLSearchParams();
+  if (filters.stage)   params.set("stage",   filters.stage);
+  if (filters.search)  params.set("search",  filters.search);
+  if (filters.company) params.set("company", filters.company);
+  params.set("limit", String(filters.limit ?? 200));
+
+  return useQuery<{ data: JobContactWithDeal[]; total: number }>({
+    queryKey: ["jobs", "contacts", filters],
+    queryFn: async () => {
+      const { data } = await api.get<{ success: boolean; data: JobContactWithDeal[]; total: number }>(
+        `/api/jobs/contacts?${params}`
+      );
+      return { data: data.data, total: data.total };
+    },
+    staleTime: 60_000,
+  });
+}
+
 export function useContactsSummary() {
   return useQuery<ContactsSummary>({
     queryKey: ["jobs", "contacts-summary"],

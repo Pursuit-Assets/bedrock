@@ -77,6 +77,94 @@ class OpportunityUpdate(BaseModel):
     note: Optional[str] = None  # optional note when changing stage
 
 
+@router.get("/contacts")
+async def list_contacts(
+    stage: Optional[str] = Query(None),
+    company: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
+    limit: int = Query(200, le=500),
+    offset: int = Query(0),
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """All employer contacts from Airtable, with their linked deal where findable."""
+    filters = ["c.airtable_id IS NOT NULL"]
+    params: list = []
+    i = 1
+
+    if stage:
+        filters.append(f"c.contact_stage = ${i}"); params.append(stage); i += 1
+    if company:
+        filters.append(f"(lower(c.current_company) LIKE lower(${i}) OR lower(c.full_name) LIKE lower(${i}))")
+        params.append(f"%{company}%"); i += 1
+    if search:
+        filters.append(f"(lower(c.full_name) LIKE lower(${i}) OR lower(c.email) LIKE lower(${i}) OR lower(c.current_company) LIKE lower(${i}) OR lower(c.current_title) LIKE lower(${i}))")
+        params.append(f"%{search}%"); i += 1
+
+    where = " AND ".join(filters)
+    rows = await conn.fetch(
+        f"""
+        SELECT
+            c.contact_id,
+            c.full_name,
+            c.first_name,
+            c.last_name,
+            c.email,
+            c.current_title,
+            c.current_company,
+            c.contact_stage,
+            c.linkedin_url,
+            c.notes,
+            c.airtable_id,
+            -- linked deal via sf_contact_ids
+            jo.id           AS deal_id,
+            jo.account_name AS deal_account,
+            jo.stage        AS deal_stage,
+            -- OR via company name match (fallback)
+            jo2.id           AS deal_id_by_company,
+            jo2.account_name AS deal_account_by_company,
+            jo2.stage        AS deal_stage_by_company
+        FROM public.contacts c
+        -- direct link via sf_contact_ids airtable: ref
+        LEFT JOIN bedrock.jobs_opportunity jo
+            ON jo.deleted_at IS NULL
+            AND ('airtable:' || c.airtable_id) = ANY(jo.sf_contact_ids)
+        -- company name fuzzy match fallback
+        LEFT JOIN bedrock.jobs_opportunity jo2
+            ON jo2.deleted_at IS NULL
+            AND jo.id IS NULL  -- only use fallback when no direct link
+            AND (
+                lower(jo2.account_name) = lower(c.current_company)
+                OR lower(jo2.account_name) LIKE '%' || lower(split_part(c.current_company, '.', 1)) || '%'
+                OR lower(c.current_company) LIKE '%' || lower(jo2.account_name) || '%'
+            )
+        WHERE {where}
+        ORDER BY c.contact_stage NULLS LAST, c.full_name
+        LIMIT ${i} OFFSET ${i+1}
+        """,
+        *params, limit, offset,
+    )
+    total = await conn.fetchval(
+        f"SELECT count(*) FROM public.contacts c WHERE {where}", *params
+    )
+    return {
+        "success": True,
+        "total": total,
+        "data": [
+            {
+                **{k: v for k, v in dict(r).items() if not k.startswith("deal_")},
+                "deal": (
+                    {"id": str(r["deal_id"]), "account_name": r["deal_account"], "stage": r["deal_stage"]}
+                    if r["deal_id"] else
+                    {"id": str(r["deal_id_by_company"]), "account_name": r["deal_account_by_company"], "stage": r["deal_stage_by_company"]}
+                    if r["deal_id_by_company"] else None
+                ),
+            }
+            for r in rows
+        ],
+    }
+
+
 @router.get("/contacts/summary")
 async def get_contacts_summary(user=Depends(require_auth), conn=Depends(get_db)):
     """Contacts & outreach metrics for the leadership dashboard."""
