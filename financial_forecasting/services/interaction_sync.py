@@ -70,15 +70,28 @@ async def run_interaction_sync(conn_or_pool, days_back: int = 90) -> dict[str, A
 
     total_gmail = sum(r["gmail"].get("upserted", 0) for r in results)
     total_cal = sum(r["calendar"].get("upserted", 0) for r in results)
+
+    # Domain enrichment pass — auto-map new domains found in this run
+    domains_mapped = 0
+    try:
+        from services.domain_enrichment import auto_enrich_domains
+        enrich_conn = await _get_conn()
+        try:
+            enrich_result = await auto_enrich_domains(enrich_conn)
+            domains_mapped = enrich_result.get("auto_mapped", 0)
+        finally:
+            await _release_conn(enrich_conn)
+    except Exception as e:
+        logger.error("domain enrichment failed: %s", e)
+
     logger.info(
-        "interaction sync complete: %d staff, %d gmail, %d calendar",
-        len(results),
-        total_gmail,
-        total_cal,
+        "interaction sync complete: %d staff, %d gmail, %d calendar, %d domains auto-mapped",
+        len(results), total_gmail, total_cal, domains_mapped,
     )
     return {
         "staff_count": len(results),
         "gmail_upserted": total_gmail,
         "calendar_upserted": total_cal,
+        "domains_auto_mapped": domains_mapped,
         "by_staff": results,
     }
