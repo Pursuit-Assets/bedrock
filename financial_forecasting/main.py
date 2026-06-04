@@ -66,9 +66,14 @@ from routes.activities import router as activities_router
 from routes.platform_intake import router as platform_intake_router
 from routes.awards import router as awards_router
 from routes.saved_views import router as saved_views_router
+from routes.search import router as search_router
+from routes.pebble_proxy import router as pebble_proxy_router, close as close_pebble_proxy
+from routes.chisel_proxy import router as chisel_proxy_router, close as close_chisel_proxy
 from routes.affiliations import router as affiliations_router
 from routes.airtable_jobs import router as airtable_jobs_router
 from routes.sputnik import router as sputnik_router
+from services.search_indexer import run_worker as run_search_indexer_worker
+from services.pebble_audit import PebbleWriteAuditMiddleware
 from auth import get_current_user_dep, require_auth, IS_PRODUCTION, JWT_SECRET_KEY
 from security import validate_salesforce_id, escape_soql_string
 from services.crm_parser import refresh_opp_cache as _refresh_opp_cache
@@ -98,6 +103,21 @@ app = FastAPI(
 limiter = Limiter(key_func=get_remote_address, default_limits=["60/minute"])
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# Pebble write-audit middleware — captures every internal-key write
+# to a Pebble-relevant route into bedrock.pebble_write_audit. Phase 0.8.
+# pool_provider returns the asyncpg pool from main.py's _services dict
+# so the middleware doesn't have to import a top-level symbol that
+# would couple the module to main.py.
+def _audit_pool_provider():
+    try:
+        from db import get_pool
+        return get_pool()
+    except Exception:
+        return None
+
+
+app.add_middleware(PebbleWriteAuditMiddleware, pool_provider=_audit_pool_provider)
 
 # Session middleware (required for Authlib OAuth state)
 app.add_middleware(
@@ -150,6 +170,9 @@ app.include_router(activities_router)
 app.include_router(platform_intake_router)
 app.include_router(awards_router)
 app.include_router(saved_views_router)
+app.include_router(search_router)
+app.include_router(pebble_proxy_router)
+app.include_router(chisel_proxy_router)
 app.include_router(affiliations_router)
 app.include_router(airtable_jobs_router)
 app.include_router(sputnik_router)
@@ -252,6 +275,27 @@ async def startup_event():
         except Exception as e:
             logger.warning(f"sf_notification_poller failed to start: {e}")
 
+    # Search indexer worker — drains bedrock.search_index_queue and
+    # upserts bedrock.search_doc rows. Lives on the Bedrock process
+    # alongside the other lifecycle services so search reflects writes
+    # within seconds rather than waiting for a separate worker pod.
+    try:
+        from db import get_pool
+        pool = get_pool()
+        if pool is not None:
+            stop_event = asyncio.Event()
+            _services["search_indexer_stop"] = stop_event
+            _services["search_indexer_task"] = asyncio.create_task(
+                run_search_indexer_worker(pool, stop_event),
+            )
+            logger.info("Search indexer worker started")
+        else:
+            logger.warning("Search indexer not started: db pool unavailable")
+    except Exception:
+        # Indexer is non-critical at startup — search remains
+        # available, it just won't reflect new writes until restart.
+        logger.exception("Failed to start search indexer worker")
+
     logger.info(f"API started — connected services: {client.connected_services or ['none']}")
 
 
@@ -259,6 +303,25 @@ async def startup_event():
 async def shutdown_event():
     """Cleanup on shutdown."""
     logger.info("Shutting down Financial Forecasting API...")
+
+    # Stop the search indexer cleanly — give it 5s to drain in-flight
+    # rows; cancel hard if it doesn't.
+    stop_event = _services.get("search_indexer_stop")
+    task = _services.get("search_indexer_task")
+    if stop_event is not None:
+        stop_event.set()
+    if task is not None:
+        try:
+            await asyncio.wait_for(task, timeout=5.0)
+        except asyncio.TimeoutError:
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+
+    await close_pebble_proxy()
+    await close_chisel_proxy()
     await close_db()
     client = _services.get("mcp_client")
     if client:

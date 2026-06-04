@@ -93,11 +93,13 @@ async def handle_t1(
             })
             return None
 
+    # search_person is web_search (sync, still on to_thread); the rest are
+    # async-native post-P1.
     web_results, wiki_data, oc_data, fec_data = await asyncio.gather(
         _timed_fetch("web_search", asyncio.to_thread(search_person, name, org_name) if name else _noop()),
-        _timed_fetch("wikipedia", asyncio.to_thread(fetch_full_profile, name) if name else _noop()),
-        _timed_fetch("opencorporates", asyncio.to_thread(search_officers, name) if name else _noop()),
-        _timed_fetch("fec", asyncio.to_thread(search_contributions, name, 3) if name else _noop()),
+        _timed_fetch("wikipedia", fetch_full_profile(name) if name else _noop()),
+        _timed_fetch("opencorporates", search_officers(name) if name else _noop()),
+        _timed_fetch("fec", search_contributions(name, 3) if name else _noop()),
     )
     web_results = web_results or []
 
@@ -105,7 +107,7 @@ async def handle_t1(
     if wiki_data is None and org_name:
         try:
             t0_wiki_fb = time.time()
-            wiki_data = await asyncio.to_thread(fetch_full_profile, org_name)
+            wiki_data = await fetch_full_profile(org_name)
             if wiki_data:
                 wiki_data["fallback_source"] = "org_article"
                 logger.info("T1: Wikipedia org fallback found article for %s", org_name)

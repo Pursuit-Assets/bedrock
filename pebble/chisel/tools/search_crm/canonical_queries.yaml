@@ -1,0 +1,14 @@
+queries:
+  - id: smoke_find_by_name
+    user_query: "Find Acme Corp in our records"
+    expected_plan:
+      - tool: search_crm
+        args_includes:
+          query: "Acme Corp"
+    tags: [smoke]
+
+  - id: smoke_find_by_email
+    user_query: "Search for jane@example.com"
+    expected_plan:
+      - tool: search_crm
+    tags: [smoke]

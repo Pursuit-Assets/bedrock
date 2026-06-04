@@ -49,12 +49,12 @@ async def run_public_profile_cluster(
     # --- Wikipedia (fetch early so other clusters can reuse) ---
     if not ctx.has_source("wiki_data") and budget.can_call():
         try:
-            wiki_data = await asyncio.to_thread(fetch_full_profile, name)
+            wiki_data = await fetch_full_profile(name)
             budget.record_call()
 
             # Org fallback if personal article not found
             if wiki_data is None and org_name and org_name != name and budget.can_call():
-                wiki_data = await asyncio.to_thread(fetch_full_profile, org_name)
+                wiki_data = await fetch_full_profile(org_name)
                 if wiki_data:
                     wiki_data["fallback_source"] = "org_article"
                 budget.record_call()

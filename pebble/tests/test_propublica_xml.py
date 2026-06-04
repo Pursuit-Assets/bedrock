@@ -2,7 +2,7 @@
 
 import os
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, AsyncMock
 
 import pytest
 
@@ -110,31 +110,37 @@ class TestGetLatestObjectId:
 
 
 class TestDownload990Xml:
-    """Tests for download_990_xml() — mocked HTTP + cache."""
+    """Tests for download_990_xml() — mocked HTTP + cache.
 
+    Patches updated post-P1: download_990_xml is async and the HTTP
+    layer moved to pebble.data_sources._http.get_with_retry.
+    """
+
+    @pytest.mark.asyncio
     @patch("pebble.storage.cache.get_cached")
-    def test_cache_hit(self, mock_get_cached):
+    async def test_cache_hit(self, mock_get_cached):
         """Cache hit returns stored XML without HTTP call."""
         mock_get_cached.return_value = {"xml": "<Return>cached</Return>"}
 
-        result = download_990_xml("12345")
+        result = await download_990_xml("12345")
         assert result == "<Return>cached</Return>"
         mock_get_cached.assert_called_once_with("propublica_990_xml", "12345")
 
+    @pytest.mark.asyncio
     @patch("pebble.storage.cache.set_cached")
-    @patch("pebble.data_sources.propublica._get_with_retry")
+    @patch("pebble.data_sources.propublica.get_with_retry", new_callable=AsyncMock)
     @patch("pebble.storage.cache.get_cached", return_value=None)
-    def test_cache_miss_downloads(self, mock_get_cached, mock_get, mock_set_cached):
+    async def test_cache_miss_downloads(self, mock_get_cached, mock_get, mock_set_cached):
         """Cache miss triggers HTTP download and caches result."""
         mock_response = MagicMock()
         mock_response.text = "<Return>fresh</Return>"
         mock_get.return_value = mock_response
 
-        result = download_990_xml("67890")
+        result = await download_990_xml("67890")
         assert result == "<Return>fresh</Return>"
 
         # Verify correct IRS S3 URL
-        mock_get.assert_called_once_with(
+        mock_get.assert_awaited_once_with(
             "https://s3.amazonaws.com/irs-form-990/67890_public.xml"
         )
 
@@ -145,8 +151,10 @@ class TestDownload990Xml:
             ttl_seconds=2_592_000,
         )
 
-    @patch("pebble.data_sources.propublica._get_with_retry", return_value=None)
+    @pytest.mark.asyncio
+    @patch("pebble.data_sources.propublica.get_with_retry", new_callable=AsyncMock,
+           return_value=None)
     @patch("pebble.storage.cache.get_cached", return_value=None)
-    def test_download_failure(self, mock_get_cached, mock_get):
+    async def test_download_failure(self, mock_get_cached, mock_get):
         """HTTP failure returns None."""
-        assert download_990_xml("bad_id") is None
+        assert await download_990_xml("bad_id") is None

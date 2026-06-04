@@ -1,12 +1,18 @@
-"""Wikipedia search + summary + full article parsing. No auth."""
+"""Wikipedia search + summary + full article parsing. No auth.
+
+P1 — native async via _http with circuit breaker.
+"""
+
+from __future__ import annotations
 
 import logging
 import urllib.parse
 
-import httpx
-
 from ._circuit import CircuitBreaker
-from .wikipedia_parser import parse_infobox, extract_board_memberships, extract_career_history
+from ._http import get_with_retry
+from .wikipedia_parser import (
+    parse_infobox, extract_board_memberships, extract_career_history,
+)
 
 logger = logging.getLogger("pebble.data_sources.wikipedia")
 
@@ -18,27 +24,18 @@ _breaker = CircuitBreaker("wikipedia")
 _USER_AGENT = "PebbleResearch/0.2 (pursuit.org; prospect research pipeline)"
 
 
-def _get(url: str, params: dict | None = None, headers: dict | None = None) -> httpx.Response | None:
-    if _breaker.is_open():
-        logger.info("Circuit open for wikipedia — skipping")
-        return None
+async def _get(url: str, params: dict | None = None, headers: dict | None = None):
     merged_headers = {"User-Agent": _USER_AGENT}
     if headers:
         merged_headers.update(headers)
-    try:
-        r = httpx.get(url, params=params, headers=merged_headers, timeout=15.0)
-        r.raise_for_status()
-        _breaker.record_success()
-        return r
-    except httpx.HTTPError:
-        _breaker.record_failure()
-        return None
+    return await get_with_retry(
+        url, params=params, headers=merged_headers, breaker=_breaker,
+    )
 
 
-def fetch_summary(name: str) -> dict | None:
+async def fetch_summary(name: str) -> dict | None:
     """Search Wikipedia and return summary for the best match. Returns None if no match."""
-    # Step 1: search
-    r = _get(SEARCH_URL, params={
+    r = await _get(SEARCH_URL, params={
         "action": "query",
         "list": "search",
         "srsearch": name,
@@ -55,9 +52,8 @@ def fetch_summary(name: str) -> dict | None:
     except (ValueError, KeyError):
         return None
 
-    # Step 2: get summary
     encoded_title = urllib.parse.quote(title.replace(" ", "_"), safe="")
-    r2 = _get(
+    r2 = await _get(
         f"{SUMMARY_URL}/{encoded_title}",
         headers={"Accept": "application/json"},
     )
@@ -79,30 +75,23 @@ def _strip_wikitext_to_plain(wikitext: str) -> str:
     """Convert raw wikitext to rough plain text for NLP extraction."""
     import re
     text = wikitext
-    # Remove refs
     text = re.sub(r"<ref[^>]*(?:>.*?</ref>|/>)", "", text, flags=re.DOTALL)
-    # Remove HTML tags
     text = re.sub(r"<[^>]+>", "", text)
-    # Convert [[link|display]] -> display, [[link]] -> link
     text = re.sub(r"\[\[(?:[^|\]]*\|)?([^\]]+)\]\]", r"\1", text)
-    # Remove templates (simple non-nested)
     text = re.sub(r"\{\{[^{}]*\}\}", "", text)
-    # Remove remaining markup
     text = re.sub(r"'{2,}", "", text)
-    # Clean whitespace
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
 
 
-def fetch_full_profile(name: str) -> dict | None:
+async def fetch_full_profile(name: str) -> dict | None:
     """Search Wikipedia, fetch summary + full wikitext, parse infobox and extract structured data.
 
     Returns enriched dict with: title, extract, description, content_urls,
     full_text, infobox, categories, board_memberships, career_history.
     Returns None if no match found.
     """
-    # Step 1: search for the person
-    r = _get(SEARCH_URL, params={
+    r = await _get(SEARCH_URL, params={
         "action": "query",
         "list": "search",
         "srsearch": name,
@@ -119,9 +108,8 @@ def fetch_full_profile(name: str) -> dict | None:
     except (ValueError, KeyError):
         return None
 
-    # Step 2: get summary via REST API
     encoded_title = urllib.parse.quote(title.replace(" ", "_"), safe="")
-    r_summary = _get(
+    r_summary = await _get(
         f"{SUMMARY_URL}/{encoded_title}",
         headers={"Accept": "application/json"},
     )
@@ -138,8 +126,7 @@ def fetch_full_profile(name: str) -> dict | None:
         except (ValueError, KeyError):
             summary_data = {"title": title, "extract": "", "description": "", "content_urls": ""}
 
-    # Step 3: get full wikitext + categories via action=parse
-    r_parse = _get(PARSE_URL, params={
+    r_parse = await _get(PARSE_URL, params={
         "action": "parse",
         "page": title,
         "prop": "wikitext|categories",
@@ -148,9 +135,9 @@ def fetch_full_profile(name: str) -> dict | None:
 
     full_text = ""
     infobox = {}
-    categories = []
-    board_memberships = []
-    career_history = []
+    categories: list[str] = []
+    board_memberships: list[str] = []
+    career_history: list[str] = []
 
     if r_parse:
         try:
@@ -164,7 +151,10 @@ def fetch_full_profile(name: str) -> dict | None:
                 career_history = extract_career_history(full_text)
 
             raw_cats = parse_data.get("categories", [])
-            categories = [c.get("*", "") for c in raw_cats if isinstance(c, dict) and not c.get("hidden")]
+            categories = [
+                c.get("*", "") for c in raw_cats
+                if isinstance(c, dict) and not c.get("hidden")
+            ]
         except (ValueError, KeyError):
             logger.warning("Failed to parse wikitext for %s", title)
 
