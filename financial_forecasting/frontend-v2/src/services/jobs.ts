@@ -297,6 +297,45 @@ export function useCreateOpportunity() {
   });
 }
 
+export function useUpdateContact() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, ...body }: { id: number; [k: string]: unknown }) => {
+      const { data } = await api.patch<ApiResponse<JobContact>>(`/api/jobs/contacts/${id}`, body);
+      return data.data;
+    },
+    onSuccess: (_d, vars) => {
+      qc.invalidateQueries({ queryKey: ["jobs", "contacts"] });
+      qc.invalidateQueries({ queryKey: ["jobs", "contact", vars.id] });
+      toast.success("Contact updated");
+    },
+    onError: () => toast.error("Update failed"),
+  });
+}
+
+export interface ActivityCreateBody {
+  jobs_opportunity_id: string;
+  type: "email" | "call" | "meeting" | "note";
+  description: string;
+  activity_date?: string;
+  subject?: string;
+}
+
+export function useLogActivity() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (body: ActivityCreateBody) => {
+      const { data } = await api.post<ApiResponse<ActivityEntry>>("/api/jobs/activity", body);
+      return data.data;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["jobs"] });
+      toast.success("Activity logged");
+    },
+    onError: () => toast.error("Failed to log activity"),
+  });
+}
+
 export function useDeleteOpportunity() {
   const qc = useQueryClient();
   return useMutation({

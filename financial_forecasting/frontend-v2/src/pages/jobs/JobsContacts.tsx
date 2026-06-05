@@ -1,14 +1,17 @@
 import { useState } from "react";
-import { Search, Mail, Linkedin, Building2, ChevronRight, ChevronDown, Phone, FileText, Calendar, MessageSquare } from "lucide-react";
+import { Search, Mail, Linkedin, Building2, ChevronRight, ChevronDown, Phone, FileText, Calendar, MessageSquare, Plus } from "lucide-react";
 import { formatDistanceToNow, format } from "date-fns";
 import { cn } from "@/lib/utils";
 import {
   useJobsContacts,
   useContactDetail,
+  useUpdateContact,
+  useLogActivity,
   STAGE_LABELS,
   type JobContactWithDeal,
   type JobStage,
 } from "@/services/jobs";
+import { InlineText, InlineSelect } from "@/components/ui/InlineEdit";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -66,10 +69,130 @@ function ownerName(email: string | null) {
   return local.charAt(0).toUpperCase() + local.slice(1);
 }
 
+// ── Activity log form ────────────────────────────────────────────────────────
+
+const ACTIVITY_TYPE_OPTIONS = [
+  { value: "email",   label: "Email" },
+  { value: "call",    label: "Call" },
+  { value: "meeting", label: "Meeting" },
+  { value: "note",    label: "Note" },
+] as const;
+
+type ActivityType = typeof ACTIVITY_TYPE_OPTIONS[number]["value"];
+
+function todayIso() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function LogActivityForm({
+  dealId,
+  onClose,
+}: {
+  dealId: string;
+  onClose: () => void;
+}) {
+  const [type, setType] = useState<ActivityType>("email");
+  const [date, setDate] = useState(todayIso());
+  const [description, setDescription] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const { mutateAsync: logActivity } = useLogActivity();
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!description.trim()) return;
+    setSubmitting(true);
+    try {
+      await logActivity({
+        jobs_opportunity_id: dealId,
+        type,
+        description: description.trim(),
+        activity_date: date,
+      });
+      onClose();
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <form onSubmit={handleSubmit} className="mb-4 rounded-lg border border-border-strong bg-surface p-3 flex flex-col gap-3">
+      {/* Type pills */}
+      <div className="flex gap-1.5 flex-wrap">
+        {ACTIVITY_TYPE_OPTIONS.map(opt => (
+          <button
+            key={opt.value}
+            type="button"
+            onClick={() => setType(opt.value)}
+            className={cn(
+              "px-3 py-1 rounded-full text-[11px] font-medium border transition-colors",
+              type === opt.value
+                ? "bg-accent text-white border-accent"
+                : "bg-surface text-ink-3 border-border-strong hover:border-accent hover:text-accent"
+            )}
+          >
+            {opt.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Date */}
+      <div>
+        <label className="text-[10px] font-semibold uppercase tracking-wide text-ink-4 mb-0.5 block">Date</label>
+        <input
+          type="date"
+          value={date}
+          onChange={e => setDate(e.target.value)}
+          className="text-[12px] border border-border-strong rounded px-2 py-1 bg-surface text-ink focus:outline-none focus:ring-1 focus:ring-accent"
+        />
+      </div>
+
+      {/* Description */}
+      <div>
+        <label className="text-[10px] font-semibold uppercase tracking-wide text-ink-4 mb-0.5 block">Description</label>
+        <textarea
+          rows={3}
+          required
+          value={description}
+          onChange={e => setDescription(e.target.value)}
+          placeholder="What happened?"
+          className="w-full text-[12px] border border-border-strong rounded px-2 py-1.5 bg-surface text-ink placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent resize-none"
+        />
+      </div>
+
+      {/* Actions */}
+      <div className="flex items-center gap-3">
+        <button
+          type="submit"
+          disabled={submitting || !description.trim()}
+          className="px-3 py-1.5 rounded-md bg-accent text-white text-[12px] font-medium disabled:opacity-50 hover:bg-accent/90 transition-colors"
+        >
+          {submitting ? "Logging…" : "Log"}
+        </button>
+        <button
+          type="button"
+          onClick={onClose}
+          className="text-[12px] text-ink-3 hover:text-ink transition-colors"
+        >
+          Cancel
+        </button>
+      </div>
+    </form>
+  );
+}
+
 // ── Contact expand panel ─────────────────────────────────────────────────────
+
+const CONTACT_STAGE_EDIT_OPTIONS = [
+  { value: "active",           label: "Active" },
+  { value: "initial_outreach", label: "Outreach" },
+  { value: "lead",             label: "Lead" },
+  { value: "on_hold",          label: "On Hold" },
+] as const;
 
 function ContactDetail({ contactId }: { contactId: number }) {
   const { data, isLoading } = useContactDetail(contactId);
+  const { mutateAsync: updateContact } = useUpdateContact();
+  const [showLogForm, setShowLogForm] = useState(false);
 
   if (isLoading) {
     return (
@@ -85,6 +208,10 @@ function ContactDetail({ contactId }: { contactId: number }) {
     ? DEAL_STAGE_STYLES[data.deal.stage] ?? "bg-stone-100 text-stone-500"
     : null;
 
+  const save = (field: string) => async (value: string) => {
+    await updateContact({ id: contactId, [field]: value });
+  };
+
   return (
     <div className="border-t border-border-strong bg-surface-2">
       <div className="flex gap-6 p-5">
@@ -95,52 +222,77 @@ function ContactDetail({ contactId }: { contactId: number }) {
             <div className="w-10 h-10 rounded-full bg-accent-soft flex items-center justify-center text-[13px] font-bold text-accent-ink flex-shrink-0">
               {initials(data.full_name)}
             </div>
-            <div>
-              <div className="text-[14px] font-semibold text-ink">{data.full_name}</div>
-              {data.contact_stage && (
-                <span className={cn("inline-flex items-center rounded-full px-2 py-0.5 text-[10px] leading-4 font-medium mt-0.5",
-                  CONTACT_STAGE_STYLES[data.contact_stage] ?? "bg-stone-100 text-stone-500")}>
-                  {CONTACT_STAGE_LABELS[data.contact_stage] ?? data.contact_stage}
-                </span>
-              )}
+            <div className="min-w-0 flex-1">
+              <InlineText
+                value={data.full_name}
+                onSave={save("full_name")}
+                placeholder="Full name"
+                className="text-[14px] font-semibold text-ink"
+              />
+              <div className="mt-0.5 px-1.5">
+                <InlineSelect
+                  value={data.contact_stage ?? undefined}
+                  options={CONTACT_STAGE_EDIT_OPTIONS as unknown as { value: string; label: string }[]}
+                  onSave={save("contact_stage")}
+                  emptyLabel="Set stage"
+                  renderValue={(v) =>
+                    v ? (
+                      <span className={cn("inline-flex items-center rounded-full px-2 py-0.5 text-[10px] leading-4 font-medium",
+                        CONTACT_STAGE_STYLES[v] ?? "bg-stone-100 text-stone-500")}>
+                        {CONTACT_STAGE_LABELS[v] ?? v}
+                      </span>
+                    ) : (
+                      <span className="text-[10px] italic text-ink-4">Set stage</span>
+                    )
+                  }
+                />
+              </div>
             </div>
           </div>
 
           {/* Fields */}
           <div className="flex flex-col gap-2.5 text-[12px]">
-            {data.current_title && (
-              <div>
-                <div className="text-ink-4 uppercase tracking-wide text-[10px] font-semibold mb-0.5">Title</div>
-                <div className="text-ink-2">{data.current_title}</div>
-              </div>
-            )}
-            {data.current_company && (
-              <div>
-                <div className="text-ink-4 uppercase tracking-wide text-[10px] font-semibold mb-0.5">Company</div>
-                <div className="text-ink-2">{data.current_company}</div>
-              </div>
-            )}
-            {data.email && (
-              <div>
-                <div className="text-ink-4 uppercase tracking-wide text-[10px] font-semibold mb-0.5">Email</div>
-                <a href={`mailto:${data.email}`} className="text-accent hover:underline">{data.email}</a>
-              </div>
-            )}
-            {data.linkedin_url && (
-              <div>
-                <a href={data.linkedin_url} target="_blank" rel="noopener noreferrer"
-                  className="flex items-center gap-1.5 text-accent hover:underline">
-                  <Linkedin size={12} />
-                  LinkedIn profile
-                </a>
-              </div>
-            )}
-            {data.notes && (
-              <div>
-                <div className="text-ink-4 uppercase tracking-wide text-[10px] font-semibold mb-0.5">Notes</div>
-                <div className="text-ink-2 whitespace-pre-wrap leading-relaxed">{data.notes}</div>
-              </div>
-            )}
+            <div>
+              <div className="text-ink-4 uppercase tracking-wide text-[10px] font-semibold mb-0.5">Title</div>
+              <InlineText
+                value={data.current_title}
+                onSave={save("current_title")}
+                placeholder="Current title"
+              />
+            </div>
+            <div>
+              <div className="text-ink-4 uppercase tracking-wide text-[10px] font-semibold mb-0.5">Company</div>
+              <InlineText
+                value={data.current_company}
+                onSave={save("current_company")}
+                placeholder="Current company"
+              />
+            </div>
+            <div>
+              <div className="text-ink-4 uppercase tracking-wide text-[10px] font-semibold mb-0.5">Email</div>
+              <InlineText
+                value={data.email}
+                onSave={save("email")}
+                placeholder="Email address"
+              />
+            </div>
+            <div>
+              <div className="text-ink-4 uppercase tracking-wide text-[10px] font-semibold mb-0.5">LinkedIn</div>
+              <InlineText
+                value={data.linkedin_url}
+                onSave={save("linkedin_url")}
+                placeholder="LinkedIn URL"
+              />
+            </div>
+            <div>
+              <div className="text-ink-4 uppercase tracking-wide text-[10px] font-semibold mb-0.5">Notes</div>
+              <InlineText
+                value={data.notes}
+                onSave={save("notes")}
+                placeholder="Add notes…"
+                multiline
+              />
+            </div>
           </div>
 
           {/* Linked deal */}
@@ -167,9 +319,34 @@ function ContactDetail({ contactId }: { contactId: number }) {
 
         {/* ── Right: activity timeline ── */}
         <div className="flex-1 min-w-0">
-          <div className="text-[11px] font-semibold uppercase tracking-wider text-ink-3 mb-3">
-            Engagement History ({data.activity.length})
+          {/* Header + Log Activity button */}
+          <div className="flex items-center justify-between mb-3">
+            <div className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">
+              Engagement History ({data.activity.length})
+            </div>
+            {data.deal ? (
+              <button
+                type="button"
+                onClick={() => setShowLogForm(v => !v)}
+                className="flex items-center gap-1 px-2.5 py-1 rounded-md border border-border-strong bg-surface text-[11px] font-medium text-ink-2 hover:border-accent hover:text-accent transition-colors"
+              >
+                <Plus size={11} />
+                Log Activity
+              </button>
+            ) : (
+              <span className="text-[11px] text-ink-4 italic">
+                Link contact to a deal first to log activity.
+              </span>
+            )}
           </div>
+
+          {/* Inline log form */}
+          {showLogForm && data.deal && (
+            <LogActivityForm
+              dealId={data.deal.id}
+              onClose={() => setShowLogForm(false)}
+            />
+          )}
 
           {data.activity.length === 0 ? (
             <div className="text-[13px] text-ink-4 italic py-4">

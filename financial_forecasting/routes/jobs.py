@@ -583,3 +583,91 @@ async def delete_opportunity(
     if result == "UPDATE 0":
         raise HTTPException(404, "Opportunity not found")
     return {"success": True, "data": {"deleted": True}}
+
+
+# ── Contact PATCH ────────────────────────────────────────────────────────────
+
+class ContactUpdate(BaseModel):
+    full_name:       Optional[str] = None
+    email:           Optional[str] = None
+    current_title:   Optional[str] = None
+    current_company: Optional[str] = None
+    contact_stage:   Optional[str] = None
+    linkedin_url:    Optional[str] = None
+    notes:           Optional[str] = None
+
+
+@router.patch("/contacts/{contact_id}")
+async def update_contact(
+    contact_id: int,
+    body: ContactUpdate,
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    existing = await conn.fetchrow(
+        "SELECT contact_id FROM public.contacts WHERE contact_id=$1 AND airtable_id IS NOT NULL",
+        contact_id,
+    )
+    if not existing:
+        raise HTTPException(404, "Contact not found")
+
+    sets, params = [], []
+    i = 1
+    for field in ("full_name", "email", "current_title", "current_company",
+                  "contact_stage", "linkedin_url", "notes"):
+        val = getattr(body, field, None)
+        if val is not None:
+            sets.append(f"{field} = ${i}"); params.append(val); i += 1
+
+    if not sets:
+        row = await conn.fetchrow("SELECT * FROM public.contacts WHERE contact_id=$1", contact_id)
+        return {"success": True, "data": dict(row)}
+
+    params.append(contact_id)
+    await conn.execute(
+        f"UPDATE public.contacts SET {', '.join(sets)}, updated_at=now() WHERE contact_id=${i}",
+        *params,
+    )
+    row = await conn.fetchrow("SELECT * FROM public.contacts WHERE contact_id=$1", contact_id)
+    return {"success": True, "data": dict(row)}
+
+
+# ── Activity logging ─────────────────────────────────────────────────────────
+
+class ActivityCreate(BaseModel):
+    jobs_opportunity_id: str
+    type:                str          # email | call | meeting | note
+    description:         str
+    activity_date:       Optional[datetime] = None
+    subject:             Optional[str] = None
+
+
+@router.post("/activity")
+async def log_activity(
+    body: ActivityCreate,
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    user_email = user.get("email") if isinstance(user, dict) else getattr(user, "email", None)
+    if body.type not in ("email", "call", "meeting", "note"):
+        raise HTTPException(400, f"Invalid type: {body.type}")
+
+    import uuid as _uuid
+    opp_id = _uuid.UUID(body.jobs_opportunity_id)
+
+    row_id = await conn.fetchval(
+        """
+        INSERT INTO bedrock.activity
+            (type, subject, description, activity_date, source, jobs_opportunity_id, logged_by)
+        VALUES ($1, $2, $3, COALESCE($4, now()), 'manual', $5, $6)
+        RETURNING id
+        """,
+        body.type,
+        body.subject or f"{body.type.capitalize()} — {user_email}",
+        body.description,
+        body.activity_date,
+        opp_id,
+        user_email,
+    )
+    row = await conn.fetchrow("SELECT * FROM bedrock.activity WHERE id=$1", row_id)
+    return {"success": True, "data": dict(row)}

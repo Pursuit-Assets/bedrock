@@ -3,6 +3,7 @@ import {
   useJobsOpportunities,
   useJobsOpportunity,
   useUpdateOpportunity,
+  useLogActivity,
   STAGE_LABELS,
   DEAL_TYPE_LABELS,
   ACTIVE_STAGES,
@@ -11,8 +12,10 @@ import {
   type DealType,
   type JobsOpportunity,
   type JobContact,
+  type ActivityCreateBody,
 } from "@/services/jobs";
 import { JobStageChip, DealTypeChip } from "@/components/jobs/JobStageChip";
+import { InlineText, InlineDate } from "@/components/ui/InlineEdit";
 import { ChevronDown, ChevronRight, Building2, Users, Activity, Clock, Mail, Linkedin } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { format, formatDistanceToNow } from "date-fns";
@@ -106,11 +109,6 @@ function fmtShortDate(iso: string | null): string {
   }
 }
 
-function fmtSalary(n: number | null): string {
-  if (n == null) return "—";
-  return `$${n.toLocaleString("en-US")}`;
-}
-
 // ── Sub-components ────────────────────────────────────────────────────────────
 
 function OwnerAvatar({ email, size = "sm" }: { email: string | null; size?: "sm" | "md" }) {
@@ -183,6 +181,15 @@ function DealDetailPanel({ deal }: { deal: JobsOpportunity }) {
     updateOpp.mutate({ id: deal.id, deal_type: val === "" ? null : val });
   }
 
+  function patch(fields: Record<string, unknown>) {
+    return new Promise<void>((resolve, reject) => {
+      updateOpp.mutate({ id: deal.id, ...fields }, { onSuccess: () => resolve(), onError: reject });
+    });
+  }
+
+  // Contacts summary from detail
+  const contacts = detail?.contacts ?? [];
+
   return (
     <div
       className="grid min-h-[280px] grid-cols-[1fr_340px] border-t border-border-strong bg-surface"
@@ -214,6 +221,14 @@ function DealDetailPanel({ deal }: { deal: JobsOpportunity }) {
         </div>
 
         <div className="grid grid-cols-2 gap-x-6 gap-y-3">
+          <Field label="Role Title" className="col-span-2">
+            <InlineText
+              value={deal.title}
+              placeholder="Add role title…"
+              onSave={(v) => patch({ title: v || null })}
+            />
+          </Field>
+
           <Field label="Deal Type">
             <select
               value={deal.deal_type ?? ""}
@@ -229,18 +244,45 @@ function DealDetailPanel({ deal }: { deal: JobsOpportunity }) {
           </Field>
 
           <Field label="Owner">
-            <span className="flex items-center gap-1.5 text-[12px] text-ink-2">
-              <OwnerAvatar email={deal.owner_email} />
-              {ownerLabel(deal.owner_email)}
-            </span>
+            <InlineText
+              value={deal.owner_email}
+              placeholder="owner@pursuit.org"
+              onSave={(v) => patch({ owner_email: v || null })}
+            />
           </Field>
 
-          <Field label="Follow-up">
-            <span className="font-mono text-[12px] text-ink-2">{fmtShortDate(deal.follow_up_date)}</span>
+          <Field label="Follow-up Date">
+            <InlineDate
+              value={deal.follow_up_date}
+              onSave={(v) => patch({ follow_up_date: v })}
+              variant="long"
+            />
           </Field>
 
-          <Field label="Salary Expected">
-            <span className="font-mono text-[12px] text-ink-2">{fmtSalary(deal.salary_expected)}</span>
+          <Field label="Expected Salary $">
+            <InlineText
+              value={deal.salary_expected != null ? String(deal.salary_expected) : ""}
+              placeholder="—"
+              formatDisplay={(raw) => {
+                const n = Number(raw.replace(/[^0-9.]/g, ""));
+                return isNaN(n) ? raw : `$${n.toLocaleString("en-US")}`;
+              }}
+              onSave={(v) => {
+                const n = v === "" ? null : Number(v.replace(/[^0-9.]/g, ""));
+                return patch({ salary_expected: n === null || isNaN(n) ? null : n });
+              }}
+            />
+          </Field>
+
+          <Field label="Touch Count">
+            <InlineText
+              value={deal.touch_count > 0 ? String(deal.touch_count) : ""}
+              placeholder="0"
+              onSave={(v) => {
+                const n = v === "" ? 0 : parseInt(v, 10);
+                return patch({ touch_count: isNaN(n) ? 0 : n });
+              }}
+            />
           </Field>
 
           <Field label="Builders" className="col-span-2">
@@ -260,21 +302,34 @@ function DealDetailPanel({ deal }: { deal: JobsOpportunity }) {
             )}
           </Field>
 
-          {deal.description ? (
-            <Field label="Description" className="col-span-2">
-              <p className="text-[12px] leading-relaxed text-ink-2">{deal.description}</p>
-            </Field>
-          ) : null}
-        </div>
+          <Field label="Contacts" className="col-span-2">
+            {detailQ.isLoading ? (
+              <span className="text-[12px] text-ink-4">Loading…</span>
+            ) : contacts.length === 0 ? (
+              <span className="text-[12px] text-ink-4">None linked</span>
+            ) : (
+              <div className="flex flex-wrap gap-1.5">
+                {contacts.map((c) => (
+                  <span
+                    key={c.contact_id}
+                    className="inline-flex items-center rounded-full bg-surface-2 px-2 py-0.5 text-[11px] text-ink-2 border border-border-strong"
+                    title={c.email ?? undefined}
+                  >
+                    {c.full_name ?? (`${c.first_name ?? ""} ${c.last_name ?? ""}`.trim() || `#${c.contact_id}`)}
+                  </span>
+                ))}
+              </div>
+            )}
+          </Field>
 
-        <div className="mt-auto pt-2">
-          <button
-            type="button"
-            className="rounded border border-border-strong bg-surface px-3 py-1 text-[12px] text-ink-2 hover:bg-surface-2 transition-colors"
-            onClick={() => alert("Add Note — coming soon")}
-          >
-            + Add Note
-          </button>
+          <Field label="Description / Notes" className="col-span-2">
+            <InlineText
+              value={deal.description}
+              placeholder="Add notes…"
+              multiline
+              onSave={(v) => patch({ description: v || null })}
+            />
+          </Field>
         </div>
       </div>
 
@@ -309,13 +364,16 @@ function DealDetailPanel({ deal }: { deal: JobsOpportunity }) {
           ))}
         </div>
 
-        <div className="flex-1 overflow-y-auto py-2">
+        <div className="flex flex-1 flex-col overflow-y-auto">
           {detailQ.isLoading ? (
             <div className="flex items-center justify-center py-8 text-[12px] text-ink-3">
               Loading…
             </div>
           ) : activeTab === "activity" ? (
-            <ActivityTab entries={detail?.activity ?? []} />
+            <>
+              <ActivityTab entries={detail?.activity ?? []} />
+              <LogActivityForm dealId={deal.id} />
+            </>
           ) : activeTab === "history" ? (
             <HistoryTab entries={detail?.stage_history ?? []} />
           ) : (
@@ -341,6 +399,124 @@ function Field({
       <span className="text-[10.5px] uppercase tracking-wider text-ink-4">{label}</span>
       <div>{children}</div>
     </div>
+  );
+}
+
+// ── Log Activity inline form ──────────────────────────────────────────────────
+
+type ActivityType = ActivityCreateBody["type"];
+
+const ACTIVITY_TYPES: { value: ActivityType; label: string }[] = [
+  { value: "email",   label: "Email" },
+  { value: "call",    label: "Call" },
+  { value: "meeting", label: "Meeting" },
+  { value: "note",    label: "Note" },
+];
+
+function todayIso(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function LogActivityForm({ dealId }: { dealId: string }) {
+  const [open, setOpen] = useState(false);
+  const [type, setType]   = useState<ActivityType>("email");
+  const [date, setDate]   = useState(todayIso);
+  const [desc, setDesc]   = useState("");
+
+  const logActivity = useLogActivity();
+
+  function reset() {
+    setType("email");
+    setDate(todayIso());
+    setDesc("");
+    setOpen(false);
+  }
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!desc.trim()) return;
+    await logActivity.mutateAsync({
+      jobs_opportunity_id: dealId,
+      type,
+      description: desc.trim(),
+      activity_date: date || todayIso(),
+    });
+    reset();
+  }
+
+  if (!open) {
+    return (
+      <div className="border-t border-border-strong px-4 py-2">
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          className="text-[12px] text-accent hover:underline"
+        >
+          + Log Activity
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <form
+      onSubmit={(e) => void handleSubmit(e)}
+      className="border-t border-border-strong px-4 py-3 flex flex-col gap-2"
+    >
+      {/* Type selector — button group */}
+      <div className="flex gap-1">
+        {ACTIVITY_TYPES.map((t) => (
+          <button
+            key={t.value}
+            type="button"
+            onClick={() => setType(t.value)}
+            className={cn(
+              "rounded border px-2 py-0.5 text-[11px] font-medium transition-colors",
+              type === t.value
+                ? "border-accent bg-accent/5 text-accent"
+                : "border-border-strong bg-surface text-ink-3 hover:text-ink-2",
+            )}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Date */}
+      <input
+        type="date"
+        value={date}
+        onChange={(e) => setDate(e.target.value)}
+        className="w-full rounded border border-border-strong bg-surface px-2 py-1 text-[12px] text-ink-2 focus:outline-none focus:ring-1 focus:ring-accent/40"
+      />
+
+      {/* Description */}
+      <textarea
+        rows={3}
+        value={desc}
+        onChange={(e) => setDesc(e.target.value)}
+        placeholder="What happened?"
+        className="w-full resize-none rounded border border-border-strong bg-surface px-2 py-1 text-[12px] text-ink-2 placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40"
+      />
+
+      {/* Actions */}
+      <div className="flex items-center gap-3">
+        <button
+          type="submit"
+          disabled={logActivity.isPending || !desc.trim()}
+          className="rounded bg-accent px-3 py-1 text-[12px] font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+        >
+          {logActivity.isPending ? "Logging…" : "Log"}
+        </button>
+        <button
+          type="button"
+          onClick={reset}
+          className="text-[12px] text-ink-3 hover:text-ink-2"
+        >
+          Cancel
+        </button>
+      </div>
+    </form>
   );
 }
 
