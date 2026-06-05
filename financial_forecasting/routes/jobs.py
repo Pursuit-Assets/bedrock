@@ -211,8 +211,19 @@ async def list_contacts(
     user=Depends(require_auth),
     conn=Depends(get_db),
 ):
-    """All employer contacts from Airtable, with their linked deal where findable."""
-    filters = ["c.airtable_id IS NOT NULL"]
+    """All contacts in the jobs pipeline: Airtable-imported, manually created, or linked to a deal."""
+    filters = ["""(
+        c.airtable_id IS NOT NULL
+        OR c.source = 'manual'
+        OR EXISTS (
+            SELECT 1 FROM bedrock.jobs_opportunity jo
+            WHERE jo.deleted_at IS NULL
+              AND (
+                ('airtable:' || c.airtable_id) = ANY(jo.sf_contact_ids)
+                OR ('pub:' || c.contact_id::text) = ANY(jo.sf_contact_ids)
+              )
+        )
+    )"""]
     params: list = []
     i = 1
 
@@ -249,10 +260,13 @@ async def list_contacts(
             jo2.account_name AS deal_account_by_company,
             jo2.stage        AS deal_stage_by_company
         FROM public.contacts c
-        -- direct link via sf_contact_ids airtable: ref
+        -- direct link via sf_contact_ids (airtable: or pub: ref)
         LEFT JOIN bedrock.jobs_opportunity jo
             ON jo.deleted_at IS NULL
-            AND ('airtable:' || c.airtable_id) = ANY(jo.sf_contact_ids)
+            AND (
+                (c.airtable_id IS NOT NULL AND ('airtable:' || c.airtable_id) = ANY(jo.sf_contact_ids))
+                OR ('pub:' || c.contact_id::text) = ANY(jo.sf_contact_ids)
+            )
         -- company name fuzzy match fallback
         LEFT JOIN bedrock.jobs_opportunity jo2
             ON jo2.deleted_at IS NULL
