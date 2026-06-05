@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { Search, Mail, Linkedin, Building2, ChevronRight, ChevronDown, Phone, FileText, Calendar, MessageSquare, Plus, Trash2, X } from "lucide-react";
+import { useState, useRef } from "react";
+import { Search, Mail, Linkedin, Building2, ChevronRight, ChevronDown, Phone, FileText, Calendar, MessageSquare, Plus, Trash2, X, UserSearch } from "lucide-react";
 import { formatDistanceToNow, format } from "date-fns";
 import { cn } from "@/lib/utils";
 import {
@@ -9,10 +9,12 @@ import {
   useCreateContact,
   useLogActivity,
   useDeleteActivity,
+  useContactSearch,
   STAGE_LABELS,
   type JobContactWithDeal,
   type JobStage,
   type ContactCreateBody,
+  type ContactSearchResult,
 } from "@/services/jobs";
 import { InlineText, InlineSelect } from "@/components/ui/InlineEdit";
 
@@ -847,6 +849,15 @@ export function JobsContacts() {
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [showNewContact, setShowNewContact] = useState(false);
 
+  // Global contact search state
+  const [globalSearch, setGlobalSearch] = useState("");
+  const [selectedContact, setSelectedContact] = useState<ContactSearchResult | null>(null);
+  const [showDropdown, setShowDropdown] = useState(false);
+  const blurTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const { data: globalSearchResults } = useContactSearch(globalSearch);
+  const searchResults = globalSearchResults ?? [];
+
   const handleSearch = (val: string) => {
     setSearch(val);
     clearTimeout((handleSearch as any)._t);
@@ -870,6 +881,126 @@ export function JobsContacts() {
     <div className="flex flex-col gap-4">
       {showNewContact && (
         <NewContactModal onClose={() => setShowNewContact(false)} />
+      )}
+
+      {/* ── Global "Find any contact" search ─────────────────────────────── */}
+      <div className="relative">
+        <div className="relative">
+          <UserSearch size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-ink-3" />
+          <input
+            value={globalSearch}
+            onChange={e => {
+              setGlobalSearch(e.target.value);
+              setShowDropdown(true);
+            }}
+            onFocus={() => setShowDropdown(true)}
+            onBlur={() => {
+              blurTimerRef.current = setTimeout(() => setShowDropdown(false), 150);
+            }}
+            placeholder="Find any contact across SF, LinkedIn, or Jobs pipeline…"
+            className="w-full pl-10 pr-4 py-2.5 text-[14px] border-2 border-border-strong rounded-xl bg-surface focus:outline-none focus:border-accent transition-colors placeholder:text-ink-4"
+          />
+          {globalSearch && (
+            <button
+              type="button"
+              onMouseDown={e => e.preventDefault()}
+              onClick={() => { setGlobalSearch(""); setShowDropdown(false); }}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-ink-4 hover:text-ink transition-colors"
+            >
+              <X size={14} />
+            </button>
+          )}
+        </div>
+
+        {/* Search results dropdown */}
+        {showDropdown && globalSearch.trim().length >= 1 && searchResults.length > 0 && (
+          <div className="absolute top-full left-0 right-0 z-30 mt-1 rounded-xl border border-border-strong bg-surface shadow-lg overflow-hidden">
+            {searchResults.slice(0, 10).map(result => {
+              const isJobs = !!result.airtable_id;
+              const isSF = result.in_sf;
+              const isLinkedIn = result.source === "linkedin_import";
+              return (
+                <button
+                  key={result.contact_id}
+                  type="button"
+                  onMouseDown={e => e.preventDefault()}
+                  onClick={() => {
+                    setSelectedContact(result);
+                    setGlobalSearch("");
+                    setShowDropdown(false);
+                  }}
+                  className="w-full flex items-center gap-3 px-4 py-2.5 text-left hover:bg-surface-2 transition-colors border-b border-border-strong last:border-0"
+                >
+                  {/* Initials avatar */}
+                  <div className="flex-shrink-0 w-8 h-8 rounded-full bg-accent-soft flex items-center justify-center text-[11px] font-bold text-accent-ink">
+                    {initials(result.full_name)}
+                  </div>
+                  {/* Name + title/company */}
+                  <div className="flex-1 min-w-0">
+                    <div className="text-[13px] font-semibold text-ink truncate">{result.full_name || "—"}</div>
+                    {(result.current_title || result.current_company) && (
+                      <div className="text-[11px] text-ink-3 truncate">
+                        {[result.current_title, result.current_company].filter(Boolean).join(" @ ")}
+                      </div>
+                    )}
+                  </div>
+                  {/* Source badge */}
+                  <div className="flex-shrink-0">
+                    {isJobs ? (
+                      <span className="inline-flex items-center rounded-full px-1.5 py-0.5 bg-accent-soft text-accent-ink font-medium leading-none" style={{ fontSize: 10 }}>Jobs</span>
+                    ) : isSF ? (
+                      <span className="inline-flex items-center rounded-full px-1.5 py-0.5 bg-sky-50 text-sky-600 font-medium leading-none" style={{ fontSize: 10 }}>SF</span>
+                    ) : isLinkedIn ? (
+                      <span className="inline-flex items-center rounded-full px-1.5 py-0.5 bg-indigo-50 text-indigo-600 font-medium leading-none" style={{ fontSize: 10 }}>LinkedIn</span>
+                    ) : null}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* ── Selected contact panel ──────────────────────────────────────── */}
+      {selectedContact && (
+        <>
+          {/* Dismissible banner */}
+          <div className="flex items-center gap-3 rounded-xl border border-border-strong bg-surface-2 px-4 py-3">
+            <div className="flex-shrink-0 w-8 h-8 rounded-full bg-accent-soft flex items-center justify-center text-[11px] font-bold text-accent-ink">
+              {initials(selectedContact.full_name)}
+            </div>
+            <div className="flex-1 min-w-0">
+              <span className="text-[14px] font-semibold text-ink mr-2">{selectedContact.full_name || "—"}</span>
+              {(selectedContact.current_title || selectedContact.current_company) && (
+                <span className="text-[12px] text-ink-3 mr-2">
+                  {[selectedContact.current_title, selectedContact.current_company].filter(Boolean).join(" @ ")}
+                </span>
+              )}
+              {selectedContact.airtable_id ? (
+                <span className="inline-flex items-center rounded-full px-1.5 py-0.5 bg-accent-soft text-accent-ink font-medium leading-none" style={{ fontSize: 10 }}>Jobs</span>
+              ) : selectedContact.in_sf ? (
+                <span className="inline-flex items-center rounded-full px-1.5 py-0.5 bg-sky-50 text-sky-600 font-medium leading-none" style={{ fontSize: 10 }}>SF</span>
+              ) : selectedContact.source === "linkedin_import" ? (
+                <span className="inline-flex items-center rounded-full px-1.5 py-0.5 bg-indigo-50 text-indigo-600 font-medium leading-none" style={{ fontSize: 10 }}>LinkedIn</span>
+              ) : null}
+            </div>
+            <button
+              type="button"
+              onClick={() => setSelectedContact(null)}
+              className="flex items-center gap-1 text-[12px] font-medium text-ink-3 hover:text-ink transition-colors flex-shrink-0"
+            >
+              <X size={13} />
+              Deselect
+            </button>
+          </div>
+
+          {/* Inline detail panel */}
+          <div className="rounded-xl border border-border-strong bg-surface overflow-hidden">
+            <ContactDetail contactId={selectedContact.contact_id} />
+          </div>
+
+          <hr className="border-border-strong my-0" />
+        </>
       )}
 
       {/* Toolbar */}
