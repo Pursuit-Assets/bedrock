@@ -211,15 +211,14 @@ async def list_contacts(
     user=Depends(require_auth),
     conn=Depends(get_db),
 ):
-    """All contacts in the jobs pipeline: Airtable-imported, manually created, or linked to a deal."""
+    """All contacts in the jobs pipeline (is_jobs_contact=true or linked to a deal)."""
     filters = ["""(
-        c.airtable_id IS NOT NULL
-        OR c.source = 'manual'
+        c.is_jobs_contact = true
         OR EXISTS (
             SELECT 1 FROM bedrock.jobs_opportunity jo
             WHERE jo.deleted_at IS NULL
               AND (
-                ('airtable:' || c.airtable_id) = ANY(jo.sf_contact_ids)
+                (c.airtable_id IS NOT NULL AND ('airtable:' || c.airtable_id) = ANY(jo.sf_contact_ids))
                 OR ('pub:' || c.contact_id::text) = ANY(jo.sf_contact_ids)
               )
         )
@@ -774,31 +773,58 @@ async def delete_activity(
 
 @router.get("/builders")
 async def list_builders(
-    search: Optional[str] = Query(None),
+    search: Optional[str] = Query(None, min_length=1),
     user=Depends(require_auth),
     conn=Depends(get_db),
 ):
-    """Return known builders from across all deal builder_ids arrays."""
+    """Search all platform builders via SECURITY DEFINER function (bypasses RLS)."""
     rows = await conn.fetch(
-        """
-        SELECT DISTINCT unnest(builder_ids) AS email
-        FROM bedrock.jobs_opportunity
-        WHERE deleted_at IS NULL AND array_length(builder_ids, 1) > 0
-        ORDER BY 1
-        """
+        "SELECT user_id, full_name, email, cohort FROM bedrock.search_builders($1)",
+        search or "",
     )
-    emails = [r["email"] for r in rows if r["email"]]
-    if search:
-        s = search.lower()
-        emails = [e for e in emails if s in e.lower()]
-    # Format as {email, name} objects
-    def _name(email: str) -> str:
-        local = email.split("@")[0].replace(".", " ")
-        return " ".join(p.capitalize() for p in local.split())
     return {
         "success": True,
-        "data": [{"email": e, "name": _name(e)} for e in emails],
+        "data": [
+            {
+                "user_id": r["user_id"],
+                "email":   r["email"] or "",
+                "name":    r["full_name"] or r["email"] or "",
+                "cohort":  r["cohort"] or "",
+            }
+            for r in rows
+            if r["email"]
+        ],
     }
+
+
+@router.post("/contacts/{contact_id}/add-to-jobs")
+async def add_contact_to_jobs(
+    contact_id: int,
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Flag any contact (SF, LinkedIn, manual) as a jobs pipeline contact."""
+    result = await conn.execute(
+        "UPDATE public.contacts SET is_jobs_contact=true, updated_at=now() WHERE contact_id=$1",
+        contact_id,
+    )
+    if result == "UPDATE 0":
+        raise HTTPException(404, "Contact not found")
+    return {"success": True, "data": {"contact_id": contact_id, "is_jobs_contact": True}}
+
+
+@router.delete("/contacts/{contact_id}/add-to-jobs")
+async def remove_contact_from_jobs(
+    contact_id: int,
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Remove a contact from the jobs pipeline (unflag)."""
+    await conn.execute(
+        "UPDATE public.contacts SET is_jobs_contact=false, updated_at=now() WHERE contact_id=$1",
+        contact_id,
+    )
+    return {"success": True, "data": {"contact_id": contact_id, "is_jobs_contact": False}}
 
 
 # ── Contact PATCH ────────────────────────────────────────────────────────────

@@ -10,6 +10,7 @@ import {
   useLogActivity,
   useDeleteActivity,
   useContactSearch,
+  useAddContactToJobs,
   STAGE_LABELS,
   type JobContactWithDeal,
   type JobStage,
@@ -854,9 +855,14 @@ export function JobsContacts() {
   const [selectedContact, setSelectedContact] = useState<ContactSearchResult | null>(null);
   const [showDropdown, setShowDropdown] = useState(false);
   const blurTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Track which contact IDs have been added to Jobs from the dropdown
+  const [addedToJobsIds, setAddedToJobsIds] = useState<Set<number>>(new Set());
+  // Track whether the selected contact banner contact has been added
+  const [bannerAddedToJobs, setBannerAddedToJobs] = useState(false);
 
   const { data: globalSearchResults } = useContactSearch(globalSearch);
   const searchResults = globalSearchResults ?? [];
+  const { mutate: addContactToJobs } = useAddContactToJobs();
 
   const handleSearch = (val: string) => {
     setSearch(val);
@@ -920,41 +926,72 @@ export function JobsContacts() {
               const isSF = result.in_sf;
               const isLinkedIn = result.source === "linkedin_import";
               return (
-                <button
+                <div
                   key={result.contact_id}
-                  type="button"
-                  onMouseDown={e => e.preventDefault()}
-                  onClick={() => {
-                    setSelectedContact(result);
-                    setGlobalSearch("");
-                    setShowDropdown(false);
-                  }}
-                  className="w-full flex items-center gap-3 px-4 py-2.5 text-left hover:bg-surface-2 transition-colors border-b border-border-strong last:border-0"
+                  className="w-full flex items-center gap-3 px-4 py-2.5 hover:bg-surface-2 transition-colors border-b border-border-strong last:border-0"
                 >
-                  {/* Initials avatar */}
-                  <div className="flex-shrink-0 w-8 h-8 rounded-full bg-accent-soft flex items-center justify-center text-[11px] font-bold text-accent-ink">
-                    {initials(result.full_name)}
-                  </div>
-                  {/* Name + title/company */}
-                  <div className="flex-1 min-w-0">
-                    <div className="text-[13px] font-semibold text-ink truncate">{result.full_name || "—"}</div>
-                    {(result.current_title || result.current_company) && (
-                      <div className="text-[11px] text-ink-3 truncate">
-                        {[result.current_title, result.current_company].filter(Boolean).join(" @ ")}
-                      </div>
-                    )}
-                  </div>
-                  {/* Source badge */}
-                  <div className="flex-shrink-0">
-                    {isJobs ? (
-                      <span className="inline-flex items-center rounded-full px-1.5 py-0.5 bg-accent-soft text-accent-ink font-medium leading-none" style={{ fontSize: 10 }}>Jobs</span>
-                    ) : isSF ? (
-                      <span className="inline-flex items-center rounded-full px-1.5 py-0.5 bg-sky-50 text-sky-600 font-medium leading-none" style={{ fontSize: 10 }}>SF</span>
-                    ) : isLinkedIn ? (
-                      <span className="inline-flex items-center rounded-full px-1.5 py-0.5 bg-indigo-50 text-indigo-600 font-medium leading-none" style={{ fontSize: 10 }}>LinkedIn</span>
-                    ) : null}
-                  </div>
-                </button>
+                  <button
+                    type="button"
+                    onMouseDown={e => e.preventDefault()}
+                    onClick={() => {
+                      setSelectedContact(result);
+                      setBannerAddedToJobs(false);
+                      setGlobalSearch("");
+                      setShowDropdown(false);
+                    }}
+                    className="flex items-center gap-3 flex-1 min-w-0 text-left"
+                  >
+                    {/* Initials avatar */}
+                    <div className="flex-shrink-0 w-8 h-8 rounded-full bg-accent-soft flex items-center justify-center text-[11px] font-bold text-accent-ink">
+                      {initials(result.full_name)}
+                    </div>
+                    {/* Name + title/company */}
+                    <div className="flex-1 min-w-0">
+                      <div className="text-[13px] font-semibold text-ink truncate">{result.full_name || "—"}</div>
+                      {(result.current_title || result.current_company) && (
+                        <div className="text-[11px] text-ink-3 truncate">
+                          {[result.current_title, result.current_company].filter(Boolean).join(" @ ")}
+                        </div>
+                      )}
+                    </div>
+                    {/* Source badge */}
+                    <div className="flex-shrink-0">
+                      {isJobs ? (
+                        <span className="inline-flex items-center rounded-full px-1.5 py-0.5 bg-accent-soft text-accent-ink font-medium leading-none" style={{ fontSize: 10 }}>Jobs</span>
+                      ) : isSF ? (
+                        <span className="inline-flex items-center rounded-full px-1.5 py-0.5 bg-sky-50 text-sky-600 font-medium leading-none" style={{ fontSize: 10 }}>SF</span>
+                      ) : isLinkedIn ? (
+                        <span className="inline-flex items-center rounded-full px-1.5 py-0.5 bg-indigo-50 text-indigo-600 font-medium leading-none" style={{ fontSize: 10 }}>LinkedIn</span>
+                      ) : null}
+                    </div>
+                  </button>
+                  {/* + Add to Jobs button (hidden if already in Jobs pipeline) */}
+                  {!isJobs && (
+                    <div className="flex-shrink-0 ml-2">
+                      {addedToJobsIds.has(result.contact_id) ? (
+                        <span className="text-accent text-[11px] font-medium">✓ Added</span>
+                      ) : (
+                        <button
+                          type="button"
+                          onMouseDown={e => e.preventDefault()}
+                          onClick={e => {
+                            e.stopPropagation();
+                            addContactToJobs(
+                              { id: result.contact_id, add: true },
+                              {
+                                onSuccess: () =>
+                                  setAddedToJobsIds(prev => new Set(prev).add(result.contact_id)),
+                              }
+                            );
+                          }}
+                          className="px-2 py-0.5 text-[11px] rounded border border-border-strong text-ink-3 hover:text-accent hover:border-accent transition-colors"
+                        >
+                          + Add to Jobs
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
               );
             })}
           </div>
@@ -984,14 +1021,35 @@ export function JobsContacts() {
                 <span className="inline-flex items-center rounded-full px-1.5 py-0.5 bg-indigo-50 text-indigo-600 font-medium leading-none" style={{ fontSize: 10 }}>LinkedIn</span>
               ) : null}
             </div>
-            <button
-              type="button"
-              onClick={() => setSelectedContact(null)}
-              className="flex items-center gap-1 text-[12px] font-medium text-ink-3 hover:text-ink transition-colors flex-shrink-0"
-            >
-              <X size={13} />
-              Deselect
-            </button>
+            <div className="flex items-center gap-2 flex-shrink-0">
+              {/* Add to Jobs Pipeline toggle — hidden if already in Jobs pipeline */}
+              {!selectedContact.airtable_id && !selectedContact.in_sf && (
+                bannerAddedToJobs ? (
+                  <span className="text-[12px] font-medium text-accent">✓ In Jobs Pipeline</span>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      addContactToJobs(
+                        { id: selectedContact.contact_id, add: true },
+                        { onSuccess: () => setBannerAddedToJobs(true) }
+                      );
+                    }}
+                    className="flex items-center gap-1 px-2.5 py-1 rounded-md border border-border-strong text-[12px] font-medium text-ink-3 hover:text-accent hover:border-accent transition-colors"
+                  >
+                    + Add to Jobs Pipeline
+                  </button>
+                )
+              )}
+              <button
+                type="button"
+                onClick={() => setSelectedContact(null)}
+                className="flex items-center gap-1 text-[12px] font-medium text-ink-3 hover:text-ink transition-colors"
+              >
+                <X size={13} />
+                Deselect
+              </button>
+            </div>
           </div>
 
           {/* Inline detail panel */}

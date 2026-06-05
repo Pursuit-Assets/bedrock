@@ -369,7 +369,25 @@ export function useDeleteActivity() {
   });
 }
 
-export interface Builder { email: string; name: string }
+export interface Builder { user_id: number; email: string; name: string; cohort: string }
+
+export function useAddContactToJobs() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, add }: { id: number; add: boolean }) => {
+      if (add) {
+        await api.post(`/api/jobs/contacts/${id}/add-to-jobs`);
+      } else {
+        await api.delete(`/api/jobs/contacts/${id}/add-to-jobs`);
+      }
+    },
+    onSuccess: (_, { add }) => {
+      qc.invalidateQueries({ queryKey: ["jobs", "contacts"] });
+      toast.success(add ? "Added to Jobs pipeline" : "Removed from Jobs pipeline");
+    },
+    onError: () => toast.error("Failed to update contact"),
+  });
+}
 
 export function useBuilders(search?: string) {
   return useQuery<Builder[]>({
