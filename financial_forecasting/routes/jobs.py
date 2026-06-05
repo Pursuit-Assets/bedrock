@@ -165,6 +165,101 @@ async def list_contacts(
     }
 
 
+@router.get("/contacts/{contact_id}")
+async def get_contact(
+    contact_id: int,
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Full contact detail — info, linked deal, and all engagement activity."""
+    row = await conn.fetchrow(
+        """
+        SELECT c.*,
+            jo.id           AS deal_id,
+            jo.account_name AS deal_account,
+            jo.stage        AS deal_stage,
+            jo.owner_email  AS deal_owner,
+            jo2.id           AS deal_id2,
+            jo2.account_name AS deal_account2,
+            jo2.stage        AS deal_stage2
+        FROM public.contacts c
+        LEFT JOIN bedrock.jobs_opportunity jo
+            ON jo.deleted_at IS NULL
+            AND ('airtable:' || c.airtable_id) = ANY(jo.sf_contact_ids)
+        LEFT JOIN bedrock.jobs_opportunity jo2
+            ON jo2.deleted_at IS NULL AND jo.id IS NULL
+            AND (
+                lower(jo2.account_name) = lower(c.current_company)
+                OR lower(jo2.account_name) LIKE '%' || lower(split_part(c.current_company, '.', 1)) || '%'
+                OR lower(c.current_company) LIKE '%' || lower(jo2.account_name) || '%'
+            )
+        WHERE c.contact_id = $1
+        """,
+        contact_id,
+    )
+    if not row:
+        raise HTTPException(404, "Contact not found")
+
+    deal_id = row["deal_id"] or row["deal_id2"]
+
+    # Activity: from linked deal + any activity mentioning this contact's name
+    activity = []
+    if deal_id:
+        activity = await conn.fetch(
+            """
+            SELECT id, type, subject, description, activity_date, logged_by, source
+            FROM bedrock.activity
+            WHERE jobs_opportunity_id = $1
+            ORDER BY activity_date DESC NULLS LAST
+            LIMIT 50
+            """,
+            deal_id,
+        )
+
+    # Also search for activity mentioning the contact by name (cross-deal)
+    name = row["full_name"] or ""
+    if name:
+        name_hits = await conn.fetch(
+            """
+            SELECT id, type, subject, description, activity_date, logged_by, source
+            FROM bedrock.activity
+            WHERE jobs_opportunity_id IS NOT NULL
+              AND (lower(description) LIKE lower($1) OR lower(subject) LIKE lower($1))
+              AND id != ALL($2::uuid[])
+            ORDER BY activity_date DESC NULLS LAST
+            LIMIT 20
+            """,
+            f"%{name.split()[0]}%",  # search first name in descriptions
+            [r["id"] for r in activity] if activity else [],
+        )
+        activity = list(activity) + list(name_hits)
+
+    deal = None
+    if row["deal_id"]:
+        deal = {"id": str(row["deal_id"]), "account_name": row["deal_account"], "stage": row["deal_stage"], "owner_email": row["deal_owner"]}
+    elif row["deal_id2"]:
+        deal = {"id": str(row["deal_id2"]), "account_name": row["deal_account2"], "stage": row["deal_stage2"], "owner_email": None}
+
+    return {
+        "success": True,
+        "data": {
+            "contact_id":      row["contact_id"],
+            "full_name":       row["full_name"],
+            "first_name":      row["first_name"],
+            "last_name":       row["last_name"],
+            "email":           row["email"],
+            "current_title":   row["current_title"],
+            "current_company": row["current_company"],
+            "contact_stage":   row["contact_stage"],
+            "linkedin_url":    row["linkedin_url"],
+            "notes":           row["notes"],
+            "airtable_id":     row["airtable_id"],
+            "deal":            deal,
+            "activity":        [dict(a) for a in activity],
+        },
+    }
+
+
 @router.get("/contacts/summary")
 async def get_contacts_summary(user=Depends(require_auth), conn=Depends(get_db)):
     """Contacts & outreach metrics for the leadership dashboard."""

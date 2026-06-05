@@ -168,7 +168,7 @@ interface ListResponse<T> { success: boolean; data: T[]; total: number }
 
 export interface JobContactWithDeal extends JobContact {
   airtable_id: string | null;
-  deal: { id: string; account_name: string; stage: JobStage } | null;
+  deal: { id: string; account_name: string; stage: JobStage; owner_email?: string | null } | null;
 }
 
 export interface ContactFilters {
@@ -176,6 +176,22 @@ export interface ContactFilters {
   search?: string;
   company?: string;
   limit?: number;
+}
+
+export interface ContactDetail extends JobContactWithDeal {
+  activity: ActivityEntry[];
+}
+
+export function useContactDetail(id: number | null) {
+  return useQuery<ContactDetail>({
+    queryKey: ["jobs", "contact", id],
+    queryFn: async () => {
+      const { data } = await api.get<ApiResponse<ContactDetail>>(`/api/jobs/contacts/${id}`);
+      return data.data;
+    },
+    enabled: id !== null,
+    staleTime: 30_000,
+  });
 }
 
 export function useJobsContacts(filters: ContactFilters = {}) {
