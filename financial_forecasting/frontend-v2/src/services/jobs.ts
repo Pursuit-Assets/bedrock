@@ -97,6 +97,11 @@ export interface ActivityEntry {
   source: string;
   logged_by: string | null;
   synced_at: string | null;
+  email_from: string | null;
+  email_snippet: string | null;
+  meeting_duration_minutes: number | null;
+  is_jobs: boolean;
+  deleted_at: string | null;
 }
 
 export interface PipelineStageSummary {
@@ -294,6 +299,59 @@ export function useCreateOpportunity() {
       toast.success("Deal created");
     },
     onError: () => toast.error("Failed to create deal"),
+  });
+}
+
+export interface ContactCreateBody {
+  full_name: string;
+  email?: string;
+  current_title?: string;
+  current_company?: string;
+  contact_stage?: string;
+  linkedin_url?: string;
+  notes?: string;
+}
+
+export function useCreateContact() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (body: ContactCreateBody) => {
+      const { data } = await api.post<ApiResponse<JobContact>>("/api/jobs/contacts", body);
+      return data.data;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["jobs", "contacts"] });
+      toast.success("Contact created");
+    },
+    onError: () => toast.error("Failed to create contact"),
+  });
+}
+
+export function useDeleteActivity() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (activityId: string) => {
+      await api.delete(`/api/jobs/activity/${activityId}`);
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["jobs"] });
+      toast.success("Activity deleted");
+    },
+    onError: () => toast.error("Delete failed"),
+  });
+}
+
+export interface Builder { email: string; name: string }
+
+export function useBuilders(search?: string) {
+  return useQuery<Builder[]>({
+    queryKey: ["jobs", "builders", search],
+    queryFn: async () => {
+      const params = search ? `?search=${encodeURIComponent(search)}` : "";
+      const { data } = await api.get<ApiResponse<Builder[]>>(`/api/jobs/builders${params}`);
+      return data.data;
+    },
+    staleTime: 300_000,
   });
 }
 

@@ -1,12 +1,11 @@
 import { useMemo } from "react";
-import { Users, Target, DollarSign, Building2, ArrowRight } from "lucide-react";
+import { Users, Target, DollarSign, Building2 } from "lucide-react";
 
 import {
   useJobsPipeline,
   useJobsOpportunities,
   useContactsSummary,
   ACTIVE_STAGES,
-  STAGE_LABELS,
   DEAL_TYPE_LABELS,
   type PipelineStageSummary,
   type JobsOpportunity,
@@ -14,6 +13,7 @@ import {
   type DealType,
 } from "@/services/jobs";
 import { cn } from "@/lib/utils";
+import { JobsFunnel } from "@/components/jobs/JobsFunnel";
 
 // ── SOP targets ───────────────────────────────────────────────────────────
 
@@ -34,31 +34,11 @@ const OWNER_DISPLAY: Record<string, string> = {
 };
 const TRACKED_OWNERS = Object.keys(OWNER_DISPLAY);
 
-// ── Funnel stage ordering for the bar chart ───────────────────────────────
-
-const FUNNEL_ORDER: JobStage[] = [
-  "lead_submitted",
-  "initial_outreach",
-  "active_in_discussions",
-  "active_opportunity_confirmed",
-  "active_builder_interview",
-  "closed_won",
-  "closed_lost",
-  "on_hold_not_selected",
-  "on_hold_not_interested",
-  "on_hold_not_responsive",
-];
-
 // ── Helpers ───────────────────────────────────────────────────────────────
 
 function fmtSalary(n: number | null | undefined): string {
   if (n == null) return "—";
   return `$${Math.round(n).toLocaleString("en-US")}`;
-}
-
-function pct(num: number, den: number): string {
-  if (den === 0) return "—";
-  return `${Math.round((num / den) * 100)}%`;
 }
 
 function statusColor(value: number, lo: number): string {
@@ -148,40 +128,6 @@ function SectionWrap({
   );
 }
 
-// ── Stage bar color ───────────────────────────────────────────────────────
-
-function stageBarClass(stage: JobStage): string {
-  if (stage === "closed_won") return "bg-[var(--green)]";
-  if (stage === "closed_lost") return "bg-[var(--red)]";
-  if (
-    stage === "on_hold_not_selected" ||
-    stage === "on_hold_not_interested" ||
-    stage === "on_hold_not_responsive"
-  ) {
-    return "bg-border-strong";
-  }
-  if (ACTIVE_STAGES.includes(stage as (typeof ACTIVE_STAGES)[number])) {
-    return "bg-[var(--accent)]";
-  }
-  return "bg-surface-2";
-}
-
-function stageLabelClass(stage: JobStage): string {
-  if (stage === "closed_won") return "text-[var(--green)]";
-  if (stage === "closed_lost") return "text-[var(--red)]";
-  if (
-    stage === "on_hold_not_selected" ||
-    stage === "on_hold_not_interested" ||
-    stage === "on_hold_not_responsive"
-  ) {
-    return "text-ink-3";
-  }
-  if (ACTIVE_STAGES.includes(stage as (typeof ACTIVE_STAGES)[number])) {
-    return "text-[var(--accent-ink)]";
-  }
-  return "text-ink-2";
-}
-
 // ── Main component ────────────────────────────────────────────────────────
 
 export function JobsLeadership() {
@@ -218,24 +164,6 @@ export function JobsLeadership() {
   );
   const placementsCount = closedWonSummary?.total ?? 0;
   const avgSalary = closedWonSummary?.avg_salary ?? null;
-
-  // ── Funnel rows (ordered) ───────────────────────────────────────────────
-
-  const funnelRows = useMemo(() => {
-    const rows = FUNNEL_ORDER.map((stage) => ({
-      stage,
-      label: STAGE_LABELS[stage],
-      total: stageMap.get(stage)?.total ?? 0,
-    }));
-    const maxTotal = Math.max(...rows.map((r) => r.total), 1);
-
-    return rows.map((row, idx) => {
-      const next = rows[idx + 1];
-      const conversionRate =
-        next && row.total > 0 ? pct(next.total, row.total) : null;
-      return { ...row, maxTotal, conversionRate };
-    });
-  }, [stageMap]);
 
   // ── Conversion rates (from pipeline summary totals) ─────────────────────
 
@@ -449,69 +377,8 @@ export function JobsLeadership() {
         />
       </div>
 
-      {/* ── Stage funnel ──────────────────────────────────────────────── */}
-      <SectionWrap title="Pipeline Funnel">
-        <div className="rounded-[8px] border border-border-strong bg-surface shadow-[var(--shadow-sm)]">
-          {/* Column headers */}
-          <div className="grid grid-cols-[180px_1fr_56px_80px] gap-0 border-b border-border-strong bg-surface-2 px-5 py-2 text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
-            <span>Stage</span>
-            <span>Volume</span>
-            <span className="text-right">Count</span>
-            <span className="text-right">Next →</span>
-          </div>
-          {pipelineQ.isLoading
-            ? Array.from({ length: 6 }).map((_, i) => (
-                <div
-                  key={i}
-                  className="flex items-center gap-4 border-t border-border-strong px-5 py-3 first:border-t-0"
-                >
-                  <div className="h-3 w-[160px] animate-pulse rounded bg-surface-2" />
-                  <div className="h-2 flex-1 animate-pulse rounded bg-surface-2" />
-                </div>
-              ))
-            : funnelRows.map((row) => {
-                const widthPct =
-                  row.total === 0 ? 0 : (row.total / row.maxTotal) * 100;
-                return (
-                  <div
-                    key={row.stage}
-                    className="grid grid-cols-[180px_1fr_56px_80px] items-center gap-0 border-t border-border-strong px-5 py-2.5 first:border-t-0"
-                  >
-                    <span
-                      className={cn(
-                        "truncate text-[12.5px] font-medium",
-                        stageLabelClass(row.stage),
-                      )}
-                      title={row.label}
-                    >
-                      {row.label}
-                    </span>
-                    <div className="pr-4">
-                      <div className="h-2 w-full overflow-hidden rounded-full bg-surface-2">
-                        <div
-                          className={cn("h-full rounded-full", stageBarClass(row.stage))}
-                          style={{ width: `${widthPct}%` }}
-                        />
-                      </div>
-                    </div>
-                    <span className="font-mono text-right text-[13px] font-semibold tabular-nums text-ink">
-                      {row.total}
-                    </span>
-                    <span className="text-right text-[11.5px] tabular-nums text-ink-3">
-                      {row.conversionRate != null ? (
-                        <span className="inline-flex items-center justify-end gap-0.5">
-                          <ArrowRight size={10} className="text-ink-4" />
-                          {row.conversionRate}
-                        </span>
-                      ) : (
-                        "—"
-                      )}
-                    </span>
-                  </div>
-                );
-              })}
-        </div>
-      </SectionWrap>
+      {/* ── Jobs funnel ───────────────────────────────────────────────── */}
+      <JobsFunnel pipeline={pipelineQ.data ?? []} />
 
       {/* ── Conversion rates ──────────────────────────────────────────── */}
       <SectionWrap title="Conversion Rates">

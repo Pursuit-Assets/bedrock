@@ -1,15 +1,18 @@
 import { useState } from "react";
-import { Search, Mail, Linkedin, Building2, ChevronRight, ChevronDown, Phone, FileText, Calendar, MessageSquare, Plus } from "lucide-react";
+import { Search, Mail, Linkedin, Building2, ChevronRight, ChevronDown, Phone, FileText, Calendar, MessageSquare, Plus, Trash2, X } from "lucide-react";
 import { formatDistanceToNow, format } from "date-fns";
 import { cn } from "@/lib/utils";
 import {
   useJobsContacts,
   useContactDetail,
   useUpdateContact,
+  useCreateContact,
   useLogActivity,
+  useDeleteActivity,
   STAGE_LABELS,
   type JobContactWithDeal,
   type JobStage,
+  type ContactCreateBody,
 } from "@/services/jobs";
 import { InlineText, InlineSelect } from "@/components/ui/InlineEdit";
 
@@ -189,10 +192,51 @@ const CONTACT_STAGE_EDIT_OPTIONS = [
   { value: "on_hold",          label: "On Hold" },
 ] as const;
 
+// ── Source badge ─────────────────────────────────────────────────────────────
+
+function SourceBadge({ isJobs, source }: { isJobs: boolean; source: string }) {
+  if (isJobs) {
+    return (
+      <span className="inline-flex items-center rounded-full px-1.5 py-0.5 bg-accent-soft text-accent-ink font-medium leading-none" style={{ fontSize: 10 }}>
+        Jobs
+      </span>
+    );
+  }
+  if (source === "gmail-sync") {
+    return (
+      <span className="inline-flex items-center rounded-full px-1.5 py-0.5 bg-blue-50 text-blue-600 font-medium leading-none" style={{ fontSize: 10 }}>
+        Gmail
+      </span>
+    );
+  }
+  if (source === "calendar-sync") {
+    return (
+      <span className="inline-flex items-center rounded-full px-1.5 py-0.5 bg-violet-50 text-violet-600 font-medium leading-none" style={{ fontSize: 10 }}>
+        Calendar
+      </span>
+    );
+  }
+  if (source === "salesforce") {
+    return (
+      <span className="inline-flex items-center rounded-full px-1.5 py-0.5 bg-sky-50 text-sky-600 font-medium leading-none" style={{ fontSize: 10 }}>
+        SF
+      </span>
+    );
+  }
+  // manual + not jobs
+  return (
+    <span className="inline-flex items-center rounded-full px-1.5 py-0.5 bg-stone-100 text-stone-500 font-medium leading-none" style={{ fontSize: 10 }}>
+      Manual
+    </span>
+  );
+}
+
 function ContactDetail({ contactId }: { contactId: number }) {
   const { data, isLoading } = useContactDetail(contactId);
   const { mutateAsync: updateContact } = useUpdateContact();
+  const { mutate: deleteActivity } = useDeleteActivity();
   const [showLogForm, setShowLogForm] = useState(false);
+  const [expandedActivityId, setExpandedActivityId] = useState<string | null>(null);
 
   if (isLoading) {
     return (
@@ -352,49 +396,136 @@ function ContactDetail({ contactId }: { contactId: number }) {
             <div className="text-[13px] text-ink-4 italic py-4">
               No engagement history recorded yet.
             </div>
-          ) : (
-            <div className="flex flex-col gap-0">
-              {data.activity.map((act, i) => {
-                const Icon = ACTIVITY_ICONS[act.type] ?? MessageSquare;
-                const date = act.activity_date ? new Date(act.activity_date) : null;
-                return (
-                  <div key={act.id} className="flex gap-3 pb-4 relative">
-                    {/* Timeline line */}
-                    {i < data.activity.length - 1 && (
-                      <div className="absolute left-[15px] top-7 bottom-0 w-px bg-border-strong" />
-                    )}
-                    {/* Icon */}
-                    <div className="flex-shrink-0 w-8 h-8 rounded-full border border-border-strong bg-surface flex items-center justify-center z-10">
-                      <Icon size={13} className="text-ink-3" />
-                    </div>
-                    {/* Content */}
-                    <div className="flex-1 min-w-0 pt-1">
-                      <div className="flex items-center gap-2 mb-0.5">
-                        <span className="text-[12px] font-medium text-ink capitalize">{act.type}</span>
-                        {date && (
-                          <span className="text-[11px] text-ink-4" title={format(date, "MMM d, yyyy")}>
-                            {formatDistanceToNow(date, { addSuffix: true })}
-                          </span>
+          ) : (() => {
+            const jobsActivity = data.activity.filter(a => a.is_jobs);
+            const otherActivity = data.activity.filter(a => !a.is_jobs);
+
+            const renderActivityGroup = (
+              items: typeof data.activity,
+              dotColorClass: string,
+            ) => (
+              <div className="flex flex-col gap-0">
+                {items.map((act, i) => {
+                  const Icon = ACTIVITY_ICONS[act.type] ?? MessageSquare;
+                  const actDate = act.activity_date ? new Date(act.activity_date) : null;
+                  const isExpanded = expandedActivityId === act.id;
+                  const preview = act.description
+                    ? act.description.slice(0, 120) + (act.description.length > 120 ? "…" : "")
+                    : null;
+
+                  return (
+                    <div key={act.id} className="flex gap-3 pb-4 relative">
+                      {/* Timeline line */}
+                      {i < items.length - 1 && (
+                        <div className="absolute left-[15px] top-7 bottom-0 w-px bg-border-strong" />
+                      )}
+                      {/* Icon dot */}
+                      <div className={cn(
+                        "flex-shrink-0 w-8 h-8 rounded-full border flex items-center justify-center z-10",
+                        dotColorClass,
+                      )}>
+                        <Icon size={13} className={act.is_jobs ? "text-accent-ink" : "text-stone-400"} />
+                      </div>
+                      {/* Content */}
+                      <div
+                        className="flex-1 min-w-0 pt-1 cursor-pointer"
+                        onClick={() => setExpandedActivityId(isExpanded ? null : act.id)}
+                      >
+                        {/* Row header */}
+                        <div className="flex items-center gap-2 mb-0.5 flex-wrap">
+                          <span className="text-[12px] font-medium text-ink capitalize">{act.type}</span>
+                          {actDate && (
+                            <span className="text-[11px] text-ink-4" title={format(actDate, "MMM d, yyyy")}>
+                              {formatDistanceToNow(actDate, { addSuffix: true })}
+                            </span>
+                          )}
+                          {act.logged_by && (
+                            <span className="text-[11px] text-ink-4">
+                              · {ownerName(act.logged_by)}
+                            </span>
+                          )}
+                          <SourceBadge isJobs={act.is_jobs} source={act.source} />
+                          {act.is_jobs && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                deleteActivity(act.id);
+                              }}
+                              className="ml-auto text-ink-4 hover:text-red-500 transition-colors p-0.5 rounded"
+                              title="Delete activity"
+                            >
+                              <Trash2 size={12} />
+                            </button>
+                          )}
+                        </div>
+                        {/* Description */}
+                        {!isExpanded && preview && (
+                          <p className="text-[12px] text-ink-2 leading-relaxed whitespace-pre-wrap">
+                            {preview}
+                          </p>
                         )}
-                        {act.logged_by && (
-                          <span className="text-[11px] text-ink-4">
-                            · {ownerName(act.logged_by)}
-                          </span>
+                        {isExpanded && (
+                          <div className="flex flex-col gap-1.5">
+                            {act.description && (
+                              <p className="text-[12px] text-ink-2 leading-relaxed whitespace-pre-wrap">
+                                {act.description}
+                              </p>
+                            )}
+                            {act.subject && (
+                              <div className="text-[11px] text-ink-3">
+                                <span className="font-semibold text-ink-4 uppercase tracking-wide text-[10px]">Subject: </span>
+                                {act.subject}
+                              </div>
+                            )}
+                            {act.email_from && (
+                              <div className="text-[11px] text-ink-3">
+                                <span className="font-semibold text-ink-4 uppercase tracking-wide text-[10px]">From: </span>
+                                {act.email_from}
+                              </div>
+                            )}
+                            {act.meeting_duration_minutes != null && (
+                              <div className="text-[11px] text-ink-3">
+                                <span className="font-semibold text-ink-4 uppercase tracking-wide text-[10px]">Duration: </span>
+                                {act.meeting_duration_minutes}m
+                              </div>
+                            )}
+                          </div>
                         )}
                       </div>
-                      {act.description && (
-                        <p className="text-[12px] text-ink-2 leading-relaxed whitespace-pre-wrap">
-                          {act.description.length > 300
-                            ? act.description.slice(0, 300) + "…"
-                            : act.description}
-                        </p>
-                      )}
                     </div>
+                  );
+                })}
+              </div>
+            );
+
+            return (
+              <div className="flex flex-col gap-4">
+                {jobsActivity.length > 0 && (
+                  <div>
+                    <div className="text-[10px] font-semibold uppercase tracking-wider text-accent-ink mb-2">
+                      Jobs Activity ({jobsActivity.length})
+                    </div>
+                    {renderActivityGroup(
+                      jobsActivity,
+                      "border-accent-soft bg-accent-soft",
+                    )}
                   </div>
-                );
-              })}
-            </div>
-          )}
+                )}
+                {otherActivity.length > 0 && (
+                  <div>
+                    <div className="text-[10px] font-semibold uppercase tracking-wider text-ink-4 mb-2">
+                      Other Activity ({otherActivity.length})
+                    </div>
+                    {renderActivityGroup(
+                      otherActivity,
+                      "border-border-strong bg-surface",
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
         </div>
       </div>
     </div>
@@ -501,6 +632,212 @@ function ContactRow({
   );
 }
 
+// ── New Contact modal ─────────────────────────────────────────────────────────
+
+type ContactStageValue = "active" | "initial_outreach" | "lead" | "on_hold";
+
+const NEW_CONTACT_STAGE_OPTIONS: { value: ContactStageValue; label: string }[] = [
+  { value: "lead",             label: "Lead" },
+  { value: "initial_outreach", label: "Initial Outreach" },
+  { value: "active",           label: "Active" },
+  { value: "on_hold",          label: "On Hold" },
+];
+
+interface NewContactForm {
+  fullName: string;
+  email: string;
+  title: string;
+  company: string;
+  linkedIn: string;
+  stage: ContactStageValue;
+  notes: string;
+}
+
+const DEFAULT_NEW_CONTACT_FORM: NewContactForm = {
+  fullName: "",
+  email: "",
+  title: "",
+  company: "",
+  linkedIn: "",
+  stage: "lead",
+  notes: "",
+};
+
+function Spinner() {
+  return (
+    <svg className="h-3 w-3 animate-spin" viewBox="0 0 24 24" fill="none">
+      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
+    </svg>
+  );
+}
+
+function NewContactModal({ onClose }: { onClose: () => void }) {
+  const [form, setForm] = useState<NewContactForm>(DEFAULT_NEW_CONTACT_FORM);
+  const createContact = useCreateContact();
+
+  function set<K extends keyof NewContactForm>(key: K, value: NewContactForm[K]) {
+    setForm((prev) => ({ ...prev, [key]: value }));
+  }
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!form.fullName.trim()) return;
+
+    const body: ContactCreateBody = {
+      full_name: form.fullName.trim(),
+      email: form.email.trim() || undefined,
+      current_title: form.title.trim() || undefined,
+      current_company: form.company.trim() || undefined,
+      linkedin_url: form.linkedIn.trim() || undefined,
+      contact_stage: form.stage,
+      notes: form.notes.trim() || undefined,
+    };
+
+    await createContact.mutateAsync(body);
+    onClose();
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/30"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div className="w-full max-w-md rounded-xl border border-border-strong bg-surface shadow-xl">
+        {/* Header */}
+        <div className="flex items-center justify-between border-b border-border-strong px-5 py-4">
+          <h2 className="text-[15px] font-semibold text-ink">New Contact</h2>
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-ink-3 hover:text-ink transition-colors"
+            aria-label="Close"
+          >
+            <X size={16} />
+          </button>
+        </div>
+
+        {/* Form */}
+        <form onSubmit={(e) => void handleSubmit(e)} className="flex flex-col gap-4 px-5 py-4">
+          {/* Full Name */}
+          <div className="flex flex-col gap-1">
+            <label className="text-[11px] font-semibold uppercase tracking-wider text-ink-4">
+              Full Name <span className="text-red-500">*</span>
+            </label>
+            <input
+              type="text"
+              required
+              value={form.fullName}
+              onChange={(e) => set("fullName", e.target.value)}
+              placeholder="Jane Smith"
+              className="w-full rounded-md border border-border-strong bg-surface px-3 py-2 text-[13px] text-ink placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40"
+            />
+          </div>
+
+          {/* Email + Stage (two columns) */}
+          <div className="grid grid-cols-2 gap-3">
+            <div className="flex flex-col gap-1">
+              <label className="text-[11px] font-semibold uppercase tracking-wider text-ink-4">Email</label>
+              <input
+                type="email"
+                value={form.email}
+                onChange={(e) => set("email", e.target.value)}
+                placeholder="jane@acme.com"
+                className="w-full rounded-md border border-border-strong bg-surface px-3 py-2 text-[13px] text-ink placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40"
+              />
+            </div>
+
+            <div className="flex flex-col gap-1">
+              <label className="text-[11px] font-semibold uppercase tracking-wider text-ink-4">Stage</label>
+              <select
+                value={form.stage}
+                onChange={(e) => set("stage", e.target.value as ContactStageValue)}
+                className="w-full rounded-md border border-border-strong bg-surface px-3 py-2 text-[13px] text-ink focus:outline-none focus:ring-1 focus:ring-accent/40"
+              >
+                {NEW_CONTACT_STAGE_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          {/* Title + Company (two columns) */}
+          <div className="grid grid-cols-2 gap-3">
+            <div className="flex flex-col gap-1">
+              <label className="text-[11px] font-semibold uppercase tracking-wider text-ink-4">Title</label>
+              <input
+                type="text"
+                value={form.title}
+                onChange={(e) => set("title", e.target.value)}
+                placeholder="Engineering Manager"
+                className="w-full rounded-md border border-border-strong bg-surface px-3 py-2 text-[13px] text-ink placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40"
+              />
+            </div>
+
+            <div className="flex flex-col gap-1">
+              <label className="text-[11px] font-semibold uppercase tracking-wider text-ink-4">Company</label>
+              <input
+                type="text"
+                value={form.company}
+                onChange={(e) => set("company", e.target.value)}
+                placeholder="Acme Corp"
+                className="w-full rounded-md border border-border-strong bg-surface px-3 py-2 text-[13px] text-ink placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40"
+              />
+            </div>
+          </div>
+
+          {/* LinkedIn URL */}
+          <div className="flex flex-col gap-1">
+            <label className="text-[11px] font-semibold uppercase tracking-wider text-ink-4">LinkedIn URL</label>
+            <input
+              type="url"
+              value={form.linkedIn}
+              onChange={(e) => set("linkedIn", e.target.value)}
+              placeholder="https://linkedin.com/in/janesmith"
+              className="w-full rounded-md border border-border-strong bg-surface px-3 py-2 text-[13px] text-ink placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40"
+            />
+          </div>
+
+          {/* Notes */}
+          <div className="flex flex-col gap-1">
+            <label className="text-[11px] font-semibold uppercase tracking-wider text-ink-4">Notes</label>
+            <textarea
+              rows={3}
+              value={form.notes}
+              onChange={(e) => set("notes", e.target.value)}
+              placeholder="Add any initial notes…"
+              className="w-full resize-none rounded-md border border-border-strong bg-surface px-3 py-2 text-[13px] text-ink placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40"
+            />
+          </div>
+
+          {/* Actions */}
+          <div className="flex items-center justify-end gap-3 pt-1">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-4 py-2 text-[13px] font-medium text-ink-3 hover:text-ink transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={createContact.isPending || !form.fullName.trim()}
+              className="flex items-center gap-1.5 rounded-lg bg-accent px-4 py-2 text-[13px] font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+            >
+              {createContact.isPending ? (
+                <Spinner />
+              ) : (
+                <Plus size={13} />
+              )}
+              {createContact.isPending ? "Creating…" : "Create Contact"}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 
 export function JobsContacts() {
@@ -508,6 +845,7 @@ export function JobsContacts() {
   const [stage, setStage] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [expandedId, setExpandedId] = useState<number | null>(null);
+  const [showNewContact, setShowNewContact] = useState(false);
 
   const handleSearch = (val: string) => {
     setSearch(val);
@@ -530,6 +868,10 @@ export function JobsContacts() {
 
   return (
     <div className="flex flex-col gap-4">
+      {showNewContact && (
+        <NewContactModal onClose={() => setShowNewContact(false)} />
+      )}
+
       {/* Toolbar */}
       <div className="flex items-center gap-3 flex-wrap">
         <div className="relative flex-1 min-w-[200px] max-w-[360px]">
@@ -541,6 +883,16 @@ export function JobsContacts() {
             className="w-full pl-8 pr-3 py-2 text-[13px] border border-border-strong rounded-lg bg-surface focus:outline-none focus:ring-1 focus:ring-accent"
           />
         </div>
+
+        {/* New Contact button */}
+        <button
+          type="button"
+          onClick={() => setShowNewContact(true)}
+          className="flex items-center gap-1.5 rounded-lg border border-border-strong bg-surface px-3 py-2 text-[12px] font-medium text-ink-2 transition-colors hover:border-accent hover:text-accent"
+        >
+          <Plus size={12} />
+          New Contact
+        </button>
 
         <div className="flex items-center gap-1 rounded-lg border border-border-strong bg-surface-2 p-1">
           {CONTACT_STAGE_OPTIONS.map(opt => (

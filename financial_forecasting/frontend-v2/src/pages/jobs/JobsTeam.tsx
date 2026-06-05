@@ -3,7 +3,11 @@ import {
   useJobsOpportunities,
   useJobsOpportunity,
   useUpdateOpportunity,
+  useCreateOpportunity,
   useLogActivity,
+  useDeleteActivity,
+  useBuilders,
+  useJobsContacts,
   STAGE_LABELS,
   DEAL_TYPE_LABELS,
   ACTIVE_STAGES,
@@ -13,10 +17,12 @@ import {
   type JobsOpportunity,
   type JobContact,
   type ActivityCreateBody,
+  type Builder,
+  type JobContactWithDeal,
 } from "@/services/jobs";
 import { JobStageChip, DealTypeChip } from "@/components/jobs/JobStageChip";
 import { InlineText, InlineDate } from "@/components/ui/InlineEdit";
-import { ChevronDown, ChevronRight, Building2, Users, Activity, Clock, Mail, Linkedin } from "lucide-react";
+import { ChevronDown, ChevronRight, Building2, Users, Activity, Clock, Mail, Linkedin, Trash2, X, Plus } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { format, formatDistanceToNow } from "date-fns";
 
@@ -160,6 +166,186 @@ function Spinner() {
   );
 }
 
+// ── Builder picker ────────────────────────────────────────────────────────────
+
+function BuilderPicker({
+  dealId,
+  builderIds,
+}: {
+  dealId: string;
+  builderIds: string[];
+}) {
+  const [search, setSearch] = useState("");
+  const [open, setOpen] = useState(false);
+  const updateOpp = useUpdateOpportunity();
+  const buildersQ = useBuilders(search || undefined);
+  const builders = buildersQ.data ?? [];
+
+  function removeBuilder(email: string) {
+    updateOpp.mutate({ id: dealId, builder_ids: builderIds.filter((b) => b !== email) });
+  }
+
+  function addBuilder(builder: Builder) {
+    if (builderIds.includes(builder.email)) return;
+    updateOpp.mutate({ id: dealId, builder_ids: [...builderIds, builder.email] });
+    setSearch("");
+    setOpen(false);
+  }
+
+  const filtered = builders.filter(
+    (b) => !builderIds.includes(b.email)
+  );
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      {builderIds.length > 0 && (
+        <div className="flex flex-wrap gap-1">
+          {builderIds.map((email) => (
+            <span
+              key={email}
+              className="inline-flex items-center gap-1 rounded-full bg-surface-2 px-2 py-0.5 text-[11px] text-ink-2 border border-border-strong"
+            >
+              {email}
+              <button
+                type="button"
+                onClick={() => removeBuilder(email)}
+                className="ml-0.5 text-ink-4 hover:text-red-500 transition-colors"
+                title="Remove builder"
+              >
+                <X size={11} />
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+      <div className="relative">
+        <input
+          type="text"
+          value={search}
+          onFocus={() => setOpen(true)}
+          onBlur={() => setTimeout(() => setOpen(false), 150)}
+          onChange={(e) => { setSearch(e.target.value); setOpen(true); }}
+          placeholder="Search builders…"
+          className="w-full rounded border border-border-strong bg-surface px-2 py-1 text-[11.5px] text-ink-2 placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40"
+        />
+        {open && filtered.length > 0 && (
+          <ul className="absolute z-20 mt-1 max-h-[140px] w-full overflow-y-auto rounded border border-border-strong bg-surface shadow-md">
+            {filtered.slice(0, 12).map((b) => (
+              <li key={b.email}>
+                <button
+                  type="button"
+                  onMouseDown={() => addBuilder(b)}
+                  className="w-full px-3 py-1.5 text-left text-[11.5px] text-ink hover:bg-surface-2"
+                >
+                  <span className="font-medium">{b.name}</span>
+                  <span className="ml-1.5 text-ink-3">{b.email}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Contact picker ────────────────────────────────────────────────────────────
+
+function ContactPicker({
+  dealId,
+  sfContactIds,
+  linkedContacts,
+}: {
+  dealId: string;
+  sfContactIds: string[];
+  linkedContacts: JobContact[];
+}) {
+  const [search, setSearch] = useState("");
+  const [open, setOpen] = useState(false);
+  const updateOpp = useUpdateOpportunity();
+  const contactsQ = useJobsContacts(search ? { search, limit: 20 } : { limit: 0 });
+  const contacts: JobContactWithDeal[] = search ? (contactsQ.data?.data ?? []) : [];
+
+  function contactDisplayName(c: JobContact | JobContactWithDeal): string {
+    return c.full_name ?? (`${c.first_name ?? ""} ${c.last_name ?? ""}`.trim() || `#${c.contact_id}`);
+  }
+
+  function removeContact(id: string) {
+    updateOpp.mutate({ id: dealId, sf_contact_ids: sfContactIds.filter((x) => x !== id) });
+  }
+
+  function addContact(c: JobContactWithDeal) {
+    const key = `airtable:${c.airtable_id ?? c.contact_id}`;
+    if (sfContactIds.includes(key)) return;
+    updateOpp.mutate({ id: dealId, sf_contact_ids: [...sfContactIds, key] });
+    setSearch("");
+    setOpen(false);
+  }
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      {linkedContacts.length > 0 && (
+        <div className="flex flex-wrap gap-1">
+          {linkedContacts.map((c) => (
+            <span
+              key={c.contact_id}
+              className="inline-flex items-center gap-1 rounded-full bg-surface-2 px-2 py-0.5 text-[11px] text-ink-2 border border-border-strong"
+              title={c.email ?? undefined}
+            >
+              {contactDisplayName(c)}
+              <button
+                type="button"
+                onClick={() => {
+                  // Try to find matching key in sfContactIds — match by airtable_id pattern or contact_id
+                  const toRemove = sfContactIds.find(
+                    (id) =>
+                      id === `airtable:${c.contact_id}` ||
+                      id.endsWith(`:${c.contact_id}`)
+                  ) ?? String(c.contact_id);
+                  removeContact(toRemove);
+                }}
+                className="ml-0.5 text-ink-4 hover:text-red-500 transition-colors"
+                title="Remove contact"
+              >
+                <X size={11} />
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+      <div className="relative">
+        <input
+          type="text"
+          value={search}
+          onFocus={() => { if (search) setOpen(true); }}
+          onBlur={() => setTimeout(() => setOpen(false), 150)}
+          onChange={(e) => { setSearch(e.target.value); setOpen(true); }}
+          placeholder="Search contacts…"
+          className="w-full rounded border border-border-strong bg-surface px-2 py-1 text-[11.5px] text-ink-2 placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40"
+        />
+        {open && contacts.length > 0 && (
+          <ul className="absolute z-20 mt-1 max-h-[140px] w-full overflow-y-auto rounded border border-border-strong bg-surface shadow-md">
+            {contacts.slice(0, 12).map((c) => (
+              <li key={c.contact_id}>
+                <button
+                  type="button"
+                  onMouseDown={() => addContact(c)}
+                  className="w-full px-3 py-1.5 text-left text-[11.5px] text-ink hover:bg-surface-2"
+                >
+                  <span className="font-medium">{contactDisplayName(c)}</span>
+                  {c.current_company ? (
+                    <span className="ml-1.5 text-ink-3">{c.current_company}</span>
+                  ) : null}
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── Expanded detail panel ────────────────────────────────────────────────────
 
 function DealDetailPanel({ deal }: { deal: JobsOpportunity }) {
@@ -286,39 +472,18 @@ function DealDetailPanel({ deal }: { deal: JobsOpportunity }) {
           </Field>
 
           <Field label="Builders" className="col-span-2">
-            {deal.builder_ids.length === 0 ? (
-              <span className="text-[12px] text-ink-4">None linked</span>
-            ) : (
-              <div className="flex flex-wrap gap-1.5">
-                {deal.builder_ids.map((id) => (
-                  <span
-                    key={id}
-                    className="inline-flex items-center rounded-full bg-surface-2 px-2 py-0.5 text-[11px] text-ink-2 border border-border-strong"
-                  >
-                    {id}
-                  </span>
-                ))}
-              </div>
-            )}
+            <BuilderPicker dealId={deal.id} builderIds={deal.builder_ids} />
           </Field>
 
           <Field label="Contacts" className="col-span-2">
             {detailQ.isLoading ? (
               <span className="text-[12px] text-ink-4">Loading…</span>
-            ) : contacts.length === 0 ? (
-              <span className="text-[12px] text-ink-4">None linked</span>
             ) : (
-              <div className="flex flex-wrap gap-1.5">
-                {contacts.map((c) => (
-                  <span
-                    key={c.contact_id}
-                    className="inline-flex items-center rounded-full bg-surface-2 px-2 py-0.5 text-[11px] text-ink-2 border border-border-strong"
-                    title={c.email ?? undefined}
-                  >
-                    {c.full_name ?? (`${c.first_name ?? ""} ${c.last_name ?? ""}`.trim() || `#${c.contact_id}`)}
-                  </span>
-                ))}
-              </div>
+              <ContactPicker
+                dealId={deal.id}
+                sfContactIds={deal.sf_contact_ids}
+                linkedContacts={contacts}
+              />
             )}
           </Field>
 
@@ -520,11 +685,51 @@ function LogActivityForm({ dealId }: { dealId: string }) {
   );
 }
 
+function ActivitySourceBadge({ entry }: { entry: import("@/services/jobs").ActivityEntry }) {
+  if (entry.is_jobs) {
+    return (
+      <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium bg-accent-soft text-accent-ink">
+        Jobs
+      </span>
+    );
+  }
+  if (entry.source === "gmail-sync") {
+    return (
+      <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium bg-blue-50 text-blue-600">
+        Gmail
+      </span>
+    );
+  }
+  if (entry.source === "calendar-sync") {
+    return (
+      <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium bg-violet-50 text-violet-600">
+        Calendar
+      </span>
+    );
+  }
+  if (entry.source === "salesforce") {
+    return (
+      <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium bg-sky-50 text-sky-600">
+        SF
+      </span>
+    );
+  }
+  // manual and not is_jobs
+  return (
+    <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium bg-stone-100 text-stone-500">
+      Manual
+    </span>
+  );
+}
+
 function ActivityTab({
   entries,
 }: {
   entries: import("@/services/jobs").ActivityEntry[];
 }) {
+  const [expandedActivityId, setExpandedActivityId] = useState<string | null>(null);
+  const deleteActivity = useDeleteActivity();
+
   if (entries.length === 0) {
     return (
       <div className="px-4 py-6 text-center text-[12px] text-ink-3">
@@ -534,26 +739,66 @@ function ActivityTab({
   }
   return (
     <ul className="divide-y divide-border-strong">
-      {entries.map((e) => (
-        <li key={e.id} className="px-4 py-2.5">
-          <div className="flex items-start justify-between gap-2">
-            <div className="flex flex-col gap-0.5">
-              <span className="text-[12px] font-medium text-ink">
-                {e.subject ?? e.type ?? "Activity"}
-              </span>
-              {e.description ? (
-                <span className="text-[11.5px] text-ink-3 line-clamp-2">{e.description}</span>
-              ) : null}
-              {e.logged_by ? (
-                <span className="text-[10.5px] text-ink-4">by {e.logged_by}</span>
-              ) : null}
+      {entries.map((e) => {
+        const isExpanded = expandedActivityId === e.id;
+        return (
+          <li
+            key={e.id}
+            className="cursor-pointer px-4 py-2.5 hover:bg-surface-2/40 transition-colors"
+            onClick={() => setExpandedActivityId(isExpanded ? null : e.id)}
+          >
+            <div className="flex items-start justify-between gap-2">
+              <div className="flex flex-col gap-0.5 min-w-0 flex-1">
+                <span className="text-[12px] font-medium text-ink">
+                  {e.subject ?? e.type ?? "Activity"}
+                </span>
+                {!isExpanded && e.description ? (
+                  <span className="text-[11.5px] text-ink-3 line-clamp-2">{e.description}</span>
+                ) : null}
+                {e.logged_by ? (
+                  <span className="text-[10.5px] text-ink-4">by {e.logged_by}</span>
+                ) : null}
+                {isExpanded && (
+                  <div className="mt-1.5 flex flex-col gap-1">
+                    {e.description ? (
+                      <p className="text-[11.5px] text-ink-2 whitespace-pre-wrap">{e.description}</p>
+                    ) : null}
+                    {e.email_from ? (
+                      <span className="text-[11px] text-ink-3">
+                        <span className="font-medium">From:</span> {e.email_from}
+                      </span>
+                    ) : null}
+                    {e.meeting_duration_minutes != null ? (
+                      <span className="text-[11px] text-ink-3">
+                        <span className="font-medium">Duration:</span> {e.meeting_duration_minutes} min
+                      </span>
+                    ) : null}
+                  </div>
+                )}
+              </div>
+              <div className="flex shrink-0 items-center gap-1.5">
+                <ActivitySourceBadge entry={e} />
+                <span className="font-mono text-[10.5px] text-ink-4">
+                  {e.activity_date ? format(new Date(e.activity_date), "MMM d") : "—"}
+                </span>
+                {e.is_jobs ? (
+                  <button
+                    type="button"
+                    title="Delete activity"
+                    onClick={(ev) => {
+                      ev.stopPropagation();
+                      deleteActivity.mutate(e.id);
+                    }}
+                    className="text-ink-4 hover:text-red-500 transition-colors"
+                  >
+                    <Trash2 size={13} />
+                  </button>
+                ) : null}
+              </div>
             </div>
-            <span className="shrink-0 font-mono text-[10.5px] text-ink-4">
-              {e.activity_date ? format(new Date(e.activity_date), "MMM d") : "—"}
-            </span>
-          </div>
-        </li>
-      ))}
+          </li>
+        );
+      })}
     </ul>
   );
 }
@@ -797,12 +1042,211 @@ function DealRow({
   );
 }
 
+// ── New Deal modal ────────────────────────────────────────────────────────────
+
+interface NewDealForm {
+  companyName: string;
+  stage: JobStage;
+  dealType: DealType | "";
+  roleTitle: string;
+  owner: string;
+  expectedSalary: string;
+  notes: string;
+}
+
+const DEFAULT_NEW_DEAL_FORM: NewDealForm = {
+  companyName: "",
+  stage: "lead_submitted",
+  dealType: "",
+  roleTitle: "",
+  owner: "",
+  expectedSalary: "",
+  notes: "",
+};
+
+function NewDealModal({ onClose }: { onClose: () => void }) {
+  const [form, setForm] = useState<NewDealForm>(DEFAULT_NEW_DEAL_FORM);
+  const createOpportunity = useCreateOpportunity();
+
+  function set<K extends keyof NewDealForm>(key: K, value: NewDealForm[K]) {
+    setForm((prev) => ({ ...prev, [key]: value }));
+  }
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!form.companyName.trim()) return;
+
+    const salary = form.expectedSalary.trim()
+      ? Number(form.expectedSalary.replace(/[^0-9.]/g, ""))
+      : undefined;
+
+    await createOpportunity.mutateAsync({
+      account_id: "UNKNOWN",
+      account_name: form.companyName.trim(),
+      stage: form.stage,
+      deal_type: form.dealType || null,
+      title: form.roleTitle.trim() || undefined,
+      owner_email: form.owner.trim() || undefined,
+      salary_expected: salary != null && !isNaN(salary) ? salary : undefined,
+      description: form.notes.trim() || undefined,
+    } as Partial<JobsOpportunity>);
+
+    onClose();
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/30"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div className="w-full max-w-md rounded-xl border border-border-strong bg-surface shadow-xl">
+        {/* Header */}
+        <div className="flex items-center justify-between border-b border-border-strong px-5 py-4">
+          <h2 className="text-[15px] font-semibold text-ink">New Deal</h2>
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-ink-3 hover:text-ink transition-colors"
+            aria-label="Close"
+          >
+            <X size={16} />
+          </button>
+        </div>
+
+        {/* Form */}
+        <form onSubmit={(e) => void handleSubmit(e)} className="flex flex-col gap-4 px-5 py-4">
+          {/* Company Name */}
+          <div className="flex flex-col gap-1">
+            <label className="text-[11px] font-semibold uppercase tracking-wider text-ink-4">
+              Company Name <span className="text-red-500">*</span>
+            </label>
+            <input
+              type="text"
+              required
+              value={form.companyName}
+              onChange={(e) => set("companyName", e.target.value)}
+              placeholder="Acme Corp"
+              className="w-full rounded-md border border-border-strong bg-surface px-3 py-2 text-[13px] text-ink placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40"
+            />
+          </div>
+
+          {/* Stage */}
+          <div className="flex flex-col gap-1">
+            <label className="text-[11px] font-semibold uppercase tracking-wider text-ink-4">
+              Stage <span className="text-red-500">*</span>
+            </label>
+            <select
+              value={form.stage}
+              onChange={(e) => set("stage", e.target.value as JobStage)}
+              className="w-full rounded-md border border-border-strong bg-surface px-3 py-2 text-[13px] text-ink focus:outline-none focus:ring-1 focus:ring-accent/40"
+            >
+              {STAGES_ORDERED.map((s) => (
+                <option key={s} value={s}>{STAGE_LABELS[s]}</option>
+              ))}
+            </select>
+          </div>
+
+          {/* Deal Type + Role Title (two columns) */}
+          <div className="grid grid-cols-2 gap-3">
+            <div className="flex flex-col gap-1">
+              <label className="text-[11px] font-semibold uppercase tracking-wider text-ink-4">Deal Type</label>
+              <select
+                value={form.dealType}
+                onChange={(e) => set("dealType", e.target.value as DealType | "")}
+                className="w-full rounded-md border border-border-strong bg-surface px-3 py-2 text-[13px] text-ink focus:outline-none focus:ring-1 focus:ring-accent/40"
+              >
+                <option value="">— none —</option>
+                {(Object.entries(DEAL_TYPE_LABELS) as [DealType, string][]).map(([k, v]) => (
+                  <option key={k} value={k}>{v}</option>
+                ))}
+              </select>
+            </div>
+
+            <div className="flex flex-col gap-1">
+              <label className="text-[11px] font-semibold uppercase tracking-wider text-ink-4">Role Title</label>
+              <input
+                type="text"
+                value={form.roleTitle}
+                onChange={(e) => set("roleTitle", e.target.value)}
+                placeholder="Software Engineer"
+                className="w-full rounded-md border border-border-strong bg-surface px-3 py-2 text-[13px] text-ink placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40"
+              />
+            </div>
+          </div>
+
+          {/* Owner + Expected Salary (two columns) */}
+          <div className="grid grid-cols-2 gap-3">
+            <div className="flex flex-col gap-1">
+              <label className="text-[11px] font-semibold uppercase tracking-wider text-ink-4">Owner</label>
+              <input
+                type="text"
+                value={form.owner}
+                onChange={(e) => set("owner", e.target.value)}
+                placeholder="avni@pursuit.org"
+                className="w-full rounded-md border border-border-strong bg-surface px-3 py-2 text-[13px] text-ink placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40"
+              />
+            </div>
+
+            <div className="flex flex-col gap-1">
+              <label className="text-[11px] font-semibold uppercase tracking-wider text-ink-4">Expected Salary</label>
+              <input
+                type="number"
+                value={form.expectedSalary}
+                onChange={(e) => set("expectedSalary", e.target.value)}
+                placeholder="85000"
+                min={0}
+                className="w-full rounded-md border border-border-strong bg-surface px-3 py-2 text-[13px] text-ink placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40"
+              />
+            </div>
+          </div>
+
+          {/* Notes */}
+          <div className="flex flex-col gap-1">
+            <label className="text-[11px] font-semibold uppercase tracking-wider text-ink-4">Notes</label>
+            <textarea
+              rows={3}
+              value={form.notes}
+              onChange={(e) => set("notes", e.target.value)}
+              placeholder="Add any initial notes…"
+              className="w-full resize-none rounded-md border border-border-strong bg-surface px-3 py-2 text-[13px] text-ink placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40"
+            />
+          </div>
+
+          {/* Actions */}
+          <div className="flex items-center justify-end gap-3 pt-1">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-4 py-2 text-[13px] font-medium text-ink-3 hover:text-ink transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={createOpportunity.isPending || !form.companyName.trim()}
+              className="flex items-center gap-1.5 rounded-lg bg-accent px-4 py-2 text-[13px] font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+            >
+              {createOpportunity.isPending ? (
+                <Spinner />
+              ) : (
+                <Plus size={13} />
+              )}
+              {createOpportunity.isPending ? "Creating…" : "Create Deal"}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 
 export function JobsTeam() {
   const [ownerFilter, setOwnerFilter] = useState<string | null>(null);
   const [stageGroup, setStageGroup] = useState<StageGroup>("all");
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [showNewDeal, setShowNewDeal] = useState(false);
 
   const { data: rawData, isLoading } = useJobsOpportunities(
     ownerFilter ? { owner_email: ownerFilter } : {},
@@ -882,7 +1326,21 @@ export function JobsTeam() {
         <span className="ml-auto font-mono text-[12px] text-ink-4">
           {isLoading ? "…" : `${visible.length} deal${visible.length === 1 ? "" : "s"}`}
         </span>
+
+        {/* New Deal button */}
+        <button
+          type="button"
+          onClick={() => setShowNewDeal(true)}
+          className="flex items-center gap-1.5 rounded-lg border border-border-strong bg-surface px-3 py-1.5 text-[12px] font-medium text-ink-2 transition-colors hover:border-accent hover:text-accent"
+        >
+          <Plus size={12} />
+          New Deal
+        </button>
       </div>
+
+      {showNewDeal && (
+        <NewDealModal onClose={() => setShowNewDeal(false)} />
+      )}
 
       {/* Table */}
       {isLoading ? (

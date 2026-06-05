@@ -77,6 +77,82 @@ class OpportunityUpdate(BaseModel):
     note: Optional[str] = None  # optional note when changing stage
 
 
+@router.get("/contacts/summary")
+async def get_contacts_summary(user=Depends(require_auth), conn=Depends(get_db)):
+    """Contacts & outreach metrics for the leadership dashboard."""
+    stages = await conn.fetch("""
+        SELECT contact_stage, count(*) AS count
+        FROM public.contacts WHERE airtable_id IS NOT NULL
+        GROUP BY contact_stage ORDER BY count DESC
+    """)
+    total   = sum(r["count"] for r in stages)
+    engaged = sum(r["count"] for r in stages if r["contact_stage"] in ("initial_outreach", "active", "on_hold"))
+
+    activity = await conn.fetchrow("""
+        SELECT
+            count(*) FILTER (WHERE a.activity_date >= now() - interval '7 days') AS outreach_this_week,
+            count(*) FILTER (WHERE a.type='call' AND a.activity_date >= now() - interval '7 days') AS calls_this_week,
+            count(*) FILTER (WHERE a.activity_date >= now() - interval '30 days') AS outreach_this_month,
+            count(*) AS total_engagements,
+            count(*) FILTER (WHERE a.type='call') AS total_calls,
+            count(DISTINCT a.logged_by) AS active_owners
+        FROM bedrock.activity a
+        WHERE a.jobs_opportunity_id IS NOT NULL
+          AND a.deleted_at IS NULL
+    """)
+
+    active_companies = await conn.fetchval("""
+        SELECT count(*) FROM bedrock.jobs_opportunity
+        WHERE deleted_at IS NULL AND stage LIKE 'active_%'
+    """)
+
+    return {
+        "success": True,
+        "data": {
+            "contacts": {
+                "total":    total,
+                "engaged":  engaged,
+                "by_stage": [{"stage": r["contact_stage"] or "none", "count": r["count"]} for r in stages],
+            },
+            "activity": dict(activity),
+            "active_companies": active_companies,
+        },
+    }
+
+
+class ContactCreate(BaseModel):
+    full_name:       str
+    email:           Optional[str] = None
+    current_title:   Optional[str] = None
+    current_company: Optional[str] = None
+    contact_stage:   str = "lead"
+    linkedin_url:    Optional[str] = None
+    notes:           Optional[str] = None
+
+
+@router.post("/contacts")
+async def create_contact(
+    body: ContactCreate,
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    import uuid as _uuid
+    at_id = f"manual-{_uuid.uuid4().hex[:8]}"
+    parts = body.full_name.split(" ", 1)
+    first = parts[0]
+    last  = parts[1] if len(parts) > 1 else ""
+    cid = await conn.fetchval("""
+        INSERT INTO public.contacts
+            (first_name, last_name, full_name, email, current_title,
+             current_company, linkedin_url, notes, source, airtable_id, contact_stage)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'manual',$9,$10)
+        RETURNING contact_id
+    """, first, last, body.full_name, body.email, body.current_title,
+        body.current_company, body.linkedin_url, body.notes, at_id, body.contact_stage)
+    row = await conn.fetchrow("SELECT * FROM public.contacts WHERE contact_id=$1", cid)
+    return {"success": True, "data": dict(row)}
+
+
 @router.get("/contacts")
 async def list_contacts(
     stage: Optional[str] = Query(None),
@@ -200,39 +276,83 @@ async def get_contact(
     if not row:
         raise HTTPException(404, "Contact not found")
 
-    deal_id = row["deal_id"] or row["deal_id2"]
+    deal_id    = row["deal_id"] or row["deal_id2"]
+    deal_id2   = row["deal_id2"]
+    contact_email = row["email"]
+    contact_name  = row["full_name"] or ""
+    first_name    = contact_name.split()[0] if contact_name else ""
 
-    # Activity: from linked deal + any activity mentioning this contact's name
-    activity = []
+    # Pull ALL activity for this contact:
+    # 1. Jobs-tagged activity on their linked deal
+    # 2. Gmail/Calendar/SF activity where email matches
+    # 3. Activity where their name appears in description
+    seen_ids: set = set()
+    all_activity: list = []
+
     if deal_id:
-        activity = await conn.fetch(
+        rows_deal = await conn.fetch(
             """
-            SELECT id, type, subject, description, activity_date, logged_by, source
-            FROM bedrock.activity
-            WHERE jobs_opportunity_id = $1
-            ORDER BY activity_date DESC NULLS LAST
-            LIMIT 50
+            SELECT a.id, a.type, a.subject, a.description, a.activity_date,
+                   a.logged_by, a.source, a.email_from, a.email_snippet,
+                   a.meeting_duration_minutes, a.deleted_at,
+                   true AS is_jobs
+            FROM bedrock.activity a
+            WHERE a.deleted_at IS NULL AND a.jobs_opportunity_id = $1
+            ORDER BY a.activity_date DESC NULLS LAST LIMIT 100
             """,
             deal_id,
         )
+        for r in rows_deal:
+            seen_ids.add(r["id"])
+            all_activity.append(dict(r))
 
-    # Also search for activity mentioning the contact by name (cross-deal)
-    name = row["full_name"] or ""
-    if name:
-        name_hits = await conn.fetch(
+    if contact_email:
+        rows_email = await conn.fetch(
             """
-            SELECT id, type, subject, description, activity_date, logged_by, source
-            FROM bedrock.activity
-            WHERE jobs_opportunity_id IS NOT NULL
-              AND (lower(description) LIKE lower($1) OR lower(subject) LIKE lower($1))
-              AND id != ALL($2::uuid[])
-            ORDER BY activity_date DESC NULLS LAST
-            LIMIT 20
+            SELECT a.id, a.type, a.subject, a.description, a.activity_date,
+                   a.logged_by, a.source, a.email_from, a.email_snippet,
+                   a.meeting_duration_minutes, a.deleted_at,
+                   (a.jobs_opportunity_id IS NOT NULL) AS is_jobs
+            FROM bedrock.activity a
+            WHERE a.deleted_at IS NULL
+              AND a.id != ALL($2::uuid[])
+              AND (
+                lower(a.email_from) LIKE lower($1)
+                OR lower(a.email_from) LIKE '%<' || lower($1) || '>%'
+              )
+            ORDER BY a.activity_date DESC NULLS LAST LIMIT 100
             """,
-            f"%{name.split()[0]}%",  # search first name in descriptions
-            [r["id"] for r in activity] if activity else [],
+            f"%{contact_email}%",
+            list(seen_ids) or [__import__("uuid").uuid4()],
         )
-        activity = list(activity) + list(name_hits)
+        for r in rows_email:
+            seen_ids.add(r["id"])
+            all_activity.append(dict(r))
+
+    if first_name and len(first_name) > 3:
+        rows_name = await conn.fetch(
+            """
+            SELECT a.id, a.type, a.subject, a.description, a.activity_date,
+                   a.logged_by, a.source, a.email_from, a.email_snippet,
+                   a.meeting_duration_minutes, a.deleted_at,
+                   (a.jobs_opportunity_id IS NOT NULL) AS is_jobs
+            FROM bedrock.activity a
+            WHERE a.deleted_at IS NULL
+              AND a.id != ALL($2::uuid[])
+              AND jobs_opportunity_id IS NOT NULL
+              AND (lower(description) LIKE lower($1) OR lower(subject) LIKE lower($1))
+            ORDER BY a.activity_date DESC NULLS LAST LIMIT 30
+            """,
+            f"%{first_name}%",
+            list(seen_ids) or [__import__("uuid").uuid4()],
+        )
+        for r in rows_name:
+            if r["id"] not in seen_ids:
+                seen_ids.add(r["id"])
+                all_activity.append(dict(r))
+
+    all_activity.sort(key=lambda x: x.get("activity_date") or "", reverse=True)
+    activity = all_activity[:150]
 
     deal = None
     if row["deal_id"]:
@@ -256,51 +376,6 @@ async def get_contact(
             "airtable_id":     row["airtable_id"],
             "deal":            deal,
             "activity":        [dict(a) for a in activity],
-        },
-    }
-
-
-@router.get("/contacts/summary")
-async def get_contacts_summary(user=Depends(require_auth), conn=Depends(get_db)):
-    """Contacts & outreach metrics for the leadership dashboard."""
-    # Stage breakdown
-    stages = await conn.fetch("""
-        SELECT contact_stage, count(*) AS count
-        FROM public.contacts WHERE airtable_id IS NOT NULL
-        GROUP BY contact_stage ORDER BY count DESC
-    """)
-    total     = sum(r["count"] for r in stages)
-    engaged   = sum(r["count"] for r in stages if r["contact_stage"] in ("initial_outreach", "active", "on_hold"))
-
-    # Weekly & total activity
-    activity = await conn.fetchrow("""
-        SELECT
-            count(*) FILTER (WHERE a.activity_date >= now() - interval '7 days') AS outreach_this_week,
-            count(*) FILTER (WHERE a.type='call' AND a.activity_date >= now() - interval '7 days') AS calls_this_week,
-            count(*) FILTER (WHERE a.activity_date >= now() - interval '30 days') AS outreach_this_month,
-            count(*) AS total_engagements,
-            count(*) FILTER (WHERE a.type='call') AS total_calls,
-            count(DISTINCT a.logged_by) AS active_owners
-        FROM bedrock.activity a
-        WHERE a.jobs_opportunity_id IS NOT NULL
-    """)
-
-    # Active companies (deals in active_* stages)
-    active_companies = await conn.fetchval("""
-        SELECT count(*) FROM bedrock.jobs_opportunity
-        WHERE deleted_at IS NULL AND stage LIKE 'active_%'
-    """)
-
-    return {
-        "success": True,
-        "data": {
-            "contacts": {
-                "total":   total,
-                "engaged": engaged,
-                "by_stage": [{"stage": r["contact_stage"] or "none", "count": r["count"]} for r in stages],
-            },
-            "activity": dict(activity),
-            "active_companies": active_companies,
         },
     }
 
@@ -483,15 +558,27 @@ async def get_opportunity(
     )
     contacts = await _resolve_contacts(conn, list(row["sf_contact_ids"] or []))
 
+    account_id = row["account_id"]
+
+    # All activity for this account (Gmail, Calendar, SF, manual) + jobs-tagged
     activity = await conn.fetch(
         """
-        SELECT id, type, subject, description, activity_date, source, logged_by, synced_at
-        FROM bedrock.activity
-        WHERE jobs_opportunity_id=$1
-        ORDER BY activity_date DESC NULLS LAST
-        LIMIT 100
+        SELECT
+            a.id, a.type, a.subject, a.description, a.activity_date,
+            a.source, a.logged_by, a.synced_at, a.email_from, a.email_snippet,
+            a.meeting_duration_minutes, a.meeting_attendees, a.deleted_at,
+            (a.jobs_opportunity_id = $1) AS is_jobs
+        FROM bedrock.activity a
+        WHERE a.deleted_at IS NULL
+          AND (
+            a.jobs_opportunity_id = $1
+            OR (a.account_id = $2 AND $2 != 'UNKNOWN')
+          )
+        ORDER BY a.activity_date DESC NULLS LAST
+        LIMIT 250
         """,
         opp_id,
+        account_id,
     )
     return {
         "success": True,
@@ -583,6 +670,54 @@ async def delete_opportunity(
     if result == "UPDATE 0":
         raise HTTPException(404, "Opportunity not found")
     return {"success": True, "data": {"deleted": True}}
+
+
+# ── Activity delete ──────────────────────────────────────────────────────────
+
+@router.delete("/activity/{activity_id}")
+async def delete_activity(
+    activity_id: UUID,
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    result = await conn.execute(
+        "UPDATE bedrock.activity SET deleted_at=now() WHERE id=$1 AND deleted_at IS NULL",
+        activity_id,
+    )
+    if result == "UPDATE 0":
+        raise HTTPException(404, "Activity not found")
+    return {"success": True, "data": {"deleted": True}}
+
+
+# ── Builders search ───────────────────────────────────────────────────────────
+
+@router.get("/builders")
+async def list_builders(
+    search: Optional[str] = Query(None),
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Return known builders from across all deal builder_ids arrays."""
+    rows = await conn.fetch(
+        """
+        SELECT DISTINCT unnest(builder_ids) AS email
+        FROM bedrock.jobs_opportunity
+        WHERE deleted_at IS NULL AND array_length(builder_ids, 1) > 0
+        ORDER BY 1
+        """
+    )
+    emails = [r["email"] for r in rows if r["email"]]
+    if search:
+        s = search.lower()
+        emails = [e for e in emails if s in e.lower()]
+    # Format as {email, name} objects
+    def _name(email: str) -> str:
+        local = email.split("@")[0].replace(".", " ")
+        return " ".join(p.capitalize() for p in local.split())
+    return {
+        "success": True,
+        "data": [{"email": e, "name": _name(e)} for e in emails],
+    }
 
 
 # ── Contact PATCH ────────────────────────────────────────────────────────────
