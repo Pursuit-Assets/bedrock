@@ -7,7 +7,7 @@ import {
   useLogActivity,
   useDeleteActivity,
   useBuilders,
-  useJobsContacts,
+  useContactSearch,
   STAGE_LABELS,
   DEAL_TYPE_LABELS,
   ACTIVE_STAGES,
@@ -18,7 +18,7 @@ import {
   type JobContact,
   type ActivityCreateBody,
   type Builder,
-  type JobContactWithDeal,
+  type ContactSearchResult,
 } from "@/services/jobs";
 import { JobStageChip, DealTypeChip } from "@/components/jobs/JobStageChip";
 import { InlineText, InlineDate } from "@/components/ui/InlineEdit";
@@ -251,6 +251,29 @@ function BuilderPicker({
 
 // ── Contact picker ────────────────────────────────────────────────────────────
 
+/** Derive source badge label + style from a sf_contact_ids ref string */
+function contactRefSource(ref: string): { label: string; className: string } {
+  if (ref.startsWith("airtable:")) return { label: "Jobs", className: "bg-accent-soft text-accent-ink" };
+  if (ref.startsWith("pub:"))      return { label: "LinkedIn", className: "bg-indigo-50 text-indigo-600" };
+  return { label: "SF", className: "bg-sky-50 text-sky-600" };
+}
+
+/** Derive source badge label + style from a ContactSearchResult */
+function searchResultSource(c: ContactSearchResult): { label: string; className: string } {
+  if (c.airtable_id)                   return { label: "Jobs",     className: "bg-accent-soft text-accent-ink" };
+  if (c.in_sf)                          return { label: "SF",       className: "bg-sky-50 text-sky-600" };
+  if (c.source === "linkedin_import")   return { label: "LinkedIn", className: "bg-indigo-50 text-indigo-600" };
+  return { label: "Jobs", className: "bg-accent-soft text-accent-ink" };
+}
+
+function ContactSourceBadge({ className, label }: { className: string; label: string }) {
+  return (
+    <span className={cn("inline-flex items-center rounded px-1 py-0.5 text-[9.5px] font-semibold leading-none", className)}>
+      {label}
+    </span>
+  );
+}
+
 function ContactPicker({
   dealId,
   sfContactIds,
@@ -263,85 +286,119 @@ function ContactPicker({
   const [search, setSearch] = useState("");
   const [open, setOpen] = useState(false);
   const updateOpp = useUpdateOpportunity();
-  const contactsQ = useJobsContacts(search ? { search, limit: 20 } : { limit: 0 });
-  const contacts: JobContactWithDeal[] = search ? (contactsQ.data?.data ?? []) : [];
+  const searchQ = useContactSearch(search);
+  const results: ContactSearchResult[] = search.length >= 2 ? (searchQ.data ?? []) : [];
 
-  function contactDisplayName(c: JobContact | JobContactWithDeal): string {
+  function contactDisplayName(c: JobContact): string {
     return c.full_name ?? (`${c.first_name ?? ""} ${c.last_name ?? ""}`.trim() || `#${c.contact_id}`);
   }
 
-  function removeContact(id: string) {
-    updateOpp.mutate({ id: dealId, sf_contact_ids: sfContactIds.filter((x) => x !== id) });
+  /** Find the ref stored in sfContactIds that corresponds to this linked contact */
+  function findRef(c: JobContact): string {
+    return (
+      sfContactIds.find(
+        (id) =>
+          id === `airtable:${c.contact_id}` ||
+          id === `pub:${c.contact_id}` ||
+          id.endsWith(`:${c.contact_id}`)
+      ) ?? String(c.contact_id)
+    );
   }
 
-  function addContact(c: JobContactWithDeal) {
-    const key = `airtable:${c.airtable_id ?? c.contact_id}`;
-    if (sfContactIds.includes(key)) return;
-    updateOpp.mutate({ id: dealId, sf_contact_ids: [...sfContactIds, key] });
+  function removeContact(ref: string) {
+    updateOpp.mutate({ id: dealId, sf_contact_ids: sfContactIds.filter((x) => x !== ref) });
+  }
+
+  function addContact(result: ContactSearchResult) {
+    if (sfContactIds.includes(result.contact_ref)) return;
+    updateOpp.mutate({ id: dealId, sf_contact_ids: [...sfContactIds, result.contact_ref] });
     setSearch("");
     setOpen(false);
   }
 
   return (
     <div className="flex flex-col gap-1.5">
+      {/* Current linked contacts as pills */}
       {linkedContacts.length > 0 && (
         <div className="flex flex-wrap gap-1">
-          {linkedContacts.map((c) => (
-            <span
-              key={c.contact_id}
-              className="inline-flex items-center gap-1 rounded-full bg-surface-2 px-2 py-0.5 text-[11px] text-ink-2 border border-border-strong"
-              title={c.email ?? undefined}
-            >
-              {contactDisplayName(c)}
-              <button
-                type="button"
-                onClick={() => {
-                  // Try to find matching key in sfContactIds — match by airtable_id pattern or contact_id
-                  const toRemove = sfContactIds.find(
-                    (id) =>
-                      id === `airtable:${c.contact_id}` ||
-                      id.endsWith(`:${c.contact_id}`)
-                  ) ?? String(c.contact_id);
-                  removeContact(toRemove);
-                }}
-                className="ml-0.5 text-ink-4 hover:text-red-500 transition-colors"
-                title="Remove contact"
+          {linkedContacts.map((c) => {
+            const ref = findRef(c);
+            const badge = contactRefSource(ref);
+            return (
+              <span
+                key={c.contact_id}
+                className="inline-flex items-center gap-1 rounded-full bg-surface-2 px-2 py-0.5 text-[11px] text-ink-2 border border-border-strong"
+                title={c.email ?? undefined}
               >
-                <X size={11} />
-              </button>
-            </span>
-          ))}
+                {contactDisplayName(c)}
+                <ContactSourceBadge label={badge.label} className={badge.className} />
+                <button
+                  type="button"
+                  onClick={() => removeContact(ref)}
+                  className="ml-0.5 text-ink-4 hover:text-red-500 transition-colors"
+                  title="Remove contact"
+                >
+                  <X size={11} />
+                </button>
+              </span>
+            );
+          })}
         </div>
       )}
+
+      {/* Search input */}
       <div className="relative">
         <input
           type="text"
           value={search}
-          onFocus={() => { if (search) setOpen(true); }}
+          onFocus={() => { if (search.length >= 2) setOpen(true); }}
           onBlur={() => setTimeout(() => setOpen(false), 150)}
           onChange={(e) => { setSearch(e.target.value); setOpen(true); }}
-          placeholder="Search contacts…"
+          placeholder="Search all 32k+ contacts…"
           className="w-full rounded border border-border-strong bg-surface px-2 py-1 text-[11.5px] text-ink-2 placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40"
         />
-        {open && contacts.length > 0 && (
-          <ul className="absolute z-20 mt-1 max-h-[140px] w-full overflow-y-auto rounded border border-border-strong bg-surface shadow-md">
-            {contacts.slice(0, 12).map((c) => (
-              <li key={c.contact_id}>
-                <button
-                  type="button"
-                  onMouseDown={() => addContact(c)}
-                  className="w-full px-3 py-1.5 text-left text-[11.5px] text-ink hover:bg-surface-2"
-                >
-                  <span className="font-medium">{contactDisplayName(c)}</span>
-                  {c.current_company ? (
-                    <span className="ml-1.5 text-ink-3">{c.current_company}</span>
-                  ) : null}
-                </button>
+        {open && search.length >= 2 && (
+          <ul className="absolute z-20 mt-1 max-h-[160px] w-full overflow-y-auto rounded border border-border-strong bg-surface shadow-md">
+            {searchQ.isLoading ? (
+              <li className="flex items-center gap-2 px-3 py-2 text-[11.5px] text-ink-3">
+                <Spinner /> Searching…
               </li>
-            ))}
+            ) : results.length === 0 ? (
+              <li className="px-3 py-2 text-[11.5px] text-ink-4">No contacts found.</li>
+            ) : (
+              results.slice(0, 12).map((r) => {
+                const badge = searchResultSource(r);
+                const titleLine = [r.current_title, r.current_company].filter(Boolean).join(" @ ");
+                return (
+                  <li key={r.contact_id}>
+                    <button
+                      type="button"
+                      onMouseDown={() => addContact(r)}
+                      className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11.5px] text-ink hover:bg-surface-2"
+                    >
+                      <span className="min-w-0 flex-1">
+                        <span className="font-medium">{r.full_name ?? `#${r.contact_id}`}</span>
+                        {titleLine ? (
+                          <span className="ml-1.5 text-ink-3">{titleLine}</span>
+                        ) : null}
+                      </span>
+                      <ContactSourceBadge label={badge.label} className={badge.className} />
+                    </button>
+                  </li>
+                );
+              })
+            )}
           </ul>
         )}
       </div>
+
+      {/* Footer hints */}
+      <p className="text-[10.5px] text-ink-4">
+        Contacts from SF, LinkedIn, and Jobs pipeline — all 32k+ contacts searchable
+      </p>
+      <p className="text-[10.5px] text-ink-4">
+        Can't find them? Use the Contacts tab to create a new one.
+      </p>
     </div>
   );
 }

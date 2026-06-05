@@ -199,6 +199,34 @@ export function useContactDetail(id: number | null) {
   });
 }
 
+export interface ContactSearchResult {
+  contact_id: number;
+  full_name: string | null;
+  email: string | null;
+  current_title: string | null;
+  current_company: string | null;
+  source: string | null;
+  airtable_id: string | null;
+  contact_stage: string | null;
+  in_sf: boolean;
+  contact_ref: string;  // the ref to store in sf_contact_ids: airtable:XX, pub:123, or sf_id
+}
+
+export function useContactSearch(q: string) {
+  return useQuery<ContactSearchResult[]>({
+    queryKey: ["jobs", "contact-search", q],
+    queryFn: async () => {
+      if (q.length < 2) return [];
+      const { data } = await api.get<ApiResponse<ContactSearchResult[]>>(
+        `/api/jobs/contacts/search?q=${encodeURIComponent(q)}&limit=20`
+      );
+      return data.data;
+    },
+    enabled: q.length >= 2,
+    staleTime: 30_000,
+  });
+}
+
 export function useJobsContacts(filters: ContactFilters = {}) {
   const params = new URLSearchParams();
   if (filters.stage)   params.set("stage",   filters.stage);

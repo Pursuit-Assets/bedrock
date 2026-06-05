@@ -153,6 +153,54 @@ async def create_contact(
     return {"success": True, "data": dict(row)}
 
 
+@router.get("/contacts/search")
+async def search_all_contacts(
+    q: str = Query(..., min_length=2),
+    limit: int = Query(20, le=50),
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Search ALL contacts in the DB (LinkedIn, SF-linked, Airtable) for the picker UI."""
+    rows = await conn.fetch(
+        """
+        SELECT
+            c.contact_id,
+            c.full_name,
+            c.email,
+            c.current_title,
+            c.current_company,
+            c.source,
+            c.airtable_id,
+            c.contact_stage,
+            scl.sf_contact_id IS NOT NULL AS in_sf,
+            -- Reference key to use when linking to a deal
+            CASE
+                WHEN c.airtable_id IS NOT NULL THEN 'airtable:' || c.airtable_id
+                WHEN scl.sf_contact_id IS NOT NULL THEN scl.sf_contact_id
+                ELSE 'pub:' || c.contact_id::text
+            END AS contact_ref
+        FROM public.contacts c
+        LEFT JOIN bedrock.sf_contact_link scl ON scl.public_contact_id = c.contact_id
+        WHERE
+            lower(c.full_name) LIKE lower($1)
+            OR lower(c.email) LIKE lower($1)
+            OR lower(c.current_company) LIKE lower($1)
+        ORDER BY
+            CASE WHEN c.airtable_id IS NOT NULL THEN 0
+                 WHEN scl.sf_contact_id IS NOT NULL THEN 1
+                 ELSE 2 END,
+            c.full_name
+        LIMIT $2
+        """,
+        f"%{q}%",
+        limit,
+    )
+    return {
+        "success": True,
+        "data": [dict(r) for r in rows],
+    }
+
+
 @router.get("/contacts")
 async def list_contacts(
     stage: Optional[str] = Query(None),
@@ -380,23 +428,42 @@ async def get_contact(
     }
 
 
+CONTACT_SELECT = """
+    SELECT contact_id, first_name, last_name, full_name, email,
+           current_title, current_company, contact_stage, linkedin_url, notes, source, airtable_id
+"""
+
 async def _resolve_contacts(conn, sf_contact_ids: list[str]) -> list[dict]:
-    """Resolve airtable:recXXX refs and SF IDs to contact records."""
+    """Resolve contact refs to public.contacts records.
+
+    Supported ref formats:
+      airtable:{airtable_id}  — from Airtable employer contacts
+      pub:{contact_id}        — any public.contacts row by PK
+      {sf_contact_id}         — 15/18-char SF contact ID via sf_contact_link
+    """
     if not sf_contact_ids:
         return []
-    airtable_ids = [cid.replace("airtable:", "") for cid in sf_contact_ids if cid.startswith("airtable:")]
-    sf_ids       = [cid for cid in sf_contact_ids if not cid.startswith("airtable:")]
+
+    airtable_ids = [r.replace("airtable:", "") for r in sf_contact_ids if r.startswith("airtable:")]
+    pub_ids      = [int(r.replace("pub:", "")) for r in sf_contact_ids if r.startswith("pub:")]
+    sf_ids       = [r for r in sf_contact_ids if not r.startswith("airtable:") and not r.startswith("pub:")]
+
     contacts = []
     if airtable_ids:
         rows = await conn.fetch(
-            "SELECT contact_id, first_name, last_name, full_name, email, current_title, current_company, contact_stage, linkedin_url, notes FROM public.contacts WHERE airtable_id = ANY($1::text[])",
+            CONTACT_SELECT + "FROM public.contacts WHERE airtable_id = ANY($1::text[])",
             airtable_ids,
+        )
+        contacts.extend([dict(r) for r in rows])
+    if pub_ids:
+        rows = await conn.fetch(
+            CONTACT_SELECT + "FROM public.contacts WHERE contact_id = ANY($1::int[])",
+            pub_ids,
         )
         contacts.extend([dict(r) for r in rows])
     if sf_ids:
         rows = await conn.fetch(
-            """SELECT c.contact_id, c.first_name, c.last_name, c.full_name, c.email, c.current_title, c.current_company, c.contact_stage, c.linkedin_url, c.notes
-               FROM public.contacts c
+            CONTACT_SELECT + """FROM public.contacts c
                JOIN bedrock.sf_contact_link scl ON scl.public_contact_id = c.contact_id
                WHERE scl.sf_contact_id = ANY($1::text[])""",
             sf_ids,
