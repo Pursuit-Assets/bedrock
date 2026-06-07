@@ -424,6 +424,10 @@ function DealDetailPanel({
   const detail = detailQ.data;
   const isPending = updateOpp.isPending;
 
+  // Only full-time / part-time-contract wins produce job placements.
+  // Capstone, volunteer, workshop, pilot wins are outcomes but not secured jobs.
+  const isPlacementType = deal.deal_type === "ft" || deal.deal_type === "pt_contract";
+
   function handleStageChange(e: React.ChangeEvent<HTMLSelectElement>) {
     const newStage = e.target.value as JobStage;
     if (newStage === deal.stage) return;
@@ -431,7 +435,7 @@ function DealDetailPanel({
       { id: deal.id, stage: newStage },
       {
         onSuccess: () => {
-          if (newStage === "closed_won") {
+          if (newStage === "closed_won" && isPlacementType) {
             onRecordPlacements({ id: deal.id, account_name: deal.account_name });
           }
         },
@@ -482,7 +486,7 @@ function DealDetailPanel({
             ))}
           </select>
 
-          {deal.stage === "closed_won" && (
+          {deal.stage === "closed_won" && isPlacementType && (
             <button
               type="button"
               onClick={() => onRecordPlacements({ id: deal.id, account_name: deal.account_name })}
