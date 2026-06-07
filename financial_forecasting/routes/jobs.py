@@ -149,7 +149,7 @@ async def metric_drilldown(
     company_cols = [
         {"key": "company_name", "label": "Company"},
         {"key": "candidates", "label": "# Candidates"},
-        {"key": "builders", "label": "Builders"},
+        {"key": "roles", "label": "Roles"},
     ]
 
     async def companies(where: str):
@@ -157,7 +157,7 @@ async def metric_drilldown(
             f"""
             SELECT company_name,
                    count(*)                              AS candidates,
-                   string_agg(DISTINCT role_title, ', ') AS builders
+                   string_agg(DISTINCT role_title, ', ') AS roles
             FROM public.job_applications
             WHERE source_type='Pursuit_referred' AND {where}
             GROUP BY company_name

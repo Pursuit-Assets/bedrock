@@ -1,12 +1,15 @@
 import { Drawer } from "@/components/ui/Drawer";
 import { useMetricDrill } from "@/services/jobs";
-import { STAGE_LABELS, type JobStage } from "@/services/jobs";
+import { STAGE_LABELS, DEAL_TYPE_LABELS, type JobStage, type DealType } from "@/services/jobs";
 
 // Pretty-print known coded values; pass everything else through.
 function formatCell(colKey: string, value: string | null): string {
   if (value == null || value === "") return "—";
   if (colKey === "stage" && value in STAGE_LABELS) {
     return STAGE_LABELS[value as JobStage];
+  }
+  if (colKey === "deal_type" && value in DEAL_TYPE_LABELS) {
+    return DEAL_TYPE_LABELS[value as DealType];
   }
   if (colKey === "activity_date" || colKey === "date_applied") {
     const d = new Date(value);
