@@ -30,7 +30,6 @@ const TARGET_ACTIVE_ORGS_HI = 30;
 const TARGET_PLACEMENTS = 20;
 const TARGET_AVG_SALARY = 85_000;
 const OUTREACH_TO_CALL_LO = 0.20;
-const OUTREACH_TO_CALL_HI = 0.25;
 const ACTIVE_TO_INTERVIEW = 0.40;
 const INTERVIEW_TO_PLACEMENT = 0.20;
 
@@ -61,70 +60,6 @@ function progressBarColor(value: number, lo: number): string {
   return "bg-[var(--red)]";
 }
 
-// ── Metric card ───────────────────────────────────────────────────────────
-
-interface MetricCardProps {
-  icon: React.ReactNode;
-  label: string;
-  value: string | number;
-  isLoading: boolean;
-  target?: string;
-  progress?: { value: number; max: number; colorClass: string };
-  valueColor?: string;
-  onClick?: () => void;
-}
-
-function MetricCard({
-  icon,
-  label,
-  value,
-  isLoading,
-  target,
-  progress,
-  valueColor,
-  onClick,
-}: MetricCardProps) {
-  return (
-    <div
-      onClick={onClick}
-      className={cn(
-        "flex flex-col gap-3 rounded-[8px] border border-border-strong bg-surface p-5 shadow-[var(--shadow-sm)]",
-        onClick && "cursor-pointer transition-colors hover:border-accent",
-      )}
-    >
-      <div className="flex items-center justify-between">
-        <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">
-          {label}
-        </span>
-        <span className="text-ink-4">{icon}</span>
-      </div>
-      <div className="flex flex-col gap-1">
-        <span
-          className={cn(
-            "font-mono text-[28px] font-semibold leading-none tabular-nums",
-            isLoading ? "text-ink-4" : (valueColor ?? "text-ink"),
-          )}
-        >
-          {isLoading ? "—" : value}
-        </span>
-        {target ? (
-          <span className="text-[11.5px] text-ink-3">{target}</span>
-        ) : null}
-      </div>
-      {progress ? (
-        <div className="h-1 w-full overflow-hidden rounded-full bg-surface-2">
-          <div
-            className={cn("h-full rounded-full", progress.colorClass)}
-            style={{
-              width: `${Math.min(100, (progress.value / progress.max) * 100)}%`,
-            }}
-          />
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
 // ── Section wrapper ───────────────────────────────────────────────────────
 
 function SectionWrap({
@@ -148,6 +83,8 @@ function SectionWrap({
 
 export function JobsLeadership() {
   const [openMetric, setOpenMetric] = useState<string | null>(null);
+  const [ownerOpen, setOwnerOpen] = useState(true);
+  const [rolesOpen, setRolesOpen] = useState(false);
 
   const pipelineQ = useJobsPipeline();
   const oppsQ = useJobsOpportunities({ limit: 500 });
@@ -258,233 +195,190 @@ export function JobsLeadership() {
           : "text-[var(--red)]";
 
   return (
-    <div className="flex flex-col gap-8">
-      {/* ── Prospects ─────────────────────────────────────────────────── */}
-      <div className="flex flex-col gap-3">
-        <div className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">
-          Prospects
-        </div>
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <div
-            onClick={() => setOpenMetric("total_leads")}
-            className="flex cursor-pointer flex-col gap-2 rounded-[8px] border border-border-strong bg-surface p-4 shadow-[var(--shadow-sm)] transition-colors hover:border-accent"
-          >
-            <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
-              Total Leads
-            </span>
-            <span className="font-mono text-[28px] font-semibold leading-none tabular-nums text-ink">
-              {contactsLoading ? "—" : (totalLeads ?? "—")}
-            </span>
-          </div>
-          <div
-            onClick={() => setOpenMetric("engaged_leads")}
-            className="flex cursor-pointer flex-col gap-2 rounded-[8px] border border-border-strong bg-surface p-4 shadow-[var(--shadow-sm)] transition-colors hover:border-accent"
-          >
-            <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
-              Engaged Leads
-            </span>
-            <span className="text-[10.5px] text-ink-4 -mt-1">
-              Received an initial email and beyond
-            </span>
-            <span className="font-mono text-[28px] font-semibold leading-none tabular-nums text-ink">
-              {contactsLoading ? "—" : (engagedLeads ?? "—")}
-            </span>
-          </div>
-        </div>
-      </div>
-
-      {/* ── Employer Outreach ─────────────────────────────────────────── */}
-      <div className="flex flex-col gap-3">
-        <div className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">
-          Employer Outreach
-        </div>
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-          <div
-            onClick={() => setOpenMetric("outreach_week")}
-            className="flex cursor-pointer flex-col gap-2 rounded-[8px] border border-border-strong bg-surface p-4 shadow-[var(--shadow-sm)] transition-colors hover:border-accent"
-          >
-            <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
-              All Outreach
-            </span>
-            <span className="text-[10.5px] text-ink-4 -mt-1">in last week</span>
-            <span className="font-mono text-[28px] font-semibold leading-none tabular-nums text-ink">
-              {contactsLoading ? "—" : (outreachThisWeek ?? "—")}
-            </span>
-            <span className="text-[10.5px] text-ink-4">
-              {contactsLoading ? "—" : `${outreachAllTime ?? "—"} all time`}
-            </span>
-          </div>
-          <div
-            onClick={() => setOpenMetric("calls_total")}
-            className="flex cursor-pointer flex-col gap-2 rounded-[8px] border border-border-strong bg-surface p-4 shadow-[var(--shadow-sm)] transition-colors hover:border-accent"
-          >
-            <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
-              Calls in total
-            </span>
-            <span className="font-mono text-[28px] font-semibold leading-none tabular-nums text-ink">
-              {contactsLoading ? "—" : (callsAllTime ?? "—")}
-            </span>
-          </div>
-          <div
-            onClick={() => setOpenMetric("calls_week")}
-            className="flex cursor-pointer flex-col gap-2 rounded-[8px] border border-border-strong bg-surface p-4 shadow-[var(--shadow-sm)] transition-colors hover:border-accent"
-          >
-            <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
-              Calls in last week
-            </span>
-            <span className="font-mono text-[28px] font-semibold leading-none tabular-nums text-ink">
-              {contactsLoading ? "—" : (callsThisWeek ?? "—")}
-            </span>
-          </div>
-        </div>
-      </div>
-
-      {/* ── Active Engagements ────────────────────────────────────────── */}
-      <div className="flex flex-col gap-3">
-        <div className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">
-          Active Engagements
-        </div>
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <div
-            onClick={() => setOpenMetric("active_companies")}
-            className="flex cursor-pointer flex-col gap-2 rounded-[8px] border border-border-strong bg-surface p-4 shadow-[var(--shadow-sm)] transition-colors hover:border-accent"
-          >
-            <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
-              Active Companies
-            </span>
-            <span className="font-mono text-[28px] font-semibold leading-none tabular-nums text-ink">
-              {isLoading ? "—" : activeOrgsCount}
-            </span>
-          </div>
-          <div
-            onClick={() => setOpenMetric("in_discussion")}
-            className="flex cursor-pointer flex-col gap-2 rounded-[8px] border border-border-strong bg-surface p-4 shadow-[var(--shadow-sm)] transition-colors hover:border-accent"
-          >
-            <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
-              In Discussion
-            </span>
-            <span className="font-mono text-[28px] font-semibold leading-none tabular-nums text-ink">
-              {isLoading ? "—" : (stageMap.get("active_in_discussions")?.total ?? 0)}
-            </span>
-          </div>
-          <div
-            onClick={() => setOpenMetric("candidates_submitted")}
-            className="flex cursor-pointer flex-col gap-2 rounded-[8px] border border-border-strong bg-surface p-4 shadow-[var(--shadow-sm)] transition-colors hover:border-accent"
-          >
-            <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
-              Companies with Candidates Submitted
-            </span>
-            <span className="font-mono text-[28px] font-semibold leading-none tabular-nums text-ink">
-              {candidatesSubmittedQ.isLoading ? "—" : (candidatesSubmittedQ.data?.count ?? 0)}
-            </span>
-          </div>
-          <div
-            onClick={() => setOpenMetric("interviewing")}
-            className="flex cursor-pointer flex-col gap-2 rounded-[8px] border border-border-strong bg-surface p-4 shadow-[var(--shadow-sm)] transition-colors hover:border-accent"
-          >
-            <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
-              Companies Interviewing Builders
-            </span>
-            <span className="font-mono text-[28px] font-semibold leading-none tabular-nums text-ink">
-              {interviewingQ.isLoading ? "—" : (interviewingQ.data?.count ?? 0)}
-            </span>
-          </div>
-        </div>
-      </div>
-
-      {/* ── KPI cards ─────────────────────────────────────────────────── */}
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <MetricCard
-          icon={<Building2 size={15} />}
-          label="Active Orgs"
-          value={activeOrgsCount}
-          isLoading={isLoading}
-          onClick={() => setOpenMetric("active_orgs")}
-          target={`Target: ${TARGET_ACTIVE_ORGS_LO}–${TARGET_ACTIVE_ORGS_HI}`}
-          progress={{
-            value: activeOrgsCount,
-            max: TARGET_ACTIVE_ORGS_HI,
-            colorClass: progressBarColor(activeOrgsCount, TARGET_ACTIVE_ORGS_LO),
-          }}
-          valueColor={statusColor(activeOrgsCount, TARGET_ACTIVE_ORGS_LO)}
-        />
-        <MetricCard
-          icon={<Users size={15} />}
-          label="Builder Interviews"
-          value={builderInterviewCount}
-          isLoading={isLoading}
-          onClick={() => setOpenMetric("builder_interviews")}
-          target="Target: 2–3 per week"
-        />
-        <MetricCard
-          icon={<Target size={15} />}
-          label="Placements This Cycle"
-          value={placementsCount}
-          isLoading={isLoading}
-          onClick={() => setOpenMetric("placements")}
-          target={`Target ${TARGET_PLACEMENTS} by end of July`}
-          progress={{
-            value: placementsCount,
-            max: TARGET_PLACEMENTS,
-            colorClass: progressBarColor(placementsCount, TARGET_PLACEMENTS * 0.7),
-          }}
-          valueColor={statusColor(placementsCount, TARGET_PLACEMENTS * 0.7)}
-        />
-        <MetricCard
-          icon={<DollarSign size={15} />}
-          label="Avg Placed Salary"
-          value={fmtSalary(avgSalary)}
-          isLoading={isLoading}
-          target={`Target ${fmtSalary(TARGET_AVG_SALARY)}+`}
-          valueColor={salaryColor}
-        />
-      </div>
-
-      {/* ── Jobs funnels ──────────────────────────────────────────────── */}
-      <JobsFunnels />
-
-      {/* ── Conversion rates ──────────────────────────────────────────── */}
-      <SectionWrap title="Conversion Rates">
-        <div className="rounded-[8px] border border-border-strong bg-surface shadow-[var(--shadow-sm)]">
-          <table className="w-full text-[12.5px]">
-            <thead className="bg-surface-2 text-[10.5px] uppercase tracking-wider text-ink-3">
-              <tr>
-                <th className="px-5 py-2 text-left font-semibold">Metric</th>
-                <th className="px-5 py-2 text-right font-semibold">Actual</th>
-                <th className="px-5 py-2 text-right font-semibold">Target</th>
-                <th className="w-[140px] px-5 py-2 text-left font-semibold">Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              <ConversionRow
-                label="Outreach → Call"
-                rate={outreachToCallRate}
-                targetLo={OUTREACH_TO_CALL_LO}
-                targetHi={OUTREACH_TO_CALL_HI}
-                targetLabel="20–25%"
-                isLoading={isLoading}
-              />
-              <ConversionRow
-                label="Active → Builder Interview"
-                rate={activeToInterviewRate}
-                targetLo={ACTIVE_TO_INTERVIEW}
-                targetLabel="40%"
-                isLoading={isLoading}
-              />
-              <ConversionRow
-                label="Interview → Placement"
-                rate={interviewToPlacementRate}
-                targetLo={INTERVIEW_TO_PLACEMENT}
-                targetLabel="20%"
-                isLoading={isLoading}
-              />
-            </tbody>
-          </table>
+    <div className="flex flex-col gap-6">
+      {/* ── ZONE 1 · North Star (outcomes) ────────────────────────────── */}
+      <SectionWrap title="North Star · Outcomes">
+        <div className="grid grid-cols-2 gap-px overflow-hidden rounded-[8px] border border-border-strong bg-border-strong shadow-[var(--shadow-sm)] sm:grid-cols-4">
+          <NorthStarCell
+            label="Placements"
+            value={placementsCount}
+            isLoading={isLoading}
+            valueColor={statusColor(placementsCount, TARGET_PLACEMENTS * 0.7)}
+            sub={`of ${TARGET_PLACEMENTS} by end of July`}
+            progress={{
+              value: placementsCount,
+              max: TARGET_PLACEMENTS,
+              colorClass: progressBarColor(placementsCount, TARGET_PLACEMENTS * 0.7),
+            }}
+            icon={<Target size={14} />}
+            onClick={() => setOpenMetric("placements")}
+          />
+          <NorthStarCell
+            label="Avg FT Salary"
+            value={fmtSalary(avgSalary)}
+            isLoading={isLoading}
+            valueColor={salaryColor}
+            sub={`target ${fmtSalary(TARGET_AVG_SALARY)}+`}
+            progress={{
+              value: avgSalary ?? 0,
+              max: TARGET_AVG_SALARY,
+              colorClass:
+                avgSalary == null
+                  ? "bg-surface-2"
+                  : avgSalary >= TARGET_AVG_SALARY
+                    ? "bg-[var(--green)]"
+                    : avgSalary >= TARGET_AVG_SALARY * 0.9
+                      ? "bg-[var(--amber)]"
+                      : "bg-[var(--red)]",
+            }}
+            icon={<DollarSign size={14} />}
+          />
+          <NorthStarCell
+            label="Active Orgs"
+            value={activeOrgsCount}
+            isLoading={isLoading}
+            valueColor={statusColor(activeOrgsCount, TARGET_ACTIVE_ORGS_LO)}
+            sub={`target ${TARGET_ACTIVE_ORGS_LO}–${TARGET_ACTIVE_ORGS_HI}`}
+            progress={{
+              value: activeOrgsCount,
+              max: TARGET_ACTIVE_ORGS_HI,
+              colorClass: progressBarColor(activeOrgsCount, TARGET_ACTIVE_ORGS_LO),
+            }}
+            icon={<Building2 size={14} />}
+            onClick={() => setOpenMetric("active_orgs")}
+          />
+          <NorthStarCell
+            label="Builder Interviews"
+            value={builderInterviewCount}
+            isLoading={isLoading}
+            sub="target 2–3 / week"
+            icon={<Users size={14} />}
+            onClick={() => setOpenMetric("builder_interviews")}
+          />
         </div>
       </SectionWrap>
 
-      {/* ── Owner breakdown ────────────────────────────────────────────── */}
-      <SectionWrap title="Owner Breakdown">
+      {/* ── ZONE 2 · The Funnel (the engine) ──────────────────────────── */}
+      <div className="flex flex-col gap-3">
+        <JobsFunnels />
+        {/* Conversion strip — caption under the funnel */}
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+          <ConversionChip
+            label="Outreach → Call"
+            rate={outreachToCallRate}
+            targetLo={OUTREACH_TO_CALL_LO}
+            targetLabel="20–25%"
+            isLoading={isLoading}
+          />
+          <ConversionChip
+            label="Active → Interview"
+            rate={activeToInterviewRate}
+            targetLo={ACTIVE_TO_INTERVIEW}
+            targetLabel="40%"
+            isLoading={isLoading}
+          />
+          <ConversionChip
+            label="Interview → Placement"
+            rate={interviewToPlacementRate}
+            targetLo={INTERVIEW_TO_PLACEMENT}
+            targetLabel="20%"
+            isLoading={isLoading}
+          />
+        </div>
+      </div>
+
+      {/* ── ZONE 3 · Top of Funnel (leading indicators) ───────────────── */}
+      <SectionWrap title="Top of Funnel · Activity">
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <PulseCell
+            label="Total Leads"
+            value={totalLeads ?? "—"}
+            isLoading={contactsLoading}
+            onClick={() => setOpenMetric("total_leads")}
+          />
+          <PulseCell
+            label="Engaged Leads"
+            value={engagedLeads ?? "—"}
+            isLoading={contactsLoading}
+            sub="initial email & beyond"
+            onClick={() => setOpenMetric("engaged_leads")}
+          />
+          <PulseCell
+            label="Outreach · wk"
+            value={outreachThisWeek ?? "—"}
+            isLoading={contactsLoading}
+            sub={`${outreachAllTime ?? "—"} all time`}
+            onClick={() => setOpenMetric("outreach_week")}
+          />
+          <PulseCell
+            label="Calls · wk"
+            value={callsThisWeek ?? "—"}
+            isLoading={contactsLoading}
+            sub={`${callsAllTime ?? "—"} all time`}
+            onClick={() => setOpenMetric("calls_week")}
+          />
+        </div>
+      </SectionWrap>
+
+      {/* ── ZONE 4 · Secured Jobs (results detail) ────────────────────── */}
+      <SectionWrap title="Secured Jobs">
+        <div className="-mt-1 text-[11.5px] text-ink-3">
+          Single source of truth — all placements, separable by jobs-team
+          influence.
+        </div>
+        {/* Engagement chips — preserve candidates_submitted / interviewing drills */}
+        <div className="flex flex-wrap items-center gap-3">
+          <EngagementChip
+            label="Candidates Submitted"
+            value={candidatesSubmittedQ.data?.count ?? 0}
+            isLoading={candidatesSubmittedQ.isLoading}
+            onClick={() => setOpenMetric("candidates_submitted")}
+          />
+          <EngagementChip
+            label="Interviewing"
+            value={interviewingQ.data?.count ?? 0}
+            isLoading={interviewingQ.isLoading}
+            onClick={() => setOpenMetric("interviewing")}
+          />
+          <span className="text-ink-4">·</span>
+          {pipelineQ.isLoading
+            ? Array.from({ length: 4 }).map((_, i) => (
+                <div
+                  key={i}
+                  className="h-7 w-[110px] animate-pulse rounded-full bg-surface-2"
+                />
+              ))
+            : dealTypeOrder.map((type) => {
+                const count = dealTypeBreakdown[type] ?? 0;
+                return (
+                  <div
+                    key={type}
+                    className="inline-flex items-center gap-2 rounded-full border border-border-strong bg-surface px-3 py-1 shadow-[var(--shadow-sm)]"
+                  >
+                    <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
+                      {DEAL_TYPE_LABELS[type]}
+                    </span>
+                    <span
+                      className={cn(
+                        "font-mono text-[13px] font-semibold tabular-nums",
+                        count > 0 ? "text-ink" : "text-ink-4",
+                      )}
+                    >
+                      {count}
+                    </span>
+                  </div>
+                );
+              })}
+        </div>
+        <SecuredJobsSection placementsQ={placementsQ} />
+      </SectionWrap>
+
+      {/* ── ZONE 5 · Details (secondary, collapsible) ─────────────────── */}
+      <Collapsible
+        title="Owner Breakdown"
+        open={ownerOpen}
+        onToggle={() => setOwnerOpen((o) => !o)}
+      >
         <div className="rounded-[8px] border border-border-strong bg-surface shadow-[var(--shadow-sm)]">
           <table className="w-full text-[12.5px]">
             <thead className="bg-surface-2 text-[10.5px] uppercase tracking-wider text-ink-3">
@@ -554,62 +448,224 @@ export function JobsLeadership() {
             ) : null}
           </table>
         </div>
-      </SectionWrap>
+      </Collapsible>
 
-      {/* ── Deal type breakdown (closed_won) ──────────────────────────── */}
-      <SectionWrap title="Placement Types">
-        <div className="flex flex-wrap items-center gap-3">
-          {pipelineQ.isLoading
-            ? Array.from({ length: 4 }).map((_, i) => (
-                <div
-                  key={i}
-                  className="h-8 w-[120px] animate-pulse rounded-full bg-surface-2"
-                />
-              ))
-            : dealTypeOrder.map((type) => {
-                const count = dealTypeBreakdown[type] ?? 0;
-                return (
-                  <div
-                    key={type}
-                    className="inline-flex items-center gap-2 rounded-full border border-border-strong bg-surface px-4 py-1.5 shadow-[var(--shadow-sm)]"
-                  >
-                    <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">
-                      {DEAL_TYPE_LABELS[type]}
-                    </span>
-                    <span
-                      className={cn(
-                        "font-mono text-[14px] font-semibold tabular-nums",
-                        count > 0 ? "text-ink" : "text-ink-4",
-                      )}
-                    >
-                      {count}
-                    </span>
-                  </div>
-                );
-              })}
-          {!pipelineQ.isLoading && placementsCount > 0 ? (
-            <span className="text-[11.5px] text-ink-3">
-              {placementsCount} total placement{placementsCount !== 1 ? "s" : ""}
-            </span>
-          ) : null}
-        </div>
-      </SectionWrap>
-
-      {/* ── Secured Jobs ──────────────────────────────────────────────── */}
-      <SectionWrap title="Secured Jobs">
-        <div className="-mt-2 text-[11.5px] text-ink-3">
-          Single source of truth — all placements, separable by jobs-team
-          influence.
-        </div>
-        <SecuredJobsSection placementsQ={placementsQ} />
-      </SectionWrap>
-
-      {/* ── Jobs ──────────────────────────────────────────────────────── */}
-      <SectionWrap title="Jobs">
+      <Collapsible
+        title="Jobs Roles"
+        open={rolesOpen}
+        onToggle={() => setRolesOpen((o) => !o)}
+      >
         <JobsRolesSection rolesQ={rolesQ} />
-      </SectionWrap>
+      </Collapsible>
 
       <MetricDrawer metricKey={openMetric} onClose={() => setOpenMetric(null)} />
+    </div>
+  );
+}
+
+// ── North Star cell (Zone 1 — biggest numbers) ──────────────────────────────
+
+function NorthStarCell({
+  label,
+  value,
+  isLoading,
+  valueColor,
+  sub,
+  progress,
+  icon,
+  onClick,
+}: {
+  label: string;
+  value: string | number;
+  isLoading: boolean;
+  valueColor?: string;
+  sub?: string;
+  progress?: { value: number; max: number; colorClass: string };
+  icon?: React.ReactNode;
+  onClick?: () => void;
+}) {
+  return (
+    <div
+      onClick={onClick}
+      className={cn(
+        "flex flex-col gap-2 bg-surface p-4",
+        onClick && "cursor-pointer transition-colors hover:bg-surface-2/40",
+      )}
+    >
+      <div className="flex items-center justify-between">
+        <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
+          {label}
+        </span>
+        <span className="text-ink-4">{icon}</span>
+      </div>
+      <span
+        className={cn(
+          "font-mono text-[30px] font-semibold leading-none tabular-nums",
+          isLoading ? "text-ink-4" : (valueColor ?? "text-ink"),
+        )}
+      >
+        {isLoading ? "—" : value}
+      </span>
+      {progress ? (
+        <div className="h-1 w-full overflow-hidden rounded-full bg-surface-2">
+          <div
+            className={cn("h-full rounded-full", progress.colorClass)}
+            style={{
+              width: `${Math.min(100, (progress.value / progress.max) * 100)}%`,
+            }}
+          />
+        </div>
+      ) : null}
+      {sub ? <span className="text-[10.5px] text-ink-4">{sub}</span> : null}
+    </div>
+  );
+}
+
+// ── Pulse cell (Zone 3 — smaller leading-indicator numbers) ─────────────────
+
+function PulseCell({
+  label,
+  value,
+  isLoading,
+  sub,
+  onClick,
+}: {
+  label: string;
+  value: string | number;
+  isLoading: boolean;
+  sub?: string;
+  onClick?: () => void;
+}) {
+  return (
+    <div
+      onClick={onClick}
+      className={cn(
+        "flex flex-col gap-1 rounded-[8px] border border-border-strong bg-surface px-3 py-2.5 shadow-[var(--shadow-sm)]",
+        onClick && "cursor-pointer transition-colors hover:border-accent",
+      )}
+    >
+      <span className="text-[10px] font-semibold uppercase tracking-wider text-ink-3">
+        {label}
+      </span>
+      <span className="font-mono text-[20px] font-semibold leading-none tabular-nums text-ink">
+        {isLoading ? "—" : value}
+      </span>
+      {sub ? (
+        <span className="text-[10px] text-ink-4">
+          {isLoading ? "—" : sub}
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
+// ── Engagement chip (small clickable stat) ──────────────────────────────────
+
+function EngagementChip({
+  label,
+  value,
+  isLoading,
+  onClick,
+}: {
+  label: string;
+  value: string | number;
+  isLoading: boolean;
+  onClick?: () => void;
+}) {
+  return (
+    <div
+      onClick={onClick}
+      className={cn(
+        "inline-flex items-center gap-2 rounded-full border border-border-strong bg-surface px-3 py-1 shadow-[var(--shadow-sm)]",
+        onClick && "cursor-pointer transition-colors hover:border-accent",
+      )}
+    >
+      <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
+        {label}
+      </span>
+      <span className="font-mono text-[13px] font-semibold tabular-nums text-ink">
+        {isLoading ? "—" : value}
+      </span>
+    </div>
+  );
+}
+
+// ── Conversion chip (Zone 2 — compact rate vs target) ───────────────────────
+
+function ConversionChip({
+  label,
+  rate,
+  targetLo,
+  targetLabel,
+  isLoading,
+}: {
+  label: string;
+  rate: number | null;
+  targetLo: number;
+  targetLabel: string;
+  isLoading: boolean;
+}) {
+  const actualDisplay =
+    isLoading || rate == null ? "—" : `${Math.round(rate * 100)}%`;
+  const onTarget = rate != null && rate >= targetLo;
+  const near = rate != null && rate >= targetLo * 0.75;
+  const dotColor =
+    isLoading || rate == null
+      ? "bg-surface-2"
+      : onTarget
+        ? "bg-[var(--green)]"
+        : near
+          ? "bg-[var(--amber)]"
+          : "bg-[var(--red)]";
+  const rateColor =
+    isLoading || rate == null
+      ? "text-ink-4"
+      : onTarget
+        ? "text-[var(--green)]"
+        : near
+          ? "text-[var(--amber)]"
+          : "text-[var(--red)]";
+
+  return (
+    <div className="flex items-center justify-between gap-3 rounded-[8px] border border-border-strong bg-surface px-3 py-2 shadow-[var(--shadow-sm)]">
+      <div className="flex items-center gap-2">
+        <span className={cn("h-2 w-2 shrink-0 rounded-full", dotColor)} />
+        <span className="text-[11px] font-medium text-ink-2">{label}</span>
+      </div>
+      <div className="flex items-baseline gap-1.5">
+        <span className={cn("font-mono text-[15px] font-semibold tabular-nums", rateColor)}>
+          {actualDisplay}
+        </span>
+        <span className="text-[10.5px] text-ink-4">/ {targetLabel}</span>
+      </div>
+    </div>
+  );
+}
+
+// ── Collapsible section (Zone 5 — secondary detail) ─────────────────────────
+
+function Collapsible({
+  title,
+  open,
+  onToggle,
+  children,
+}: {
+  title: string;
+  open: boolean;
+  onToggle: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="flex flex-col gap-3">
+      <button
+        type="button"
+        onClick={onToggle}
+        className="flex items-center gap-1.5 self-start text-[11px] font-semibold uppercase tracking-wider text-ink-3 transition-colors hover:text-ink-2"
+      >
+        {open ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+        {title}
+      </button>
+      {open ? children : null}
     </div>
   );
 }
@@ -925,18 +981,18 @@ function SecuredJobsSection({ placementsQ }: { placementsQ: PlacementsQuery }) {
   return (
     <div className="flex flex-col gap-4">
       {/* Breakdown cards */}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-4">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         {cards.map((c) => (
           <div
             key={c.label}
-            className="flex flex-col gap-2 rounded-[8px] border border-border-strong bg-surface p-4 shadow-[var(--shadow-sm)]"
+            className="flex flex-col gap-1 rounded-[8px] border border-border-strong bg-surface px-3 py-2.5 shadow-[var(--shadow-sm)]"
           >
-            <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-ink-3">
               {c.label}
             </span>
             <span
               className={cn(
-                "font-mono text-[28px] font-semibold leading-none tabular-nums",
+                "font-mono text-[22px] font-semibold leading-none tabular-nums",
                 c.valueColor ?? "text-ink",
               )}
             >
@@ -1064,102 +1120,5 @@ function StagePill({ stage }: { stage: string }) {
     >
       {meta.label}
     </span>
-  );
-}
-
-// ── Conversion row ────────────────────────────────────────────────────────
-
-function ConversionRow({
-  label,
-  rate,
-  targetLo,
-  targetHi,
-  targetLabel,
-  isLoading,
-}: {
-  label: string;
-  rate: number | null;
-  targetLo: number;
-  targetHi?: number;
-  targetLabel: string;
-  isLoading: boolean;
-}) {
-  const effectiveHi = targetHi ?? targetLo;
-  const actualDisplay =
-    isLoading || rate == null ? "—" : `${Math.round(rate * 100)}%`;
-
-  const colorClass =
-    isLoading || rate == null
-      ? "text-ink-4"
-      : rate >= targetLo
-        ? "text-[var(--green)]"
-        : rate >= targetLo * 0.75
-          ? "text-[var(--amber)]"
-          : "text-[var(--red)]";
-
-  const barColor =
-    isLoading || rate == null
-      ? "bg-surface-2"
-      : rate >= targetLo
-        ? "bg-[var(--green)]"
-        : rate >= targetLo * 0.75
-          ? "bg-[var(--amber)]"
-          : "bg-[var(--red)]";
-
-  const fillPct =
-    rate == null ? 0 : Math.min(100, (rate / effectiveHi) * 100);
-
-  const statusText =
-    isLoading || rate == null
-      ? null
-      : rate >= targetLo
-        ? "On target"
-        : rate >= targetLo * 0.75
-          ? "Below target"
-          : "Needs attention";
-
-  const statusClass =
-    isLoading || rate == null
-      ? "text-ink-4 bg-surface-2"
-      : rate >= targetLo
-        ? "text-[var(--green)] bg-[var(--green-soft)]"
-        : rate >= targetLo * 0.75
-          ? "text-[var(--amber)] bg-[var(--amber-soft)]"
-          : "text-[var(--red)] bg-[var(--red-soft)]";
-
-  return (
-    <tr className="border-t border-border-strong">
-      <td className="px-5 py-3 font-medium text-ink">{label}</td>
-      <td className="px-5 py-3 text-right">
-        <span className={cn("font-mono text-[15px] font-semibold tabular-nums", colorClass)}>
-          {actualDisplay}
-        </span>
-        {rate != null && !isLoading ? (
-          <div className="mt-1 ml-auto h-1 w-[80px] overflow-hidden rounded-full bg-surface-2">
-            <div
-              className={cn("h-full rounded-full", barColor)}
-              style={{ width: `${fillPct}%` }}
-            />
-          </div>
-        ) : null}
-      </td>
-      <td className="font-mono px-5 py-3 text-right tabular-nums text-ink-3">
-        {targetLabel}
-      </td>
-      <td className="px-5 py-3">
-        {statusText ? (
-          <span
-            className={cn(
-              "inline-flex items-center rounded-full px-2.5 py-0.5 text-[11px] font-semibold",
-              statusClass,
-            )}
-          >
-            {statusText}
-          </span>
-        ) : (
-          <span className="text-[11px] text-ink-4">—</span>
-        )}
-      </td>
-    </tr>
   );
 }
