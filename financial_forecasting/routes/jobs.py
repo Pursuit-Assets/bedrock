@@ -200,6 +200,106 @@ async def metric_drilldown(
     }
 
 
+@router.get("/funnel/{ftype}")
+async def get_funnel(ftype: str, user=Depends(require_auth), conn=Depends(get_db)):
+    """Unified funnel for the three pipelines: opportunities | prospects | builders.
+
+    Returns ordered stages with counts, conversion-to-next, and the records in
+    each stage (for inline expand). Opportunities also include recent
+    progression (advanced/regressed) from bedrock.jobs_stage_history.
+    """
+    if ftype == "opportunities":
+        stage_order = [
+            ("lead_submitted", "Lead Submitted"),
+            ("initial_outreach", "Initial Outreach"),
+            ("active_in_discussions", "In Discussions"),
+            ("active_opportunity_confirmed", "Opportunity Confirmed"),
+            ("active_builder_interview", "Builder Interview"),
+            ("closed_won", "Closed — Won"),
+        ]
+        rows = await conn.fetch("""
+            SELECT stage, account_name AS name, owner_email AS detail
+            FROM bedrock.jobs_opportunity
+            WHERE deleted_at IS NULL ORDER BY account_name
+        """)
+        by_stage: dict = {}
+        for r in rows:
+            by_stage.setdefault(r["stage"], []).append({"name": r["name"], "detail": r["detail"]})
+
+        idx = {k: i for i, (k, _) in enumerate(stage_order)}
+        hist = await conn.fetch("""
+            SELECT h.from_stage, h.to_stage, h.changed_at, o.account_name
+            FROM bedrock.jobs_stage_history h
+            JOIN bedrock.jobs_opportunity o ON o.id = h.opportunity_id
+            WHERE h.from_stage IS NOT NULL
+              AND h.changed_at >= now() - interval '30 days'
+            ORDER BY h.changed_at DESC LIMIT 50
+        """)
+        progression = []
+        for h in hist:
+            fi, ti = idx.get(h["from_stage"]), idx.get(h["to_stage"])
+            direction = "advanced" if (fi is not None and ti is not None and ti > fi) else "regressed"
+            progression.append({
+                "name": h["account_name"],
+                "from_label": dict(stage_order).get(h["from_stage"], h["from_stage"]),
+                "to_label": dict(stage_order).get(h["to_stage"], h["to_stage"]),
+                "direction": direction,
+                "when": h["changed_at"].isoformat() if h["changed_at"] else None,
+            })
+
+    elif ftype == "prospects":
+        stage_order = [
+            ("lead", "Lead"),
+            ("initial_outreach", "Initial Outreach"),
+            ("active", "Active"),
+            ("on_hold", "On Hold"),
+        ]
+        rows = await conn.fetch("""
+            SELECT contact_stage AS stage, full_name AS name, current_company AS detail
+            FROM public.contacts WHERE is_jobs_contact=true ORDER BY full_name
+        """)
+        by_stage = {}
+        for r in rows:
+            by_stage.setdefault(r["stage"], []).append({"name": r["name"], "detail": r["detail"]})
+        progression = []
+
+    elif ftype == "builders":
+        stage_order = [
+            ("applied", "Applied"),
+            ("interview", "Interviewing"),
+            ("accepted", "Hired"),
+        ]
+        rows = await conn.fetch("""
+            SELECT stage, trim(split_part(notes,':',1)) AS name,
+                   company_name AS detail
+            FROM public.job_applications WHERE source_type='Pursuit_referred'
+            ORDER BY company_name
+        """)
+        by_stage = {}
+        for r in rows:
+            by_stage.setdefault(r["stage"], []).append({"name": r["name"], "detail": r["detail"]})
+        progression = []
+    else:
+        raise HTTPException(404, f"Unknown funnel: {ftype}")
+
+    stages = []
+    counts = [len(by_stage.get(k, [])) for k, _ in stage_order]
+    max_count = max(counts) if counts else 1
+    for i, (k, label) in enumerate(stage_order):
+        recs = by_stage.get(k, [])
+        cnt = len(recs)
+        nxt = counts[i + 1] if i + 1 < len(counts) else None
+        conv = round(100 * nxt / cnt) if (nxt is not None and cnt > 0) else None
+        stages.append({
+            "key": k, "label": label, "count": cnt,
+            "pct_of_max": round(100 * cnt / max_count) if max_count else 0,
+            "conversion_to_next": conv,
+            "records": recs,
+        })
+
+    return {"success": True, "data": {"type": ftype, "stages": stages, "progression": progression}}
+
+
 @router.get("/roles")
 async def get_roles(user=Depends(require_auth), conn=Depends(get_db)):
     """Jobs / roles view — committed & hired counts + per-application rows.

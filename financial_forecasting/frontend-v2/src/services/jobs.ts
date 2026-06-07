@@ -278,6 +278,42 @@ export interface RolesSummary {
   rows: JobRole[];
 }
 
+export type FunnelType = "opportunities" | "prospects" | "builders";
+
+export interface FunnelStage {
+  key: string;
+  label: string;
+  count: number;
+  pct_of_max: number;
+  conversion_to_next: number | null;
+  records: { name: string | null; detail: string | null }[];
+}
+
+export interface FunnelProgression {
+  name: string;
+  from_label: string;
+  to_label: string;
+  direction: "advanced" | "regressed";
+  when: string | null;
+}
+
+export interface FunnelData {
+  type: FunnelType;
+  stages: FunnelStage[];
+  progression: FunnelProgression[];
+}
+
+export function useJobsFunnel(ftype: FunnelType) {
+  return useQuery<FunnelData>({
+    queryKey: ["jobs", "funnel", ftype],
+    queryFn: async () => {
+      const { data } = await api.get<ApiResponse<FunnelData>>(`/api/jobs/funnel/${ftype}`);
+      return data.data;
+    },
+    staleTime: 30_000,
+  });
+}
+
 export function useJobRoles() {
   return useQuery<RolesSummary>({
     queryKey: ["jobs", "roles"],

@@ -17,7 +17,7 @@ import {
   type RoleSegment,
 } from "@/services/jobs";
 import { cn } from "@/lib/utils";
-import { JobsFunnel } from "@/components/jobs/JobsFunnel";
+import { JobsFunnels } from "@/components/jobs/JobsFunnels";
 import { MetricDrawer } from "@/components/jobs/MetricDrawer";
 
 // ── SOP targets ───────────────────────────────────────────────────────────
@@ -436,8 +436,8 @@ export function JobsLeadership() {
         />
       </div>
 
-      {/* ── Jobs funnel ───────────────────────────────────────────────── */}
-      <JobsFunnel pipeline={pipelineQ.data ?? []} />
+      {/* ── Jobs funnels ──────────────────────────────────────────────── */}
+      <JobsFunnels />
 
       {/* ── Conversion rates ──────────────────────────────────────────── */}
       <SectionWrap title="Conversion Rates">
