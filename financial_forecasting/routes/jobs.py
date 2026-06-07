@@ -210,50 +210,67 @@ async def get_roles(user=Depends(require_auth), conn=Depends(get_db)):
       Avg $ Closed/Hired = avg salary of accepted applications
     Builder name comes from the 'Name: …' prefix stored in notes on import.
     """
-    summary = await conn.fetchrow("""
-        SELECT
-            count(*) FILTER (WHERE stage IN ('accepted','interview'))            AS committed,
-            count(*) FILTER (WHERE stage='accepted')                            AS hired,
-            round(avg(salary::numeric) FILTER (WHERE stage='accepted'
-                  AND salary ~ '^[0-9]+$'))                                     AS avg_salary
-        FROM public.job_applications
-        WHERE source_type='Pursuit_referred'
-    """)
-
+    # Each application carries its opportunity's deal_type so hired roles split FT vs PT/Contract.
+    # is_contract = deal_type is a part-time/contract variant.
     rows = await conn.fetch("""
         SELECT
-            job_application_id AS id,
-            trim(split_part(notes, ':', 1)) AS builder,
-            role_title,
-            company_name,
-            CASE WHEN salary ~ '^[0-9]+$' THEN salary::int ELSE NULL END AS salary,
-            stage
-        FROM public.job_applications
-        WHERE source_type='Pursuit_referred'
+            ja.job_application_id AS id,
+            trim(split_part(ja.notes, ':', 1)) AS builder,
+            ja.role_title,
+            ja.company_name,
+            CASE WHEN ja.salary ~ '^[0-9]+$' THEN ja.salary::int ELSE NULL END AS salary,
+            ja.stage,
+            jo.deal_type,
+            (jo.deal_type IN ('pt_contract','contract','volunteer','capstone')) AS is_contract
+        FROM public.job_applications ja
+        LEFT JOIN bedrock.jobs_opportunity jo ON jo.id = ja.jobs_opportunity_id
+        WHERE ja.source_type='Pursuit_referred'
         ORDER BY
-            CASE stage WHEN 'accepted' THEN 0 WHEN 'interview' THEN 1
-                       WHEN 'applied' THEN 2 ELSE 3 END,
-            (salary ~ '^[0-9]+$') DESC,
-            company_name
+            CASE ja.stage WHEN 'accepted' THEN 0 WHEN 'interview' THEN 1
+                          WHEN 'applied' THEN 2 ELSE 3 END,
+            (ja.salary ~ '^[0-9]+$') DESC,
+            ja.company_name
     """)
+
+    def seg(stage, is_contract):
+        if stage == "accepted":
+            return "hired_contract" if is_contract else "hired_ft"
+        return {"interview": "interviewing", "applied": "applied",
+                "rejected": "rejected", "withdrawn": "withdrawn"}.get(stage, "other")
+
+    out_rows = []
+    hired_ft = hired_contract = 0
+    ft_salaries = []
+    for r in rows:
+        s = seg(r["stage"], r["is_contract"])
+        if s == "hired_ft":
+            hired_ft += 1
+            if r["salary"]:
+                ft_salaries.append(r["salary"])
+        elif s == "hired_contract":
+            hired_contract += 1
+        out_rows.append({
+            "id": str(r["id"]),
+            "builder": r["builder"] or "—",
+            "role_title": r["role_title"] or "—",
+            "company_name": r["company_name"] or "—",
+            "salary": r["salary"],
+            "stage": r["stage"],
+            "segment": s,
+        })
+
+    interviewing = sum(1 for r in out_rows if r["segment"] == "interviewing")
+    avg_ft = round(sum(ft_salaries) / len(ft_salaries)) if ft_salaries else None
 
     return {
         "success": True,
         "data": {
-            "committed":  summary["committed"] or 0,
-            "hired":      summary["hired"] or 0,
-            "avg_salary": int(summary["avg_salary"]) if summary["avg_salary"] else None,
-            "rows": [
-                {
-                    "id": str(r["id"]),
-                    "builder": r["builder"] or "—",
-                    "role_title": r["role_title"] or "—",
-                    "company_name": r["company_name"] or "—",
-                    "salary": r["salary"],
-                    "stage": r["stage"],
-                }
-                for r in rows
-            ],
+            "committed":       hired_ft + hired_contract + interviewing,  # hired + interviewing
+            "hired_ft":        hired_ft,
+            "hired_contract":  hired_contract,
+            "hired_total":     hired_ft + hired_contract,
+            "avg_salary_ft":   avg_ft,
+            "rows": out_rows,
         },
     }
 

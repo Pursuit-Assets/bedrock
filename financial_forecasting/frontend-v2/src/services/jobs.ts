@@ -255,6 +255,10 @@ export interface MetricDrill {
   entity: "deal" | "contact" | "activity" | "company";
 }
 
+export type RoleSegment =
+  | "hired_ft" | "hired_contract" | "interviewing"
+  | "applied" | "rejected" | "withdrawn" | "other";
+
 export interface JobRole {
   id: string;
   builder: string;
@@ -262,12 +266,15 @@ export interface JobRole {
   company_name: string;
   salary: number | null;
   stage: string;
+  segment: RoleSegment;
 }
 
 export interface RolesSummary {
   committed: number;
-  hired: number;
-  avg_salary: number | null;
+  hired_ft: number;
+  hired_contract: number;
+  hired_total: number;
+  avg_salary_ft: number | null;
   rows: JobRole[];
 }
 

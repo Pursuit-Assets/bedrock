@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Users, Target, DollarSign, Building2 } from "lucide-react";
+import { Users, Target, DollarSign, Building2, ChevronUp, ChevronDown } from "lucide-react";
 
 import {
   useJobsPipeline,
@@ -13,6 +13,8 @@ import {
   type JobsOpportunity,
   type JobStage,
   type DealType,
+  type JobRole,
+  type RoleSegment,
 } from "@/services/jobs";
 import { cn } from "@/lib/utils";
 import { JobsFunnel } from "@/components/jobs/JobsFunnel";
@@ -253,10 +255,10 @@ export function JobsLeadership() {
 
   return (
     <div className="flex flex-col gap-8">
-      {/* ── Contacts & Leads ──────────────────────────────────────────── */}
+      {/* ── Prospects ─────────────────────────────────────────────────── */}
       <div className="flex flex-col gap-3">
         <div className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">
-          Contacts &amp; Leads
+          Prospects
         </div>
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <div
@@ -591,87 +593,239 @@ export function JobsLeadership() {
 
       {/* ── Jobs ──────────────────────────────────────────────────────── */}
       <SectionWrap title="Jobs">
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-          <div className="flex flex-col gap-2 rounded-[8px] border border-border-strong bg-surface p-4 shadow-[var(--shadow-sm)]">
-            <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
-              Committed Roles
-            </span>
-            <span className="font-mono text-[28px] font-semibold leading-none tabular-nums text-ink">
-              {rolesQ.isLoading ? "—" : (rolesQ.data?.committed ?? 0)}
-            </span>
-          </div>
-          <div className="flex flex-col gap-2 rounded-[8px] border border-border-strong bg-surface p-4 shadow-[var(--shadow-sm)]">
-            <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
-              Closed/Hired Roles
-            </span>
-            <span className="font-mono text-[28px] font-semibold leading-none tabular-nums text-ink">
-              {rolesQ.isLoading ? "—" : (rolesQ.data?.hired ?? 0)}
-            </span>
-          </div>
-          <div className="flex flex-col gap-2 rounded-[8px] border border-border-strong bg-surface p-4 shadow-[var(--shadow-sm)]">
-            <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
-              Avg $ Closed/Hired
-            </span>
-            <span className="font-mono text-[28px] font-semibold leading-none tabular-nums text-ink">
-              {rolesQ.isLoading ? "—" : fmtSalary(rolesQ.data?.avg_salary)}
-            </span>
-          </div>
-        </div>
-
-        <div className="max-h-[400px] overflow-auto rounded-[8px] border border-border-strong bg-surface shadow-[var(--shadow-sm)]">
-          <table className="w-full text-[12.5px]">
-            <thead className="sticky top-0 z-10 bg-surface-2 text-[10.5px] uppercase tracking-wider text-ink-3">
-              <tr>
-                <th className="px-5 py-2 text-left font-semibold">Builder</th>
-                <th className="px-5 py-2 text-left font-semibold">Role</th>
-                <th className="px-5 py-2 text-left font-semibold">Company</th>
-                <th className="px-5 py-2 text-right font-semibold">Salary</th>
-                <th className="px-5 py-2 text-left font-semibold">Stage</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rolesQ.isLoading ? (
-                Array.from({ length: 5 }).map((_, i) => (
-                  <tr key={i} className="border-t border-border-strong">
-                    {Array.from({ length: 5 }).map((_, j) => (
-                      <td key={j} className="px-5 py-3">
-                        <div className="h-3 animate-pulse rounded bg-surface-2" />
-                      </td>
-                    ))}
-                  </tr>
-                ))
-              ) : (rolesQ.data?.rows.length ?? 0) === 0 ? (
-                <tr className="border-t border-border-strong">
-                  <td colSpan={5} className="px-5 py-6 text-center text-ink-4">
-                    No roles
-                  </td>
-                </tr>
-              ) : (
-                rolesQ.data?.rows.map((row) => (
-                  <tr
-                    key={row.id}
-                    className="border-t border-border-strong hover:bg-surface-2/40"
-                  >
-                    <td className="px-5 py-2.5 font-medium text-ink">
-                      {row.builder}
-                    </td>
-                    <td className="px-5 py-2.5 text-ink-2">{row.role_title}</td>
-                    <td className="px-5 py-2.5 text-ink-2">{row.company_name}</td>
-                    <td className="font-mono px-5 py-2.5 text-right tabular-nums text-ink">
-                      {fmtSalary(row.salary)}
-                    </td>
-                    <td className="px-5 py-2.5">
-                      <StagePill stage={row.stage} />
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
+        <JobsRolesSection rolesQ={rolesQ} />
       </SectionWrap>
 
       <MetricDrawer metricKey={openMetric} onClose={() => setOpenMetric(null)} />
+    </div>
+  );
+}
+
+// ── Jobs roles section (breakdown cards + segment table) ────────────────────
+
+type RolesQuery = ReturnType<typeof useJobRoles>;
+
+const SEGMENT_TABS: { segment: RoleSegment; label: string }[] = [
+  { segment: "hired_ft", label: "Hired — FT" },
+  { segment: "hired_contract", label: "Hired — PT/Contract" },
+  { segment: "interviewing", label: "Interviewing" },
+  { segment: "applied", label: "Applied" },
+  { segment: "rejected", label: "Rejected" },
+  { segment: "withdrawn", label: "Withdrawn" },
+];
+
+type SortKey = "builder" | "role_title" | "company_name" | "salary" | "stage";
+type SortDir = "asc" | "desc";
+
+function JobsRolesSection({ rolesQ }: { rolesQ: RolesQuery }) {
+  const [segment, setSegment] = useState<RoleSegment>("hired_ft");
+  const [search, setSearch] = useState("");
+  const [sortKey, setSortKey] = useState<SortKey>("builder");
+  const [sortDir, setSortDir] = useState<SortDir>("asc");
+
+  const rows = rolesQ.data?.rows ?? [];
+
+  const segmentCounts = useMemo(() => {
+    const counts = {} as Record<RoleSegment, number>;
+    for (const tab of SEGMENT_TABS) counts[tab.segment] = 0;
+    for (const r of rows) {
+      if (r.segment in counts) counts[r.segment] += 1;
+    }
+    return counts;
+  }, [rows]);
+
+  const visibleRows = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    const filtered = rows
+      .filter((r) => r.segment === segment)
+      .filter((r) => {
+        if (!q) return true;
+        return (
+          r.builder.toLowerCase().includes(q) ||
+          r.role_title.toLowerCase().includes(q) ||
+          r.company_name.toLowerCase().includes(q)
+        );
+      });
+
+    const sorted = [...filtered].sort((a, b) => {
+      let cmp: number;
+      if (sortKey === "salary") {
+        const av = a.salary;
+        const bv = b.salary;
+        if (av == null && bv == null) cmp = 0;
+        else if (av == null) cmp = 1; // nulls last regardless of dir
+        else if (bv == null) cmp = -1;
+        else cmp = av - bv;
+        if (av == null || bv == null) return cmp; // keep nulls last
+      } else {
+        cmp = String(a[sortKey] ?? "").localeCompare(String(b[sortKey] ?? ""), undefined, {
+          sensitivity: "base",
+        });
+      }
+      return sortDir === "asc" ? cmp : -cmp;
+    });
+
+    return sorted;
+  }, [rows, segment, search, sortKey, sortDir]);
+
+  function toggleSort(key: SortKey) {
+    if (key === sortKey) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortKey(key);
+      setSortDir("asc");
+    }
+  }
+
+  const cards: { label: string; value: string | number; subtitle?: string }[] = [
+    { label: "Hired — Full-Time", value: rolesQ.isLoading ? "—" : (rolesQ.data?.hired_ft ?? 0) },
+    { label: "Hired — PT/Contract", value: rolesQ.isLoading ? "—" : (rolesQ.data?.hired_contract ?? 0) },
+    {
+      label: "Committed Roles",
+      value: rolesQ.isLoading ? "—" : (rolesQ.data?.committed ?? 0),
+      subtitle: "hired + interviewing",
+    },
+    {
+      label: "Avg $ (FT Placed)",
+      value: rolesQ.isLoading ? "—" : fmtSalary(rolesQ.data?.avg_salary_ft),
+    },
+  ];
+
+  const columns: { key: SortKey; label: string; align: "left" | "right" }[] = [
+    { key: "builder", label: "Builder", align: "left" },
+    { key: "role_title", label: "Role", align: "left" },
+    { key: "company_name", label: "Company", align: "left" },
+    { key: "salary", label: "Salary", align: "right" },
+    { key: "stage", label: "Stage", align: "left" },
+  ];
+
+  return (
+    <div className="flex flex-col gap-4">
+      {/* Breakdown cards */}
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-4">
+        {cards.map((c) => (
+          <div
+            key={c.label}
+            className="flex flex-col gap-2 rounded-[8px] border border-border-strong bg-surface p-4 shadow-[var(--shadow-sm)]"
+          >
+            <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
+              {c.label}
+            </span>
+            {c.subtitle ? (
+              <span className="text-[10.5px] text-ink-4 -mt-1">{c.subtitle}</span>
+            ) : null}
+            <span className="font-mono text-[28px] font-semibold leading-none tabular-nums text-ink">
+              {c.value}
+            </span>
+          </div>
+        ))}
+      </div>
+
+      {/* Segment tabs + search */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="inline-flex flex-wrap rounded-lg border border-border-strong bg-surface-2 p-1">
+          {SEGMENT_TABS.map((tab) => {
+            const active = tab.segment === segment;
+            return (
+              <button
+                key={tab.segment}
+                type="button"
+                onClick={() => setSegment(tab.segment)}
+                className={cn(
+                  "rounded-md px-3 py-1.5 text-[12px] font-medium transition-colors",
+                  active
+                    ? "bg-surface text-ink shadow-sm"
+                    : "text-ink-3 hover:text-ink-2",
+                )}
+              >
+                {tab.label} ({segmentCounts[tab.segment] ?? 0})
+              </button>
+            );
+          })}
+        </div>
+        <input
+          type="text"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search builder, role, company…"
+          className="w-full rounded-md border border-border-strong bg-surface px-3 py-1.5 text-[12.5px] text-ink placeholder:text-ink-4 focus:border-accent focus:outline-none sm:w-[260px]"
+        />
+      </div>
+
+      {/* Table */}
+      <div className="max-h-[440px] overflow-auto rounded-[8px] border border-border-strong bg-surface shadow-[var(--shadow-sm)]">
+        <table className="w-full text-[12.5px]">
+          <thead className="sticky top-0 z-10 bg-surface-2 text-[10.5px] uppercase tracking-wider text-ink-3">
+            <tr>
+              {columns.map((col) => {
+                const isActive = sortKey === col.key;
+                return (
+                  <th
+                    key={col.key}
+                    onClick={() => toggleSort(col.key)}
+                    className={cn(
+                      "cursor-pointer select-none px-5 py-2 font-semibold",
+                      col.align === "right" ? "text-right" : "text-left",
+                    )}
+                  >
+                    <span
+                      className={cn(
+                        "inline-flex items-center gap-1",
+                        col.align === "right" && "flex-row-reverse",
+                      )}
+                    >
+                      {col.label}
+                      {isActive ? (
+                        sortDir === "asc" ? (
+                          <ChevronUp size={12} />
+                        ) : (
+                          <ChevronDown size={12} />
+                        )
+                      ) : null}
+                    </span>
+                  </th>
+                );
+              })}
+            </tr>
+          </thead>
+          <tbody>
+            {rolesQ.isLoading ? (
+              Array.from({ length: 5 }).map((_, i) => (
+                <tr key={i} className="border-t border-border-strong">
+                  {Array.from({ length: 5 }).map((_, j) => (
+                    <td key={j} className="px-5 py-3">
+                      <div className="h-3 animate-pulse rounded bg-surface-2" />
+                    </td>
+                  ))}
+                </tr>
+              ))
+            ) : visibleRows.length === 0 ? (
+              <tr className="border-t border-border-strong">
+                <td colSpan={5} className="px-5 py-6 text-center text-ink-4">
+                  No roles in this segment.
+                </td>
+              </tr>
+            ) : (
+              visibleRows.map((row: JobRole) => (
+                <tr
+                  key={row.id}
+                  className="border-t border-border-strong hover:bg-surface-2/50"
+                >
+                  <td className="px-5 py-2.5 font-medium text-ink">{row.builder}</td>
+                  <td className="px-5 py-2.5 text-ink-2">{row.role_title}</td>
+                  <td className="px-5 py-2.5 text-ink-2">{row.company_name}</td>
+                  <td className="font-mono px-5 py-2.5 text-right tabular-nums text-ink">
+                    {fmtSalary(row.salary)}
+                  </td>
+                  <td className="px-5 py-2.5">
+                    <StagePill stage={row.stage} />
+                  </td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
@@ -683,7 +837,7 @@ function StagePill({ stage }: { stage: string }) {
     accepted: { label: "Hired", className: "text-[var(--green)] bg-[var(--green-soft)]" },
     interview: { label: "Interviewing", className: "text-[var(--amber)] bg-[var(--amber-soft)]" },
     applied: { label: "Applied", className: "text-[var(--accent)] bg-[var(--accent-soft)]" },
-    rejected: { label: "Rejected", className: "text-ink-3 bg-surface-2" },
+    rejected: { label: "Rejected", className: "text-[var(--red)] bg-[var(--red-soft)]" },
     withdrawn: { label: "Withdrawn", className: "text-ink-3 bg-surface-2" },
   };
 
