@@ -79,25 +79,41 @@ class OpportunityUpdate(BaseModel):
 
 @router.get("/contacts/summary")
 async def get_contacts_summary(user=Depends(require_auth), conn=Depends(get_db)):
-    """Contacts & outreach metrics for the leadership dashboard."""
+    """Contacts & outreach metrics for the leadership dashboard.
+
+    Mirrors the legacy Airtable "Job Outcomes Dash":
+      Contacts & Leads:
+        Total Leads   = every contact in the jobs pipeline (is_jobs_contact)
+        Engaged Leads = those past the lead stage (initial outreach & beyond),
+                        i.e. contact_stage IN (initial_outreach, active, on_hold)
+      Employer Outreach (manually-logged engagements; source='manual'):
+        All Outreach (last week) = engagements logged in the trailing 7 days
+        Calls in total           = all call-type engagements
+        Calls in last week       = call-type engagements in the trailing 7 days
+    """
     stages = await conn.fetch("""
         SELECT contact_stage, count(*) AS count
-        FROM public.contacts WHERE airtable_id IS NOT NULL
+        FROM public.contacts WHERE is_jobs_contact = true
         GROUP BY contact_stage ORDER BY count DESC
     """)
     total   = sum(r["count"] for r in stages)
     engaged = sum(r["count"] for r in stages if r["contact_stage"] in ("initial_outreach", "active", "on_hold"))
 
+    # Outreach = manually-logged engagements (imported Emp. Engagements + new logs).
+    # NOT filtered to deal-linked: most engagements are logged against a company/
+    # contact, not a specific deal — matching the Airtable engagement log.
     activity = await conn.fetchrow("""
         SELECT
+            count(*)                                                            AS outreach_total,
             count(*) FILTER (WHERE a.activity_date >= now() - interval '7 days') AS outreach_this_week,
-            count(*) FILTER (WHERE a.type='call' AND a.activity_date >= now() - interval '7 days') AS calls_this_week,
+            count(*) FILTER (WHERE a.type='call')                               AS calls_total,
+            count(*) FILTER (WHERE a.type='call'
+                             AND a.activity_date >= now() - interval '7 days')  AS calls_this_week,
+            count(*) FILTER (WHERE a.type='meeting')                            AS meetings_total,
             count(*) FILTER (WHERE a.activity_date >= now() - interval '30 days') AS outreach_this_month,
-            count(*) AS total_engagements,
-            count(*) FILTER (WHERE a.type='call') AS total_calls,
-            count(DISTINCT a.logged_by) AS active_owners
+            count(DISTINCT a.logged_by)                                         AS active_owners
         FROM bedrock.activity a
-        WHERE a.jobs_opportunity_id IS NOT NULL
+        WHERE a.source = 'manual'
           AND a.deleted_at IS NULL
     """)
 

@@ -217,12 +217,12 @@ export function JobsLeadership() {
   // ── Contacts & Outreach derived values ─────────────────────────────────
 
   const contactsLoading = contactsQ.isLoading;
-  const totalContacts = contactsQ.data?.contacts.total ?? null;
-  const engagedContacts = contactsQ.data?.contacts.engaged ?? null;
+  const totalLeads = contactsQ.data?.contacts.total ?? null;
+  const engagedLeads = contactsQ.data?.contacts.engaged ?? null;
+  const outreachTotal = contactsQ.data?.activity.outreach_total ?? null;
   const outreachThisWeek = contactsQ.data?.activity.outreach_this_week ?? null;
+  const callsTotal = contactsQ.data?.activity.calls_total ?? null;
   const callsThisWeek = contactsQ.data?.activity.calls_this_week ?? null;
-  const totalEngagements = contactsQ.data?.activity.total_engagements ?? null;
-  const totalCalls = contactsQ.data?.activity.total_calls ?? null;
 
   const activeInDiscussions = stageMap.get("active_in_discussions")?.total ?? 0;
   const activeBuilderInterview = stageMap.get("active_builder_interview")?.total ?? 0;
@@ -240,94 +240,67 @@ export function JobsLeadership() {
 
   return (
     <div className="flex flex-col gap-8">
-      {/* ── Contacts & Outreach ───────────────────────────────────────── */}
+      {/* ── Contacts & Leads ──────────────────────────────────────────── */}
       <div className="flex flex-col gap-3">
         <div className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">
-          Contacts &amp; Outreach
+          Contacts &amp; Leads
         </div>
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-          {/* Contacts & Leads */}
-          <div className="flex flex-col gap-2">
-            <div className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-4">
-              Contacts &amp; Leads
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div className="flex flex-col gap-2 rounded-[8px] border border-border-strong bg-surface p-4 shadow-[var(--shadow-sm)]">
-                <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
-                  Total Contacts
-                </span>
-                <span className="font-mono text-[28px] font-semibold leading-none tabular-nums text-ink">
-                  {contactsLoading ? "—" : (totalContacts ?? "—")}
-                </span>
-              </div>
-              <div className="flex flex-col gap-2 rounded-[8px] border border-border-strong bg-surface p-4 shadow-[var(--shadow-sm)]">
-                <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
-                  Engaged
-                </span>
-                <span className="font-mono text-[28px] font-semibold leading-none tabular-nums text-ink">
-                  {contactsLoading ? "—" : (engagedContacts ?? "—")}
-                </span>
-                <span className="text-[10.5px] text-ink-4">
-                  Outreach sent or beyond
-                </span>
-              </div>
-            </div>
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <div className="flex flex-col gap-2 rounded-[8px] border border-border-strong bg-surface p-4 shadow-[var(--shadow-sm)]">
+            <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
+              Total Leads
+            </span>
+            <span className="font-mono text-[28px] font-semibold leading-none tabular-nums text-ink">
+              {contactsLoading ? "—" : (totalLeads ?? "—")}
+            </span>
           </div>
-
-          {/* Outreach Activity */}
-          <div className="flex flex-col gap-2">
-            <div className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-4">
-              Outreach Activity
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div className="flex flex-col gap-2 rounded-[8px] border border-border-strong bg-surface p-4 shadow-[var(--shadow-sm)]">
-                <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
-                  This Week
-                </span>
-                <span className="font-mono text-[28px] font-semibold leading-none tabular-nums text-ink">
-                  {contactsLoading ? "—" : (outreachThisWeek ?? "—")}
-                </span>
-                <span className="text-[10.5px] text-ink-4">
-                  {contactsLoading ? "— alltime" : `${totalEngagements ?? "—"} alltime`}
-                </span>
-              </div>
-              <div className="flex flex-col gap-2 rounded-[8px] border border-border-strong bg-surface p-4 shadow-[var(--shadow-sm)]">
-                <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
-                  Calls This Week
-                </span>
-                <span className="font-mono text-[28px] font-semibold leading-none tabular-nums text-ink">
-                  {contactsLoading ? "—" : (callsThisWeek ?? "—")}
-                </span>
-                <span className="text-[10.5px] text-ink-4">
-                  {contactsLoading ? "— alltime" : `${totalCalls ?? "—"} alltime`}
-                </span>
-              </div>
-            </div>
+          <div className="flex flex-col gap-2 rounded-[8px] border border-border-strong bg-surface p-4 shadow-[var(--shadow-sm)]">
+            <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
+              Engaged Leads
+            </span>
+            <span className="text-[10.5px] text-ink-4 -mt-1">
+              Received an initial email and beyond
+            </span>
+            <span className="font-mono text-[28px] font-semibold leading-none tabular-nums text-ink">
+              {contactsLoading ? "—" : (engagedLeads ?? "—")}
+            </span>
           </div>
+        </div>
+      </div>
 
-          {/* Active Pipeline */}
-          <div className="flex flex-col gap-2">
-            <div className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-4">
-              Active Pipeline
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div className="flex flex-col gap-2 rounded-[8px] border border-border-strong bg-surface p-4 shadow-[var(--shadow-sm)]">
-                <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
-                  In Discussions
-                </span>
-                <span className="font-mono text-[28px] font-semibold leading-none tabular-nums text-ink">
-                  {isLoading ? "—" : activeInDiscussions}
-                </span>
-              </div>
-              <div className="flex flex-col gap-2 rounded-[8px] border border-border-strong bg-surface p-4 shadow-[var(--shadow-sm)]">
-                <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
-                  Builder Interview
-                </span>
-                <span className="font-mono text-[28px] font-semibold leading-none tabular-nums text-ink">
-                  {isLoading ? "—" : activeBuilderInterview}
-                </span>
-              </div>
-            </div>
+      {/* ── Employer Outreach ─────────────────────────────────────────── */}
+      <div className="flex flex-col gap-3">
+        <div className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">
+          Employer Outreach
+        </div>
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+          <div className="flex flex-col gap-2 rounded-[8px] border border-border-strong bg-surface p-4 shadow-[var(--shadow-sm)]">
+            <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
+              All Outreach
+            </span>
+            <span className="text-[10.5px] text-ink-4 -mt-1">in last week</span>
+            <span className="font-mono text-[28px] font-semibold leading-none tabular-nums text-ink">
+              {contactsLoading ? "—" : (outreachThisWeek ?? "—")}
+            </span>
+            <span className="text-[10.5px] text-ink-4">
+              {contactsLoading ? "—" : `${outreachTotal ?? "—"} all time`}
+            </span>
+          </div>
+          <div className="flex flex-col gap-2 rounded-[8px] border border-border-strong bg-surface p-4 shadow-[var(--shadow-sm)]">
+            <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
+              Calls in total
+            </span>
+            <span className="font-mono text-[28px] font-semibold leading-none tabular-nums text-ink">
+              {contactsLoading ? "—" : (callsTotal ?? "—")}
+            </span>
+          </div>
+          <div className="flex flex-col gap-2 rounded-[8px] border border-border-strong bg-surface p-4 shadow-[var(--shadow-sm)]">
+            <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
+              Calls in last week
+            </span>
+            <span className="font-mono text-[28px] font-semibold leading-none tabular-nums text-ink">
+              {contactsLoading ? "—" : (callsThisWeek ?? "—")}
+            </span>
           </div>
         </div>
       </div>

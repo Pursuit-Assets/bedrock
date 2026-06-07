@@ -62,11 +62,12 @@ export interface ContactsSummary {
     by_stage: { stage: string; count: number }[];
   };
   activity: {
+    outreach_total: number;
     outreach_this_week: number;
+    calls_total: number;
     calls_this_week: number;
+    meetings_total: number;
     outreach_this_month: number;
-    total_engagements: number;
-    total_calls: number;
     active_owners: number;
   };
   active_companies: number;
