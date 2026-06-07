@@ -245,6 +245,125 @@ async def get_placements(user=Depends(require_auth), conn=Depends(get_db)):
     }
 
 
+@router.get("/placements/unlinked")
+async def search_unlinked_placements(
+    q: Optional[str] = Query(None),
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Existing employment_records not yet tied to an opportunity (for linking on win)."""
+    rows = await conn.fetch("""
+        SELECT er.id, er.role_title, er.company_name, er.employment_type,
+               COALESCE(NULLIF(trim(u.first_name||' '||u.last_name),''),
+                        'Builder #'||er.user_id) AS builder
+        FROM public.employment_records er
+        LEFT JOIN public.users u ON u.user_id = er.user_id
+        WHERE er.opportunity_id IS NULL
+        ORDER BY er.id DESC LIMIT 200
+    """)
+    out = [
+        {"id": str(r["id"]), "builder": r["builder"], "role_title": r["role_title"],
+         "company_name": r["company_name"], "employment_type": r["employment_type"]}
+        for r in rows
+    ]
+    if q:
+        ql = q.lower()
+        out = [r for r in out if ql in (r["builder"] or "").lower()
+               or ql in (r["company_name"] or "").lower()
+               or ql in (r["role_title"] or "").lower()]
+    return {"success": True, "data": out[:30]}
+
+
+@router.get("/opportunities/{opp_id}/placements")
+async def list_opp_placements(
+    opp_id: UUID,
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Placements already linked to this opportunity."""
+    rows = await conn.fetch("""
+        SELECT er.id, er.role_title, er.company_name, er.employment_type,
+               er.payment_amount, er.user_id,
+               COALESCE(NULLIF(trim(u.first_name||' '||u.last_name),''),
+                        'Builder #'||er.user_id) AS builder
+        FROM public.employment_records er
+        LEFT JOIN public.users u ON u.user_id = er.user_id
+        WHERE er.opportunity_id = $1
+        ORDER BY er.id
+    """, opp_id)
+    return {"success": True, "data": [
+        {"id": str(r["id"]), "builder": r["builder"], "role_title": r["role_title"],
+         "company_name": r["company_name"], "employment_type": r["employment_type"],
+         "salary": int(r["payment_amount"]) if r["payment_amount"] else None}
+        for r in rows
+    ]}
+
+
+class PlacementCreate(BaseModel):
+    builder_user_id: Optional[int] = None   # link to a platform builder if known
+    builder_name:    Optional[str] = None   # free-text fallback
+    role_title:      Optional[str] = None
+    employment_type: str = "full_time"      # full_time | contract | freelance | pro_bono
+    salary:          Optional[int] = None
+
+
+@router.post("/opportunities/{opp_id}/placements")
+async def create_opp_placement(
+    opp_id: UUID,
+    body: PlacementCreate,
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Create a new secured-job placement under this opportunity (jobs-team influenced)."""
+    opp = await conn.fetchrow(
+        "SELECT account_id, account_name FROM bedrock.jobs_opportunity WHERE id=$1 AND deleted_at IS NULL",
+        opp_id,
+    )
+    if not opp:
+        raise HTTPException(404, "Opportunity not found")
+
+    user_email = user.get("email") if isinstance(user, dict) else getattr(user, "email", None)
+    # employment_records.user_id is NOT NULL — require a builder_user_id, or store name in story/notes
+    if not body.builder_user_id and not body.builder_name:
+        raise HTTPException(400, "Provide builder_user_id or builder_name")
+
+    role = body.role_title or "(role TBD)"
+    notes = f"{body.builder_name}: jobs-team placement" if body.builder_name else "jobs-team placement"
+
+    if body.builder_user_id:
+        new_id = await conn.fetchval("""
+            INSERT INTO public.employment_records
+                (user_id, role_title, company_name, employment_type, engagement_stage,
+                 payment_amount, source, opportunity_id, influenced, notes)
+            VALUES ($1,$2,$3,$4,'completed',$5,'staff_created',$6,true,$7)
+            RETURNING id
+        """, body.builder_user_id, role, opp["account_name"], body.employment_type,
+            body.salary, opp_id, notes)
+    else:
+        # No platform user — store as a name-only record (user_id required, use 0 sentinel won't work
+        # if FK; instead reject). Most placements should link a real builder.
+        raise HTTPException(400, "builder_user_id required to create a placement (name-only not supported)")
+
+    return {"success": True, "data": {"id": str(new_id)}}
+
+
+@router.post("/opportunities/{opp_id}/placements/{placement_id}/link")
+async def link_opp_placement(
+    opp_id: UUID,
+    placement_id: int,
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Link an existing employment_record to this opportunity (mark jobs-team influenced)."""
+    result = await conn.execute(
+        "UPDATE public.employment_records SET opportunity_id=$1, influenced=true, updated_at=now() WHERE id=$2",
+        opp_id, placement_id,
+    )
+    if result == "UPDATE 0":
+        raise HTTPException(404, "Placement not found")
+    return {"success": True, "data": {"id": str(placement_id), "opportunity_id": str(opp_id)}}
+
+
 class PlacementUpdate(BaseModel):
     influenced: Optional[bool] = None  # true / false / null (unclassify)
 

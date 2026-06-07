@@ -310,6 +310,76 @@ export function usePlacements() {
   });
 }
 
+export interface OppPlacement {
+  id: string;
+  builder: string;
+  role_title: string | null;
+  company_name: string | null;
+  employment_type: string;
+  salary?: number | null;
+}
+
+export function useOppPlacements(oppId: string | null) {
+  return useQuery<OppPlacement[]>({
+    queryKey: ["jobs", "opp-placements", oppId],
+    queryFn: async () => {
+      const { data } = await api.get<ApiResponse<OppPlacement[]>>(`/api/jobs/opportunities/${oppId}/placements`);
+      return data.data;
+    },
+    enabled: oppId !== null,
+    staleTime: 15_000,
+  });
+}
+
+export function useUnlinkedPlacements(q: string) {
+  return useQuery<OppPlacement[]>({
+    queryKey: ["jobs", "unlinked-placements", q],
+    queryFn: async () => {
+      const { data } = await api.get<ApiResponse<OppPlacement[]>>(
+        `/api/jobs/placements/unlinked${q ? `?q=${encodeURIComponent(q)}` : ""}`
+      );
+      return data.data;
+    },
+    staleTime: 15_000,
+  });
+}
+
+export function useCreatePlacement() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ oppId, ...body }: {
+      oppId: string; builder_user_id?: number; builder_name?: string;
+      role_title?: string; employment_type?: string; salary?: number;
+    }) => {
+      const { data } = await api.post<ApiResponse<{ id: string }>>(
+        `/api/jobs/opportunities/${oppId}/placements`, body
+      );
+      return data.data;
+    },
+    onSuccess: (_d, vars) => {
+      qc.invalidateQueries({ queryKey: ["jobs"] });
+      qc.invalidateQueries({ queryKey: ["jobs", "opp-placements", vars.oppId] });
+      toast.success("Placement recorded");
+    },
+    onError: () => toast.error("Failed to record placement"),
+  });
+}
+
+export function useLinkPlacement() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ oppId, placementId }: { oppId: string; placementId: string }) => {
+      await api.post(`/api/jobs/opportunities/${oppId}/placements/${placementId}/link`);
+    },
+    onSuccess: (_d, vars) => {
+      qc.invalidateQueries({ queryKey: ["jobs"] });
+      qc.invalidateQueries({ queryKey: ["jobs", "opp-placements", vars.oppId] });
+      toast.success("Placement linked");
+    },
+    onError: () => toast.error("Failed to link placement"),
+  });
+}
+
 export function useUpdatePlacement() {
   const qc = useQueryClient();
   return useMutation({

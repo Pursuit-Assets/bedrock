@@ -8,6 +8,10 @@ import {
   useDeleteActivity,
   useBuilders,
   useContactSearch,
+  useOppPlacements,
+  useUnlinkedPlacements,
+  useCreatePlacement,
+  useLinkPlacement,
   STAGE_LABELS,
   DEAL_TYPE_LABELS,
   ACTIVE_STAGES,
@@ -19,6 +23,7 @@ import {
   type ActivityCreateBody,
   type Builder,
   type ContactSearchResult,
+  type OppPlacement,
 } from "@/services/jobs";
 import { JobStageChip, DealTypeChip } from "@/components/jobs/JobStageChip";
 import { InlineText, InlineDate } from "@/components/ui/InlineEdit";
@@ -405,7 +410,13 @@ function ContactPicker({
 
 // ── Expanded detail panel ────────────────────────────────────────────────────
 
-function DealDetailPanel({ deal }: { deal: JobsOpportunity }) {
+function DealDetailPanel({
+  deal,
+  onRecordPlacements,
+}: {
+  deal: JobsOpportunity;
+  onRecordPlacements: (deal: { id: string; account_name: string }) => void;
+}) {
   const [activeTab, setActiveTab] = useState<"activity" | "history" | "contacts">("activity");
   const detailQ = useJobsOpportunity(deal.id);
   const updateOpp = useUpdateOpportunity();
@@ -416,7 +427,16 @@ function DealDetailPanel({ deal }: { deal: JobsOpportunity }) {
   function handleStageChange(e: React.ChangeEvent<HTMLSelectElement>) {
     const newStage = e.target.value as JobStage;
     if (newStage === deal.stage) return;
-    updateOpp.mutate({ id: deal.id, stage: newStage });
+    updateOpp.mutate(
+      { id: deal.id, stage: newStage },
+      {
+        onSuccess: () => {
+          if (newStage === "closed_won") {
+            onRecordPlacements({ id: deal.id, account_name: deal.account_name });
+          }
+        },
+      },
+    );
   }
 
   function handleDealTypeChange(e: React.ChangeEvent<HTMLSelectElement>) {
@@ -461,6 +481,17 @@ function DealDetailPanel({ deal }: { deal: JobsOpportunity }) {
               </option>
             ))}
           </select>
+
+          {deal.stage === "closed_won" && (
+            <button
+              type="button"
+              onClick={() => onRecordPlacements({ id: deal.id, account_name: deal.account_name })}
+              className="flex items-center gap-1.5 rounded border border-border-strong bg-surface px-2.5 py-1 text-[12px] font-medium text-ink-2 transition-colors hover:border-accent hover:text-accent"
+            >
+              <Users size={12} />
+              Record placements
+            </button>
+          )}
         </div>
 
         <div className="grid grid-cols-2 gap-x-6 gap-y-3">
@@ -1013,10 +1044,12 @@ function DealRow({
   deal,
   isExpanded,
   onToggle,
+  onRecordPlacements,
 }: {
   deal: JobsOpportunity;
   isExpanded: boolean;
   onToggle: () => void;
+  onRecordPlacements: (deal: { id: string; account_name: string }) => void;
 }) {
   return (
     <Fragment>
@@ -1091,7 +1124,7 @@ function DealRow({
       {isExpanded ? (
         <tr>
           <td colSpan={7} className="p-0">
-            <DealDetailPanel deal={deal} />
+            <DealDetailPanel deal={deal} onRecordPlacements={onRecordPlacements} />
           </td>
         </tr>
       ) : null}
@@ -1297,6 +1330,305 @@ function NewDealModal({ onClose }: { onClose: () => void }) {
   );
 }
 
+// ── Record Placements modal ───────────────────────────────────────────────────
+
+const EMPLOYMENT_TYPES: { value: string; label: string }[] = [
+  { value: "full_time", label: "Full-Time" },
+  { value: "contract",  label: "Contract" },
+  { value: "freelance", label: "Freelance" },
+  { value: "pro_bono",  label: "Pro Bono" },
+];
+
+const EMPLOYMENT_TYPE_LABELS: Record<string, string> = Object.fromEntries(
+  EMPLOYMENT_TYPES.map((t) => [t.value, t.label]),
+);
+
+function PlacementsModal({
+  deal,
+  onClose,
+}: {
+  deal: { id: string; account_name: string };
+  onClose: () => void;
+}) {
+  const placementsQ = useOppPlacements(deal.id);
+  const placements = placementsQ.data ?? [];
+  const createPlacement = useCreatePlacement();
+
+  // New placement sub-form
+  const [builderSearch, setBuilderSearch] = useState("");
+  const [builderOpen, setBuilderOpen] = useState(false);
+  const [builder, setBuilder] = useState<{ user_id: number; name: string } | null>(null);
+  const [roleTitle, setRoleTitle] = useState("");
+  const [employmentType, setEmploymentType] = useState("full_time");
+  const [salary, setSalary] = useState("");
+
+  const buildersQ = useBuilders(builderSearch || undefined);
+  const builderResults = buildersQ.data ?? [];
+
+  // Link-existing section
+  const [linkOpen, setLinkOpen] = useState(false);
+  const [linkSearch, setLinkSearch] = useState("");
+  const unlinkedQ = useUnlinkedPlacements(linkOpen ? linkSearch : "");
+  const unlinked = linkOpen ? (unlinkedQ.data ?? []) : [];
+  const linkPlacement = useLinkPlacement();
+
+  const linkedIds = new Set(placements.map((p) => p.id));
+
+  function resetSubForm() {
+    setBuilder(null);
+    setBuilderSearch("");
+    setRoleTitle("");
+    setEmploymentType("full_time");
+    setSalary("");
+  }
+
+  function handleAddPlacement(e: React.FormEvent) {
+    e.preventDefault();
+    if (!builder) return;
+    const salaryNum = salary.trim() ? Number(salary.replace(/[^0-9.]/g, "")) : undefined;
+    createPlacement.mutate(
+      {
+        oppId: deal.id,
+        builder_user_id: builder.user_id,
+        builder_name: builder.name,
+        role_title: roleTitle.trim() || undefined,
+        employment_type: employmentType,
+        salary: salaryNum != null && !isNaN(salaryNum) ? salaryNum : undefined,
+      },
+      { onSuccess: () => resetSubForm() },
+    );
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/30"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div className="flex max-h-[90vh] w-full max-w-lg flex-col rounded-xl border border-border-strong bg-surface shadow-xl">
+        {/* Header */}
+        <div className="flex items-center justify-between border-b border-border-strong px-5 py-4">
+          <h2 className="text-[15px] font-semibold text-ink">
+            Record Placements for {deal.account_name}
+          </h2>
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-ink-3 hover:text-ink transition-colors"
+            aria-label="Close"
+          >
+            <X size={16} />
+          </button>
+        </div>
+
+        {/* Body */}
+        <div className="flex flex-col gap-5 overflow-y-auto px-5 py-4">
+          {/* Currently linked placements */}
+          <div className="flex flex-col gap-2">
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-4">
+              Linked Placements
+            </span>
+            {placementsQ.isLoading ? (
+              <span className="text-[12px] text-ink-3">Loading…</span>
+            ) : placements.length === 0 ? (
+              <span className="text-[12px] text-ink-3">No placements recorded yet.</span>
+            ) : (
+              <ul className="flex flex-col divide-y divide-border-strong rounded-md border border-border-strong">
+                {placements.map((p) => (
+                  <li key={p.id} className="flex items-center justify-between gap-3 px-3 py-2">
+                    <div className="flex min-w-0 flex-col gap-0.5">
+                      <span className="truncate text-[13px] font-medium text-ink">{p.builder}</span>
+                      <span className="truncate text-[11.5px] text-ink-3">
+                        {[p.role_title, EMPLOYMENT_TYPE_LABELS[p.employment_type] ?? p.employment_type]
+                          .filter(Boolean)
+                          .join(" · ")}
+                      </span>
+                    </div>
+                    {p.salary != null ? (
+                      <span className="shrink-0 font-mono text-[11.5px] text-ink-3">
+                        ${p.salary.toLocaleString("en-US")}
+                      </span>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+
+          {/* Add a new placement */}
+          <form onSubmit={handleAddPlacement} className="flex flex-col gap-3 rounded-md border border-border-strong p-3">
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-4">
+              Add a Placement
+            </span>
+
+            {/* Builder picker */}
+            <div className="flex flex-col gap-1">
+              <label className="text-[11px] font-medium text-ink-3">Builder</label>
+              {builder ? (
+                <div className="flex items-center gap-2">
+                  <span className="inline-flex items-center gap-1 rounded-full border border-border-strong bg-surface-2 px-2 py-0.5 text-[11.5px] text-ink-2">
+                    {builder.name}
+                    <button
+                      type="button"
+                      onClick={() => { setBuilder(null); setBuilderSearch(""); }}
+                      className="ml-0.5 text-ink-4 hover:text-red-500 transition-colors"
+                      title="Clear builder"
+                    >
+                      <X size={11} />
+                    </button>
+                  </span>
+                </div>
+              ) : (
+                <div className="relative">
+                  <input
+                    type="text"
+                    value={builderSearch}
+                    onFocus={() => setBuilderOpen(true)}
+                    onBlur={() => setTimeout(() => setBuilderOpen(false), 150)}
+                    onChange={(e) => { setBuilderSearch(e.target.value); setBuilderOpen(true); }}
+                    placeholder="Search builders…"
+                    className="w-full rounded border border-border-strong bg-surface px-2 py-1.5 text-[12.5px] text-ink-2 placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40"
+                  />
+                  {builderOpen && builderResults.length > 0 && (
+                    <ul className="absolute z-20 mt-1 max-h-[160px] w-full overflow-y-auto rounded border border-border-strong bg-surface shadow-md">
+                      {builderResults.slice(0, 12).map((b) => (
+                        <li key={b.user_id}>
+                          <button
+                            type="button"
+                            onMouseDown={() => {
+                              setBuilder({ user_id: b.user_id, name: b.name });
+                              setBuilderOpen(false);
+                              setBuilderSearch("");
+                            }}
+                            className="w-full px-3 py-1.5 text-left text-[12px] text-ink hover:bg-surface-2"
+                          >
+                            <span className="font-medium">{b.name}</span>
+                            <span className="ml-1.5 text-ink-3">{b.email}</span>
+                            {b.cohort ? <span className="ml-1.5 text-ink-4">· {b.cohort}</span> : null}
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Role title */}
+            <div className="flex flex-col gap-1">
+              <label className="text-[11px] font-medium text-ink-3">Role Title</label>
+              <input
+                type="text"
+                value={roleTitle}
+                onChange={(e) => setRoleTitle(e.target.value)}
+                placeholder="Software Engineer"
+                className="w-full rounded border border-border-strong bg-surface px-2 py-1.5 text-[12.5px] text-ink-2 placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40"
+              />
+            </div>
+
+            {/* Employment type + Salary */}
+            <div className="grid grid-cols-2 gap-3">
+              <div className="flex flex-col gap-1">
+                <label className="text-[11px] font-medium text-ink-3">Employment Type</label>
+                <select
+                  value={employmentType}
+                  onChange={(e) => setEmploymentType(e.target.value)}
+                  className="w-full rounded border border-border-strong bg-surface px-2 py-1.5 text-[12.5px] text-ink-2 focus:outline-none focus:ring-1 focus:ring-accent/40"
+                >
+                  {EMPLOYMENT_TYPES.map((t) => (
+                    <option key={t.value} value={t.value}>{t.label}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-[11px] font-medium text-ink-3">Salary</label>
+                <input
+                  type="number"
+                  value={salary}
+                  onChange={(e) => setSalary(e.target.value)}
+                  placeholder="85000"
+                  min={0}
+                  className="w-full rounded border border-border-strong bg-surface px-2 py-1.5 text-[12.5px] text-ink-2 placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40"
+                />
+              </div>
+            </div>
+
+            <div>
+              <button
+                type="submit"
+                disabled={!builder || createPlacement.isPending}
+                className="flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1.5 text-[12.5px] font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+              >
+                {createPlacement.isPending ? <Spinner /> : <Plus size={12} />}
+                {createPlacement.isPending ? "Adding…" : "Add Placement"}
+              </button>
+            </div>
+          </form>
+
+          {/* Link an existing placement */}
+          <div className="flex flex-col gap-2">
+            <button
+              type="button"
+              onClick={() => setLinkOpen((v) => !v)}
+              className="flex items-center gap-1.5 self-start text-[12px] font-medium text-accent hover:underline"
+            >
+              {linkOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+              Link existing
+            </button>
+            {linkOpen && (
+              <div className="flex flex-col gap-2">
+                <input
+                  type="text"
+                  value={linkSearch}
+                  onChange={(e) => setLinkSearch(e.target.value)}
+                  placeholder="Search unlinked placements…"
+                  className="w-full rounded border border-border-strong bg-surface px-2 py-1.5 text-[12.5px] text-ink-2 placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40"
+                />
+                {unlinkedQ.isLoading ? (
+                  <span className="text-[12px] text-ink-3">Searching…</span>
+                ) : unlinked.length === 0 ? (
+                  <span className="text-[12px] text-ink-4">No unlinked placements found.</span>
+                ) : (
+                  <ul className="flex flex-col divide-y divide-border-strong rounded-md border border-border-strong">
+                    {unlinked.map((row: OppPlacement) => (
+                      <li key={row.id} className="flex items-center justify-between gap-3 px-3 py-2">
+                        <div className="flex min-w-0 flex-col gap-0.5">
+                          <span className="truncate text-[12.5px] font-medium text-ink">{row.builder}</span>
+                          <span className="truncate text-[11px] text-ink-3">
+                            {[row.role_title, row.company_name].filter(Boolean).join(" @ ")}
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          disabled={linkedIds.has(row.id) || linkPlacement.isPending}
+                          onClick={() => linkPlacement.mutate({ oppId: deal.id, placementId: row.id })}
+                          className="shrink-0 rounded border border-border-strong bg-surface px-2.5 py-1 text-[11.5px] font-medium text-ink-2 transition-colors hover:border-accent hover:text-accent disabled:opacity-50"
+                        >
+                          {linkedIds.has(row.id) ? "Linked" : "Link"}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div className="flex items-center justify-end border-t border-border-strong px-5 py-3">
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-lg bg-accent px-4 py-2 text-[13px] font-medium text-white transition-opacity hover:opacity-90"
+          >
+            Done
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 
 export function JobsTeam() {
@@ -1304,6 +1636,7 @@ export function JobsTeam() {
   const [stageGroup, setStageGroup] = useState<StageGroup>("all");
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [showNewDeal, setShowNewDeal] = useState(false);
+  const [placementModalDeal, setPlacementModalDeal] = useState<{ id: string; account_name: string } | null>(null);
 
   const { data: rawData, isLoading } = useJobsOpportunities(
     ownerFilter ? { owner_email: ownerFilter } : {},
@@ -1399,6 +1732,13 @@ export function JobsTeam() {
         <NewDealModal onClose={() => setShowNewDeal(false)} />
       )}
 
+      {placementModalDeal && (
+        <PlacementsModal
+          deal={placementModalDeal}
+          onClose={() => setPlacementModalDeal(null)}
+        />
+      )}
+
       {/* Table */}
       {isLoading ? (
         <EmptyState>Loading deals…</EmptyState>
@@ -1433,6 +1773,7 @@ export function JobsTeam() {
                 deal={deal}
                 isExpanded={expandedId === deal.id}
                 onToggle={() => setExpandedId(expandedId === deal.id ? null : deal.id)}
+                onRecordPlacements={setPlacementModalDeal}
               />
             ))}
           </tbody>
