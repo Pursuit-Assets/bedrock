@@ -7,6 +7,8 @@ import {
   useContactsSummary,
   useMetricDrill,
   useJobRoles,
+  usePlacements,
+  useUpdatePlacement,
   ACTIVE_STAGES,
   DEAL_TYPE_LABELS,
   type PipelineStageSummary,
@@ -15,6 +17,7 @@ import {
   type DealType,
   type JobRole,
   type RoleSegment,
+  type Placement,
 } from "@/services/jobs";
 import { cn } from "@/lib/utils";
 import { JobsFunnels } from "@/components/jobs/JobsFunnels";
@@ -152,6 +155,7 @@ export function JobsLeadership() {
   const candidatesSubmittedQ = useMetricDrill("candidates_submitted");
   const interviewingQ = useMetricDrill("interviewing");
   const rolesQ = useJobRoles();
+  const placementsQ = usePlacements();
 
   const isLoading = pipelineQ.isLoading || oppsQ.isLoading;
 
@@ -591,6 +595,15 @@ export function JobsLeadership() {
         </div>
       </SectionWrap>
 
+      {/* ── Secured Jobs ──────────────────────────────────────────────── */}
+      <SectionWrap title="Secured Jobs">
+        <div className="-mt-2 text-[11.5px] text-ink-3">
+          Single source of truth — all placements, separable by jobs-team
+          influence.
+        </div>
+        <SecuredJobsSection placementsQ={placementsQ} />
+      </SectionWrap>
+
       {/* ── Jobs ──────────────────────────────────────────────────────── */}
       <SectionWrap title="Jobs">
         <JobsRolesSection rolesQ={rolesQ} />
@@ -819,6 +832,202 @@ function JobsRolesSection({ rolesQ }: { rolesQ: RolesQuery }) {
                   </td>
                   <td className="px-5 py-2.5">
                     <StagePill stage={row.stage} />
+                  </td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// ── Secured Jobs section (breakdown cards + editable attribution table) ─────
+
+type PlacementsQuery = ReturnType<typeof usePlacements>;
+type InfluenceFilter = "all" | "influenced" | "self_sourced" | "unclassified";
+
+const INFLUENCE_FILTERS: { key: InfluenceFilter; label: string }[] = [
+  { key: "all", label: "All" },
+  { key: "influenced", label: "Influenced" },
+  { key: "self_sourced", label: "Self-Sourced" },
+  { key: "unclassified", label: "Unclassified" },
+];
+
+function employmentTypeLabel(type: string): string {
+  switch (type) {
+    case "full_time":
+      return "Full-Time";
+    case "contract":
+      return "Contract";
+    case "freelance":
+      return "Freelance";
+    case "pro_bono":
+      return "Pro Bono";
+    default:
+      return type ? type.charAt(0).toUpperCase() + type.slice(1) : "—";
+  }
+}
+
+function influenceToValue(influenced: boolean | null): string {
+  if (influenced === true) return "true";
+  if (influenced === false) return "false";
+  return "";
+}
+
+function SecuredJobsSection({ placementsQ }: { placementsQ: PlacementsQuery }) {
+  const [filter, setFilter] = useState<InfluenceFilter>("all");
+  const updatePlacement = useUpdatePlacement();
+
+  const summary = placementsQ.data;
+  const rows = summary?.rows ?? [];
+
+  const visibleRows = useMemo(() => {
+    return rows.filter((r) => {
+      switch (filter) {
+        case "influenced":
+          return r.influenced === true;
+        case "self_sourced":
+          return r.influenced === false;
+        case "unclassified":
+          return r.influenced == null;
+        default:
+          return true;
+      }
+    });
+  }, [rows, filter]);
+
+  const cards: { label: string; value: string | number; valueColor?: string }[] = [
+    {
+      label: "Total Secured",
+      value: placementsQ.isLoading ? "—" : (summary?.total ?? 0),
+    },
+    {
+      label: "Jobs-Team Influenced",
+      value: placementsQ.isLoading ? "—" : (summary?.influenced ?? 0),
+      valueColor: "text-[var(--green)]",
+    },
+    {
+      label: "Self-Sourced",
+      value: placementsQ.isLoading ? "—" : (summary?.self_sourced ?? 0),
+    },
+    {
+      label: "Unclassified",
+      value: placementsQ.isLoading ? "—" : (summary?.unclassified ?? 0),
+      valueColor:
+        !placementsQ.isLoading && (summary?.unclassified ?? 0) > 0
+          ? "text-[var(--amber)]"
+          : undefined,
+    },
+  ];
+
+  return (
+    <div className="flex flex-col gap-4">
+      {/* Breakdown cards */}
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-4">
+        {cards.map((c) => (
+          <div
+            key={c.label}
+            className="flex flex-col gap-2 rounded-[8px] border border-border-strong bg-surface p-4 shadow-[var(--shadow-sm)]"
+          >
+            <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
+              {c.label}
+            </span>
+            <span
+              className={cn(
+                "font-mono text-[28px] font-semibold leading-none tabular-nums",
+                c.valueColor ?? "text-ink",
+              )}
+            >
+              {c.value}
+            </span>
+          </div>
+        ))}
+      </div>
+
+      {/* Filter toggle */}
+      <div className="inline-flex flex-wrap self-start rounded-lg border border-border-strong bg-surface-2 p-1">
+        {INFLUENCE_FILTERS.map((f) => {
+          const active = f.key === filter;
+          return (
+            <button
+              key={f.key}
+              type="button"
+              onClick={() => setFilter(f.key)}
+              className={cn(
+                "rounded-md px-3 py-1.5 text-[12px] font-medium transition-colors",
+                active
+                  ? "bg-surface text-ink shadow-sm"
+                  : "text-ink-3 hover:text-ink-2",
+              )}
+            >
+              {f.label}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Table */}
+      <div className="max-h-[440px] overflow-auto rounded-[8px] border border-border-strong bg-surface shadow-[var(--shadow-sm)]">
+        <table className="w-full text-[12.5px]">
+          <thead className="sticky top-0 z-10 bg-surface-2 text-[10.5px] uppercase tracking-wider text-ink-3">
+            <tr>
+              <th className="px-5 py-2 text-left font-semibold">Builder</th>
+              <th className="px-5 py-2 text-left font-semibold">Role</th>
+              <th className="px-5 py-2 text-left font-semibold">Company</th>
+              <th className="px-5 py-2 text-left font-semibold">Type</th>
+              <th className="px-5 py-2 text-left font-semibold">Influence</th>
+            </tr>
+          </thead>
+          <tbody>
+            {placementsQ.isLoading ? (
+              Array.from({ length: 5 }).map((_, i) => (
+                <tr key={i} className="border-t border-border-strong">
+                  {Array.from({ length: 5 }).map((_, j) => (
+                    <td key={j} className="px-5 py-3">
+                      <div className="h-3 animate-pulse rounded bg-surface-2" />
+                    </td>
+                  ))}
+                </tr>
+              ))
+            ) : visibleRows.length === 0 ? (
+              <tr className="border-t border-border-strong">
+                <td colSpan={5} className="px-5 py-6 text-center text-ink-4">
+                  No placements in this filter.
+                </td>
+              </tr>
+            ) : (
+              visibleRows.map((row: Placement) => (
+                <tr
+                  key={row.id}
+                  className="border-t border-border-strong hover:bg-surface-2/50"
+                >
+                  <td className="px-5 py-2.5 font-medium text-ink">
+                    {row.builder}
+                  </td>
+                  <td className="px-5 py-2.5 text-ink-2">{row.role_title}</td>
+                  <td className="px-5 py-2.5 text-ink-2">{row.company_name}</td>
+                  <td className="px-5 py-2.5 text-ink-2">
+                    {employmentTypeLabel(row.employment_type)}
+                  </td>
+                  <td className="px-5 py-2.5">
+                    <select
+                      value={influenceToValue(row.influenced)}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        updatePlacement.mutate({
+                          id: row.id,
+                          influenced:
+                            v === "true" ? true : v === "false" ? false : null,
+                        });
+                      }}
+                      className="cursor-pointer rounded border border-border-strong bg-surface px-1.5 py-0.5 text-[12px]"
+                    >
+                      <option value="true">Influenced</option>
+                      <option value="false">Self-Sourced</option>
+                      <option value="">Unclassified</option>
+                    </select>
                   </td>
                 </tr>
               ))

@@ -200,6 +200,72 @@ async def metric_drilldown(
     }
 
 
+@router.get("/placements")
+async def get_placements(user=Depends(require_auth), conn=Depends(get_db)):
+    """Secured jobs — single source of truth = public.employment_records.
+
+    Counts ALL placements (incl. builder self-sourced, no deal link) and
+    separates by `influenced` (jobs-team influenced / self-sourced / unclassified).
+    """
+    rows = await conn.fetch("SELECT * FROM bedrock.secured_jobs() ORDER BY influenced DESC NULLS LAST, company_name")
+
+    def is_ft(t):     return t == "full_time"
+    def is_contract(t): return t in ("contract", "freelance")
+
+    total = len(rows)
+    influenced   = sum(1 for r in rows if r["influenced"] is True)
+    self_sourced = sum(1 for r in rows if r["influenced"] is False)
+    unclassified = sum(1 for r in rows if r["influenced"] is None)
+    ft    = sum(1 for r in rows if is_ft(r["employment_type"]))
+    contract = sum(1 for r in rows if is_contract(r["employment_type"]))
+
+    return {
+        "success": True,
+        "data": {
+            "total": total,
+            "influenced": influenced,
+            "self_sourced": self_sourced,
+            "unclassified": unclassified,
+            "ft": ft,
+            "contract": contract,
+            "rows": [
+                {
+                    "id": str(r["id"]),
+                    "builder": r["builder"],
+                    "role_title": r["role_title"] or "—",
+                    "company_name": r["company_name"] or "—",
+                    "employment_type": r["employment_type"] or "—",
+                    "engagement_stage": r["engagement_stage"],
+                    "influenced": r["influenced"],
+                    "salary": int(r["payment_amount"]) if r["payment_amount"] else None,
+                }
+                for r in rows
+            ],
+        },
+    }
+
+
+class PlacementUpdate(BaseModel):
+    influenced: Optional[bool] = None  # true / false / null (unclassify)
+
+
+@router.patch("/placements/{placement_id}")
+async def update_placement(
+    placement_id: int,
+    body: PlacementUpdate,
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Set the influence attribution on a secured job."""
+    result = await conn.execute(
+        "UPDATE public.employment_records SET influenced=$1, updated_at=now() WHERE id=$2",
+        body.influenced, placement_id,
+    )
+    if result == "UPDATE 0":
+        raise HTTPException(404, "Placement not found")
+    return {"success": True, "data": {"id": placement_id, "influenced": body.influenced}}
+
+
 @router.get("/funnel/{ftype}")
 async def get_funnel(ftype: str, user=Depends(require_auth), conn=Depends(get_db)):
     """Unified funnel for the three pipelines: opportunities | prospects | builders.

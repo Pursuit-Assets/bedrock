@@ -278,6 +278,52 @@ export interface RolesSummary {
   rows: JobRole[];
 }
 
+export interface Placement {
+  id: string;
+  builder: string;
+  role_title: string;
+  company_name: string;
+  employment_type: string;
+  engagement_stage: string | null;
+  influenced: boolean | null;
+  salary: number | null;
+}
+
+export interface PlacementsSummary {
+  total: number;
+  influenced: number;
+  self_sourced: number;
+  unclassified: number;
+  ft: number;
+  contract: number;
+  rows: Placement[];
+}
+
+export function usePlacements() {
+  return useQuery<PlacementsSummary>({
+    queryKey: ["jobs", "placements"],
+    queryFn: async () => {
+      const { data } = await api.get<ApiResponse<PlacementsSummary>>("/api/jobs/placements");
+      return data.data;
+    },
+    staleTime: 30_000,
+  });
+}
+
+export function useUpdatePlacement() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, influenced }: { id: string; influenced: boolean | null }) => {
+      await api.patch(`/api/jobs/placements/${id}`, { influenced });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["jobs", "placements"] });
+      toast.success("Attribution updated");
+    },
+    onError: () => toast.error("Update failed"),
+  });
+}
+
 export type FunnelType = "opportunities" | "prospects" | "builders";
 
 export interface FunnelStage {
