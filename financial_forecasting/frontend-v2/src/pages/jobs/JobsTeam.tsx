@@ -12,6 +12,8 @@ import {
   useUnlinkedPlacements,
   useCreatePlacement,
   useLinkPlacement,
+  useStaff,
+  type Staff,
   STAGE_LABELS,
   DEAL_TYPE_LABELS,
   ACTIVE_STAGES,
@@ -27,7 +29,7 @@ import {
 } from "@/services/jobs";
 import { JobStageChip, DealTypeChip } from "@/components/jobs/JobStageChip";
 import { InlineText, InlineDate } from "@/components/ui/InlineEdit";
-import { ChevronDown, ChevronRight, Building2, Users, Activity, Clock, Mail, Linkedin, Trash2, X, Plus } from "lucide-react";
+import { ChevronDown, ChevronRight, Building2, Users, Activity, Clock, Mail, Linkedin, Trash2, X, Plus, Check } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { format, formatDistanceToNow } from "date-fns";
 
@@ -408,6 +410,114 @@ function ContactPicker({
   );
 }
 
+// ── Staff (owner) picker ──────────────────────────────────────────────────────
+
+function StaffPicker({
+  value,
+  onChange,
+}: {
+  value: string | null;
+  /** Returns a promise that resolves once the save has persisted. */
+  onChange: (email: string | null) => Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [savedTick, setSavedTick] = useState(false);
+
+  // useStaff() with no arg returns up to 50 active staff; filter client-side for snappiness.
+  const staffQ = useStaff();
+  const staff = staffQ.data ?? [];
+
+  const q = search.trim().toLowerCase();
+  const filtered: Staff[] = q
+    ? staff.filter(
+        (s) =>
+          s.name.toLowerCase().includes(q) || s.email.toLowerCase().includes(q),
+      )
+    : staff;
+
+  // Display label for the current owner: staff name if resolvable, else raw email, else Unassigned.
+  const current = value ? staff.find((s) => s.email === value) : undefined;
+  const displayLabel = current?.name ?? (value || "Unassigned");
+
+  async function select(email: string | null) {
+    setSaving(true);
+    try {
+      await onChange(email);
+      setSavedTick(true);
+      setTimeout(() => setSavedTick(false), 1200);
+    } finally {
+      setSaving(false);
+      setOpen(false);
+      setSearch("");
+    }
+  }
+
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        onBlur={() => setTimeout(() => setOpen(false), 150)}
+        className="group flex w-full items-center gap-1.5 rounded px-1 py-0.5 text-left text-[12px] text-ink-2 hover:bg-surface-2"
+      >
+        <span className={cn(value ? "text-ink-2" : "text-ink-4")}>{displayLabel}</span>
+        {saving ? (
+          <Spinner />
+        ) : savedTick ? (
+          <Check size={12} className="text-emerald-600" />
+        ) : (
+          <ChevronDown size={12} className="text-ink-4 opacity-0 transition-opacity group-hover:opacity-100" />
+        )}
+      </button>
+
+      {open && (
+        <div className="absolute z-30 mt-1 max-h-64 w-full min-w-[180px] overflow-auto rounded border border-border-strong bg-surface shadow">
+          <div className="sticky top-0 bg-surface px-2 pt-2 pb-1">
+            <input
+              type="text"
+              autoFocus
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              onMouseDown={(e) => e.stopPropagation()}
+              placeholder="Search staff…"
+              className="w-full rounded border border-border-strong bg-surface px-2 py-1 text-[12px] text-ink-2 placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40"
+            />
+          </div>
+          <div
+            onMouseDown={(e) => e.preventDefault()}
+            className="px-3 py-1.5 text-[12px] italic text-ink-4 hover:bg-surface-2 cursor-pointer"
+            onClick={() => void select(null)}
+          >
+            Unassign
+          </div>
+          {staffQ.isLoading ? (
+            <div className="px-3 py-1.5 text-[12px] text-ink-4">Loading…</div>
+          ) : filtered.length === 0 ? (
+            <div className="px-3 py-1.5 text-[12px] text-ink-4">No staff found.</div>
+          ) : (
+            filtered.map((s) => (
+              <div
+                key={s.email}
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => void select(s.email)}
+                className={cn(
+                  "px-3 py-1.5 text-[12px] hover:bg-surface-2 cursor-pointer",
+                  s.email === value ? "font-medium text-ink" : "text-ink-2",
+                )}
+              >
+                <span>{s.name}</span>
+                <span className="ml-1.5 text-ink-4">{s.email}</span>
+              </div>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Expanded detail panel ────────────────────────────────────────────────────
 
 function DealDetailPanel({
@@ -522,10 +632,9 @@ function DealDetailPanel({
           </Field>
 
           <Field label="Owner">
-            <InlineText
+            <StaffPicker
               value={deal.owner_email}
-              placeholder="owner@pursuit.org"
-              onSave={(v) => patch({ owner_email: v || null })}
+              onChange={(email) => patch({ owner_email: email })}
             />
           </Field>
 

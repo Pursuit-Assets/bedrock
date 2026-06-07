@@ -576,6 +576,20 @@ export function useDeleteActivity() {
   });
 }
 
+export interface Staff { email: string; name: string }
+
+export function useStaff(q?: string) {
+  return useQuery<Staff[]>({
+    queryKey: ["jobs", "staff", q ?? ""],
+    queryFn: async () => {
+      const params = q ? `?q=${encodeURIComponent(q)}` : "";
+      const { data } = await api.get<ApiResponse<Staff[]>>(`/api/jobs/staff${params}`);
+      return data.data;
+    },
+    staleTime: 300_000,
+  });
+}
+
 export interface Builder { user_id: number; email: string; name: string; cohort: string }
 
 export function useAddContactToJobs() {

@@ -6,16 +6,16 @@ import { JobsTeam } from "./jobs/JobsTeam";
 import { JobsLeadership } from "./jobs/JobsLeadership";
 import { JobsContacts } from "./jobs/JobsContacts";
 
-type View = "team" | "leadership" | "contacts";
+type View = "performance" | "team" | "contacts";
 
 const VIEWS = [
-  { id: "team" as View,       label: "Deals",      icon: Kanban,   desc: "Day-to-day deal management" },
-  { id: "contacts" as View,   label: "Contacts",   icon: Users,    desc: "All employer contacts" },
-  { id: "leadership" as View, label: "Leadership", icon: BarChart3, desc: "Pipeline health & metrics" },
+  { id: "performance" as View, label: "Performance", icon: BarChart3, desc: "Pipeline health & metrics" },
+  { id: "team" as View,        label: "Deals",       icon: Kanban,    desc: "Day-to-day deal management" },
+  { id: "contacts" as View,    label: "Contacts",    icon: Users,     desc: "All employer contacts" },
 ];
 
 export function JobsPage() {
-  const [view, setView] = useState<View>("team");
+  const [view, setView] = useState<View>("performance");
 
   return (
     <div className="flex flex-col gap-0 px-7 py-6 pb-12">
@@ -47,9 +47,9 @@ export function JobsPage() {
       />
 
       <div className="mt-2">
-        {view === "team"       && <JobsTeam />}
-        {view === "contacts"   && <JobsContacts />}
-        {view === "leadership" && <JobsLeadership />}
+        {view === "performance" && <JobsLeadership />}
+        {view === "team"        && <JobsTeam />}
+        {view === "contacts"    && <JobsContacts />}
       </div>
     </div>
   );

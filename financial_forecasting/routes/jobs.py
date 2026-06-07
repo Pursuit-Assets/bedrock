@@ -166,6 +166,30 @@ async def metric_drilldown(
         )
         return company_cols, [dict(r) for r in rows], "company"
 
+    # Secured-job placements (employment_records) — shows builder names.
+    placement_cols = [
+        {"key": "builder", "label": "Builder"},
+        {"key": "role_title", "label": "Role"},
+        {"key": "company_name", "label": "Company"},
+        {"key": "employment_type", "label": "Type"},
+        {"key": "influence", "label": "Influence"},
+    ]
+
+    async def placements(where: str):
+        rows = await conn.fetch(f"SELECT * FROM bedrock.secured_jobs() WHERE {where} ORDER BY builder")
+        out = []
+        for r in rows:
+            out.append({
+                "id": str(r["id"]),
+                "builder": r["builder"],
+                "role_title": r["role_title"] or "—",
+                "company_name": r["company_name"] or "—",
+                "employment_type": r["employment_type"] or "—",
+                "influence": ("Influenced" if r["influenced"] is True
+                              else "Self-sourced" if r["influenced"] is False else "Unclassified"),
+            })
+        return placement_cols, out, "placement"
+
     DISPATCH = {
         "total_leads":          ("Total Leads",              lambda: contacts("true")),
         "engaged_leads":        ("Engaged Leads",            lambda: contacts(f"contact_stage IN {ENGAGED}")),
@@ -177,7 +201,7 @@ async def metric_drilldown(
         "active_companies":     ("Active Companies",         lambda: deals("stage LIKE 'active_%'")),
         "in_discussion":        ("In Discussion",            lambda: deals("stage='active_in_discussions'")),
         "builder_interviews":   ("Builder Interview",        lambda: deals("stage='active_builder_interview'")),
-        "placements":           ("Placements (Closed Won)",  lambda: deals("stage='closed_won'")),
+        "placements":           ("Secured Jobs (Placements)", lambda: placements("true")),
         "candidates_submitted": ("Companies w/ Candidates Submitted", lambda: companies("stage IN ('applied','interview','accepted')")),
         "interviewing":         ("Companies Interviewing Builders",   lambda: companies("stage='interview'")),
     }
@@ -243,6 +267,27 @@ async def get_placements(user=Depends(require_auth), conn=Depends(get_db)):
             ],
         },
     }
+
+
+@router.get("/staff")
+async def list_staff(
+    q: Optional[str] = Query(None),
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Active Pursuit staff (for owner pickers). Deduped by email."""
+    rows = await conn.fetch("""
+        SELECT DISTINCT ON (lower(email)) email, display_name
+        FROM public.org_users
+        WHERE is_active = true AND email IS NOT NULL
+        ORDER BY lower(email), display_name
+    """)
+    out = [{"email": r["email"], "name": r["display_name"] or r["email"]} for r in rows]
+    if q:
+        ql = q.lower()
+        out = [s for s in out if ql in s["email"].lower() or ql in (s["name"] or "").lower()]
+    out.sort(key=lambda s: s["name"])
+    return {"success": True, "data": out[:50]}
 
 
 @router.get("/placements/unlinked")
