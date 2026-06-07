@@ -219,13 +219,10 @@ export function JobsLeadership() {
   const contactsLoading = contactsQ.isLoading;
   const totalLeads = contactsQ.data?.contacts.total ?? null;
   const engagedLeads = contactsQ.data?.contacts.engaged ?? null;
-  const outreachTotal = contactsQ.data?.activity.outreach_total ?? null;
+  const outreachAllTime = contactsQ.data?.activity.outreach_total ?? null;
   const outreachThisWeek = contactsQ.data?.activity.outreach_this_week ?? null;
-  const callsTotal = contactsQ.data?.activity.calls_total ?? null;
+  const callsAllTime = contactsQ.data?.activity.calls_total ?? null;
   const callsThisWeek = contactsQ.data?.activity.calls_this_week ?? null;
-
-  const activeInDiscussions = stageMap.get("active_in_discussions")?.total ?? 0;
-  const activeBuilderInterview = stageMap.get("active_builder_interview")?.total ?? 0;
 
   // ── Salary color ────────────────────────────────────────────────────────
 
@@ -283,7 +280,7 @@ export function JobsLeadership() {
               {contactsLoading ? "—" : (outreachThisWeek ?? "—")}
             </span>
             <span className="text-[10.5px] text-ink-4">
-              {contactsLoading ? "—" : `${outreachTotal ?? "—"} all time`}
+              {contactsLoading ? "—" : `${outreachAllTime ?? "—"} all time`}
             </span>
           </div>
           <div className="flex flex-col gap-2 rounded-[8px] border border-border-strong bg-surface p-4 shadow-[var(--shadow-sm)]">
@@ -291,7 +288,7 @@ export function JobsLeadership() {
               Calls in total
             </span>
             <span className="font-mono text-[28px] font-semibold leading-none tabular-nums text-ink">
-              {contactsLoading ? "—" : (callsTotal ?? "—")}
+              {contactsLoading ? "—" : (callsAllTime ?? "—")}
             </span>
           </div>
           <div className="flex flex-col gap-2 rounded-[8px] border border-border-strong bg-surface p-4 shadow-[var(--shadow-sm)]">
