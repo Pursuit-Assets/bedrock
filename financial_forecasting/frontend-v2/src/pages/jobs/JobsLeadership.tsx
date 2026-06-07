@@ -6,6 +6,7 @@ import {
   useJobsOpportunities,
   useContactsSummary,
   useMetricDrill,
+  useJobRoles,
   ACTIVE_STAGES,
   DEAL_TYPE_LABELS,
   type PipelineStageSummary,
@@ -148,6 +149,7 @@ export function JobsLeadership() {
   const contactsQ = useContactsSummary();
   const candidatesSubmittedQ = useMetricDrill("candidates_submitted");
   const interviewingQ = useMetricDrill("interviewing");
+  const rolesQ = useJobRoles();
 
   const isLoading = pipelineQ.isLoading || oppsQ.isLoading;
 
@@ -587,8 +589,118 @@ export function JobsLeadership() {
         </div>
       </SectionWrap>
 
+      {/* ── Jobs ──────────────────────────────────────────────────────── */}
+      <SectionWrap title="Jobs">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+          <div className="flex flex-col gap-2 rounded-[8px] border border-border-strong bg-surface p-4 shadow-[var(--shadow-sm)]">
+            <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
+              Committed Roles
+            </span>
+            <span className="font-mono text-[28px] font-semibold leading-none tabular-nums text-ink">
+              {rolesQ.isLoading ? "—" : (rolesQ.data?.committed ?? 0)}
+            </span>
+          </div>
+          <div className="flex flex-col gap-2 rounded-[8px] border border-border-strong bg-surface p-4 shadow-[var(--shadow-sm)]">
+            <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
+              Closed/Hired Roles
+            </span>
+            <span className="font-mono text-[28px] font-semibold leading-none tabular-nums text-ink">
+              {rolesQ.isLoading ? "—" : (rolesQ.data?.hired ?? 0)}
+            </span>
+          </div>
+          <div className="flex flex-col gap-2 rounded-[8px] border border-border-strong bg-surface p-4 shadow-[var(--shadow-sm)]">
+            <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
+              Avg $ Closed/Hired
+            </span>
+            <span className="font-mono text-[28px] font-semibold leading-none tabular-nums text-ink">
+              {rolesQ.isLoading ? "—" : fmtSalary(rolesQ.data?.avg_salary)}
+            </span>
+          </div>
+        </div>
+
+        <div className="max-h-[400px] overflow-auto rounded-[8px] border border-border-strong bg-surface shadow-[var(--shadow-sm)]">
+          <table className="w-full text-[12.5px]">
+            <thead className="sticky top-0 z-10 bg-surface-2 text-[10.5px] uppercase tracking-wider text-ink-3">
+              <tr>
+                <th className="px-5 py-2 text-left font-semibold">Builder</th>
+                <th className="px-5 py-2 text-left font-semibold">Role</th>
+                <th className="px-5 py-2 text-left font-semibold">Company</th>
+                <th className="px-5 py-2 text-right font-semibold">Salary</th>
+                <th className="px-5 py-2 text-left font-semibold">Stage</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rolesQ.isLoading ? (
+                Array.from({ length: 5 }).map((_, i) => (
+                  <tr key={i} className="border-t border-border-strong">
+                    {Array.from({ length: 5 }).map((_, j) => (
+                      <td key={j} className="px-5 py-3">
+                        <div className="h-3 animate-pulse rounded bg-surface-2" />
+                      </td>
+                    ))}
+                  </tr>
+                ))
+              ) : (rolesQ.data?.rows.length ?? 0) === 0 ? (
+                <tr className="border-t border-border-strong">
+                  <td colSpan={5} className="px-5 py-6 text-center text-ink-4">
+                    No roles
+                  </td>
+                </tr>
+              ) : (
+                rolesQ.data?.rows.map((row) => (
+                  <tr
+                    key={row.id}
+                    className="border-t border-border-strong hover:bg-surface-2/40"
+                  >
+                    <td className="px-5 py-2.5 font-medium text-ink">
+                      {row.builder}
+                    </td>
+                    <td className="px-5 py-2.5 text-ink-2">{row.role_title}</td>
+                    <td className="px-5 py-2.5 text-ink-2">{row.company_name}</td>
+                    <td className="font-mono px-5 py-2.5 text-right tabular-nums text-ink">
+                      {fmtSalary(row.salary)}
+                    </td>
+                    <td className="px-5 py-2.5">
+                      <StagePill stage={row.stage} />
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </SectionWrap>
+
       <MetricDrawer metricKey={openMetric} onClose={() => setOpenMetric(null)} />
     </div>
+  );
+}
+
+// ── Stage pill ──────────────────────────────────────────────────────────────
+
+function StagePill({ stage }: { stage: string }) {
+  const STAGE_META: Record<string, { label: string; className: string }> = {
+    accepted: { label: "Hired", className: "text-[var(--green)] bg-[var(--green-soft)]" },
+    interview: { label: "Interviewing", className: "text-[var(--amber)] bg-[var(--amber-soft)]" },
+    applied: { label: "Applied", className: "text-[var(--accent)] bg-[var(--accent-soft)]" },
+    rejected: { label: "Rejected", className: "text-ink-3 bg-surface-2" },
+    withdrawn: { label: "Withdrawn", className: "text-ink-3 bg-surface-2" },
+  };
+
+  const meta = STAGE_META[stage] ?? {
+    label: stage ? stage.charAt(0).toUpperCase() + stage.slice(1) : "—",
+    className: "text-ink-3 bg-surface-2",
+  };
+
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-semibold",
+        meta.className,
+      )}
+    >
+      {meta.label}
+    </span>
   );
 }
 

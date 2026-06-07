@@ -252,6 +252,34 @@ export interface MetricDrill {
   columns: { key: string; label: string }[];
   rows: Record<string, string | null>[];
   count: number;
+  entity: "deal" | "contact" | "activity" | "company";
+}
+
+export interface JobRole {
+  id: string;
+  builder: string;
+  role_title: string;
+  company_name: string;
+  salary: number | null;
+  stage: string;
+}
+
+export interface RolesSummary {
+  committed: number;
+  hired: number;
+  avg_salary: number | null;
+  rows: JobRole[];
+}
+
+export function useJobRoles() {
+  return useQuery<RolesSummary>({
+    queryKey: ["jobs", "roles"],
+    queryFn: async () => {
+      const { data } = await api.get<ApiResponse<RolesSummary>>("/api/jobs/roles");
+      return data.data;
+    },
+    staleTime: 30_000,
+  });
 }
 
 export function useMetricDrill(metricKey: string | null) {

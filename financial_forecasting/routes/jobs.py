@@ -123,27 +123,27 @@ async def metric_drilldown(
 
     async def contacts(where: str):
         rows = await conn.fetch(
-            f"SELECT full_name, current_company, current_title, contact_stage, email "
+            f"SELECT contact_id AS id, full_name, current_company, current_title, contact_stage, email "
             f"FROM public.contacts WHERE is_jobs_contact=true AND {where} "
             f"ORDER BY full_name"
         )
-        return contact_cols, [dict(r) for r in rows]
+        return contact_cols, [dict(r) for r in rows], "contact"
 
     async def deals(where: str):
         rows = await conn.fetch(
-            f"SELECT account_name, stage, deal_type, owner_email, title "
+            f"SELECT id, account_name, stage, deal_type, owner_email, title "
             f"FROM bedrock.jobs_opportunity WHERE deleted_at IS NULL AND {where} "
             f"ORDER BY account_name"
         )
-        return deal_cols, [dict(r) for r in rows]
+        return deal_cols, [dict(r) for r in rows], "deal"
 
     async def activity(where: str):
         rows = await conn.fetch(
-            f"SELECT type, subject, activity_date, logged_by, description "
+            f"SELECT id, type, subject, activity_date, logged_by, description "
             f"FROM bedrock.activity WHERE source='manual' AND deleted_at IS NULL AND {where} "
             f"ORDER BY activity_date DESC NULLS LAST LIMIT 500"
         )
-        return activity_cols, [dict(r) for r in rows]
+        return activity_cols, [dict(r) for r in rows], "activity"
 
     # Company-level rollup for the "Companies with…" metrics — one row per company.
     company_cols = [
@@ -164,7 +164,7 @@ async def metric_drilldown(
             ORDER BY count(*) DESC, company_name
             """
         )
-        return company_cols, [dict(r) for r in rows]
+        return company_cols, [dict(r) for r in rows], "company"
 
     DISPATCH = {
         "total_leads":          ("Total Leads",              lambda: contacts("true")),
@@ -186,13 +186,76 @@ async def metric_drilldown(
         raise HTTPException(404, f"Unknown metric: {key}")
 
     title, fn = DISPATCH[key]
-    columns, rows = await fn()
-    # serialize dates
+    columns, rows, entity = await fn()
+    # serialize dates + ids
     for r in rows:
         for k, v in list(r.items()):
             if hasattr(v, "isoformat"):
                 r[k] = v.isoformat()
-    return {"success": True, "data": {"title": title, "columns": columns, "rows": rows, "count": len(rows)}}
+            elif k == "id" and v is not None:
+                r[k] = str(v)
+    return {
+        "success": True,
+        "data": {"title": title, "columns": columns, "rows": rows, "count": len(rows), "entity": entity},
+    }
+
+
+@router.get("/roles")
+async def get_roles(user=Depends(require_auth), conn=Depends(get_db)):
+    """Jobs / roles view — committed & hired counts + per-application rows.
+
+    Backed by public.job_applications (Pursuit-referred):
+      Committed Roles    = applications hired OR interviewing (accepted + interview)
+      Closed/Hired Roles = applications accepted
+      Avg $ Closed/Hired = avg salary of accepted applications
+    Builder name comes from the 'Name: …' prefix stored in notes on import.
+    """
+    summary = await conn.fetchrow("""
+        SELECT
+            count(*) FILTER (WHERE stage IN ('accepted','interview'))            AS committed,
+            count(*) FILTER (WHERE stage='accepted')                            AS hired,
+            round(avg(salary::numeric) FILTER (WHERE stage='accepted'
+                  AND salary ~ '^[0-9]+$'))                                     AS avg_salary
+        FROM public.job_applications
+        WHERE source_type='Pursuit_referred'
+    """)
+
+    rows = await conn.fetch("""
+        SELECT
+            job_application_id AS id,
+            trim(split_part(notes, ':', 1)) AS builder,
+            role_title,
+            company_name,
+            CASE WHEN salary ~ '^[0-9]+$' THEN salary::int ELSE NULL END AS salary,
+            stage
+        FROM public.job_applications
+        WHERE source_type='Pursuit_referred'
+        ORDER BY
+            CASE stage WHEN 'accepted' THEN 0 WHEN 'interview' THEN 1
+                       WHEN 'applied' THEN 2 ELSE 3 END,
+            (salary ~ '^[0-9]+$') DESC,
+            company_name
+    """)
+
+    return {
+        "success": True,
+        "data": {
+            "committed":  summary["committed"] or 0,
+            "hired":      summary["hired"] or 0,
+            "avg_salary": int(summary["avg_salary"]) if summary["avg_salary"] else None,
+            "rows": [
+                {
+                    "id": str(r["id"]),
+                    "builder": r["builder"] or "—",
+                    "role_title": r["role_title"] or "—",
+                    "company_name": r["company_name"] or "—",
+                    "salary": r["salary"],
+                    "stage": r["stage"],
+                }
+                for r in rows
+            ],
+        },
+    }
 
 
 @router.get("/contacts/summary")
