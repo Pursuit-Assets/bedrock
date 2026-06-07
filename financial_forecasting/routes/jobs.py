@@ -77,6 +77,124 @@ class OpportunityUpdate(BaseModel):
     note: Optional[str] = None  # optional note when changing stage
 
 
+@router.get("/metrics/{key}")
+async def metric_drilldown(
+    key: str,
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Return the underlying records behind a leadership-dashboard metric.
+
+    Generic shape: {title, columns:[{key,label}], rows:[{...}], count}.
+    Lets the frontend render any metric's detail in one table component.
+    """
+    ENGAGED = ("initial_outreach", "active", "on_hold")
+
+    # ---- contact-based metrics ----
+    contact_cols = [
+        {"key": "full_name", "label": "Name"},
+        {"key": "current_company", "label": "Company"},
+        {"key": "current_title", "label": "Title"},
+        {"key": "contact_stage", "label": "Stage"},
+        {"key": "email", "label": "Email"},
+    ]
+    # ---- deal-based metrics ----
+    deal_cols = [
+        {"key": "account_name", "label": "Company"},
+        {"key": "stage", "label": "Stage"},
+        {"key": "deal_type", "label": "Type"},
+        {"key": "owner_email", "label": "Owner"},
+        {"key": "title", "label": "Role"},
+    ]
+    # ---- activity-based metrics ----
+    activity_cols = [
+        {"key": "type", "label": "Type"},
+        {"key": "subject", "label": "Subject"},
+        {"key": "activity_date", "label": "Date"},
+        {"key": "logged_by", "label": "Logged By"},
+    ]
+    # ---- application-based metrics ----
+    app_cols = [
+        {"key": "company_name", "label": "Company"},
+        {"key": "role_title", "label": "Role"},
+        {"key": "stage", "label": "Stage"},
+        {"key": "date_applied", "label": "Applied"},
+    ]
+
+    async def contacts(where: str):
+        rows = await conn.fetch(
+            f"SELECT full_name, current_company, current_title, contact_stage, email "
+            f"FROM public.contacts WHERE is_jobs_contact=true AND {where} "
+            f"ORDER BY full_name"
+        )
+        return contact_cols, [dict(r) for r in rows]
+
+    async def deals(where: str):
+        rows = await conn.fetch(
+            f"SELECT account_name, stage, deal_type, owner_email, title "
+            f"FROM bedrock.jobs_opportunity WHERE deleted_at IS NULL AND {where} "
+            f"ORDER BY account_name"
+        )
+        return deal_cols, [dict(r) for r in rows]
+
+    async def activity(where: str):
+        rows = await conn.fetch(
+            f"SELECT type, subject, activity_date, logged_by, description "
+            f"FROM bedrock.activity WHERE source='manual' AND deleted_at IS NULL AND {where} "
+            f"ORDER BY activity_date DESC NULLS LAST LIMIT 500"
+        )
+        return activity_cols, [dict(r) for r in rows]
+
+    # Company-level rollup for the "Companies with…" metrics — one row per company.
+    company_cols = [
+        {"key": "company_name", "label": "Company"},
+        {"key": "candidates", "label": "# Candidates"},
+        {"key": "builders", "label": "Builders"},
+    ]
+
+    async def companies(where: str):
+        rows = await conn.fetch(
+            f"""
+            SELECT company_name,
+                   count(*)                              AS candidates,
+                   string_agg(DISTINCT role_title, ', ') AS builders
+            FROM public.job_applications
+            WHERE source_type='Pursuit_referred' AND {where}
+            GROUP BY company_name
+            ORDER BY count(*) DESC, company_name
+            """
+        )
+        return company_cols, [dict(r) for r in rows]
+
+    DISPATCH = {
+        "total_leads":          ("Total Leads",              lambda: contacts("true")),
+        "engaged_leads":        ("Engaged Leads",            lambda: contacts(f"contact_stage IN {ENGAGED}")),
+        "outreach_week":        ("Outreach — Last 7 Days",   lambda: activity("activity_date >= now() - interval '7 days'")),
+        "outreach_total":       ("All Outreach",             lambda: activity("true")),
+        "calls_total":          ("Calls — All Time",         lambda: activity("type='call'")),
+        "calls_week":           ("Calls — Last 7 Days",      lambda: activity("type='call' AND activity_date >= now() - interval '7 days'")),
+        "active_orgs":          ("Active Orgs",              lambda: deals("stage LIKE 'active_%'")),
+        "active_companies":     ("Active Companies",         lambda: deals("stage LIKE 'active_%'")),
+        "in_discussion":        ("In Discussion",            lambda: deals("stage='active_in_discussions'")),
+        "builder_interviews":   ("Builder Interview",        lambda: deals("stage='active_builder_interview'")),
+        "placements":           ("Placements (Closed Won)",  lambda: deals("stage='closed_won'")),
+        "candidates_submitted": ("Companies w/ Candidates Submitted", lambda: companies("stage IN ('applied','interview','accepted')")),
+        "interviewing":         ("Companies Interviewing Builders",   lambda: companies("stage='interview'")),
+    }
+
+    if key not in DISPATCH:
+        raise HTTPException(404, f"Unknown metric: {key}")
+
+    title, fn = DISPATCH[key]
+    columns, rows = await fn()
+    # serialize dates
+    for r in rows:
+        for k, v in list(r.items()):
+            if hasattr(v, "isoformat"):
+                r[k] = v.isoformat()
+    return {"success": True, "data": {"title": title, "columns": columns, "rows": rows, "count": len(rows)}}
+
+
 @router.get("/contacts/summary")
 async def get_contacts_summary(user=Depends(require_auth), conn=Depends(get_db)):
     """Contacts & outreach metrics for the leadership dashboard.

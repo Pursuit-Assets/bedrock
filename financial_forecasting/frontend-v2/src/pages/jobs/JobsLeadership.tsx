@@ -1,10 +1,11 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { Users, Target, DollarSign, Building2 } from "lucide-react";
 
 import {
   useJobsPipeline,
   useJobsOpportunities,
   useContactsSummary,
+  useMetricDrill,
   ACTIVE_STAGES,
   DEAL_TYPE_LABELS,
   type PipelineStageSummary,
@@ -14,6 +15,7 @@ import {
 } from "@/services/jobs";
 import { cn } from "@/lib/utils";
 import { JobsFunnel } from "@/components/jobs/JobsFunnel";
+import { MetricDrawer } from "@/components/jobs/MetricDrawer";
 
 // ── SOP targets ───────────────────────────────────────────────────────────
 
@@ -63,6 +65,7 @@ interface MetricCardProps {
   target?: string;
   progress?: { value: number; max: number; colorClass: string };
   valueColor?: string;
+  onClick?: () => void;
 }
 
 function MetricCard({
@@ -73,9 +76,16 @@ function MetricCard({
   target,
   progress,
   valueColor,
+  onClick,
 }: MetricCardProps) {
   return (
-    <div className="flex flex-col gap-3 rounded-[8px] border border-border-strong bg-surface p-5 shadow-[var(--shadow-sm)]">
+    <div
+      onClick={onClick}
+      className={cn(
+        "flex flex-col gap-3 rounded-[8px] border border-border-strong bg-surface p-5 shadow-[var(--shadow-sm)]",
+        onClick && "cursor-pointer transition-colors hover:border-accent",
+      )}
+    >
       <div className="flex items-center justify-between">
         <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">
           {label}
@@ -131,9 +141,13 @@ function SectionWrap({
 // ── Main component ────────────────────────────────────────────────────────
 
 export function JobsLeadership() {
+  const [openMetric, setOpenMetric] = useState<string | null>(null);
+
   const pipelineQ = useJobsPipeline();
   const oppsQ = useJobsOpportunities({ limit: 500 });
   const contactsQ = useContactsSummary();
+  const candidatesSubmittedQ = useMetricDrill("candidates_submitted");
+  const interviewingQ = useMetricDrill("interviewing");
 
   const isLoading = pipelineQ.isLoading || oppsQ.isLoading;
 
@@ -243,7 +257,10 @@ export function JobsLeadership() {
           Contacts &amp; Leads
         </div>
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <div className="flex flex-col gap-2 rounded-[8px] border border-border-strong bg-surface p-4 shadow-[var(--shadow-sm)]">
+          <div
+            onClick={() => setOpenMetric("total_leads")}
+            className="flex cursor-pointer flex-col gap-2 rounded-[8px] border border-border-strong bg-surface p-4 shadow-[var(--shadow-sm)] transition-colors hover:border-accent"
+          >
             <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
               Total Leads
             </span>
@@ -251,7 +268,10 @@ export function JobsLeadership() {
               {contactsLoading ? "—" : (totalLeads ?? "—")}
             </span>
           </div>
-          <div className="flex flex-col gap-2 rounded-[8px] border border-border-strong bg-surface p-4 shadow-[var(--shadow-sm)]">
+          <div
+            onClick={() => setOpenMetric("engaged_leads")}
+            className="flex cursor-pointer flex-col gap-2 rounded-[8px] border border-border-strong bg-surface p-4 shadow-[var(--shadow-sm)] transition-colors hover:border-accent"
+          >
             <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
               Engaged Leads
             </span>
@@ -271,7 +291,10 @@ export function JobsLeadership() {
           Employer Outreach
         </div>
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-          <div className="flex flex-col gap-2 rounded-[8px] border border-border-strong bg-surface p-4 shadow-[var(--shadow-sm)]">
+          <div
+            onClick={() => setOpenMetric("outreach_week")}
+            className="flex cursor-pointer flex-col gap-2 rounded-[8px] border border-border-strong bg-surface p-4 shadow-[var(--shadow-sm)] transition-colors hover:border-accent"
+          >
             <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
               All Outreach
             </span>
@@ -283,7 +306,10 @@ export function JobsLeadership() {
               {contactsLoading ? "—" : `${outreachAllTime ?? "—"} all time`}
             </span>
           </div>
-          <div className="flex flex-col gap-2 rounded-[8px] border border-border-strong bg-surface p-4 shadow-[var(--shadow-sm)]">
+          <div
+            onClick={() => setOpenMetric("calls_total")}
+            className="flex cursor-pointer flex-col gap-2 rounded-[8px] border border-border-strong bg-surface p-4 shadow-[var(--shadow-sm)] transition-colors hover:border-accent"
+          >
             <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
               Calls in total
             </span>
@@ -291,12 +317,68 @@ export function JobsLeadership() {
               {contactsLoading ? "—" : (callsAllTime ?? "—")}
             </span>
           </div>
-          <div className="flex flex-col gap-2 rounded-[8px] border border-border-strong bg-surface p-4 shadow-[var(--shadow-sm)]">
+          <div
+            onClick={() => setOpenMetric("calls_week")}
+            className="flex cursor-pointer flex-col gap-2 rounded-[8px] border border-border-strong bg-surface p-4 shadow-[var(--shadow-sm)] transition-colors hover:border-accent"
+          >
             <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
               Calls in last week
             </span>
             <span className="font-mono text-[28px] font-semibold leading-none tabular-nums text-ink">
               {contactsLoading ? "—" : (callsThisWeek ?? "—")}
+            </span>
+          </div>
+        </div>
+      </div>
+
+      {/* ── Active Engagements ────────────────────────────────────────── */}
+      <div className="flex flex-col gap-3">
+        <div className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">
+          Active Engagements
+        </div>
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <div
+            onClick={() => setOpenMetric("active_companies")}
+            className="flex cursor-pointer flex-col gap-2 rounded-[8px] border border-border-strong bg-surface p-4 shadow-[var(--shadow-sm)] transition-colors hover:border-accent"
+          >
+            <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
+              Active Companies
+            </span>
+            <span className="font-mono text-[28px] font-semibold leading-none tabular-nums text-ink">
+              {isLoading ? "—" : activeOrgsCount}
+            </span>
+          </div>
+          <div
+            onClick={() => setOpenMetric("in_discussion")}
+            className="flex cursor-pointer flex-col gap-2 rounded-[8px] border border-border-strong bg-surface p-4 shadow-[var(--shadow-sm)] transition-colors hover:border-accent"
+          >
+            <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
+              In Discussion
+            </span>
+            <span className="font-mono text-[28px] font-semibold leading-none tabular-nums text-ink">
+              {isLoading ? "—" : (stageMap.get("active_in_discussions")?.total ?? 0)}
+            </span>
+          </div>
+          <div
+            onClick={() => setOpenMetric("candidates_submitted")}
+            className="flex cursor-pointer flex-col gap-2 rounded-[8px] border border-border-strong bg-surface p-4 shadow-[var(--shadow-sm)] transition-colors hover:border-accent"
+          >
+            <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
+              Companies with Candidates Submitted
+            </span>
+            <span className="font-mono text-[28px] font-semibold leading-none tabular-nums text-ink">
+              {candidatesSubmittedQ.isLoading ? "—" : (candidatesSubmittedQ.data?.count ?? 0)}
+            </span>
+          </div>
+          <div
+            onClick={() => setOpenMetric("interviewing")}
+            className="flex cursor-pointer flex-col gap-2 rounded-[8px] border border-border-strong bg-surface p-4 shadow-[var(--shadow-sm)] transition-colors hover:border-accent"
+          >
+            <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
+              Companies Interviewing Builders
+            </span>
+            <span className="font-mono text-[28px] font-semibold leading-none tabular-nums text-ink">
+              {interviewingQ.isLoading ? "—" : (interviewingQ.data?.count ?? 0)}
             </span>
           </div>
         </div>
@@ -309,6 +391,7 @@ export function JobsLeadership() {
           label="Active Orgs"
           value={activeOrgsCount}
           isLoading={isLoading}
+          onClick={() => setOpenMetric("active_orgs")}
           target={`Target: ${TARGET_ACTIVE_ORGS_LO}–${TARGET_ACTIVE_ORGS_HI}`}
           progress={{
             value: activeOrgsCount,
@@ -322,6 +405,7 @@ export function JobsLeadership() {
           label="Builder Interviews"
           value={builderInterviewCount}
           isLoading={isLoading}
+          onClick={() => setOpenMetric("builder_interviews")}
           target="Target: 2–3 per week"
         />
         <MetricCard
@@ -329,6 +413,7 @@ export function JobsLeadership() {
           label="Placements This Cycle"
           value={placementsCount}
           isLoading={isLoading}
+          onClick={() => setOpenMetric("placements")}
           target={`Target ${TARGET_PLACEMENTS} by end of July`}
           progress={{
             value: placementsCount,
@@ -501,6 +586,8 @@ export function JobsLeadership() {
           ) : null}
         </div>
       </SectionWrap>
+
+      <MetricDrawer metricKey={openMetric} onClose={() => setOpenMetric(null)} />
     </div>
   );
 }

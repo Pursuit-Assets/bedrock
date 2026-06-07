@@ -247,6 +247,25 @@ export function useJobsContacts(filters: ContactFilters = {}) {
   });
 }
 
+export interface MetricDrill {
+  title: string;
+  columns: { key: string; label: string }[];
+  rows: Record<string, string | null>[];
+  count: number;
+}
+
+export function useMetricDrill(metricKey: string | null) {
+  return useQuery<MetricDrill>({
+    queryKey: ["jobs", "metric", metricKey],
+    queryFn: async () => {
+      const { data } = await api.get<ApiResponse<MetricDrill>>(`/api/jobs/metrics/${metricKey}`);
+      return data.data;
+    },
+    enabled: metricKey !== null,
+    staleTime: 30_000,
+  });
+}
+
 export function useContactsSummary() {
   return useQuery<ContactsSummary>({
     queryKey: ["jobs", "contacts-summary"],
