@@ -29,7 +29,7 @@ Backend lives in `financial_forecasting/routes/jobs.py` (+ `candidates.py`).
 
 | Concept | Table | Represents | Notes |
 |---------|-------|-----------|-------|
-| **Opportunity** (deal) | `bedrock.jobs_opportunity` | An employer relationship/deal moving through pipeline stages | Jobs-team only. Has `stage`, `deal_type`, `owner_email`, `sf_contact_ids[]`, `builder_ids[]` |
+| **Opportunity** (deal) | `bedrock.jobs_opportunity` | An employer relationship/deal moving through pipeline stages | Jobs-team only. Has `stage`, `deal_type`, **`owner_email`** (the ONE staff owner — authoritative), **`builder_ids[]`** (integer builder user_ids — one or many builders linked to the deal), `sf_contact_ids[]` |
 | **Prospect** (contact) | `public.contacts` (`is_jobs_contact=true`) | Employer contacts | SHARED table — only rows flagged `is_jobs_contact` are ours. `contact_stage` = lead/initial_outreach/active/on_hold |
 | **Builder application** | `public.job_applications` (`source_type='Pursuit_referred'`) | The submission pipeline: applied → interview → accepted | SHARED table — 600+ rows are Pathfinder builder self-logs; only `Pursuit_referred` (~70) are ours |
 | **Secured job / placement** | `public.employment_records` | **THE single source of truth for placements** | SHARED. `influenced` = jobs-team / self-sourced / null. `opportunity_id` links to the won deal |
@@ -48,6 +48,11 @@ Backend lives in `financial_forecasting/routes/jobs.py` (+ `candidates.py`).
 - **FT vs PT/Contract**: `employment_type='full_time'` → FT; `contract`/`freelance` → PT/Contract.
 - **Influence**: a placement is "jobs-team influenced" if linked to a Pursuit-referred application or a won deal; otherwise self-sourced or (for historical rows) unclassified.
 - **One deal → many placements** (`employment_records.opportunity_id`). JP Morgan = 1 deal, 3 builders hired.
+
+### Owner vs builders on an opportunity (read this before editing deals)
+- **`owner_email`** = the single staff owner of the deal. Authoritative. The owner picker writes this.
+- **`builder_ids[]`** = the builder(s) linked to the deal, as **integer `public.users` user_ids**. The builder picker writes these.
+- These are two different things. Do **not** put staff in `builder_ids`. (The original Airtable import wrongly loaded deal-team staff emails into `builder_ids`; that was cleared 2026-06-08 — backup at `db/migrations/_builder_ids_dealteam_backup_2026-06-08.json` — so the field now holds only real builder user_ids.)
 
 ---
 
@@ -117,7 +122,27 @@ Drawer/expand patterns already built you can reuse: `MetricDrawer` (generic dril
 
 ---
 
-## 6. Environment
+## 6. Data integrity — audit of 2026-06-08
+
+A full integrity audit was run before handoff. The model is structurally sound:
+**0 orphaned references** (apps→opps, placements→opps/apps, activity→opps, opps→contacts),
+**0 invalid enum values**, **0 rec-id leakage**, **0 placements on non-won deals**,
+**0 won FT/PT deals missing a placement**, **0 duplicate airtable_ids**.
+
+Fixed during the audit:
+- Removed a duplicate paid placement (Ruth Seleamy had two ICL records; merged into the complete one).
+- Soft-deleted a leftover `test` opportunity + its stale stage-history.
+- Cleared imported staff emails out of `builder_ids` (see §2; owner_email already held the owner).
+
+**Known data-quality gaps (NOT bugs — fill via the existing UI as the team works deals):**
+- **17 placements have `influenced = null`** (unclassified jobs-team vs self-sourced). Classify inline.
+- **8 opportunities have no `owner_email`; 3 have no `deal_type`.** Set them when touched.
+- **12 prospects have no `contact_stage`; 5 have neither email nor company.**
+- **7 paid records are freelance/project gigs with no company** (e.g. "Netflix Clone", "HVAC CRM" — 2 builders, March 2025 L3+). **Decision: these COUNT as paid work** (they have a dollar amount), so they're in the "in any paid work" total. They render with a blank company in placement drill-downs — the frontend should **fall back to `role_title` when `company_name` is empty** rather than show a blank cell. (These are why the distinct-builder count, not a raw row count, is the metric: one builder with 4 gigs = 1 builder placed.)
+
+---
+
+## 7. Environment
 
 - Backend: `financial_forecasting/main.py` (FastAPI, :8000). `./dev.sh` runs back+front.
 - Frontend: `frontend-v2/` (Vite/React, :4200). `VITE_API_URL` → backend.
