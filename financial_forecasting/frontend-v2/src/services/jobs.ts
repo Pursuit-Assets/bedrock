@@ -250,9 +250,10 @@ export function useJobsContacts(filters: ContactFilters = {}) {
 export interface MetricDrill {
   title: string;
   columns: { key: string; label: string }[];
-  rows: Record<string, string | null>[];
+  rows: (Record<string, string | null> & { _children?: Record<string, string | null>[] })[];
   count: number;
-  entity: "deal" | "contact" | "activity" | "company";
+  entity: "deal" | "contact" | "activity" | "company" | "placement";
+  child_columns: { key: string; label: string }[] | null;
 }
 
 export type RoleSegment =

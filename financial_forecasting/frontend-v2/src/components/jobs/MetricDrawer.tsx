@@ -1,3 +1,5 @@
+import { Fragment, useState } from "react";
+import { ChevronRight, ChevronDown } from "lucide-react";
 import { Drawer } from "@/components/ui/Drawer";
 import {
   useMetricDrill,
@@ -62,6 +64,7 @@ export function MetricDrawer({
   const updateContact = useUpdateContact();
   const queryClient = useQueryClient();
   const open = metricKey !== null;
+  const [expandedRow, setExpandedRow] = useState<number | null>(null);
 
   // Decide whether a given (entity, column) is an editable dropdown.
   // Returns the select config, or null for read-only text.
@@ -129,6 +132,93 @@ export function MetricDrawer({
           </div>
         ) : !data || data.rows.length === 0 ? (
           <div className="py-12 text-center text-[13px] text-ink-3">No records.</div>
+        ) : data.entity === "placement" ? (
+          <table className="w-full text-[12.5px]">
+            <thead className="sticky top-0 bg-surface-2 text-[10.5px] uppercase tracking-wider text-ink-3">
+              <tr>
+                <th className="w-7 px-2 py-2" />
+                {data.columns.map((c) => (
+                  <th key={c.key} className="px-3 py-2 text-left font-semibold">
+                    {c.label}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {data.rows.map((row, i) => {
+                const isExpanded = expandedRow === i;
+                const children = row._children ?? [];
+                return (
+                  <Fragment key={i}>
+                    <tr
+                      className="cursor-pointer border-t border-border-strong hover:bg-surface-2/50"
+                      onClick={() => setExpandedRow((cur) => (cur === i ? null : i))}
+                    >
+                      <td className="px-2 py-2 text-ink-3">
+                        {isExpanded ? (
+                          <ChevronDown size={14} />
+                        ) : (
+                          <ChevronRight size={14} />
+                        )}
+                      </td>
+                      {data.columns.map((c, ci) => (
+                        <td
+                          key={c.key}
+                          className={
+                            ci === 0
+                              ? "px-3 py-2 font-medium text-ink"
+                              : "px-3 py-2 text-ink-2"
+                          }
+                        >
+                          {formatCell(c.key, row[c.key])}
+                        </td>
+                      ))}
+                    </tr>
+                    {isExpanded ? (
+                      <tr className="border-t border-border-strong bg-surface-2/40">
+                        <td colSpan={data.columns.length + 1} className="px-3 py-2 pl-10">
+                          {children.length === 0 ? (
+                            <div className="py-2 text-[11.5px] text-ink-3">
+                              No placements.
+                            </div>
+                          ) : (
+                            <table className="w-full text-[11.5px]">
+                              <thead className="text-[9.5px] uppercase tracking-wider text-ink-3">
+                                <tr>
+                                  {(data.child_columns ?? []).map((cc) => (
+                                    <th
+                                      key={cc.key}
+                                      className="px-2 py-1.5 text-left font-semibold"
+                                    >
+                                      {cc.label}
+                                    </th>
+                                  ))}
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {children.map((child, ci) => (
+                                  <tr
+                                    key={ci}
+                                    className="border-t border-border-strong/60"
+                                  >
+                                    {(data.child_columns ?? []).map((cc) => (
+                                      <td key={cc.key} className="px-2 py-1.5 text-ink-2">
+                                        {formatCell(cc.key, child[cc.key])}
+                                      </td>
+                                    ))}
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          )}
+                        </td>
+                      </tr>
+                    ) : null}
+                  </Fragment>
+                );
+              })}
+            </tbody>
+          </table>
         ) : (
           <table className="w-full text-[12.5px]">
             <thead className="sticky top-0 bg-surface-2 text-[10.5px] uppercase tracking-wider text-ink-3">

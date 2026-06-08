@@ -9,7 +9,6 @@ import {
   usePlacements,
   ACTIVE_STAGES,
   type PipelineStageSummary,
-  type JobsOpportunity,
   type JobStage,
   type JobRole,
   type RoleSegment,
@@ -24,14 +23,6 @@ const TARGET_ACTIVE_ORGS_LO = 25;
 const TARGET_ACTIVE_ORGS_HI = 30;
 const TARGET_PLACEMENTS = 20;
 const TARGET_AVG_SALARY = 85_000;
-
-// Owner display names keyed by email
-const OWNER_DISPLAY: Record<string, string> = {
-  "avni@pursuit.org": "Avni",
-  "damon.kornhauser@pursuit.org": "Damon",
-  "devika@pursuit.org": "Devika",
-};
-const TRACKED_OWNERS = Object.keys(OWNER_DISPLAY);
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -75,7 +66,6 @@ function SectionWrap({
 
 export function JobsLeadership() {
   const [openMetric, setOpenMetric] = useState<string | null>(null);
-  const [ownerOpen, setOwnerOpen] = useState(true);
   const [rolesOpen, setRolesOpen] = useState(true);
 
   const pipelineQ = useJobsPipeline();
@@ -118,28 +108,6 @@ export function JobsLeadership() {
 
   const placedFt = placementsQ.data?.ft_builders ?? 0;
   const placedAny = placementsQ.data?.any_builders ?? 0;
-
-  // ── Owner breakdown (from opportunities list) ───────────────────────────
-
-  const ownerRows = useMemo(() => {
-    const rawData = oppsQ.data as { data: JobsOpportunity[]; total: number } | undefined;
-    const opps: JobsOpportunity[] = rawData?.data ?? [];
-
-    return TRACKED_OWNERS.map((email) => {
-      const owned = opps.filter((o) => o.owner_email === email);
-      const totalActive = owned.filter((o) =>
-        ACTIVE_STAGES.includes(o.stage as (typeof ACTIVE_STAGES)[number]),
-      ).length;
-      const inDiscussions = owned.filter(
-        (o) => o.stage === "active_in_discussions",
-      ).length;
-      const builderInterview = owned.filter(
-        (o) => o.stage === "active_builder_interview",
-      ).length;
-      const won = owned.filter((o) => o.stage === "closed_won").length;
-      return { email, name: OWNER_DISPLAY[email] ?? email, totalActive, inDiscussions, builderInterview, won };
-    });
-  }, [oppsQ.data]);
 
   // ── Contacts & Outreach derived values ─────────────────────────────────
 
@@ -275,82 +243,6 @@ export function JobsLeadership() {
       </div>
 
       {/* ── ZONE 4 · Details (secondary, collapsible) ─────────────────── */}
-      <Collapsible
-        title="Owner Breakdown"
-        open={ownerOpen}
-        onToggle={() => setOwnerOpen((o) => !o)}
-      >
-        <div className="rounded-[8px] border border-border-strong bg-surface shadow-[var(--shadow-sm)]">
-          <table className="w-full text-[12.5px]">
-            <thead className="bg-surface-2 text-[10.5px] uppercase tracking-wider text-ink-3">
-              <tr>
-                <th className="px-5 py-2 text-left font-semibold">Owner</th>
-                <th className="px-5 py-2 text-right font-semibold">Total Active</th>
-                <th className="px-5 py-2 text-right font-semibold">In Discussions</th>
-                <th className="px-5 py-2 text-right font-semibold">Builder Interview</th>
-                <th className="px-5 py-2 text-right font-semibold">Won</th>
-              </tr>
-            </thead>
-            <tbody>
-              {oppsQ.isLoading
-                ? Array.from({ length: 3 }).map((_, i) => (
-                    <tr key={i} className="border-t border-border-strong">
-                      {Array.from({ length: 5 }).map((_, j) => (
-                        <td key={j} className="px-5 py-3">
-                          <div className="h-3 animate-pulse rounded bg-surface-2" />
-                        </td>
-                      ))}
-                    </tr>
-                  ))
-                : ownerRows.map((row) => (
-                    <tr
-                      key={row.email}
-                      className="border-t border-border-strong hover:bg-surface-2/40"
-                    >
-                      <td className="px-5 py-2.5 font-medium text-ink">
-                        {row.name}
-                        <span className="ml-1.5 text-[11px] text-ink-4">
-                          {row.email}
-                        </span>
-                      </td>
-                      <td className="font-mono px-5 py-2.5 text-right tabular-nums text-ink">
-                        {row.totalActive}
-                      </td>
-                      <td className="font-mono px-5 py-2.5 text-right tabular-nums text-ink-2">
-                        {row.inDiscussions}
-                      </td>
-                      <td className="font-mono px-5 py-2.5 text-right tabular-nums text-ink-2">
-                        {row.builderInterview}
-                      </td>
-                      <td className="font-mono px-5 py-2.5 text-right tabular-nums font-semibold text-[var(--green)]">
-                        {row.won}
-                      </td>
-                    </tr>
-                  ))}
-            </tbody>
-            {!oppsQ.isLoading ? (
-              <tfoot>
-                <tr className="border-t-2 border-border-strong bg-surface-2 font-semibold text-[12px]">
-                  <td className="px-5 py-2 text-ink-3">Total</td>
-                  <td className="font-mono px-5 py-2 text-right tabular-nums">
-                    {ownerRows.reduce((s, r) => s + r.totalActive, 0)}
-                  </td>
-                  <td className="font-mono px-5 py-2 text-right tabular-nums text-ink-2">
-                    {ownerRows.reduce((s, r) => s + r.inDiscussions, 0)}
-                  </td>
-                  <td className="font-mono px-5 py-2 text-right tabular-nums text-ink-2">
-                    {ownerRows.reduce((s, r) => s + r.builderInterview, 0)}
-                  </td>
-                  <td className="font-mono px-5 py-2 text-right tabular-nums text-[var(--green)]">
-                    {ownerRows.reduce((s, r) => s + r.won, 0)}
-                  </td>
-                </tr>
-              </tfoot>
-            ) : null}
-          </table>
-        </div>
-      </Collapsible>
-
       <Collapsible
         title="Jobs Roles"
         open={rolesOpen}

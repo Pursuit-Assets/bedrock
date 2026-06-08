@@ -166,15 +166,6 @@ async def metric_drilldown(
         )
         return company_cols, [dict(r) for r in rows], "company"
 
-    # Secured-job placements (employment_records) — shows builder names.
-    placement_cols = [
-        {"key": "builder", "label": "Builder"},
-        {"key": "role_title", "label": "Role"},
-        {"key": "company_name", "label": "Company"},
-        {"key": "employment_type", "label": "Type"},
-        {"key": "influence", "label": "Influence"},
-    ]
-
     def _type_label(t):
         if t == "full_time":
             return "Full-Time"
@@ -183,29 +174,45 @@ async def metric_drilldown(
         return (t or "—").replace("_", " ").title()
 
     async def placements(where: str):
-        # DISTINCT builders with PAID work (a builder appears once — their best placement).
+        # Grouped by BUILDER → expandable to all their paid placements.
         rows = await conn.fetch(
-            f"SELECT * FROM bedrock.secured_jobs() WHERE payment_amount > 0 AND {where}"
+            f"SELECT * FROM bedrock.secured_jobs() WHERE payment_amount > 0 AND {where} ORDER BY builder"
         )
-        by_b: dict = {}
+        groups: dict = {}
         for r in rows:
             uid = r["user_id"]
-            cur = by_b.get(uid)
-            key = (r["employment_type"] == "full_time", r["influenced"] is True, r["payment_amount"] or 0)
-            if cur is None or key >= cur[0]:
-                by_b[uid] = (key, r)
-        out = []
-        for _, r in sorted(by_b.values(), key=lambda kv: (kv[1]["employment_type"] != "full_time", kv[1]["builder"] or "")):
-            out.append({
-                "id": str(r["id"]),
-                "builder": r["builder"],
+            g = groups.setdefault(uid, {"builder": r["builder"], "ft": False, "children": []})
+            if r["employment_type"] == "full_time":
+                g["ft"] = True
+            g["children"].append({
                 "role_title": r["role_title"] or "—",
                 "company_name": r["company_name"] or "—",
                 "employment_type": _type_label(r["employment_type"]),
+                "salary": f"${int(r['payment_amount']):,}" if r["payment_amount"] else "—",
                 "influence": ("Influenced" if r["influenced"] is True
                               else "Self-sourced" if r["influenced"] is False else "Unclassified"),
             })
-        return placement_cols, out, "placement"
+        out = []
+        for g in sorted(groups.values(), key=lambda x: (not x["ft"], x["builder"] or "")):
+            out.append({
+                "builder": g["builder"],
+                "placements": str(len(g["children"])),
+                "status": "Full-Time" if g["ft"] else "PT / Contract",
+                "_children": g["children"],
+            })
+        cols = [
+            {"key": "builder", "label": "Builder"},
+            {"key": "status", "label": "Status"},
+            {"key": "placements", "label": "# Placements"},
+        ]
+        child_cols = [
+            {"key": "company_name", "label": "Company"},
+            {"key": "role_title", "label": "Role"},
+            {"key": "employment_type", "label": "Type"},
+            {"key": "salary", "label": "Pay"},
+            {"key": "influence", "label": "Influence"},
+        ]
+        return {"columns": cols, "child_columns": child_cols}, out, "placement"
 
     DISPATCH = {
         "total_leads":          ("Total Leads",              lambda: contacts("true")),
@@ -228,6 +235,11 @@ async def metric_drilldown(
 
     title, fn = DISPATCH[key]
     columns, rows, entity = await fn()
+    # columns may be a list (flat table) or a dict {columns, child_columns} (expandable)
+    child_columns = None
+    if isinstance(columns, dict):
+        child_columns = columns.get("child_columns")
+        columns = columns["columns"]
     # serialize dates + ids
     for r in rows:
         for k, v in list(r.items()):
@@ -237,7 +249,10 @@ async def metric_drilldown(
                 r[k] = str(v)
     return {
         "success": True,
-        "data": {"title": title, "columns": columns, "rows": rows, "count": len(rows), "entity": entity},
+        "data": {
+            "title": title, "columns": columns, "rows": rows,
+            "count": len(rows), "entity": entity, "child_columns": child_columns,
+        },
     }
 
 
