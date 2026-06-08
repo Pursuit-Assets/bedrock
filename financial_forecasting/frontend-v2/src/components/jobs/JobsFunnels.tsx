@@ -4,9 +4,11 @@ import { formatDistanceToNow } from "date-fns";
 
 import {
   useJobsFunnel,
+  DEAL_TYPE_LABELS,
+  type DealType,
   type FunnelType,
   type FunnelStage,
-  type FunnelProgression,
+  type FunnelMovement,
 } from "@/services/jobs";
 import { cn } from "@/lib/utils";
 
@@ -39,7 +41,7 @@ const FUNNEL_NOUN: Record<FunnelType, string> = {
 // Final/won stage keys per funnel — these render green.
 const WON_STAGE_KEYS = new Set(["closed_won", "accepted"]);
 
-const RECORD_CAP = 50;
+const RECORD_CAP = 60;
 
 // ── Component ───────────────────────────────────────────────────────────────
 
@@ -72,17 +74,19 @@ export function JobsFunnels() {
       </div>
 
       {/* Funnel card */}
-      <FunnelCard funnel={funnel} stages={data?.stages ?? []} isLoading={isLoading} />
+      <FunnelCard
+        funnel={funnel}
+        stages={data?.stages ?? []}
+        recordColumns={data?.record_columns ?? []}
+        isLoading={isLoading}
+      />
 
-      {/* Progression panel / muted notes */}
-      {funnel === "opportunities" ? (
-        <ProgressionPanel progression={data?.progression ?? []} isLoading={isLoading} />
-      ) : (
+      {/* Muted note for funnels without stage-change history */}
+      {funnel !== "opportunities" ? (
         <p className="text-[11.5px] text-ink-3">
-          Stage-change history isn't tracked for this funnel yet — counts
-          reflect current state.
+          Stage-change history isn't tracked for this funnel yet.
         </p>
-      )}
+      ) : null}
     </div>
   );
 }
@@ -92,10 +96,12 @@ export function JobsFunnels() {
 function FunnelCard({
   funnel,
   stages,
+  recordColumns,
   isLoading,
 }: {
   funnel: FunnelType;
   stages: FunnelStage[];
+  recordColumns: { key: string; label: string }[];
   isLoading: boolean;
 }) {
   const [expanded, setExpanded] = useState<string | null>(null);
@@ -177,6 +183,24 @@ function FunnelCard({
                   </div>
 
                   <div className="flex flex-1 items-center justify-end gap-2 text-[11.5px]">
+                    {stage.advanced_in > 0 ? (
+                      <span
+                        className="inline-flex items-center gap-0.5 rounded-full bg-[var(--green-soft)] px-1.5 py-0.5 text-[10.5px] font-semibold text-[var(--green)]"
+                        title={`${stage.advanced_in} advanced into this stage in the last 30d`}
+                      >
+                        <ArrowUp size={10} />
+                        {stage.advanced_in}
+                      </span>
+                    ) : null}
+                    {stage.regressed_in > 0 ? (
+                      <span
+                        className="inline-flex items-center gap-0.5 rounded-full bg-[var(--amber-soft)] px-1.5 py-0.5 text-[10.5px] font-semibold text-[var(--amber)]"
+                        title={`${stage.regressed_in} regressed into this stage in the last 30d`}
+                      >
+                        <ArrowDown size={10} />
+                        {stage.regressed_in}
+                      </span>
+                    ) : null}
                     <span className="text-ink-2">
                       <span className="font-mono font-semibold tabular-nums text-ink">
                         {stage.count}
@@ -194,7 +218,9 @@ function FunnelCard({
                   </div>
                 </button>
 
-                {isExpanded ? <StageRecords stage={stage} /> : null}
+                {isExpanded ? (
+                  <StageDetail stage={stage} recordColumns={recordColumns} />
+                ) : null}
               </div>
             );
           })}
@@ -206,116 +232,162 @@ function FunnelCard({
 
 // ── Stage expand panel ──────────────────────────────────────────────────────
 
-function StageRecords({ stage }: { stage: FunnelStage }) {
-  const records = stage.records ?? [];
-  const shown = records.slice(0, RECORD_CAP);
-  const extra = records.length - shown.length;
+function StageDetail({
+  stage,
+  recordColumns,
+}: {
+  stage: FunnelStage;
+  recordColumns: { key: string; label: string }[];
+}) {
+  // Only show movement that flowed INTO this stage, to keep it focused.
+  const inboundMovement = (stage.movement ?? []).filter((m) => m.flow === "in");
 
   return (
-    <div className="border-t border-border-strong bg-surface-2/30 px-5 py-3">
-      {records.length === 0 ? (
-        <div className="text-[12px] text-ink-3">No records.</div>
+    <div className="flex flex-col gap-3 border-t border-border-strong bg-surface-2/30 px-5 py-3">
+      <StageMovement movement={inboundMovement} />
+      <StageRecordsTable stage={stage} recordColumns={recordColumns} />
+    </div>
+  );
+}
+
+// ── Recent movement mini-section ────────────────────────────────────────────
+
+function StageMovement({ movement }: { movement: FunnelMovement[] }) {
+  return (
+    <div className="flex flex-col gap-1.5">
+      <div className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
+        Recent Movement (30d)
+      </div>
+      {movement.length === 0 ? (
+        <div className="text-[11.5px] text-ink-3">No recent movement.</div>
       ) : (
         <div className="flex flex-col gap-1">
-          {shown.map((r, i) => (
-            <div
-              key={i}
-              className="flex items-baseline gap-2 text-[12px]"
-            >
-              <span className="truncate font-medium text-ink">
-                {r.name ?? "—"}
-              </span>
-              {r.detail ? (
-                <span className="truncate text-[11px] text-ink-3">
-                  — {r.detail}
+          {movement.map((m, i) => {
+            const advanced = m.direction === "advanced";
+            const rel = relativeTime(m.when);
+            return (
+              <div
+                key={i}
+                className="flex items-center gap-2 text-[12px]"
+              >
+                <span
+                  className={cn(
+                    "flex-shrink-0",
+                    advanced
+                      ? "text-[var(--green)]"
+                      : "text-[var(--amber)]",
+                  )}
+                >
+                  {advanced ? <ArrowUp size={12} /> : <ArrowDown size={12} />}
                 </span>
-              ) : null}
-            </div>
-          ))}
-          {extra > 0 ? (
-            <div className="mt-1 text-[11px] text-ink-4">+{extra} more</div>
-          ) : null}
+                <span className="min-w-[120px] flex-shrink-0 truncate font-medium text-ink">
+                  {m.name}
+                </span>
+                <span className="flex flex-1 items-center gap-1.5 truncate text-ink-3">
+                  <span className="truncate">{m.from_label}</span>
+                  <span className="text-ink-4">→</span>
+                  <span className="truncate text-ink-2">{m.to_label}</span>
+                </span>
+                {rel ? (
+                  <span className="w-[80px] flex-shrink-0 text-right text-[11px] text-ink-4">
+                    {rel}
+                  </span>
+                ) : null}
+              </div>
+            );
+          })}
         </div>
       )}
     </div>
   );
 }
 
-// ── Progression panel (opportunities only) ──────────────────────────────────
+// ── Records table ───────────────────────────────────────────────────────────
 
-function ProgressionPanel({
-  progression,
-  isLoading,
+function StageRecordsTable({
+  stage,
+  recordColumns,
 }: {
-  progression: FunnelProgression[];
-  isLoading: boolean;
+  stage: FunnelStage;
+  recordColumns: { key: string; label: string }[];
 }) {
-  if (isLoading) {
-    return (
-      <div className="flex flex-col gap-2">
-        {Array.from({ length: 3 }).map((_, i) => (
-          <div
-            key={i}
-            className="h-8 w-full animate-pulse rounded bg-surface-2"
-          />
-        ))}
-      </div>
-    );
+  const records = stage.records ?? [];
+  const shown = records.slice(0, RECORD_CAP);
+  const extra = records.length - shown.length;
+
+  if (records.length === 0) {
+    return <div className="text-[12px] text-ink-3">No records.</div>;
   }
 
-  if (progression.length === 0) {
+  if (recordColumns.length === 0) {
+    // Fallback: render whatever name field exists.
     return (
-      <p className="text-[11.5px] text-ink-3">
-        No stage changes recorded in the last 30 days. Movement will appear
-        here as the team updates opportunities in Bedrock.
-      </p>
+      <div className="flex flex-col gap-1">
+        {shown.map((r, i) => (
+          <div key={i} className="truncate text-[12px] font-medium text-ink">
+            {r.name ?? "—"}
+          </div>
+        ))}
+        {extra > 0 ? (
+          <div className="mt-1 text-[11px] text-ink-4">+{extra} more</div>
+        ) : null}
+      </div>
     );
   }
 
   return (
-    <div className="flex flex-col gap-2">
-      <div className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">
-        Recent Movement (30d)
-      </div>
-      <div className="overflow-hidden rounded-lg border border-border-strong bg-surface shadow-sm">
-        {progression.map((p, i) => {
-          const advanced = p.direction === "advanced";
-          const rel = relativeTime(p.when);
-          return (
-            <div
-              key={i}
-              className="flex items-center gap-3 border-t border-border-strong px-4 py-2 text-[12px] first:border-t-0"
-            >
-              <span className="min-w-[140px] flex-shrink-0 truncate font-medium text-ink">
-                {p.name}
-              </span>
-              <span className="flex flex-1 items-center gap-1.5 text-ink-3">
-                <span className="truncate">{p.from_label}</span>
-                <span className="text-ink-4">→</span>
-                <span className="truncate text-ink-2">{p.to_label}</span>
-              </span>
-              <span
-                className={cn(
-                  "inline-flex flex-shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[10.5px] font-semibold",
-                  advanced
-                    ? "bg-[var(--green-soft)] text-[var(--green)]"
-                    : "bg-[var(--amber-soft)] text-[var(--amber)]",
-                )}
+    <div className="overflow-hidden rounded border border-border-strong bg-surface">
+      <table className="w-full text-[12px]">
+        <thead>
+          <tr className="border-b border-border-strong bg-surface-2">
+            {recordColumns.map((col) => (
+              <th
+                key={col.key}
+                className="px-3 py-1.5 text-left text-[10.5px] font-semibold uppercase tracking-wider text-ink-3"
               >
-                {advanced ? <ArrowUp size={11} /> : <ArrowDown size={11} />}
-                {advanced ? "advanced" : "regressed"}
-              </span>
-              {rel ? (
-                <span className="w-[80px] flex-shrink-0 text-right text-[11px] text-ink-4">
-                  {rel}
-                </span>
-              ) : null}
-            </div>
-          );
-        })}
-      </div>
+                {col.label}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {shown.map((r, i) => (
+            <tr
+              key={i}
+              className="border-t border-border-strong first:border-t-0"
+            >
+              {recordColumns.map((col) => (
+                <td
+                  key={col.key}
+                  className={cn(
+                    "px-3 py-1.5",
+                    col.key === recordColumns[0].key
+                      ? "font-medium text-ink"
+                      : "text-ink-2",
+                  )}
+                >
+                  {formatCell(col.key, r[col.key])}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {extra > 0 ? (
+        <div className="border-t border-border-strong px-3 py-1.5 text-[11px] text-ink-4">
+          +{extra} more
+        </div>
+      ) : null}
     </div>
   );
+}
+
+function formatCell(key: string, value: string | null | undefined): string {
+  if (value == null || value === "") return "—";
+  if (key === "deal_type") {
+    return DEAL_TYPE_LABELS[value as DealType] ?? value;
+  }
+  return value;
 }
 
 function relativeTime(iso: string | null): string | null {

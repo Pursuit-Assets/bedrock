@@ -438,6 +438,8 @@ async def get_funnel(ftype: str, user=Depends(require_auth), conn=Depends(get_db
     each stage (for inline expand). Opportunities also include recent
     progression (advanced/regressed) from bedrock.jobs_stage_history.
     """
+    movement_by_stage: dict = {}  # stage_key -> list of recent transitions touching it
+
     if ftype == "opportunities":
         stage_order = [
             ("lead_submitted", "Lead Submitted"),
@@ -447,35 +449,45 @@ async def get_funnel(ftype: str, user=Depends(require_auth), conn=Depends(get_db
             ("active_builder_interview", "Builder Interview"),
             ("closed_won", "Closed — Won"),
         ]
+        record_columns = [
+            {"key": "name", "label": "Company"},
+            {"key": "deal_type", "label": "Type"},
+            {"key": "owner", "label": "Owner"},
+        ]
         rows = await conn.fetch("""
-            SELECT stage, account_name AS name, owner_email AS detail
+            SELECT stage, account_name AS name, deal_type, owner_email AS owner
             FROM bedrock.jobs_opportunity
             WHERE deleted_at IS NULL ORDER BY account_name
         """)
         by_stage: dict = {}
         for r in rows:
-            by_stage.setdefault(r["stage"], []).append({"name": r["name"], "detail": r["detail"]})
+            by_stage.setdefault(r["stage"], []).append(
+                {"name": r["name"], "deal_type": r["deal_type"], "owner": r["owner"]}
+            )
 
         idx = {k: i for i, (k, _) in enumerate(stage_order)}
+        label_of = dict(stage_order)
         hist = await conn.fetch("""
             SELECT h.from_stage, h.to_stage, h.changed_at, o.account_name
             FROM bedrock.jobs_stage_history h
             JOIN bedrock.jobs_opportunity o ON o.id = h.opportunity_id
             WHERE h.from_stage IS NOT NULL
               AND h.changed_at >= now() - interval '30 days'
-            ORDER BY h.changed_at DESC LIMIT 50
+            ORDER BY h.changed_at DESC LIMIT 100
         """)
-        progression = []
         for h in hist:
             fi, ti = idx.get(h["from_stage"]), idx.get(h["to_stage"])
             direction = "advanced" if (fi is not None and ti is not None and ti > fi) else "regressed"
-            progression.append({
+            item = {
                 "name": h["account_name"],
-                "from_label": dict(stage_order).get(h["from_stage"], h["from_stage"]),
-                "to_label": dict(stage_order).get(h["to_stage"], h["to_stage"]),
+                "from_label": label_of.get(h["from_stage"], h["from_stage"]),
+                "to_label": label_of.get(h["to_stage"], h["to_stage"]),
                 "direction": direction,
                 "when": h["changed_at"].isoformat() if h["changed_at"] else None,
-            })
+            }
+            # attach to the destination stage (moved into) and origin stage (moved out of)
+            movement_by_stage.setdefault(h["to_stage"], []).append({**item, "flow": "in"})
+            movement_by_stage.setdefault(h["from_stage"], []).append({**item, "flow": "out"})
 
     elif ftype == "prospects":
         stage_order = [
@@ -484,14 +496,17 @@ async def get_funnel(ftype: str, user=Depends(require_auth), conn=Depends(get_db
             ("active", "Active"),
             ("on_hold", "On Hold"),
         ]
+        record_columns = [
+            {"key": "name", "label": "Contact"},
+            {"key": "company", "label": "Company"},
+        ]
         rows = await conn.fetch("""
-            SELECT contact_stage AS stage, full_name AS name, current_company AS detail
+            SELECT contact_stage AS stage, full_name AS name, current_company AS company
             FROM public.contacts WHERE is_jobs_contact=true ORDER BY full_name
         """)
         by_stage = {}
         for r in rows:
-            by_stage.setdefault(r["stage"], []).append({"name": r["name"], "detail": r["detail"]})
-        progression = []
+            by_stage.setdefault(r["stage"], []).append({"name": r["name"], "company": r["company"]})
 
     elif ftype == "builders":
         stage_order = [
@@ -499,16 +514,22 @@ async def get_funnel(ftype: str, user=Depends(require_auth), conn=Depends(get_db
             ("interview", "Interviewing"),
             ("accepted", "Hired"),
         ]
+        record_columns = [
+            {"key": "name", "label": "Builder"},
+            {"key": "company", "label": "Company"},
+            {"key": "role", "label": "Role"},
+        ]
         rows = await conn.fetch("""
             SELECT stage, trim(split_part(notes,':',1)) AS name,
-                   company_name AS detail
+                   company_name AS company, role_title AS role
             FROM public.job_applications WHERE source_type='Pursuit_referred'
             ORDER BY company_name
         """)
         by_stage = {}
         for r in rows:
-            by_stage.setdefault(r["stage"], []).append({"name": r["name"], "detail": r["detail"]})
-        progression = []
+            by_stage.setdefault(r["stage"], []).append(
+                {"name": r["name"], "company": r["company"], "role": r["role"]}
+            )
     else:
         raise HTTPException(404, f"Unknown funnel: {ftype}")
 
@@ -520,14 +541,18 @@ async def get_funnel(ftype: str, user=Depends(require_auth), conn=Depends(get_db
         cnt = len(recs)
         nxt = counts[i + 1] if i + 1 < len(counts) else None
         conv = round(100 * nxt / cnt) if (nxt is not None and cnt > 0) else None
+        mv = movement_by_stage.get(k, [])
         stages.append({
             "key": k, "label": label, "count": cnt,
             "pct_of_max": round(100 * cnt / max_count) if max_count else 0,
             "conversion_to_next": conv,
             "records": recs,
+            "movement": mv,
+            "advanced_in": sum(1 for m in mv if m["flow"] == "in" and m["direction"] == "advanced"),
+            "regressed_in": sum(1 for m in mv if m["flow"] == "in" and m["direction"] == "regressed"),
         })
 
-    return {"success": True, "data": {"type": ftype, "stages": stages, "progression": progression}}
+    return {"success": True, "data": {"type": ftype, "stages": stages, "record_columns": record_columns}}
 
 
 @router.get("/roles")

@@ -5,19 +5,13 @@ import {
   useJobsPipeline,
   useJobsOpportunities,
   useContactsSummary,
-  useMetricDrill,
   useJobRoles,
-  usePlacements,
-  useUpdatePlacement,
   ACTIVE_STAGES,
-  DEAL_TYPE_LABELS,
   type PipelineStageSummary,
   type JobsOpportunity,
   type JobStage,
-  type DealType,
   type JobRole,
   type RoleSegment,
-  type Placement,
 } from "@/services/jobs";
 import { cn } from "@/lib/utils";
 import { JobsFunnels } from "@/components/jobs/JobsFunnels";
@@ -29,9 +23,6 @@ const TARGET_ACTIVE_ORGS_LO = 25;
 const TARGET_ACTIVE_ORGS_HI = 30;
 const TARGET_PLACEMENTS = 20;
 const TARGET_AVG_SALARY = 85_000;
-const OUTREACH_TO_CALL_LO = 0.20;
-const ACTIVE_TO_INTERVIEW = 0.40;
-const INTERVIEW_TO_PLACEMENT = 0.20;
 
 // Owner display names keyed by email
 const OWNER_DISPLAY: Record<string, string> = {
@@ -84,15 +75,12 @@ function SectionWrap({
 export function JobsLeadership() {
   const [openMetric, setOpenMetric] = useState<string | null>(null);
   const [ownerOpen, setOwnerOpen] = useState(true);
-  const [rolesOpen, setRolesOpen] = useState(false);
+  const [rolesOpen, setRolesOpen] = useState(true);
 
   const pipelineQ = useJobsPipeline();
   const oppsQ = useJobsOpportunities({ limit: 500 });
   const contactsQ = useContactsSummary();
-  const candidatesSubmittedQ = useMetricDrill("candidates_submitted");
-  const interviewingQ = useMetricDrill("interviewing");
   const rolesQ = useJobRoles();
-  const placementsQ = usePlacements();
 
   const isLoading = pipelineQ.isLoading || oppsQ.isLoading;
 
@@ -121,27 +109,13 @@ export function JobsLeadership() {
     () => stageMap.get("closed_won"),
     [stageMap],
   );
-  const placementsCount = closedWonSummary?.total ?? 0;
   const avgSalary = closedWonSummary?.avg_salary ?? null;
 
-  // ── Conversion rates (from pipeline summary totals) ─────────────────────
+  // ── Placements breakdown (from roles summary) ───────────────────────────
 
-  const outreachTotal = stageMap.get("initial_outreach")?.total ?? 0;
-  const callsTotal =
-    (stageMap.get("active_in_discussions")?.total ?? 0) +
-    (stageMap.get("active_opportunity_confirmed")?.total ?? 0) +
-    (stageMap.get("active_builder_interview")?.total ?? 0);
-  const outreachToCallRate = outreachTotal > 0 ? callsTotal / outreachTotal : null;
-
-  const activeTotal = ACTIVE_STAGES.reduce(
-    (s, stage) => s + (stageMap.get(stage)?.total ?? 0),
-    0,
-  );
-  const interviewTotal = stageMap.get("active_builder_interview")?.total ?? 0;
-  const activeToInterviewRate =
-    activeTotal > 0 ? interviewTotal / activeTotal : null;
-  const interviewToPlacementRate =
-    interviewTotal > 0 ? placementsCount / interviewTotal : null;
+  const hiredTotal = rolesQ.data?.hired_total ?? 0;
+  const hiredFt = rolesQ.data?.hired_ft ?? 0;
+  const hiredContract = rolesQ.data?.hired_contract ?? 0;
 
   // ── Owner breakdown (from opportunities list) ───────────────────────────
 
@@ -164,14 +138,6 @@ export function JobsLeadership() {
       return { email, name: OWNER_DISPLAY[email] ?? email, totalActive, inDiscussions, builderInterview, won };
     });
   }, [oppsQ.data]);
-
-  // ── Deal type breakdown for closed_won ─────────────────────────────────
-
-  const dealTypeBreakdown = useMemo<Partial<Record<DealType, number>>>(() => {
-    return closedWonSummary?.by_type ?? {};
-  }, [closedWonSummary]);
-
-  const dealTypeOrder: DealType[] = ["ft", "pt_contract", "capstone", "volunteer"];
 
   // ── Contacts & Outreach derived values ─────────────────────────────────
 
@@ -201,14 +167,17 @@ export function JobsLeadership() {
         <div className="grid grid-cols-2 gap-px overflow-hidden rounded-[8px] border border-border-strong bg-border-strong shadow-[var(--shadow-sm)] sm:grid-cols-4">
           <NorthStarCell
             label="Placements"
-            value={placementsCount}
-            isLoading={isLoading}
-            valueColor={statusColor(placementsCount, TARGET_PLACEMENTS * 0.7)}
+            value={rolesQ.isLoading ? "—" : hiredTotal}
+            isLoading={rolesQ.isLoading}
+            valueColor={statusColor(hiredTotal, TARGET_PLACEMENTS * 0.7)}
             sub={`of ${TARGET_PLACEMENTS} by end of July`}
+            subLead={
+              rolesQ.isLoading ? undefined : `FT ${hiredFt} · PT/Contract ${hiredContract}`
+            }
             progress={{
-              value: placementsCount,
+              value: hiredTotal,
               max: TARGET_PLACEMENTS,
-              colorClass: progressBarColor(placementsCount, TARGET_PLACEMENTS * 0.7),
+              colorClass: progressBarColor(hiredTotal, TARGET_PLACEMENTS * 0.7),
             }}
             icon={<Target size={14} />}
             onClick={() => setOpenMetric("placements")}
@@ -259,58 +228,43 @@ export function JobsLeadership() {
       </SectionWrap>
 
       {/* ── ZONE 2 · The Funnel (the engine) ──────────────────────────── */}
-      <div className="flex flex-col gap-3">
-        <JobsFunnels />
-        {/* Conversion strip — caption under the funnel */}
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-          <ConversionChip
-            label="Outreach → Call"
-            rate={outreachToCallRate}
-            targetLo={OUTREACH_TO_CALL_LO}
-            targetLabel="20–25%"
-            isLoading={isLoading}
-          />
-          <ConversionChip
-            label="Active → Interview"
-            rate={activeToInterviewRate}
-            targetLo={ACTIVE_TO_INTERVIEW}
-            targetLabel="40%"
-            isLoading={isLoading}
-          />
-          <ConversionChip
-            label="Interview → Placement"
-            rate={interviewToPlacementRate}
-            targetLo={INTERVIEW_TO_PLACEMENT}
-            targetLabel="20%"
-            isLoading={isLoading}
-          />
-        </div>
-      </div>
+      <JobsFunnels />
 
-      {/* ── ZONE 3 · Top of Funnel (leading indicators) ───────────────── */}
-      <SectionWrap title="Top of Funnel · Activity">
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-          <PulseCell
+      {/* ── ZONE 3 · Prospect Activity (leading indicators) ───────────── */}
+      <div className="flex flex-col gap-1.5">
+        <div className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">
+          Prospect Activity
+        </div>
+        <div className="text-[11px] text-ink-4">
+          Top-of-funnel engagement feeding the pipeline.
+        </div>
+        <div className="mt-1 flex flex-col divide-y divide-border-strong overflow-hidden rounded-[8px] border border-border-strong bg-surface shadow-[var(--shadow-sm)] sm:flex-row sm:divide-y-0 sm:divide-x">
+          <ActivityStat
             label="Total Leads"
             value={totalLeads ?? "—"}
             isLoading={contactsLoading}
+            sub={
+              totalLeads != null && engagedLeads != null && totalLeads > 0
+                ? `${Math.round((engagedLeads / totalLeads) * 100)}% engaged`
+                : undefined
+            }
             onClick={() => setOpenMetric("total_leads")}
           />
-          <PulseCell
-            label="Engaged Leads"
+          <ActivityStat
+            label="Engaged"
             value={engagedLeads ?? "—"}
             isLoading={contactsLoading}
             sub="initial email & beyond"
             onClick={() => setOpenMetric("engaged_leads")}
           />
-          <PulseCell
+          <ActivityStat
             label="Outreach · wk"
             value={outreachThisWeek ?? "—"}
             isLoading={contactsLoading}
             sub={`${outreachAllTime ?? "—"} all time`}
             onClick={() => setOpenMetric("outreach_week")}
           />
-          <PulseCell
+          <ActivityStat
             label="Calls · wk"
             value={callsThisWeek ?? "—"}
             isLoading={contactsLoading}
@@ -318,62 +272,9 @@ export function JobsLeadership() {
             onClick={() => setOpenMetric("calls_week")}
           />
         </div>
-      </SectionWrap>
+      </div>
 
-      {/* ── ZONE 4 · Secured Jobs (results detail) ────────────────────── */}
-      <SectionWrap title="Secured Jobs">
-        <div className="-mt-1 text-[11.5px] text-ink-3">
-          Single source of truth — all placements, separable by jobs-team
-          influence.
-        </div>
-        {/* Engagement chips — preserve candidates_submitted / interviewing drills */}
-        <div className="flex flex-wrap items-center gap-3">
-          <EngagementChip
-            label="Candidates Submitted"
-            value={candidatesSubmittedQ.data?.count ?? 0}
-            isLoading={candidatesSubmittedQ.isLoading}
-            onClick={() => setOpenMetric("candidates_submitted")}
-          />
-          <EngagementChip
-            label="Interviewing"
-            value={interviewingQ.data?.count ?? 0}
-            isLoading={interviewingQ.isLoading}
-            onClick={() => setOpenMetric("interviewing")}
-          />
-          <span className="text-ink-4">·</span>
-          {pipelineQ.isLoading
-            ? Array.from({ length: 4 }).map((_, i) => (
-                <div
-                  key={i}
-                  className="h-7 w-[110px] animate-pulse rounded-full bg-surface-2"
-                />
-              ))
-            : dealTypeOrder.map((type) => {
-                const count = dealTypeBreakdown[type] ?? 0;
-                return (
-                  <div
-                    key={type}
-                    className="inline-flex items-center gap-2 rounded-full border border-border-strong bg-surface px-3 py-1 shadow-[var(--shadow-sm)]"
-                  >
-                    <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
-                      {DEAL_TYPE_LABELS[type]}
-                    </span>
-                    <span
-                      className={cn(
-                        "font-mono text-[13px] font-semibold tabular-nums",
-                        count > 0 ? "text-ink" : "text-ink-4",
-                      )}
-                    >
-                      {count}
-                    </span>
-                  </div>
-                );
-              })}
-        </div>
-        <SecuredJobsSection placementsQ={placementsQ} />
-      </SectionWrap>
-
-      {/* ── ZONE 5 · Details (secondary, collapsible) ─────────────────── */}
+      {/* ── ZONE 4 · Details (secondary, collapsible) ─────────────────── */}
       <Collapsible
         title="Owner Breakdown"
         open={ownerOpen}
@@ -471,6 +372,7 @@ function NorthStarCell({
   isLoading,
   valueColor,
   sub,
+  subLead,
   progress,
   icon,
   onClick,
@@ -480,6 +382,7 @@ function NorthStarCell({
   isLoading: boolean;
   valueColor?: string;
   sub?: string;
+  subLead?: string;
   progress?: { value: number; max: number; colorClass: string };
   icon?: React.ReactNode;
   onClick?: () => void;
@@ -506,6 +409,9 @@ function NorthStarCell({
       >
         {isLoading ? "—" : value}
       </span>
+      {subLead ? (
+        <span className="text-[11px] text-ink-3">{subLead}</span>
+      ) : null}
       {progress ? (
         <div className="h-1 w-full overflow-hidden rounded-full bg-surface-2">
           <div
@@ -521,9 +427,9 @@ function NorthStarCell({
   );
 }
 
-// ── Pulse cell (Zone 3 — smaller leading-indicator numbers) ─────────────────
+// ── Activity stat (Zone 3 — compact prospect-activity strip cell) ───────────
 
-function PulseCell({
+function ActivityStat({
   label,
   value,
   isLoading,
@@ -540,109 +446,24 @@ function PulseCell({
     <div
       onClick={onClick}
       className={cn(
-        "flex flex-col gap-1 rounded-[8px] border border-border-strong bg-surface px-3 py-2.5 shadow-[var(--shadow-sm)]",
-        onClick && "cursor-pointer transition-colors hover:border-accent",
+        "flex flex-1 flex-col gap-0.5 px-4 py-2.5",
+        onClick && "cursor-pointer transition-colors hover:bg-surface-2/40",
       )}
     >
-      <span className="text-[10px] font-semibold uppercase tracking-wider text-ink-3">
+      <span className="text-[9.5px] font-semibold uppercase tracking-wider text-ink-3">
         {label}
       </span>
       <span className="font-mono text-[20px] font-semibold leading-none tabular-nums text-ink">
         {isLoading ? "—" : value}
       </span>
       {sub ? (
-        <span className="text-[10px] text-ink-4">
-          {isLoading ? "—" : sub}
-        </span>
+        <span className="text-[10px] text-ink-4">{isLoading ? "—" : sub}</span>
       ) : null}
     </div>
   );
 }
 
-// ── Engagement chip (small clickable stat) ──────────────────────────────────
-
-function EngagementChip({
-  label,
-  value,
-  isLoading,
-  onClick,
-}: {
-  label: string;
-  value: string | number;
-  isLoading: boolean;
-  onClick?: () => void;
-}) {
-  return (
-    <div
-      onClick={onClick}
-      className={cn(
-        "inline-flex items-center gap-2 rounded-full border border-border-strong bg-surface px-3 py-1 shadow-[var(--shadow-sm)]",
-        onClick && "cursor-pointer transition-colors hover:border-accent",
-      )}
-    >
-      <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
-        {label}
-      </span>
-      <span className="font-mono text-[13px] font-semibold tabular-nums text-ink">
-        {isLoading ? "—" : value}
-      </span>
-    </div>
-  );
-}
-
-// ── Conversion chip (Zone 2 — compact rate vs target) ───────────────────────
-
-function ConversionChip({
-  label,
-  rate,
-  targetLo,
-  targetLabel,
-  isLoading,
-}: {
-  label: string;
-  rate: number | null;
-  targetLo: number;
-  targetLabel: string;
-  isLoading: boolean;
-}) {
-  const actualDisplay =
-    isLoading || rate == null ? "—" : `${Math.round(rate * 100)}%`;
-  const onTarget = rate != null && rate >= targetLo;
-  const near = rate != null && rate >= targetLo * 0.75;
-  const dotColor =
-    isLoading || rate == null
-      ? "bg-surface-2"
-      : onTarget
-        ? "bg-[var(--green)]"
-        : near
-          ? "bg-[var(--amber)]"
-          : "bg-[var(--red)]";
-  const rateColor =
-    isLoading || rate == null
-      ? "text-ink-4"
-      : onTarget
-        ? "text-[var(--green)]"
-        : near
-          ? "text-[var(--amber)]"
-          : "text-[var(--red)]";
-
-  return (
-    <div className="flex items-center justify-between gap-3 rounded-[8px] border border-border-strong bg-surface px-3 py-2 shadow-[var(--shadow-sm)]">
-      <div className="flex items-center gap-2">
-        <span className={cn("h-2 w-2 shrink-0 rounded-full", dotColor)} />
-        <span className="text-[11px] font-medium text-ink-2">{label}</span>
-      </div>
-      <div className="flex items-baseline gap-1.5">
-        <span className={cn("font-mono text-[15px] font-semibold tabular-nums", rateColor)}>
-          {actualDisplay}
-        </span>
-        <span className="text-[10.5px] text-ink-4">/ {targetLabel}</span>
-      </div>
-    </div>
-  );
-}
-
-// ── Collapsible section (Zone 5 — secondary detail) ─────────────────────────
+// ── Collapsible section (Zone 4 — secondary detail) ─────────────────────────
 
 function Collapsible({
   title,
@@ -888,202 +709,6 @@ function JobsRolesSection({ rolesQ }: { rolesQ: RolesQuery }) {
                   </td>
                   <td className="px-5 py-2.5">
                     <StagePill stage={row.stage} />
-                  </td>
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
-}
-
-// ── Secured Jobs section (breakdown cards + editable attribution table) ─────
-
-type PlacementsQuery = ReturnType<typeof usePlacements>;
-type InfluenceFilter = "all" | "influenced" | "self_sourced" | "unclassified";
-
-const INFLUENCE_FILTERS: { key: InfluenceFilter; label: string }[] = [
-  { key: "all", label: "All" },
-  { key: "influenced", label: "Influenced" },
-  { key: "self_sourced", label: "Self-Sourced" },
-  { key: "unclassified", label: "Unclassified" },
-];
-
-function employmentTypeLabel(type: string): string {
-  switch (type) {
-    case "full_time":
-      return "Full-Time";
-    case "contract":
-      return "Contract";
-    case "freelance":
-      return "Freelance";
-    case "pro_bono":
-      return "Pro Bono";
-    default:
-      return type ? type.charAt(0).toUpperCase() + type.slice(1) : "—";
-  }
-}
-
-function influenceToValue(influenced: boolean | null): string {
-  if (influenced === true) return "true";
-  if (influenced === false) return "false";
-  return "";
-}
-
-function SecuredJobsSection({ placementsQ }: { placementsQ: PlacementsQuery }) {
-  const [filter, setFilter] = useState<InfluenceFilter>("all");
-  const updatePlacement = useUpdatePlacement();
-
-  const summary = placementsQ.data;
-  const rows = summary?.rows ?? [];
-
-  const visibleRows = useMemo(() => {
-    return rows.filter((r) => {
-      switch (filter) {
-        case "influenced":
-          return r.influenced === true;
-        case "self_sourced":
-          return r.influenced === false;
-        case "unclassified":
-          return r.influenced == null;
-        default:
-          return true;
-      }
-    });
-  }, [rows, filter]);
-
-  const cards: { label: string; value: string | number; valueColor?: string }[] = [
-    {
-      label: "Total Secured",
-      value: placementsQ.isLoading ? "—" : (summary?.total ?? 0),
-    },
-    {
-      label: "Jobs-Team Influenced",
-      value: placementsQ.isLoading ? "—" : (summary?.influenced ?? 0),
-      valueColor: "text-[var(--green)]",
-    },
-    {
-      label: "Self-Sourced",
-      value: placementsQ.isLoading ? "—" : (summary?.self_sourced ?? 0),
-    },
-    {
-      label: "Unclassified",
-      value: placementsQ.isLoading ? "—" : (summary?.unclassified ?? 0),
-      valueColor:
-        !placementsQ.isLoading && (summary?.unclassified ?? 0) > 0
-          ? "text-[var(--amber)]"
-          : undefined,
-    },
-  ];
-
-  return (
-    <div className="flex flex-col gap-4">
-      {/* Breakdown cards */}
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        {cards.map((c) => (
-          <div
-            key={c.label}
-            className="flex flex-col gap-1 rounded-[8px] border border-border-strong bg-surface px-3 py-2.5 shadow-[var(--shadow-sm)]"
-          >
-            <span className="text-[10px] font-semibold uppercase tracking-wider text-ink-3">
-              {c.label}
-            </span>
-            <span
-              className={cn(
-                "font-mono text-[22px] font-semibold leading-none tabular-nums",
-                c.valueColor ?? "text-ink",
-              )}
-            >
-              {c.value}
-            </span>
-          </div>
-        ))}
-      </div>
-
-      {/* Filter toggle */}
-      <div className="inline-flex flex-wrap self-start rounded-lg border border-border-strong bg-surface-2 p-1">
-        {INFLUENCE_FILTERS.map((f) => {
-          const active = f.key === filter;
-          return (
-            <button
-              key={f.key}
-              type="button"
-              onClick={() => setFilter(f.key)}
-              className={cn(
-                "rounded-md px-3 py-1.5 text-[12px] font-medium transition-colors",
-                active
-                  ? "bg-surface text-ink shadow-sm"
-                  : "text-ink-3 hover:text-ink-2",
-              )}
-            >
-              {f.label}
-            </button>
-          );
-        })}
-      </div>
-
-      {/* Table */}
-      <div className="max-h-[440px] overflow-auto rounded-[8px] border border-border-strong bg-surface shadow-[var(--shadow-sm)]">
-        <table className="w-full text-[12.5px]">
-          <thead className="sticky top-0 z-10 bg-surface-2 text-[10.5px] uppercase tracking-wider text-ink-3">
-            <tr>
-              <th className="px-5 py-2 text-left font-semibold">Builder</th>
-              <th className="px-5 py-2 text-left font-semibold">Role</th>
-              <th className="px-5 py-2 text-left font-semibold">Company</th>
-              <th className="px-5 py-2 text-left font-semibold">Type</th>
-              <th className="px-5 py-2 text-left font-semibold">Influence</th>
-            </tr>
-          </thead>
-          <tbody>
-            {placementsQ.isLoading ? (
-              Array.from({ length: 5 }).map((_, i) => (
-                <tr key={i} className="border-t border-border-strong">
-                  {Array.from({ length: 5 }).map((_, j) => (
-                    <td key={j} className="px-5 py-3">
-                      <div className="h-3 animate-pulse rounded bg-surface-2" />
-                    </td>
-                  ))}
-                </tr>
-              ))
-            ) : visibleRows.length === 0 ? (
-              <tr className="border-t border-border-strong">
-                <td colSpan={5} className="px-5 py-6 text-center text-ink-4">
-                  No placements in this filter.
-                </td>
-              </tr>
-            ) : (
-              visibleRows.map((row: Placement) => (
-                <tr
-                  key={row.id}
-                  className="border-t border-border-strong hover:bg-surface-2/50"
-                >
-                  <td className="px-5 py-2.5 font-medium text-ink">
-                    {row.builder}
-                  </td>
-                  <td className="px-5 py-2.5 text-ink-2">{row.role_title}</td>
-                  <td className="px-5 py-2.5 text-ink-2">{row.company_name}</td>
-                  <td className="px-5 py-2.5 text-ink-2">
-                    {employmentTypeLabel(row.employment_type)}
-                  </td>
-                  <td className="px-5 py-2.5">
-                    <select
-                      value={influenceToValue(row.influenced)}
-                      onChange={(e) => {
-                        const v = e.target.value;
-                        updatePlacement.mutate({
-                          id: row.id,
-                          influenced:
-                            v === "true" ? true : v === "false" ? false : null,
-                        });
-                      }}
-                      className="cursor-pointer rounded border border-border-strong bg-surface px-1.5 py-0.5 text-[12px]"
-                    >
-                      <option value="true">Influenced</option>
-                      <option value="false">Self-Sourced</option>
-                      <option value="">Unclassified</option>
-                    </select>
                   </td>
                 </tr>
               ))

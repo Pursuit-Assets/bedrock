@@ -396,27 +396,31 @@ export function useUpdatePlacement() {
 
 export type FunnelType = "opportunities" | "prospects" | "builders";
 
+export interface FunnelMovement {
+  name: string;
+  from_label: string;
+  to_label: string;
+  direction: "advanced" | "regressed";
+  flow: "in" | "out";
+  when: string | null;
+}
+
 export interface FunnelStage {
   key: string;
   label: string;
   count: number;
   pct_of_max: number;
   conversion_to_next: number | null;
-  records: { name: string | null; detail: string | null }[];
-}
-
-export interface FunnelProgression {
-  name: string;
-  from_label: string;
-  to_label: string;
-  direction: "advanced" | "regressed";
-  when: string | null;
+  records: Record<string, string | null>[];
+  movement: FunnelMovement[];
+  advanced_in: number;
+  regressed_in: number;
 }
 
 export interface FunnelData {
   type: FunnelType;
   stages: FunnelStage[];
-  progression: FunnelProgression[];
+  record_columns: { key: string; label: string }[];
 }
 
 export function useJobsFunnel(ftype: FunnelType) {
