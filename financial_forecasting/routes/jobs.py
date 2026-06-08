@@ -389,6 +389,25 @@ async def create_opp_placement(
     notes = f"{body.builder_name}: jobs-team placement" if body.builder_name else "jobs-team placement"
 
     if body.builder_user_id:
+        # Dedup guard: if this builder already has a placement at this company,
+        # enrich it with jobs-team attribution instead of creating a duplicate.
+        existing = await conn.fetchrow("""
+            SELECT id FROM public.employment_records
+            WHERE user_id = $1 AND lower(company_name) = lower($2)
+            ORDER BY id LIMIT 1
+        """, body.builder_user_id, opp["account_name"])
+        if existing:
+            await conn.execute("""
+                UPDATE public.employment_records
+                SET opportunity_id=$1, influenced=true,
+                    role_title=COALESCE(role_title, $2),
+                    employment_type=COALESCE(NULLIF(employment_type,''), $3),
+                    payment_amount=COALESCE(payment_amount, $4),
+                    updated_at=now()
+                WHERE id=$5
+            """, opp_id, role, body.employment_type, body.salary, existing["id"])
+            return {"success": True, "data": {"id": str(existing["id"]), "merged": True}}
+
         new_id = await conn.fetchval("""
             INSERT INTO public.employment_records
                 (user_id, role_title, company_name, employment_type, engagement_stage,
