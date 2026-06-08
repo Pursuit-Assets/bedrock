@@ -97,11 +97,11 @@ export function JobsLeadership() {
     [stageMap],
   );
 
-  const closedWonSummary = useMemo(
-    () => stageMap.get("closed_won"),
-    [stageMap],
-  );
-  const avgSalary = closedWonSummary?.avg_salary ?? null;
+  // Avg FT salary = actual pay per distinct FT-placed builder (from /roles),
+  // matching the Jobs Roles section and Airtable. NOT the per-deal
+  // salary_expected average, which counts multi-hire employers (e.g. JP Morgan,
+  // 3 builders) only once and so understates the figure.
+  const avgSalary = rolesQ.data?.avg_salary_ft ?? null;
 
   // ── Builders placed (distinct builders, paid work) ──────────────────────
   // Two tracked numbers: placed full-time, and placed in any paid work.
