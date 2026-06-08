@@ -14,6 +14,7 @@ import {
   ChevronRight,
   TrendingUp,
   Link as LinkIcon,
+  Funnel,
   Home,
   MessageSquarePlus,
   Receipt,
@@ -41,6 +42,7 @@ const NAV_GROUPS = [
       { to: "/contacts",  label: "Contacts", icon: Users },
       { to: "/pipeline",  label: "Pipeline", icon: GitBranch },
       { to: "/cleanup",   label: "Cleanup",  icon: Sparkles },
+      { to: "/candidates", label: "Candidates", icon: Funnel },
       // Tasks page hidden 2026-05-04 — pending a Salesforce data-hygiene
       // pass to close the years-old open-task backlog. Tasks remain
       // visible on the per-record expand panels and detail pages, where

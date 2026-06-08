@@ -23,6 +23,7 @@ import { CashFlowPage } from "./pages/CashFlow";
 import { PlatformIntakePage } from "./pages/PlatformIntake";
 import { PortfolioPage } from "./pages/Portfolio";
 import { JobsPage } from "./pages/Jobs";
+import { CandidateFunnelPage } from "./pages/CandidateFunnel";
 import { HomePage, HomeIndexPage } from "./pages/home";
 
 export default function App() {
@@ -48,6 +49,7 @@ export default function App() {
         <Route path="/pipeline" element={<PipelinePage />} />
         <Route path="/payments" element={<PaymentsPage />} />
         <Route path="/cleanup" element={<CleanupPage />} />
+        <Route path="/candidates" element={<CandidateFunnelPage />} />
         <Route path="/opportunities/:id" element={<OpportunityDetailPage />} />
         <Route path="/awards" element={<AwardsPage />} />
         <Route path="/awards/:id" element={<AwardDetailPage />} />
