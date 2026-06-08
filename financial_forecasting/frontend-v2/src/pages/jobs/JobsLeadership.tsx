@@ -6,6 +6,7 @@ import {
   useJobsOpportunities,
   useContactsSummary,
   useJobRoles,
+  usePlacements,
   ACTIVE_STAGES,
   type PipelineStageSummary,
   type JobsOpportunity,
@@ -81,6 +82,7 @@ export function JobsLeadership() {
   const oppsQ = useJobsOpportunities({ limit: 500 });
   const contactsQ = useContactsSummary();
   const rolesQ = useJobRoles();
+  const placementsQ = usePlacements();
 
   const isLoading = pipelineQ.isLoading || oppsQ.isLoading;
 
@@ -111,11 +113,11 @@ export function JobsLeadership() {
   );
   const avgSalary = closedWonSummary?.avg_salary ?? null;
 
-  // ── Placements breakdown (from roles summary) ───────────────────────────
+  // ── Placements breakdown (from paid employment_records) ─────────────────
 
-  const hiredTotal = rolesQ.data?.hired_total ?? 0;
-  const hiredFt = rolesQ.data?.hired_ft ?? 0;
-  const hiredContract = rolesQ.data?.hired_contract ?? 0;
+  const placementsTotal = placementsQ.data?.total ?? 0;
+  const placementsFt = placementsQ.data?.ft ?? 0;
+  const placementsContract = placementsQ.data?.contract ?? 0;
 
   // ── Owner breakdown (from opportunities list) ───────────────────────────
 
@@ -167,17 +169,19 @@ export function JobsLeadership() {
         <div className="grid grid-cols-2 gap-px overflow-hidden rounded-[8px] border border-border-strong bg-border-strong shadow-[var(--shadow-sm)] sm:grid-cols-4">
           <NorthStarCell
             label="Placements"
-            value={rolesQ.isLoading ? "—" : hiredTotal}
-            isLoading={rolesQ.isLoading}
-            valueColor={statusColor(hiredTotal, TARGET_PLACEMENTS * 0.7)}
+            value={placementsQ.isLoading ? "—" : placementsTotal}
+            isLoading={placementsQ.isLoading}
+            valueColor={statusColor(placementsTotal, TARGET_PLACEMENTS * 0.7)}
             sub={`of ${TARGET_PLACEMENTS} by end of July`}
             subLead={
-              rolesQ.isLoading ? undefined : `FT ${hiredFt} · PT/Contract ${hiredContract}`
+              placementsQ.isLoading
+                ? undefined
+                : `FT ${placementsFt} · PT/Contract ${placementsContract}`
             }
             progress={{
-              value: hiredTotal,
+              value: placementsTotal,
               max: TARGET_PLACEMENTS,
-              colorClass: progressBarColor(hiredTotal, TARGET_PLACEMENTS * 0.7),
+              colorClass: progressBarColor(placementsTotal, TARGET_PLACEMENTS * 0.7),
             }}
             icon={<Target size={14} />}
             onClick={() => setOpenMetric("placements")}
@@ -567,17 +571,17 @@ function JobsRolesSection({ rolesQ }: { rolesQ: RolesQuery }) {
     }
   }
 
-  const cards: { label: string; value: string | number; subtitle?: string }[] = [
-    { label: "Hired — Full-Time", value: rolesQ.isLoading ? "—" : (rolesQ.data?.hired_ft ?? 0) },
-    { label: "Hired — PT/Contract", value: rolesQ.isLoading ? "—" : (rolesQ.data?.hired_contract ?? 0) },
+  const cards: { label: string; value: string | number; sub?: string }[] = [
+    { label: "Hired — Full-Time", value: rolesQ.data?.hired_ft ?? 0 },
+    { label: "Hired — PT/Contract", value: rolesQ.data?.hired_contract ?? 0 },
     {
       label: "Committed Roles",
-      value: rolesQ.isLoading ? "—" : (rolesQ.data?.committed ?? 0),
-      subtitle: "hired + interviewing",
+      value: rolesQ.data?.committed ?? 0,
+      sub: "hired + interviewing",
     },
     {
       label: "Avg $ (FT Placed)",
-      value: rolesQ.isLoading ? "—" : fmtSalary(rolesQ.data?.avg_salary_ft),
+      value: fmtSalary(rolesQ.data?.avg_salary_ft),
     },
   ];
 
@@ -591,22 +595,17 @@ function JobsRolesSection({ rolesQ }: { rolesQ: RolesQuery }) {
 
   return (
     <div className="flex flex-col gap-4">
-      {/* Breakdown cards */}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-4">
+      {/* Breakdown strip */}
+      <div className="flex flex-col divide-y divide-border-strong overflow-hidden rounded-[8px] border border-border-strong bg-surface shadow-[var(--shadow-sm)] sm:flex-row sm:divide-y-0 sm:divide-x">
         {cards.map((c) => (
-          <div
-            key={c.label}
-            className="flex flex-col gap-2 rounded-[8px] border border-border-strong bg-surface p-4 shadow-[var(--shadow-sm)]"
-          >
+          <div key={c.label} className="flex flex-1 flex-col gap-1 px-4 py-3">
             <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
               {c.label}
             </span>
-            {c.subtitle ? (
-              <span className="text-[10.5px] text-ink-4 -mt-1">{c.subtitle}</span>
-            ) : null}
-            <span className="font-mono text-[28px] font-semibold leading-none tabular-nums text-ink">
-              {c.value}
+            <span className="font-mono text-[20px] font-semibold leading-none tabular-nums text-ink">
+              {rolesQ.isLoading ? "—" : c.value}
             </span>
+            {c.sub ? <span className="text-[10px] text-ink-4">{c.sub}</span> : null}
           </div>
         ))}
       </div>

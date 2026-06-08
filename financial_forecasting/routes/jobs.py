@@ -175,8 +175,18 @@ async def metric_drilldown(
         {"key": "influence", "label": "Influence"},
     ]
 
+    def _type_label(t):
+        if t == "full_time":
+            return "Full-Time"
+        if t in ("contract", "freelance"):
+            return "PT / Contract"
+        return (t or "—").replace("_", " ").title()
+
     async def placements(where: str):
-        rows = await conn.fetch(f"SELECT * FROM bedrock.secured_jobs() WHERE {where} ORDER BY builder")
+        # Only PAID placements count as secured jobs (excludes unpaid freelance / pro-bono).
+        rows = await conn.fetch(
+            f"SELECT * FROM bedrock.secured_jobs() WHERE payment_amount > 0 AND {where} ORDER BY builder"
+        )
         out = []
         for r in rows:
             out.append({
@@ -184,7 +194,7 @@ async def metric_drilldown(
                 "builder": r["builder"],
                 "role_title": r["role_title"] or "—",
                 "company_name": r["company_name"] or "—",
-                "employment_type": r["employment_type"] or "—",
+                "employment_type": _type_label(r["employment_type"]),
                 "influence": ("Influenced" if r["influenced"] is True
                               else "Self-sourced" if r["influenced"] is False else "Unclassified"),
             })
@@ -233,15 +243,18 @@ async def get_placements(user=Depends(require_auth), conn=Depends(get_db)):
     """
     rows = await conn.fetch("SELECT * FROM bedrock.secured_jobs() ORDER BY influenced DESC NULLS LAST, company_name")
 
-    def is_ft(t):     return t == "full_time"
+    def is_ft(t):       return t == "full_time"
     def is_contract(t): return t in ("contract", "freelance")
 
-    total = len(rows)
-    influenced   = sum(1 for r in rows if r["influenced"] is True)
-    self_sourced = sum(1 for r in rows if r["influenced"] is False)
-    unclassified = sum(1 for r in rows if r["influenced"] is None)
-    ft    = sum(1 for r in rows if is_ft(r["employment_type"]))
-    contract = sum(1 for r in rows if is_contract(r["employment_type"]))
+    # A placement counts as secured only if it's PAID (excludes unpaid freelance / pro-bono).
+    paid = [r for r in rows if r["payment_amount"] and r["payment_amount"] > 0]
+
+    total        = len(paid)
+    ft           = sum(1 for r in paid if is_ft(r["employment_type"]))
+    contract     = sum(1 for r in paid if is_contract(r["employment_type"]))
+    influenced   = sum(1 for r in paid if r["influenced"] is True)
+    self_sourced = sum(1 for r in paid if r["influenced"] is False)
+    unclassified = sum(1 for r in paid if r["influenced"] is None)
 
     return {
         "success": True,
