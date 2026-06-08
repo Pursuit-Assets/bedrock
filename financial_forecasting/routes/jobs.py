@@ -31,6 +31,22 @@ VALID_STAGES = {
 
 VALID_DEAL_TYPES = {"ft", "pt_contract", "capstone", "volunteer", "workshop", "pilot"}
 
+# SQL predicate (alias `a`) selecting activity relevant to the jobs pipeline:
+# manual logs + synced (gmail/calendar) touches tied to a jobs opportunity
+# (its SF account or the deal itself) or to a jobs prospect. This is what makes
+# the Performance dashboard's Outreach / Calls reflect the nightly sync.
+JOBS_ACTIVITY_SCOPE = """
+    a.source = 'manual'
+    OR a.jobs_opportunity_id IS NOT NULL
+    OR a.account_id IN (
+        SELECT account_id FROM bedrock.jobs_opportunity
+        WHERE deleted_at IS NULL AND account_id IS NOT NULL AND account_id <> ''
+    )
+    OR a.participant_public_contact_id IN (
+        SELECT contact_id FROM public.contacts WHERE is_jobs_contact = true
+    )
+"""
+
 STAGE_LABELS = {
     "lead_submitted":               "Lead Submitted",
     "initial_outreach":             "Initial Outreach",
@@ -138,12 +154,27 @@ async def metric_drilldown(
         return deal_cols, [dict(r) for r in rows], "deal"
 
     async def activity(where: str):
+        # Jobs-scoped activity = manual logs + synced (gmail/calendar) touches tied
+        # to a jobs opportunity (account or deal) or a jobs prospect. Keeps the
+        # Outreach/Calls metrics reflecting the nightly Gmail/Calendar sync.
         rows = await conn.fetch(
             f"SELECT id, type, subject, activity_date, logged_by, description "
-            f"FROM bedrock.activity WHERE source='manual' AND deleted_at IS NULL AND {where} "
+            f"FROM bedrock.activity a WHERE a.deleted_at IS NULL AND ({JOBS_ACTIVITY_SCOPE}) AND {where} "
             f"ORDER BY activity_date DESC NULLS LAST LIMIT 500"
         )
         return activity_cols, [dict(r) for r in rows], "activity"
+
+    async def engaged_prospects(_where: str):
+        # Distinct jobs prospects we've actually had activity with (linked via
+        # participant_public_contact_id by the jobs-activity-link pass).
+        rows = await conn.fetch(
+            "SELECT contact_id AS id, full_name, current_company, current_title, contact_stage, email "
+            "FROM public.contacts ct WHERE ct.is_jobs_contact=true AND EXISTS("
+            "  SELECT 1 FROM bedrock.activity a "
+            "  WHERE a.participant_public_contact_id = ct.contact_id AND a.deleted_at IS NULL) "
+            "ORDER BY full_name"
+        )
+        return contact_cols, [dict(r) for r in rows], "contact"
 
     # Company-level rollup for the "Companies with…" metrics — one row per company.
     company_cols = [
@@ -216,11 +247,11 @@ async def metric_drilldown(
 
     DISPATCH = {
         "total_leads":          ("Total Leads",              lambda: contacts("true")),
-        "engaged_leads":        ("Engaged Leads",            lambda: contacts(f"contact_stage IN {ENGAGED}")),
-        "outreach_week":        ("Outreach — Last 7 Days",   lambda: activity("activity_date >= now() - interval '7 days'")),
+        "engaged_leads":        ("Engaged Prospects",        lambda: engaged_prospects("true")),
+        "outreach_week":        ("Outreach — Last 7 Days",   lambda: activity("a.activity_date >= now() - interval '7 days'")),
         "outreach_total":       ("All Outreach",             lambda: activity("true")),
-        "calls_total":          ("Calls — All Time",         lambda: activity("type='call'")),
-        "calls_week":           ("Calls — Last 7 Days",      lambda: activity("type='call' AND activity_date >= now() - interval '7 days'")),
+        "calls_total":          ("Calls & Meetings — All Time", lambda: activity("a.type IN ('call','meeting')")),
+        "calls_week":           ("Calls & Meetings — Last 7 Days", lambda: activity("a.type IN ('call','meeting') AND a.activity_date >= now() - interval '7 days'")),
         "active_orgs":          ("Active Orgs",              lambda: deals("stage LIKE 'active_%'")),
         "active_companies":     ("Active Companies",         lambda: deals("stage LIKE 'active_%'")),
         "in_discussion":        ("In Discussion",            lambda: deals("stage='active_in_discussions'")),
@@ -626,53 +657,73 @@ async def get_funnel(ftype: str, user=Depends(require_auth), conn=Depends(get_db
 
 @router.get("/roles")
 async def get_roles(user=Depends(require_auth), conn=Depends(get_db)):
-    """Jobs / roles view — committed & hired counts + per-application rows.
+    """Jobs / roles view — hired counts (from placements) + pipeline rows.
 
-    Backed by public.job_applications (Pursuit-referred):
-      Committed Roles    = applications hired OR interviewing (accepted + interview)
-      Closed/Hired Roles = applications accepted
-      Avg $ Closed/Hired = avg salary of accepted applications
-    Builder name comes from the 'Name: …' prefix stored in notes on import.
+    Hired is counted by DISTINCT BUILDER from paid placements
+    (public.employment_records, the single source of truth), matching the North
+    Star numbers — NOT by application:
+      hired_ft       = distinct builders with any paid FULL-TIME placement
+      hired_contract = distinct builders in any paid work that is NOT full-time
+                       (so the two partition the "in any paid work" total)
+      avg_salary_ft  = avg pay of those FT builders' FT placements
+    Interviewing / applied / rejected / withdrawn come from the submission
+    funnel (public.job_applications, Pursuit-referred). Builder name comes from
+    the 'Name: …' prefix stored in notes on import.
     """
-    # Each application carries its opportunity's deal_type so hired roles split FT vs PT/Contract.
-    # is_contract = deal_type is a part-time/contract variant.
-    rows = await conn.fetch("""
+    # ── Hired: distinct paid builders from employment_records ────────────────
+    plc = await conn.fetch(
+        "SELECT * FROM bedrock.secured_jobs() WHERE payment_amount > 0 ORDER BY builder"
+    )
+    by_builder: dict = {}
+    for r in plc:
+        b = by_builder.setdefault(r["user_id"], {"builder": r["builder"], "recs": []})
+        b["recs"].append(r)
+
+    out_rows = []
+    hired_ft = hired_contract = 0
+    ft_salaries: list[int] = []
+    for uid, b in by_builder.items():
+        recs = b["recs"]
+        ft_recs = [r for r in recs if r["employment_type"] == "full_time"]
+        is_ft = bool(ft_recs)
+        # representative placement: best FT record for FT builders, else best paid
+        pool = ft_recs if is_ft else recs
+        rep = max(pool, key=lambda r: r["payment_amount"] or 0)
+        salary = int(rep["payment_amount"]) if rep["payment_amount"] is not None else None
+        if is_ft:
+            hired_ft += 1
+            if salary:
+                ft_salaries.append(salary)
+        else:
+            hired_contract += 1
+        out_rows.append({
+            "id": f"plc-{uid}",
+            "builder": b["builder"] or "—",
+            "role_title": rep["role_title"] or "—",
+            "company_name": rep["company_name"] or "—",
+            "salary": salary,
+            "stage": "accepted",
+            "segment": "hired_ft" if is_ft else "hired_contract",
+        })
+
+    # ── Pipeline (not-yet-hired): submission funnel from job_applications ─────
+    apps = await conn.fetch("""
         SELECT
             ja.job_application_id AS id,
             trim(split_part(ja.notes, ':', 1)) AS builder,
             ja.role_title,
             ja.company_name,
             CASE WHEN ja.salary ~ '^[0-9]+$' THEN ja.salary::int ELSE NULL END AS salary,
-            ja.stage,
-            jo.deal_type,
-            (jo.deal_type IN ('pt_contract','contract','volunteer','capstone')) AS is_contract
+            ja.stage
         FROM public.job_applications ja
-        LEFT JOIN bedrock.jobs_opportunity jo ON jo.id = ja.jobs_opportunity_id
-        WHERE ja.source_type='Pursuit_referred'
+        WHERE ja.source_type='Pursuit_referred' AND ja.stage <> 'accepted'
         ORDER BY
-            CASE ja.stage WHEN 'accepted' THEN 0 WHEN 'interview' THEN 1
-                          WHEN 'applied' THEN 2 ELSE 3 END,
-            (ja.salary ~ '^[0-9]+$') DESC,
-            ja.company_name
+            CASE ja.stage WHEN 'interview' THEN 1 WHEN 'applied' THEN 2 ELSE 3 END,
+            (ja.salary ~ '^[0-9]+$') DESC, ja.company_name
     """)
-
-    def seg(stage, is_contract):
-        if stage == "accepted":
-            return "hired_contract" if is_contract else "hired_ft"
-        return {"interview": "interviewing", "applied": "applied",
-                "rejected": "rejected", "withdrawn": "withdrawn"}.get(stage, "other")
-
-    out_rows = []
-    hired_ft = hired_contract = 0
-    ft_salaries = []
-    for r in rows:
-        s = seg(r["stage"], r["is_contract"])
-        if s == "hired_ft":
-            hired_ft += 1
-            if r["salary"]:
-                ft_salaries.append(r["salary"])
-        elif s == "hired_contract":
-            hired_contract += 1
+    seg_map = {"interview": "interviewing", "applied": "applied",
+               "rejected": "rejected", "withdrawn": "withdrawn"}
+    for r in apps:
         out_rows.append({
             "id": str(r["id"]),
             "builder": r["builder"] or "—",
@@ -680,7 +731,7 @@ async def get_roles(user=Depends(require_auth), conn=Depends(get_db)):
             "company_name": r["company_name"] or "—",
             "salary": r["salary"],
             "stage": r["stage"],
-            "segment": s,
+            "segment": seg_map.get(r["stage"], "other"),
         })
 
     interviewing = sum(1 for r in out_rows if r["segment"] == "interviewing")
@@ -691,7 +742,7 @@ async def get_roles(user=Depends(require_auth), conn=Depends(get_db)):
         "data": {
             "committed":       hired_ft + hired_contract + interviewing,  # hired + interviewing
             "hired_ft":        hired_ft,
-            "hired_contract":  hired_contract,
+            "hired_contract":  hired_contract,  # = builders in any paid work, not FT
             "hired_total":     hired_ft + hired_contract,
             "avg_salary_ft":   avg_ft,
             "rows": out_rows,
@@ -718,25 +769,37 @@ async def get_contacts_summary(user=Depends(require_auth), conn=Depends(get_db))
         FROM public.contacts WHERE is_jobs_contact = true
         GROUP BY contact_stage ORDER BY count DESC
     """)
-    total   = sum(r["count"] for r in stages)
-    engaged = sum(r["count"] for r in stages if r["contact_stage"] in ("initial_outreach", "active", "on_hold"))
+    total = sum(r["count"] for r in stages)
 
-    # Outreach = manually-logged engagements (imported Emp. Engagements + new logs).
-    # NOT filtered to deal-linked: most engagements are logged against a company/
-    # contact, not a specific deal — matching the Airtable engagement log.
-    activity = await conn.fetchrow("""
+    # Engaged = distinct jobs prospects we've actually had activity with (manual
+    # or synced gmail/calendar), linked via participant_public_contact_id by the
+    # jobs-activity-link pass. Grows as the nightly scrape lands new touches.
+    engaged = await conn.fetchval("""
+        SELECT count(DISTINCT ct.contact_id)
+        FROM public.contacts ct
+        WHERE ct.is_jobs_contact = true
+          AND EXISTS (
+            SELECT 1 FROM bedrock.activity a
+            WHERE a.participant_public_contact_id = ct.contact_id AND a.deleted_at IS NULL
+          )
+    """)
+
+    # Outreach/Calls = jobs-scoped activity (manual logs + synced gmail/calendar
+    # touches tied to a jobs opportunity or prospect). "Calls" includes calendar
+    # meetings — the synchronous touchpoints captured by the calendar scrape.
+    activity = await conn.fetchrow(f"""
         SELECT
             count(*)                                                            AS outreach_total,
             count(*) FILTER (WHERE a.activity_date >= now() - interval '7 days') AS outreach_this_week,
-            count(*) FILTER (WHERE a.type='call')                               AS calls_total,
-            count(*) FILTER (WHERE a.type='call'
+            count(*) FILTER (WHERE a.type IN ('call','meeting'))                AS calls_total,
+            count(*) FILTER (WHERE a.type IN ('call','meeting')
                              AND a.activity_date >= now() - interval '7 days')  AS calls_this_week,
             count(*) FILTER (WHERE a.type='meeting')                            AS meetings_total,
             count(*) FILTER (WHERE a.activity_date >= now() - interval '30 days') AS outreach_this_month,
             count(DISTINCT a.logged_by)                                         AS active_owners
         FROM bedrock.activity a
-        WHERE a.source = 'manual'
-          AND a.deleted_at IS NULL
+        WHERE a.deleted_at IS NULL
+          AND ({JOBS_ACTIVITY_SCOPE})
     """)
 
     active_companies = await conn.fetchval("""

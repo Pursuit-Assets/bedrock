@@ -84,14 +84,30 @@ async def run_interaction_sync(conn_or_pool, days_back: int = 90) -> dict[str, A
     except Exception as e:
         logger.error("domain enrichment failed: %s", e)
 
+    # Jobs-prospect link pass — resolve newly-synced activity to jobs prospects
+    # so the Performance dashboard's Engaged/Outreach/Calls reflect this run.
+    # Bounded to the synced window (+ a margin) to stay cheap.
+    prospects_linked = 0
+    try:
+        from services.jobs_activity_link import relink_jobs_prospect_activity
+        link_conn = await _get_conn()
+        try:
+            link_result = await relink_jobs_prospect_activity(link_conn, days_back=days_back + 1)
+            prospects_linked = link_result.get("linked", 0)
+        finally:
+            await _release_conn(link_conn)
+    except Exception as e:
+        logger.error("jobs-prospect activity link failed: %s", e)
+
     logger.info(
-        "interaction sync complete: %d staff, %d gmail, %d calendar, %d domains auto-mapped",
-        len(results), total_gmail, total_cal, domains_mapped,
+        "interaction sync complete: %d staff, %d gmail, %d calendar, %d domains auto-mapped, %d jobs prospects linked",
+        len(results), total_gmail, total_cal, domains_mapped, prospects_linked,
     )
     return {
         "staff_count": len(results),
         "gmail_upserted": total_gmail,
         "calendar_upserted": total_cal,
         "domains_auto_mapped": domains_mapped,
+        "jobs_prospects_linked": prospects_linked,
         "by_staff": results,
     }

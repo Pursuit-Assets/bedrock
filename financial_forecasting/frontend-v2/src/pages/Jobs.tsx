@@ -10,8 +10,8 @@ type View = "performance" | "team" | "contacts";
 
 const VIEWS = [
   { id: "performance" as View, label: "Performance", icon: BarChart3, desc: "Pipeline health & metrics" },
-  { id: "team" as View,        label: "Deals",       icon: Kanban,    desc: "Day-to-day deal management" },
-  { id: "contacts" as View,    label: "Contacts",    icon: Users,     desc: "All employer contacts" },
+  { id: "team" as View,        label: "Opportunities", icon: Kanban,  desc: "Day-to-day deal management" },
+  { id: "contacts" as View,    label: "Prospects",   icon: Users,     desc: "All employer prospects" },
 ];
 
 export function JobsPage() {

@@ -222,7 +222,7 @@ export function JobsLeadership() {
             label="Engaged"
             value={engagedLeads ?? "—"}
             isLoading={contactsLoading}
-            sub="initial email & beyond"
+            sub="prospects we've contacted"
             onClick={() => setOpenMetric("engaged_leads")}
           />
           <ActivityStat
@@ -233,7 +233,7 @@ export function JobsLeadership() {
             onClick={() => setOpenMetric("outreach_week")}
           />
           <ActivityStat
-            label="Calls · wk"
+            label="Calls/Mtgs · wk"
             value={callsThisWeek ?? "—"}
             isLoading={contactsLoading}
             sub={`${callsAllTime ?? "—"} all time`}
@@ -389,7 +389,7 @@ type RolesQuery = ReturnType<typeof useJobRoles>;
 
 const SEGMENT_TABS: { segment: RoleSegment; label: string }[] = [
   { segment: "hired_ft", label: "Hired — FT" },
-  { segment: "hired_contract", label: "Hired — PT/Contract" },
+  { segment: "hired_contract", label: "Hired — Other Paid" },
   { segment: "interviewing", label: "Interviewing" },
   { segment: "applied", label: "Applied" },
   { segment: "rejected", label: "Rejected" },
@@ -461,7 +461,7 @@ function JobsRolesSection({ rolesQ }: { rolesQ: RolesQuery }) {
 
   const cards: { label: string; value: string | number; sub?: string }[] = [
     { label: "Hired — Full-Time", value: rolesQ.data?.hired_ft ?? 0 },
-    { label: "Hired — PT/Contract", value: rolesQ.data?.hired_contract ?? 0 },
+    { label: "Hired — Other Paid", value: rolesQ.data?.hired_contract ?? 0, sub: "any paid work, not FT" },
     {
       label: "Committed Roles",
       value: rolesQ.data?.committed ?? 0,
