@@ -113,11 +113,11 @@ export function JobsLeadership() {
   );
   const avgSalary = closedWonSummary?.avg_salary ?? null;
 
-  // ── Placements breakdown (from paid employment_records) ─────────────────
+  // ── Builders placed (distinct builders, paid work) ──────────────────────
+  // Two tracked numbers: placed full-time, and placed in any paid work.
 
-  const placementsTotal = placementsQ.data?.total ?? 0;
-  const placementsFt = placementsQ.data?.ft ?? 0;
-  const placementsContract = placementsQ.data?.contract ?? 0;
+  const placedFt = placementsQ.data?.ft_builders ?? 0;
+  const placedAny = placementsQ.data?.any_builders ?? 0;
 
   // ── Owner breakdown (from opportunities list) ───────────────────────────
 
@@ -168,20 +168,16 @@ export function JobsLeadership() {
       <SectionWrap title="North Star · Outcomes">
         <div className="grid grid-cols-2 gap-px overflow-hidden rounded-[8px] border border-border-strong bg-border-strong shadow-[var(--shadow-sm)] sm:grid-cols-4">
           <NorthStarCell
-            label="Placements"
-            value={placementsQ.isLoading ? "—" : placementsTotal}
+            label="Builders Placed FT"
+            value={placementsQ.isLoading ? "—" : placedFt}
             isLoading={placementsQ.isLoading}
-            valueColor={statusColor(placementsTotal, TARGET_PLACEMENTS * 0.7)}
+            valueColor={statusColor(placedFt, TARGET_PLACEMENTS * 0.7)}
             sub={`of ${TARGET_PLACEMENTS} by end of July`}
-            subLead={
-              placementsQ.isLoading
-                ? undefined
-                : `FT ${placementsFt} · PT/Contract ${placementsContract}`
-            }
+            subLead={placementsQ.isLoading ? undefined : `${placedAny} in any paid work`}
             progress={{
-              value: placementsTotal,
+              value: placedFt,
               max: TARGET_PLACEMENTS,
-              colorClass: progressBarColor(placementsTotal, TARGET_PLACEMENTS * 0.7),
+              colorClass: progressBarColor(placedFt, TARGET_PLACEMENTS * 0.7),
             }}
             icon={<Target size={14} />}
             onClick={() => setOpenMetric("placements")}

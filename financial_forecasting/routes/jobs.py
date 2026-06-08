@@ -183,12 +183,19 @@ async def metric_drilldown(
         return (t or "—").replace("_", " ").title()
 
     async def placements(where: str):
-        # Only PAID placements count as secured jobs (excludes unpaid freelance / pro-bono).
+        # DISTINCT builders with PAID work (a builder appears once — their best placement).
         rows = await conn.fetch(
-            f"SELECT * FROM bedrock.secured_jobs() WHERE payment_amount > 0 AND {where} ORDER BY builder"
+            f"SELECT * FROM bedrock.secured_jobs() WHERE payment_amount > 0 AND {where}"
         )
-        out = []
+        by_b: dict = {}
         for r in rows:
+            uid = r["user_id"]
+            cur = by_b.get(uid)
+            key = (r["employment_type"] == "full_time", r["influenced"] is True, r["payment_amount"] or 0)
+            if cur is None or key >= cur[0]:
+                by_b[uid] = (key, r)
+        out = []
+        for _, r in sorted(by_b.values(), key=lambda kv: (kv[1]["employment_type"] != "full_time", kv[1]["builder"] or "")):
             out.append({
                 "id": str(r["id"]),
                 "builder": r["builder"],
@@ -241,43 +248,58 @@ async def get_placements(user=Depends(require_auth), conn=Depends(get_db)):
     Counts ALL placements (incl. builder self-sourced, no deal link) and
     separates by `influenced` (jobs-team influenced / self-sourced / unclassified).
     """
-    rows = await conn.fetch("SELECT * FROM bedrock.secured_jobs() ORDER BY influenced DESC NULLS LAST, company_name")
+    rows = await conn.fetch("SELECT * FROM bedrock.secured_jobs() WHERE payment_amount > 0")
 
-    def is_ft(t):       return t == "full_time"
-    def is_contract(t): return t in ("contract", "freelance")
+    # Metric is DISTINCT BUILDERS placed (a builder with 2 PT jobs counts once).
+    # Two tracked numbers: any paid work, and full-time.
+    def best(a, b):
+        """Pick the more representative placement for a builder: FT > influenced > higher pay."""
+        ka = (a["employment_type"] == "full_time", a["influenced"] is True, a["payment_amount"] or 0)
+        kb = (b["employment_type"] == "full_time", b["influenced"] is True, b["payment_amount"] or 0)
+        return a if ka >= kb else b
 
-    # A placement counts as secured only if it's PAID (excludes unpaid freelance / pro-bono).
-    paid = [r for r in rows if r["payment_amount"] and r["payment_amount"] > 0]
+    by_builder: dict = {}
+    for r in rows:
+        uid = r["user_id"]
+        by_builder[uid] = best(by_builder[uid], r) if uid in by_builder else r
 
-    total        = len(paid)
-    ft           = sum(1 for r in paid if is_ft(r["employment_type"]))
-    contract     = sum(1 for r in paid if is_contract(r["employment_type"]))
-    influenced   = sum(1 for r in paid if r["influenced"] is True)
-    self_sourced = sum(1 for r in paid if r["influenced"] is False)
-    unclassified = sum(1 for r in paid if r["influenced"] is None)
+    # A builder is FT-placed if ANY of their paid records is full_time.
+    ft_uids   = {r["user_id"] for r in rows if r["employment_type"] == "full_time"}
+    any_uids  = set(by_builder.keys())
+    infl_uids = {r["user_id"] for r in rows if r["influenced"] is True}
+
+    ft_builders   = len(ft_uids)
+    any_builders  = len(any_uids)
+    infl_ft       = len(ft_uids & infl_uids)
+    infl_any      = len(any_uids & infl_uids)
+
+    # One row per builder for the drill list (their representative placement)
+    out = []
+    for uid, r in sorted(by_builder.items(),
+                         key=lambda kv: (kv[1]["employment_type"] != "full_time", kv[1]["builder"] or "")):
+        et = r["employment_type"]
+        type_label = ("Full-Time" if et == "full_time"
+                      else "PT / Contract" if et in ("contract", "freelance")
+                      else (et or "—").replace("_", " ").title())
+        out.append({
+            "id": str(r["id"]),
+            "builder": r["builder"],
+            "role_title": r["role_title"] or "—",
+            "company_name": r["company_name"] or "—",
+            "employment_type": type_label,
+            "ft_placed": uid in ft_uids,
+            "influenced": r["influenced"],
+            "salary": int(r["payment_amount"]) if r["payment_amount"] else None,
+        })
 
     return {
         "success": True,
         "data": {
-            "total": total,
-            "influenced": influenced,
-            "self_sourced": self_sourced,
-            "unclassified": unclassified,
-            "ft": ft,
-            "contract": contract,
-            "rows": [
-                {
-                    "id": str(r["id"]),
-                    "builder": r["builder"],
-                    "role_title": r["role_title"] or "—",
-                    "company_name": r["company_name"] or "—",
-                    "employment_type": r["employment_type"] or "—",
-                    "engagement_stage": r["engagement_stage"],
-                    "influenced": r["influenced"],
-                    "salary": int(r["payment_amount"]) if r["payment_amount"] else None,
-                }
-                for r in rows
-            ],
+            "ft_builders":  ft_builders,
+            "any_builders": any_builders,
+            "influenced_ft":  infl_ft,
+            "influenced_any": infl_any,
+            "rows": out,
         },
     }
 

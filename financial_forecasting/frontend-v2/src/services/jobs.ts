@@ -290,12 +290,10 @@ export interface Placement {
 }
 
 export interface PlacementsSummary {
-  total: number;
-  influenced: number;
-  self_sourced: number;
-  unclassified: number;
-  ft: number;
-  contract: number;
+  ft_builders: number;
+  any_builders: number;
+  influenced_ft: number;
+  influenced_any: number;
   rows: Placement[];
 }
 
