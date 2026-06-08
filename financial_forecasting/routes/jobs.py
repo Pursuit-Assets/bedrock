@@ -670,41 +670,47 @@ async def get_roles(user=Depends(require_auth), conn=Depends(get_db)):
     funnel (public.job_applications, Pursuit-referred). Builder name comes from
     the 'Name: …' prefix stored in notes on import.
     """
-    # ── Hired: distinct paid builders from employment_records ────────────────
-    plc = await conn.fetch(
-        "SELECT * FROM bedrock.secured_jobs() WHERE payment_amount > 0 ORDER BY builder"
-    )
-    by_builder: dict = {}
-    for r in plc:
-        b = by_builder.setdefault(r["user_id"], {"builder": r["builder"], "recs": []})
-        b["recs"].append(r)
+    # ── Hired: placements from employment_records ────────────────────────────
+    # COUNTS (cards) are by DISTINCT BUILDER with a recorded amount (payment > 0)
+    # — "don't count them unless >0". But the table SHOWS every placement record,
+    # including ones with no amount yet ("show all, even with $0"), so the team
+    # can see (and backfill) them. Excludes pro_bono (never paid) and pipeline
+    # (not an actual placement yet).
+    plc = await conn.fetch("""
+        SELECT * FROM bedrock.secured_jobs()
+        WHERE employment_type <> 'pro_bono'
+          AND (engagement_stage IS NULL OR engagement_stage NOT IN ('pipeline'))
+        ORDER BY (payment_amount > 0) DESC NULLS LAST, payment_amount DESC NULLS LAST, builder
+    """)
 
     out_rows = []
-    hired_ft = hired_contract = 0
+    ft_builders: set = set()
+    other_builders: set = set()
     ft_salaries: list[int] = []
-    for uid, b in by_builder.items():
-        recs = b["recs"]
-        ft_recs = [r for r in recs if r["employment_type"] == "full_time"]
-        is_ft = bool(ft_recs)
-        # representative placement: best FT record for FT builders, else best paid
-        pool = ft_recs if is_ft else recs
-        rep = max(pool, key=lambda r: r["payment_amount"] or 0)
-        salary = int(rep["payment_amount"]) if rep["payment_amount"] is not None else None
-        if is_ft:
-            hired_ft += 1
-            if salary:
+    for r in plc:
+        is_ft = r["employment_type"] == "full_time"
+        salary = int(r["payment_amount"]) if r["payment_amount"] is not None else None
+        # distinct-builder counts only credit recorded paid work (payment > 0)
+        if salary and salary > 0:
+            if is_ft:
+                ft_builders.add(r["user_id"])
                 ft_salaries.append(salary)
-        else:
-            hired_contract += 1
+            else:
+                other_builders.add(r["user_id"])
         out_rows.append({
-            "id": f"plc-{uid}",
-            "builder": b["builder"] or "—",
-            "role_title": rep["role_title"] or "—",
-            "company_name": rep["company_name"] or "—",
+            "id": str(r["id"]),
+            "builder": r["builder"] or "—",
+            "role_title": r["role_title"] or "—",
+            "company_name": r["company_name"] or "—",
             "salary": salary,
             "stage": "accepted",
             "segment": "hired_ft" if is_ft else "hired_contract",
         })
+
+    # A builder counted as FT shouldn't also be counted under "other paid".
+    other_builders -= ft_builders
+    hired_ft = len(ft_builders)
+    hired_contract = len(other_builders)
 
     # ── Pipeline (not-yet-hired): submission funnel from job_applications ─────
     apps = await conn.fetch("""

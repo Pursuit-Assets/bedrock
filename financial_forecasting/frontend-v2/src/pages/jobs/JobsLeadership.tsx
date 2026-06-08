@@ -498,6 +498,12 @@ function JobsRolesSection({ rolesQ }: { rolesQ: RolesQuery }) {
         ))}
       </div>
 
+      {/* Counting note — cards count distinct paid builders; table lists all */}
+      <p className="-mt-1 text-[11px] text-ink-4">
+        Hired counts are distinct builders with pay recorded (&gt;$0). The table
+        lists every placement, including paid work without an amount entered yet.
+      </p>
+
       {/* Segment tabs + search */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="inline-flex flex-wrap rounded-lg border border-border-strong bg-surface-2 p-1">
