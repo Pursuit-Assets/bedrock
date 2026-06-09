@@ -1620,3 +1620,244 @@ async def log_activity(
     )
     row = await conn.fetchrow("SELECT * FROM bedrock.activity WHERE id=$1", row_id)
     return {"success": True, "data": dict(row)}
+
+
+# ============================================================================
+# Builders tab — per-builder job-search view (L3 population)
+# ============================================================================
+# Reads identity/apps/placements/intake/learning from platform+bedrock sources;
+# the editable coach/readiness/competency overlay lives in
+# bedrock.builder_job_profile. Status is auto-derived with a manual override.
+
+BUILDER_STATUSES = {"not_started", "actively_applying", "interviewing", "placed", "paused"}
+_READY_KEYS = ("ready_lookbook", "ready_linkedin", "ready_github", "ready_cv", "ready_mock")
+
+
+def _derive_builder_status(placed: bool, interviewing: bool, applying: bool) -> str:
+    if placed:
+        return "placed"
+    if interviewing:
+        return "interviewing"
+    if applying:
+        return "actively_applying"
+    return "not_started"
+
+
+def _is_placed(payment_amount, engagement_stage) -> bool:
+    # "Placed" = a PAID placement, consistent with the placements / North-Star
+    # definition. Unpaid active/completed freelance projects don't count — those
+    # builders are still job-searching.
+    return (payment_amount or 0) > 0
+
+
+@router.get("/builders/board")
+async def builders_board(user=Depends(require_auth), conn=Depends(get_db)):
+    """One row per L3 builder: derived status, counts, readiness, coach."""
+    builders = await conn.fetch("SELECT * FROM bedrock.l3_builders() ORDER BY full_name")
+
+    apps = await conn.fetch("""
+        SELECT builder_id,
+               count(*)                                                    AS total,
+               count(*) FILTER (WHERE stage = 'interview')                 AS interviews,
+               bool_or(date_applied >= CURRENT_DATE - INTERVAL '60 days')  AS recent
+        FROM public.job_applications
+        WHERE source_type = 'Pursuit_referred'
+        GROUP BY builder_id
+    """)
+    apps_by = {r["builder_id"]: r for r in apps}
+
+    plc_by: dict = {}
+    for r in await conn.fetch("SELECT user_id, payment_amount, engagement_stage, opportunity_id FROM bedrock.secured_jobs()"):
+        b = plc_by.setdefault(r["user_id"], {"count": 0, "placed": False, "deals": set()})
+        b["count"] += 1
+        if _is_placed(r["payment_amount"], r["engagement_stage"]):
+            b["placed"] = True
+        if r["opportunity_id"]:
+            b["deals"].add(r["opportunity_id"])
+
+    enrolled = {r["builder_id"] for r in await conn.fetch("SELECT DISTINCT builder_id FROM public.job_strategy_enrollments")}
+    profs = {r["user_id"]: r for r in await conn.fetch("SELECT * FROM bedrock.builder_job_profile")}
+
+    out = []
+    status_counts = {s: 0 for s in BUILDER_STATUSES}
+    for b in builders:
+        uid = b["user_id"]
+        a, p, prof = apps_by.get(uid), plc_by.get(uid), profs.get(uid)
+        interviews = a["interviews"] if a else 0
+        placed = bool(p and p["placed"])
+        applying = (uid in enrolled) or bool(a and a["recent"])
+        derived = _derive_builder_status(placed, interviews > 0, applying)
+        overridden = bool(prof and prof["status_overridden"])
+        status = prof["job_search_status"] if (overridden and prof and prof["job_search_status"]) else derived
+        status_counts[status] = status_counts.get(status, 0) + 1
+        ready = {k: bool(prof[k]) if prof else False for k in _READY_KEYS}
+        out.append({
+            "user_id": uid, "name": b["full_name"], "email": b["email"],
+            "cohort": b["cohort"], "cohort_completed": b["cohort_completed"],
+            "status": status, "status_overridden": overridden,
+            "coach": prof["pursuit_coach"] if prof else None,
+            "counts": {
+                "applications": (a["total"] if a else 0),
+                "interviews": interviews,
+                "placements": (p["count"] if p else 0),
+                "deal_matches": (len(p["deals"]) if p else 0),
+            },
+            "readiness": {"complete": sum(ready.values()), "total": len(_READY_KEYS),
+                          **{k.replace("ready_", ""): v for k, v in ready.items()}},
+            "prof_strength": prof["prof_strength"] if prof else None,
+            "technical_strength": prof["technical_strength"] if prof else None,
+            "has_profile": prof is not None,
+        })
+    return {"success": True, "data": {"builders": out, "status_counts": status_counts}}
+
+
+def _jsonb(v):
+    import json as _json
+    if v is None:
+        return None
+    return _json.loads(v) if isinstance(v, str) else v
+
+
+@router.get("/builders/{user_id}")
+async def builder_detail(user_id: int, user=Depends(require_auth), conn=Depends(get_db)):
+    """Full per-builder detail: identity + apps/interviews/placements/deals +
+    platform intake + learning model + editable job profile + derived status."""
+    ident = await conn.fetchrow("SELECT * FROM bedrock.l3_builders() WHERE user_id = $1", user_id)
+    if not ident:
+        raise HTTPException(404, "Builder not found in the L3 population")
+
+    apps = await conn.fetch("""
+        SELECT job_application_id AS id, company_name, role_title, stage,
+               date_applied, salary, job_url, response_date
+        FROM public.job_applications
+        WHERE builder_id = $1 AND source_type = 'Pursuit_referred'
+        ORDER BY date_applied DESC NULLS LAST
+    """, user_id)
+    placements = await conn.fetch("""
+        SELECT id, role_title, company_name, employment_type, payment_amount,
+               engagement_stage, influenced, opportunity_id, start_date
+        FROM bedrock.secured_jobs() WHERE user_id = $1
+        ORDER BY (payment_amount > 0) DESC NULLS LAST, payment_amount DESC NULLS LAST
+    """, user_id)
+    deal_ids = [r["opportunity_id"] for r in placements if r["opportunity_id"]]
+    deals = []
+    if deal_ids:
+        deals = await conn.fetch("""
+            SELECT id, account_name, stage, deal_type, owner_email
+            FROM bedrock.jobs_opportunity WHERE id = ANY($1::uuid[]) AND deleted_at IS NULL
+        """, deal_ids)
+
+    quiz = await conn.fetch("""
+        SELECT question_key, response_text, response_structured
+        FROM public.job_strategy_quiz_responses WHERE builder_id = $1
+    """, user_id)
+    enrollment = await conn.fetchrow("""
+        SELECT current_profile, onboarding_completed_at, has_coach
+        FROM public.job_strategy_enrollments WHERE builder_id = $1
+        ORDER BY updated_at DESC NULLS LAST LIMIT 1
+    """, user_id)
+    learning = await conn.fetchrow("""
+        SELECT skill_levels, competencies, interview_readiness
+        FROM public.builder_profiles WHERE user_id = $1
+    """, user_id)
+    prof = await conn.fetchrow("SELECT * FROM bedrock.builder_job_profile WHERE user_id = $1", user_id)
+
+    placed = any(_is_placed(r["payment_amount"], r["engagement_stage"]) for r in placements)
+    interviewing = any(r["stage"] == "interview" for r in apps)
+    recent = any(r["date_applied"] and (datetime.now().date() - r["date_applied"]).days <= 60 for r in apps)
+    applying = enrollment is not None or recent
+    derived = _derive_builder_status(placed, interviewing, applying)
+    overridden = bool(prof and prof["status_overridden"])
+    status = prof["job_search_status"] if (overridden and prof and prof["job_search_status"]) else derived
+
+    profile = None
+    if prof:
+        profile = dict(prof)
+        profile["intake"] = _jsonb(profile.get("intake"))
+
+    return {"success": True, "data": {
+        "identity": {
+            "user_id": ident["user_id"], "name": ident["full_name"], "email": ident["email"],
+            "cohort": ident["cohort"], "cohort_completed": ident["cohort_completed"],
+            "linkedin_url": ident["linkedin_url"], "github_url": ident["github_url"],
+        },
+        "status": status, "status_overridden": overridden, "derived_status": derived,
+        "applications": [dict(r) for r in apps],
+        "placements": [dict(r) for r in placements],
+        "deal_matches": [dict(r) for r in deals],
+        "intake_quiz": [{"question_key": r["question_key"], "response_text": r["response_text"],
+                         "response_structured": _jsonb(r["response_structured"])} for r in quiz],
+        "enrollment": dict(enrollment) if enrollment else None,
+        "learning": ({"skill_levels": _jsonb(learning["skill_levels"]),
+                      "competencies": _jsonb(learning["competencies"]),
+                      "interview_readiness": learning["interview_readiness"]} if learning else None),
+        "profile": profile,
+    }}
+
+
+class BuilderProfileUpdate(BaseModel):
+    job_search_status:      Optional[str] = None
+    status_overridden:      Optional[bool] = None
+    pursuit_coach:          Optional[str] = None
+    gen_notes:              Optional[str] = None
+    coach_notes:            Optional[str] = None
+    coach_flags:            Optional[list[str]] = None
+    improvement_tags:       Optional[list[str]] = None
+    ready_lookbook:         Optional[bool] = None
+    ready_linkedin:         Optional[bool] = None
+    ready_github:           Optional[bool] = None
+    ready_cv:               Optional[bool] = None
+    ready_mock:             Optional[bool] = None
+    technical_capability:   Optional[str] = None
+    ai_reasoning:           Optional[str] = None
+    problem_solving:        Optional[str] = None
+    presentation:           Optional[str] = None
+    professional_behaviors: Optional[str] = None
+    prof_strength:          Optional[str] = None
+    technical_strength:     Optional[str] = None
+    target_industries:      Optional[list[str]] = None
+    preferred_modes:        Optional[list[str]] = None
+    certifications:         Optional[list[str]] = None
+    resume_url:             Optional[str] = None
+    lookbook_url:           Optional[str] = None
+    university:             Optional[str] = None
+    degree:                 Optional[str] = None
+    graduation_year:        Optional[int] = None
+    languages:              Optional[list[str]] = None
+    applying_regularly:     Optional[bool] = None
+    networking_regularly:   Optional[bool] = None
+    intake:                 Optional[dict] = None
+
+
+@router.patch("/builders/{user_id}")
+async def update_builder_profile(user_id: int, body: BuilderProfileUpdate,
+                                 user=Depends(require_auth), conn=Depends(get_db)):
+    """Upsert the builder's job-profile overlay. Setting job_search_status flips
+    status_overridden on; pass status_overridden=false to revert to derived.
+    intake is merged (||) rather than replaced."""
+    fields = body.dict(exclude_unset=True)
+    if "job_search_status" in fields and "status_overridden" not in fields:
+        fields["status_overridden"] = True
+    if not fields:
+        raise HTTPException(400, "No fields to update")
+
+    import json as _json
+    cols, vals = ["user_id"], [user_id]
+    for k, v in fields.items():
+        cols.append(k)
+        vals.append(_json.dumps(v) if k == "intake" else v)
+    ph = [f"${i+1}" for i in range(len(cols))]
+    sets = []
+    for k in cols[1:]:
+        if k == "intake":
+            sets.append("intake = bedrock.builder_job_profile.intake || EXCLUDED.intake")
+        else:
+            sets.append(f"{k} = EXCLUDED.{k}")
+    sets.append("updated_at = now()")
+    sql = (f"INSERT INTO bedrock.builder_job_profile ({', '.join(cols)}) "
+           f"VALUES ({', '.join(ph)}) "
+           f"ON CONFLICT (user_id) DO UPDATE SET {', '.join(sets)} RETURNING *")
+    row = await conn.fetchrow(sql, *vals)
+    d = dict(row)
+    d["intake"] = _jsonb(d.get("intake"))
+    return {"success": True, "data": d}

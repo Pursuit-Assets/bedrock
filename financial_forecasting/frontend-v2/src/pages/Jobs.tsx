@@ -1,17 +1,19 @@
 import { useState } from "react";
-import { BarChart3, Kanban, Users } from "lucide-react";
+import { BarChart3, Kanban, Users, GraduationCap } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { cn } from "@/lib/utils";
 import { JobsTeam } from "./jobs/JobsTeam";
 import { JobsLeadership } from "./jobs/JobsLeadership";
 import { JobsContacts } from "./jobs/JobsContacts";
+import { JobsBuilders } from "./jobs/JobsBuilders";
 
-type View = "performance" | "team" | "contacts";
+type View = "performance" | "team" | "contacts" | "builders";
 
 const VIEWS = [
   { id: "performance" as View, label: "Performance", icon: BarChart3, desc: "Pipeline health & metrics" },
   { id: "team" as View,        label: "Opportunities", icon: Kanban,  desc: "Day-to-day deal management" },
   { id: "contacts" as View,    label: "Prospects",   icon: Users,     desc: "All employer prospects" },
+  { id: "builders" as View,    label: "Builders",    icon: GraduationCap, desc: "Per-builder job search" },
 ];
 
 export function JobsPage() {
@@ -50,6 +52,7 @@ export function JobsPage() {
         {view === "performance" && <JobsLeadership />}
         {view === "team"        && <JobsTeam />}
         {view === "contacts"    && <JobsContacts />}
+        {view === "builders"    && <JobsBuilders />}
       </div>
     </div>
   );

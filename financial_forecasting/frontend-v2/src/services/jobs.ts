@@ -676,3 +676,128 @@ export function useDeleteOpportunity() {
     },
   });
 }
+
+// ── Builders tab ──────────────────────────────────────────────────────────────
+
+export type BuilderStatus =
+  | "not_started" | "actively_applying" | "interviewing" | "placed" | "paused";
+
+export const BUILDER_STATUS_ORDER: BuilderStatus[] = [
+  "actively_applying", "interviewing", "placed", "paused", "not_started",
+];
+
+export const BUILDER_STATUS_LABELS: Record<BuilderStatus, string> = {
+  not_started: "Not Started",
+  actively_applying: "Actively Applying",
+  interviewing: "Interviewing",
+  placed: "Placed",
+  paused: "Paused",
+};
+
+export const BUILDER_STATUS_STYLES: Record<BuilderStatus, string> = {
+  not_started:       "text-ink-3 bg-surface-2",
+  actively_applying: "text-[var(--accent)] bg-[var(--accent-soft)]",
+  interviewing:      "text-[var(--amber)] bg-[var(--amber-soft)]",
+  placed:            "text-[var(--green)] bg-[var(--green-soft)]",
+  paused:            "text-ink-3 bg-surface-2",
+};
+
+export interface BuilderBoardRow {
+  user_id: number;
+  name: string | null;
+  email: string | null;
+  cohort: string | null;
+  cohort_completed: boolean;
+  status: BuilderStatus;
+  status_overridden: boolean;
+  coach: string | null;
+  counts: { applications: number; interviews: number; placements: number; deal_matches: number };
+  readiness: { complete: number; total: number; lookbook: boolean; linkedin: boolean; github: boolean; cv: boolean; mock: boolean };
+  prof_strength: string | null;
+  technical_strength: string | null;
+  has_profile: boolean;
+}
+
+export interface BuilderBoard {
+  builders: BuilderBoardRow[];
+  status_counts: Record<BuilderStatus, number>;
+}
+
+export interface BuilderApplication {
+  id: number; company_name: string | null; role_title: string | null; stage: string | null;
+  date_applied: string | null; salary: string | null; job_url: string | null; response_date: string | null;
+}
+export interface BuilderPlacement {
+  id: number; role_title: string | null; company_name: string | null; employment_type: string | null;
+  payment_amount: number | null; engagement_stage: string | null; influenced: boolean | null;
+  opportunity_id: string | null; start_date: string | null;
+}
+export interface BuilderDealMatch {
+  id: string; account_name: string | null; stage: JobStage; deal_type: DealType | null; owner_email: string | null;
+}
+export interface BuilderJobProfile {
+  job_search_status: string | null; status_overridden: boolean;
+  pursuit_coach: string | null; gen_notes: string | null; coach_notes: string | null;
+  coach_flags: string[]; improvement_tags: string[];
+  ready_lookbook: boolean; ready_linkedin: boolean; ready_github: boolean; ready_cv: boolean; ready_mock: boolean;
+  technical_capability: string | null; ai_reasoning: string | null; problem_solving: string | null;
+  presentation: string | null; professional_behaviors: string | null;
+  prof_strength: string | null; technical_strength: string | null;
+  target_industries: string[]; preferred_modes: string[]; certifications: string[];
+  resume_url: string | null; lookbook_url: string | null;
+  university: string | null; degree: string | null; graduation_year: number | null; languages: string[];
+  applying_regularly: boolean | null; networking_regularly: boolean | null;
+  intake: Record<string, unknown> | null;
+}
+export interface BuilderDetail {
+  identity: {
+    user_id: number; name: string | null; email: string | null; cohort: string | null;
+    cohort_completed: boolean; linkedin_url: string | null; github_url: string | null;
+  };
+  status: BuilderStatus; status_overridden: boolean; derived_status: BuilderStatus;
+  applications: BuilderApplication[];
+  placements: BuilderPlacement[];
+  deal_matches: BuilderDealMatch[];
+  intake_quiz: { question_key: string; response_text: string | null; response_structured: unknown }[];
+  enrollment: { current_profile: string | null; onboarding_completed_at: string | null; has_coach: boolean | null } | null;
+  learning: { skill_levels: Record<string, number> | null; competencies: unknown; interview_readiness: number | null } | null;
+  profile: BuilderJobProfile | null;
+}
+
+export function useBuilderBoard() {
+  return useQuery<BuilderBoard>({
+    queryKey: ["jobs", "builders"],
+    queryFn: async () => {
+      const { data } = await api.get<ApiResponse<BuilderBoard>>("/api/jobs/builders/board");
+      return data.data;
+    },
+    staleTime: 30_000,
+  });
+}
+
+export function useBuilderDetail(userId: number | null) {
+  return useQuery<BuilderDetail>({
+    queryKey: ["jobs", "builder", userId],
+    queryFn: async () => {
+      const { data } = await api.get<ApiResponse<BuilderDetail>>(`/api/jobs/builders/${userId}`);
+      return data.data;
+    },
+    enabled: userId !== null,
+    staleTime: 30_000,
+  });
+}
+
+export function useUpdateBuilderProfile() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ userId, ...body }: { userId: number; [k: string]: unknown }) => {
+      const { data } = await api.patch<ApiResponse<BuilderJobProfile>>(`/api/jobs/builders/${userId}`, body);
+      return data.data;
+    },
+    onSuccess: (_d, vars) => {
+      qc.invalidateQueries({ queryKey: ["jobs", "builders"] });
+      qc.invalidateQueries({ queryKey: ["jobs", "builder", vars.userId] });
+    },
+    onError: () => toast.error("Update failed"),
+  });
+}
