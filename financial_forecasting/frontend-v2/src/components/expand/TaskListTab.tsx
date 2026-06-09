@@ -84,6 +84,9 @@ export function TaskListTab({
   // panel so different parent records (per-account, per-owner) each
   // keep their own toggle.
   const [overdueOnly, setOverdueOnly] = useState(false);
+  // Open / Completed / All scope. Defaults to open; completed tasks are
+  // returned by the backend already, just hidden until you switch.
+  const [scope, setScope] = useState<"open" | "completed" | "all">("open");
   const [query, setQuery] = useState("");
   const { sort, toggle } = useSort<TaskSortKey>();
 
@@ -91,12 +94,17 @@ export function TaskListTab({
     () => tasks.filter((t) => !isTaskClosed(t)),
     [tasks],
   );
+  const closed = useMemo(
+    () => tasks.filter((t) => isTaskClosed(t)),
+    [tasks],
+  );
   const overdueCount = useMemo(
     () => open.filter(isOverdue).length,
     [open],
   );
   const visible = useMemo(() => {
-    const base = overdueOnly ? open.filter(isOverdue) : open;
+    let base = scope === "open" ? open : scope === "completed" ? closed : [...open, ...closed];
+    if (scope === "open" && overdueOnly) base = base.filter(isOverdue);
     const q = query.trim().toLowerCase();
     const filtered = base.filter((t) => {
       if (!q) return true;
@@ -113,7 +121,7 @@ export function TaskListTab({
         case "due": return t.ActivityDate ?? "";
       }
     });
-  }, [open, overdueOnly, query, sort]);
+  }, [open, closed, scope, overdueOnly, query, sort]);
 
   const saveStatus = (id: string, status: string) =>
     updateTask.mutateAsync({ id, patch: { Status: status } }).then(() => undefined);
@@ -140,20 +148,37 @@ export function TaskListTab({
   return (
     <div className="px-4 py-3">
       <div className="mb-2 flex items-center justify-between gap-3 text-[11px] uppercase tracking-wider text-ink-3">
-        <span>
-          {isLoading ? "…" : `${visible.length} ${overdueOnly ? "overdue" : "open"}`}
+        <div className="flex items-center gap-3">
+          {/* Open / Completed / All scope toggle */}
+          <div className="inline-flex rounded border border-border-strong bg-surface-2 p-0.5">
+            {([["open", "Open", open.length], ["completed", "Completed", closed.length], ["all", "All", open.length + closed.length]] as const).map(
+              ([s, label, n]) => (
+                <button
+                  key={s}
+                  type="button"
+                  onClick={() => { setScope(s); if (s !== "open") setOverdueOnly(false); }}
+                  className={cn(
+                    "rounded px-2 py-0.5 text-[10.5px] font-semibold normal-case transition-colors",
+                    scope === s ? "bg-surface text-ink shadow-sm" : "text-ink-3 hover:text-ink-2",
+                  )}
+                >
+                  {label} <span className="tabular-nums opacity-70">{n}</span>
+                </button>
+              ),
+            )}
+          </div>
           {overdueOnly ? (
             <button
               type="button"
               onClick={() => setOverdueOnly(false)}
-              className="ml-1.5 normal-case text-ink-3 underline underline-offset-2 hover:text-ink"
+              className="normal-case text-ink-3 underline underline-offset-2 hover:text-ink"
             >
-              show all open ({open.length})
+              showing overdue — show all open
             </button>
           ) : null}
-        </span>
+        </div>
         <div className="flex items-center gap-3">
-          {overdueCount > 0 ? (
+          {scope === "open" && overdueCount > 0 ? (
             <button
               type="button"
               onClick={() => setOverdueOnly((v) => !v)}
@@ -167,7 +192,7 @@ export function TaskListTab({
               {overdueCount} overdue
             </button>
           ) : null}
-          {open.length > 0 ? <TaskSearchBox value={query} onChange={setQuery} /> : null}
+          {tasks.length > 0 ? <TaskSearchBox value={query} onChange={setQuery} /> : null}
         </div>
       </div>
 
@@ -216,7 +241,13 @@ export function TaskListTab({
                     colSpan={6}
                     className="px-4 py-5 text-center text-[12px] italic text-ink-3"
                   >
-                    {overdueOnly ? "No overdue tasks." : emptyMessage}
+                    {overdueOnly
+                      ? "No overdue tasks."
+                      : scope === "completed"
+                        ? "No completed tasks."
+                        : scope === "all"
+                          ? "No tasks."
+                          : emptyMessage}
                   </td>
                 </tr>
               ) : (
@@ -237,7 +268,7 @@ export function TaskListTab({
               )}
             </tbody>
           </table>
-          {onCreate && !overdueOnly ? (
+          {onCreate && !overdueOnly && scope !== "completed" ? (
             <NewTaskRow placeholder={placeholder} onCreate={onCreate} ownerOptions={ownerOptions} />
           ) : null}
         </div>
