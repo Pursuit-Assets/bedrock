@@ -16,16 +16,17 @@ make; request them.
 
 ## 1. What this tool is
 
-Three surfaces under `/jobs` (frontend `src/pages/Jobs.tsx`):
+Four surfaces under `/jobs` (frontend `src/pages/Jobs.tsx`):
 - **Performance** (default tab) — leadership metrics, funnels, placements
-- **Deals** — day-to-day opportunity management (the kanban/list + expand panels)
-- **Contacts** — employer-contact management
+- **Opportunities** — day-to-day deal management (the kanban/list + expand panels)
+- **Prospects** — employer-contact management
+- **Builders** — per-builder job-search view (L3 cohort): table + status board + detail drawer
 
 Backend lives in `financial_forecasting/routes/jobs.py` (+ `candidates.py`).
 
 ---
 
-## 2. Data model — the 5 things, and what each means
+## 2. Data model — the 6 things, and what each means
 
 | Concept | Table | Represents | Notes |
 |---------|-------|-----------|-------|
@@ -34,6 +35,7 @@ Backend lives in `financial_forecasting/routes/jobs.py` (+ `candidates.py`).
 | **Builder application** | `public.job_applications` (`source_type='Pursuit_referred'`) | The submission pipeline: applied → interview → accepted | SHARED table — 600+ rows are Pathfinder builder self-logs; only `Pursuit_referred` (~70) are ours |
 | **Secured job / placement** | `public.employment_records` | **THE single source of truth for placements** | SHARED. `influenced` = jobs-team / self-sourced / null. `opportunity_id` links to the won deal |
 | **Activity** | `bedrock.activity` (`jobs_opportunity_id` set, or `source='manual'`) | Emails/calls/meetings logged against deals | Gmail/Calendar sync also writes here |
+| **Builder job profile** | `bedrock.builder_job_profile` (PK `user_id`) | The coach/readiness/competency overlay for the Builders tab | Jobs-team-owned. Stores ONLY Airtable-origin fields with no platform home (coach + notes, readiness checklist, competency ratings, target industries, education, long-tail `intake` jsonb). Everything else on the Builders tab (identity, apps, placements, intake-quiz, learning model) is READ/joined from platform sources — never duplicated. Edit via `PATCH /builders/{id}` only. |
 
 ### The two pipelines are different lenses — don't conflate them
 - **`job_applications`** = the *submission funnel* (did we put a builder forward?).
@@ -75,7 +77,9 @@ All under `/api/jobs`. All require auth (bearer/cookie, already handled by the a
 | `GET /contacts/search?q=` | search ALL 32k contacts (SF/LinkedIn/Airtable) for pickers |
 | `GET /metrics/{key}` | generic drill-down: `{title, columns, rows, entity, child_columns}` — backs the MetricDrawer. keys: total_leads, engaged_leads, outreach_week, calls_total, calls_week, active_orgs, in_discussion, builder_interviews, placements, candidates_submitted, interviewing |
 | `GET /staff?q=` | active Pursuit staff (owner picker) |
-| `GET /builders?search=` | platform builders (builder picker) |
+| `GET /builders?search=` | platform builders (builder **picker** — for matching builders to deals; distinct from the Builders-tab routes below) |
+| `GET /builders/board` | Builders tab: one row per L3 builder — derived `status`, counts (apps/interviews/placements/deal_matches), readiness summary, coach — plus top-level `status_counts` |
+| `GET /builders/{user_id}` | full builder detail: identity + applications/interviews/placements/deal-matches + platform intake-quiz + learning model + the editable `builder_job_profile` overlay + derived status |
 | `GET /placements/unlinked?q=` | employment_records not yet tied to a deal |
 | `GET /opportunities/{id}/placements` | placements linked to a deal |
 
@@ -93,8 +97,14 @@ All under `/api/jobs`. All require auth (bearer/cookie, already handled by the a
 | `POST /opportunities/{id}/placements` | record a hire (creates employment_record, influenced=true). **Dedup-guarded**: enriches existing record if builder already placed at that company |
 | `POST /opportunities/{id}/placements/{pid}/link` | link existing employment_record to a won deal |
 | `PATCH /placements/{id}` | set influence attribution |
+| `PATCH /builders/{user_id}` | upsert the `builder_job_profile` overlay (coach, notes, readiness, ratings, prefs, `intake`). Setting `job_search_status` flips `status_overridden=true`; pass `status_overridden:false` to revert to the auto-derived status; `intake` is merged (not replaced) |
 
-Drawer/expand patterns already built you can reuse: `MetricDrawer` (generic drill, supports inline-edit dropdowns for deal/contact and expandable rows for placements), `JobsFunnels` (3-funnel switcher with per-stage expand + movement).
+Drawer/expand patterns already built you can reuse: `MetricDrawer` (generic drill, supports inline-edit dropdowns for deal/contact and expandable rows for placements), `JobsFunnels` (3-funnel switcher with per-stage expand + movement), `BuilderDetailDrawer` (sectioned per-builder profile with inline edits).
+
+### Builders tab specifics (read before extending)
+- **Population** = builders who completed an **L3 cohort**, via the SECURITY DEFINER `bedrock.l3_builders()` (it bypasses RLS on `public.users`/`user_profiles`). "Completed" is a badge (cohort end-date), not a filter.
+- **Job-search status is auto-derived** and must NOT be re-derived in the frontend — the API returns it: paid placement → `placed`; interview-stage application → `interviewing`; job-strategy enrollment or app in last 60d → `actively_applying`; else `not_started`. A row in `builder_job_profile` with `status_overridden=true` pins a manual value.
+- **`bedrock.builder_job_profile` is editable only through `PATCH /builders/{id}`.** Don't write the table directly, and don't add columns without a migration. The one-time Airtable import is `scripts/import_airtable_builders.py` (idempotent; don't re-run casually).
 
 ---
 
