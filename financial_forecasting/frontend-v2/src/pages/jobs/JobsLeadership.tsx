@@ -204,7 +204,8 @@ export function JobsLeadership() {
           Prospect Activity
         </div>
         <div className="text-[11px] text-ink-4">
-          Top-of-funnel engagement feeding the pipeline.
+          Top-of-funnel engagement feeding the pipeline. Outreach counts first
+          touches by the jobs team only — each contact counts once, ever.
         </div>
         <div className="mt-1 flex flex-col divide-y divide-border-strong overflow-hidden rounded-[8px] border border-border-strong bg-surface shadow-[var(--shadow-sm)] sm:flex-row sm:divide-y-0 sm:divide-x">
           <ActivityStat
@@ -226,17 +227,17 @@ export function JobsLeadership() {
             onClick={() => setOpenMetric("engaged_leads")}
           />
           <ActivityStat
-            label="Outreach · wk"
+            label="New Outreach · wk"
             value={outreachThisWeek ?? "—"}
             isLoading={contactsLoading}
-            sub={`${outreachAllTime ?? "—"} all time`}
+            sub={`${outreachAllTime ?? "—"} contacts reached all time`}
             onClick={() => setOpenMetric("outreach_week")}
           />
           <ActivityStat
-            label="Calls/Mtgs · wk"
+            label="New Calls/Mtgs · wk"
             value={callsThisWeek ?? "—"}
             isLoading={contactsLoading}
-            sub={`${callsAllTime ?? "—"} all time`}
+            sub={`${callsAllTime ?? "—"} contacts met all time`}
             onClick={() => setOpenMetric("calls_week")}
           />
         </div>

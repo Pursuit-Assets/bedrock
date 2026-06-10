@@ -47,6 +47,56 @@ JOBS_ACTIVITY_SCOPE = """
     )
 """
 
+# The jobs team's mailboxes. The Outreach and Calls/Mtgs dashboard metrics count
+# FIRST TOUCHES by these senders only: each external contact counts once, ever,
+# across the whole team (3 emails to the same person in a week = 1; emailing
+# someone the team already reached before = 0). Synced gmail/calendar only —
+# manual deal-logs have no counterpart email to dedupe on.
+JOBS_TEAM_EMAILS = ["avni@pursuit.org", "damon.kornhauser@pursuit.org"]
+
+_FT_EXTERNAL = """
+        WHERE counterpart NOT LIKE '%@pursuit.org' AND counterpart NOT LIKE '%@pursuit.com'
+          AND counterpart NOT LIKE '%.calendar.google.com' AND counterpart <> ''
+"""
+
+
+def _first_touch_email_cte() -> str:
+    """CTE `ext(counterpart, first_touch)`: external recipients of outbound
+    emails sent by the jobs team, with each contact's first-ever touch date."""
+    sender = " OR ".join(f"a.email_from ILIKE '%{e}%'" for e in JOBS_TEAM_EMAILS)
+    return f"""
+    WITH outbound AS (
+      SELECT lower(e) AS counterpart, a.activity_date
+      FROM bedrock.activity a,
+           unnest(coalesce(a.email_to,'{{}}') || coalesce(a.email_cc,'{{}}')) e
+      WHERE a.source = 'gmail-sync' AND a.deleted_at IS NULL AND ({sender})
+    ),
+    ext AS (
+      SELECT counterpart, min(activity_date) AS first_touch
+      FROM outbound {_FT_EXTERNAL}
+      GROUP BY counterpart
+    )
+    """
+
+
+def _first_touch_meeting_cte() -> str:
+    """CTE `ext(counterpart, first_touch)`: external attendees of meetings on
+    the jobs team's calendars, with each person's first-ever meeting date."""
+    team = ", ".join(f"'{e}'" for e in JOBS_TEAM_EMAILS)
+    return f"""
+    WITH mtg AS (
+      SELECT lower(att->>'email') AS counterpart, a.activity_date
+      FROM bedrock.activity a, jsonb_array_elements(a.meeting_attendees) att
+      WHERE a.source = 'calendar-sync' AND a.deleted_at IS NULL
+        AND lower(a.logged_by) IN ({team})
+    ),
+    ext AS (
+      SELECT counterpart, min(activity_date) AS first_touch
+      FROM mtg {_FT_EXTERNAL}
+      GROUP BY counterpart
+    )
+    """
+
 STAGE_LABELS = {
     "lead_submitted":               "Lead Submitted",
     "initial_outreach":             "Initial Outreach",
@@ -176,6 +226,34 @@ async def metric_drilldown(
         )
         return contact_cols, [dict(r) for r in rows], "contact"
 
+    # First-touch drill: one row per external contact, with their first-ever
+    # touch by the jobs team and (when their email matches a jobs prospect)
+    # the known prospect name/company.
+    ft_cols = [
+        {"key": "email", "label": "Contact"},
+        {"key": "full_name", "label": "Known Prospect"},
+        {"key": "current_company", "label": "Company"},
+        {"key": "first_touch", "label": "First Touch"},
+    ]
+
+    async def first_touch(kind: str, where: str):
+        cte = _first_touch_email_cte() if kind == "email" else _first_touch_meeting_cte()
+        rows = await conn.fetch(f"""
+            {cte}
+            SELECT ext.counterpart AS email, ext.first_touch,
+                   p.full_name, p.current_company
+            FROM ext
+            LEFT JOIN LATERAL (
+                SELECT full_name, current_company FROM public.contacts c
+                WHERE lower(c.email) = ext.counterpart AND c.is_jobs_contact = true
+                LIMIT 1
+            ) p ON true
+            WHERE {where}
+            ORDER BY ext.first_touch DESC
+            LIMIT 500
+        """)
+        return ft_cols, [dict(r) for r in rows], "activity"
+
     # Company-level rollup for the "Companies with…" metrics — one row per company.
     company_cols = [
         {"key": "company_name", "label": "Company"},
@@ -248,10 +326,10 @@ async def metric_drilldown(
     DISPATCH = {
         "total_leads":          ("Total Leads",              lambda: contacts("true")),
         "engaged_leads":        ("Engaged Prospects",        lambda: engaged_prospects("true")),
-        "outreach_week":        ("Outreach — Last 7 Days",   lambda: activity("a.activity_date >= now() - interval '7 days'")),
-        "outreach_total":       ("All Outreach",             lambda: activity("true")),
-        "calls_total":          ("Calls & Meetings — All Time", lambda: activity("a.type IN ('call','meeting')")),
-        "calls_week":           ("Calls & Meetings — Last 7 Days", lambda: activity("a.type IN ('call','meeting') AND a.activity_date >= now() - interval '7 days'")),
+        "outreach_week":        ("New Contacts Emailed — Last 7 Days", lambda: first_touch("email", "ext.first_touch >= now() - interval '7 days'")),
+        "outreach_total":       ("Contacts Emailed — All Time",        lambda: first_touch("email", "true")),
+        "calls_total":          ("Contacts Met — All Time",            lambda: first_touch("meeting", "true")),
+        "calls_week":           ("New Contacts Met — Last 7 Days",     lambda: first_touch("meeting", "ext.first_touch >= now() - interval '7 days'")),
         "active_orgs":          ("Active Orgs",              lambda: deals("stage LIKE 'active_%'")),
         "active_companies":     ("Active Companies",         lambda: deals("stage LIKE 'active_%'")),
         "in_discussion":        ("In Discussion",            lambda: deals("stage='active_in_discussions'")),
@@ -790,23 +868,33 @@ async def get_contacts_summary(user=Depends(require_auth), conn=Depends(get_db))
           )
     """)
 
-    # Outreach/Calls = jobs-scoped activity (manual logs + synced gmail/calendar
-    # touches tied to a jobs opportunity or prospect). "Calls" includes calendar
-    # meetings — the synchronous touchpoints captured by the calendar scrape.
-    activity = await conn.fetchrow(f"""
-        SELECT
-            count(*)                                                            AS outreach_total,
-            count(*) FILTER (WHERE a.activity_date >= now() - interval '7 days') AS outreach_this_week,
-            count(*) FILTER (WHERE a.type IN ('call','meeting'))                AS calls_total,
-            count(*) FILTER (WHERE a.type IN ('call','meeting')
-                             AND a.activity_date >= now() - interval '7 days')  AS calls_this_week,
-            count(*) FILTER (WHERE a.type='meeting')                            AS meetings_total,
-            count(*) FILTER (WHERE a.activity_date >= now() - interval '30 days') AS outreach_this_month,
-            count(DISTINCT a.logged_by)                                         AS active_owners
-        FROM bedrock.activity a
-        WHERE a.deleted_at IS NULL
-          AND ({JOBS_ACTIVITY_SCOPE})
+    # Outreach / Calls = FIRST TOUCHES by the jobs team (JOBS_TEAM_EMAILS).
+    # Outreach: each external contact counts once — the week number is contacts
+    # whose first-ever outbound email from the team landed in the last 7 days.
+    # Calls/Mtgs: same first-touch rule over external attendees of meetings on
+    # the team's calendars.
+    em = await conn.fetchrow(f"""
+        {_first_touch_email_cte()}
+        SELECT count(*) FILTER (WHERE first_touch >= now() - interval '7 days')  AS wk,
+               count(*) FILTER (WHERE first_touch >= now() - interval '30 days') AS mo,
+               count(*)                                                          AS total
+        FROM ext
     """)
+    mt = await conn.fetchrow(f"""
+        {_first_touch_meeting_cte()}
+        SELECT count(*) FILTER (WHERE first_touch >= now() - interval '7 days') AS wk,
+               count(*)                                                         AS total
+        FROM ext
+    """)
+    activity = {
+        "outreach_total":     em["total"],
+        "outreach_this_week": em["wk"],
+        "outreach_this_month": em["mo"],
+        "calls_total":        mt["total"],
+        "calls_this_week":    mt["wk"],
+        "meetings_total":     mt["total"],
+        "active_owners":      len(JOBS_TEAM_EMAILS),
+    }
 
     active_companies = await conn.fetchval("""
         SELECT count(*) FROM bedrock.jobs_opportunity
