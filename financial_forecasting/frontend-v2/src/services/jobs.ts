@@ -297,7 +297,39 @@ export interface PlacementsSummary {
   any_builders: number;
   influenced_ft: number;
   influenced_any: number;
+  committed_ft_roles: number;
+  ft_roles_secured: number;
   rows: Placement[];
+}
+
+export interface WeekSummaryPerson {
+  email: string;
+  name: string | null;
+  company: string | null;
+  when: string | null;
+}
+export interface WeekSummaryProgress {
+  account: string | null;
+  from_stage: string;
+  to_stage: string;
+  when: string | null;
+}
+export interface ThisWeekSummary {
+  emailed: WeekSummaryPerson[];
+  met: WeekSummaryPerson[];
+  progressed: WeekSummaryProgress[];
+  counts: { emailed: number; met: number; progressed: number };
+}
+
+export function useThisWeekSummary() {
+  return useQuery<ThisWeekSummary>({
+    queryKey: ["jobs", "this-week-summary"],
+    queryFn: async () => {
+      const { data } = await api.get<ApiResponse<ThisWeekSummary>>("/api/jobs/this-week-summary");
+      return data.data;
+    },
+    staleTime: 30_000,
+  });
 }
 
 export function usePlacements() {

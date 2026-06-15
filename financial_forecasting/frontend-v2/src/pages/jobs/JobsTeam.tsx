@@ -21,22 +21,24 @@ import {
   type JobStage,
   type DealType,
   type JobsOpportunity,
+  type JobsOpportunityDetail,
   type JobContact,
   type ActivityCreateBody,
   type Builder,
   type ContactSearchResult,
   type OppPlacement,
 } from "@/services/jobs";
-import { JobStageChip, DealTypeChip } from "@/components/jobs/JobStageChip";
+import { JobStageChip } from "@/components/jobs/JobStageChip";
 import { OppRolesSection } from "@/components/jobs/OppRolesSection";
 import { OppBuilderActivity } from "@/components/jobs/OppBuilderActivity";
 import { JobsTasks } from "@/components/jobs/JobsTasks";
 import { JobsComments } from "@/components/jobs/JobsComments";
 import { CommittedRolesModal } from "@/components/jobs/CommittedRolesModal";
+import { RowExpandPanel, type ExpandTab } from "@/components/RowExpandPanel";
 import { InlineText, InlineDate, InlineSelect } from "@/components/ui/InlineEdit";
 import { useSort, sortBy } from "@/lib/sort";
 import { SortableHeader } from "@/components/ui/SortableHeader";
-import { ChevronDown, ChevronRight, Building2, Users, Activity, Clock, Mail, Linkedin, Trash2, X, Plus, Check } from "lucide-react";
+import { ChevronDown, ChevronRight, Mail, Linkedin, Trash2, X, Plus, Check } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { format, formatDistanceToNow } from "date-fns";
 
@@ -54,26 +56,6 @@ const OWNERS: OwnerDef[] = [
   { label: "Damon",  email: "damon.kornhauser@pursuit.org", initials: "D",  color: "bg-sky-100 text-sky-700" },
   { label: "Devika", email: "devika@pursuit.org",           initials: "De", color: "bg-rose-100 text-rose-700" },
 ];
-
-function ownerLabel(email: string | null): string {
-  if (!email) return "—";
-  const match = OWNERS.find((o) => o.email === email);
-  if (match) return match.label;
-  return email.split("@")[0] ?? email;
-}
-
-function ownerInitials(email: string | null): string {
-  if (!email) return "?";
-  const match = OWNERS.find((o) => o.email === email);
-  if (match) return match.initials;
-  const part = email.split("@")[0] ?? "";
-  return part.slice(0, 2).toUpperCase();
-}
-
-function ownerColor(email: string | null): string {
-  const match = OWNERS.find((o) => o.email === email);
-  return match?.color ?? "bg-stone-100 text-stone-600";
-}
 
 // ── Stage group filter ────────────────────────────────────────────────────────
 
@@ -93,21 +75,6 @@ function stageMatchesGroup(stage: JobStage, group: StageGroup): boolean {
   if (group === "closed") return stage.startsWith("closed");
   return true;
 }
-
-// ── Stage dropdown color ──────────────────────────────────────────────────────
-
-const STAGE_SELECT_STYLES: Record<JobStage, string> = {
-  lead_submitted:               "text-stone-600",
-  initial_outreach:             "text-blue-700",
-  active_in_discussions:        "text-amber-700",
-  active_opportunity_confirmed: "text-emerald-700",
-  active_builder_interview:     "text-emerald-800 font-semibold",
-  closed_won:                   "text-green-800 font-semibold",
-  closed_lost:                  "text-red-600",
-  on_hold_not_selected:         "text-stone-500",
-  on_hold_not_interested:       "text-stone-500",
-  on_hold_not_responsive:       "text-stone-500",
-};
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -130,42 +97,6 @@ function fmtShortDate(iso: string | null): string {
 }
 
 // ── Sub-components ────────────────────────────────────────────────────────────
-
-function OwnerAvatar({ email, size = "sm" }: { email: string | null; size?: "sm" | "md" }) {
-  const sz = size === "sm" ? "h-5 w-5 text-[10px]" : "h-6 w-6 text-[11px]";
-  return (
-    <span
-      className={cn(
-        "inline-flex items-center justify-center rounded-full font-semibold leading-none",
-        sz,
-        ownerColor(email),
-      )}
-      title={ownerLabel(email)}
-    >
-      {ownerInitials(email)}
-    </span>
-  );
-}
-
-function CountBadge({
-  count,
-  icon: Icon,
-  title,
-}: {
-  count: number;
-  icon: React.ElementType;
-  title: string;
-}) {
-  return (
-    <span
-      className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-ink-3"
-      title={title}
-    >
-      <Icon size={11} className="shrink-0" />
-      <span className="font-mono tabular-nums">{count}</span>
-    </span>
-  );
-}
 
 function Spinner() {
   return (
@@ -525,21 +456,9 @@ function StaffPicker({
   );
 }
 
-// ── Expanded detail panel ────────────────────────────────────────────────────
+// ── Expanded detail panel (tabbed via RowExpandPanel) ─────────────────────────
 
-// num_roles / likelihood live on the opp but are not yet typed in services/jobs.ts.
 type Likelihood = "low" | "medium" | "high";
-interface OppExtra {
-  num_roles: number | null;
-  likelihood: Likelihood | null;
-}
-function oppExtra(deal: JobsOpportunity): OppExtra {
-  const d = deal as unknown as Partial<OppExtra>;
-  return {
-    num_roles: d.num_roles ?? null,
-    likelihood: d.likelihood ?? null,
-  };
-}
 
 const LIKELIHOOD_OPTIONS: { value: Likelihood; label: string }[] = [
   { value: "low",    label: "Low" },
@@ -547,48 +466,119 @@ const LIKELIHOOD_OPTIONS: { value: Likelihood; label: string }[] = [
   { value: "high",   label: "High" },
 ];
 
-function DealDetailPanel({
+/**
+ * Tabbed expand panel matching PortfolioOpportunities. Drops below an
+ * expanded deal row. Reuses the shared {@link RowExpandPanel} shell so the
+ * jobs Opportunities tab feels identical to portfolio. All round-2
+ * functionality (roles, builder activity, activity log, tasks, comments,
+ * stage history, contacts) lives in dedicated tabs; tabs lazy-render so
+ * hidden tabs don't fire their queries.
+ */
+function DealExpandPanel({
   deal,
-  onRecordPlacements,
-  onCommittedRoles,
 }: {
   deal: JobsOpportunity;
-  onRecordPlacements: (deal: { id: string; account_name: string }) => void;
-  onCommittedRoles: (deal: { id: string; account_name: string }) => void;
 }) {
-  const [activeTab, setActiveTab] = useState<"activity" | "tasks" | "comments" | "history" | "contacts">("activity");
   const detailQ = useJobsOpportunity(deal.id);
-  const updateOpp = useUpdateOpportunity();
-
   const detail = detailQ.data;
-  const isPending = updateOpp.isPending;
-  const extra = oppExtra(deal);
 
-  // Only full-time / part-time-contract wins produce job placements.
-  // Capstone, volunteer, workshop, pilot wins are outcomes but not secured jobs.
-  const isPlacementType = deal.deal_type === "ft" || deal.deal_type === "pt_contract";
+  const tabs: ExpandTab[] = [
+    {
+      id: "details",
+      label: "Details",
+      render: () => <DetailsTab deal={deal} detail={detail} loading={detailQ.isLoading} />,
+    },
+    {
+      id: "roles",
+      label: "Roles",
+      render: () => (
+        <div className="px-4 py-3">
+          <OppRolesSection oppId={deal.id} />
+        </div>
+      ),
+    },
+    {
+      id: "builder-activity",
+      label: "Builder Activity",
+      render: () => (
+        <div className="px-4 py-3">
+          <OppBuilderActivity oppId={deal.id} />
+        </div>
+      ),
+    },
+    {
+      id: "activity",
+      label: "Activity",
+      count: detail?.activity?.length ?? null,
+      render: () =>
+        detailQ.isLoading ? (
+          <TabLoading />
+        ) : (
+          <div className="flex flex-col">
+            <ActivityTab entries={detail?.activity ?? []} />
+            <LogActivityForm dealId={deal.id} />
+          </div>
+        ),
+    },
+    {
+      id: "tasks",
+      label: "Tasks",
+      render: () => (
+        <div className="p-3">
+          <JobsTasks parentType="opportunity" parentId={deal.id} />
+        </div>
+      ),
+    },
+    {
+      id: "comments",
+      label: "Comments",
+      render: () => (
+        <div className="p-3">
+          <JobsComments parentType="opportunity" parentId={deal.id} />
+        </div>
+      ),
+    },
+    {
+      id: "history",
+      label: "History",
+      render: () =>
+        detailQ.isLoading ? <TabLoading /> : <HistoryTab entries={detail?.stage_history ?? []} />,
+    },
+    {
+      id: "contacts",
+      label: "Contacts",
+      count: detail?.contacts?.length ?? null,
+      render: () =>
+        detailQ.isLoading ? <TabLoading /> : <ContactsTab contacts={detail?.contacts ?? []} />,
+    },
+  ];
 
-  function handleStageChange(e: React.ChangeEvent<HTMLSelectElement>) {
-    const newStage = e.target.value as JobStage;
-    if (newStage === deal.stage) return;
-    updateOpp.mutate(
-      { id: deal.id, stage: newStage },
-      {
-        onSuccess: () => {
-          if (newStage === "closed_won" && isPlacementType) {
-            onRecordPlacements({ id: deal.id, account_name: deal.account_name });
-          } else if (newStage === "active_opportunity_confirmed") {
-            onCommittedRoles({ id: deal.id, account_name: deal.account_name });
-          }
-        },
-      },
-    );
-  }
+  return <RowExpandPanel tabs={tabs} defaultTab="details" />;
+}
 
-  function handleDealTypeChange(e: React.ChangeEvent<HTMLSelectElement>) {
-    const val = e.target.value;
-    updateOpp.mutate({ id: deal.id, deal_type: val === "" ? null : val });
-  }
+function TabLoading() {
+  return (
+    <div className="flex items-center justify-center py-8 text-[12px] text-ink-3">Loading…</div>
+  );
+}
+
+/**
+ * Details tab — the inline-edit fields that aren't shown in the row:
+ * role title, follow-up date, expected salary, touch count, description /
+ * notes, builders picker, contacts picker. Stage / deal type / likelihood /
+ * # roles / owner are edited inline in the row itself.
+ */
+function DetailsTab({
+  deal,
+  detail,
+  loading,
+}: {
+  deal: JobsOpportunity;
+  detail: JobsOpportunityDetail | undefined;
+  loading: boolean;
+}) {
+  const updateOpp = useUpdateOpportunity();
+  const contacts = detail?.contacts ?? [];
 
   function patch(fields: Record<string, unknown>) {
     return new Promise<void>((resolve, reject) => {
@@ -596,223 +586,75 @@ function DealDetailPanel({
     });
   }
 
-  // Contacts summary from detail
-  const contacts = detail?.contacts ?? [];
-
   return (
-    <div
-      className="grid min-h-[280px] grid-cols-[1fr_340px] border-t border-border-strong bg-surface"
-      style={{ boxShadow: "0 2px 8px rgba(20,18,14,0.04) inset" }}
-    >
-      {/* Left — deal fields */}
-      <div className="flex flex-col gap-4 border-r border-border-strong px-5 py-4">
-        <div className="flex flex-wrap items-center gap-3">
-          {/* Stage selector */}
-          <div className="flex items-center gap-1.5">
-            {isPending ? <Spinner /> : null}
-            <label className="text-[11px] uppercase tracking-wider text-ink-3">Stage</label>
-          </div>
-          <select
-            value={deal.stage}
-            onChange={handleStageChange}
-            disabled={isPending}
-            className={cn(
-              "rounded border border-border-strong bg-surface px-2 py-1 text-[12px] focus:outline-none focus:ring-1 focus:ring-accent/40 disabled:opacity-60",
-              STAGE_SELECT_STYLES[deal.stage],
-            )}
-          >
-            {STAGES_ORDERED.map((s) => (
-              <option key={s} value={s} className={STAGE_SELECT_STYLES[s]}>
-                {STAGE_LABELS[s]}
-              </option>
-            ))}
-          </select>
+    <div className="px-5 py-4">
+      <div className="grid grid-cols-2 gap-x-6 gap-y-3">
+        <Field label="Role Title" className="col-span-2">
+          <InlineText
+            value={deal.title}
+            placeholder="Add role title…"
+            onSave={(v) => patch({ title: v || null })}
+          />
+        </Field>
 
-          {deal.stage === "closed_won" && isPlacementType && (
-            <button
-              type="button"
-              onClick={() => onRecordPlacements({ id: deal.id, account_name: deal.account_name })}
-              className="flex items-center gap-1.5 rounded border border-border-strong bg-surface px-2.5 py-1 text-[12px] font-medium text-ink-2 transition-colors hover:border-accent hover:text-accent"
-            >
-              <Users size={12} />
-              Record placements
-            </button>
-          )}
-        </div>
+        <Field label="Follow-up Date">
+          <InlineDate
+            value={deal.follow_up_date}
+            onSave={(v) => patch({ follow_up_date: v })}
+            variant="long"
+          />
+        </Field>
 
-        <div className="grid grid-cols-2 gap-x-6 gap-y-3">
-          <Field label="Role Title" className="col-span-2">
-            <InlineText
-              value={deal.title}
-              placeholder="Add role title…"
-              onSave={(v) => patch({ title: v || null })}
-            />
-          </Field>
+        <Field label="Expected Salary $">
+          <InlineText
+            value={deal.salary_expected != null ? String(deal.salary_expected) : ""}
+            placeholder="—"
+            formatDisplay={(raw) => {
+              const n = Number(raw.replace(/[^0-9.]/g, ""));
+              return isNaN(n) ? raw : `$${n.toLocaleString("en-US")}`;
+            }}
+            onSave={(v) => {
+              const n = v === "" ? null : Number(v.replace(/[^0-9.]/g, ""));
+              return patch({ salary_expected: n === null || isNaN(n) ? null : n });
+            }}
+          />
+        </Field>
 
-          <Field label="Deal Type">
-            <select
-              value={deal.deal_type ?? ""}
-              onChange={handleDealTypeChange}
-              disabled={isPending}
-              className="w-full rounded border border-border-strong bg-surface px-2 py-1 text-[12px] text-ink-2 focus:outline-none focus:ring-1 focus:ring-accent/40 disabled:opacity-60"
-            >
-              <option value="">— none —</option>
-              {(Object.entries(DEAL_TYPE_LABELS) as [DealType, string][]).map(([k, v]) => (
-                <option key={k} value={k}>{v}</option>
-              ))}
-            </select>
-          </Field>
+        <Field label="Touch Count">
+          <InlineText
+            value={deal.touch_count > 0 ? String(deal.touch_count) : ""}
+            placeholder="0"
+            onSave={(v) => {
+              const n = v === "" ? 0 : parseInt(v, 10);
+              return patch({ touch_count: isNaN(n) ? 0 : n });
+            }}
+          />
+        </Field>
 
-          <Field label="Owner">
-            <StaffPicker
-              value={deal.owner_email}
-              onChange={(email) => patch({ owner_email: email })}
-            />
-          </Field>
+        <Field label="Builders" className="col-span-2">
+          <BuilderPicker dealId={deal.id} builderIds={deal.builder_ids} />
+        </Field>
 
-          <Field label="Follow-up Date">
-            <InlineDate
-              value={deal.follow_up_date}
-              onSave={(v) => patch({ follow_up_date: v })}
-              variant="long"
-            />
-          </Field>
-
-          <Field label="Expected Salary $">
-            <InlineText
-              value={deal.salary_expected != null ? String(deal.salary_expected) : ""}
-              placeholder="—"
-              formatDisplay={(raw) => {
-                const n = Number(raw.replace(/[^0-9.]/g, ""));
-                return isNaN(n) ? raw : `$${n.toLocaleString("en-US")}`;
-              }}
-              onSave={(v) => {
-                const n = v === "" ? null : Number(v.replace(/[^0-9.]/g, ""));
-                return patch({ salary_expected: n === null || isNaN(n) ? null : n });
-              }}
-            />
-          </Field>
-
-          <Field label="Touch Count">
-            <InlineText
-              value={deal.touch_count > 0 ? String(deal.touch_count) : ""}
-              placeholder="0"
-              onSave={(v) => {
-                const n = v === "" ? 0 : parseInt(v, 10);
-                return patch({ touch_count: isNaN(n) ? 0 : n });
-              }}
-            />
-          </Field>
-
-          <Field label="# Roles">
-            <InlineText
-              value={extra.num_roles != null ? String(extra.num_roles) : ""}
-              placeholder="—"
-              onSave={(v) => {
-                if (v.trim() === "") return patch({ num_roles: null });
-                const n = parseInt(v.replace(/[^0-9]/g, ""), 10);
-                return patch({ num_roles: isNaN(n) ? null : n });
-              }}
-            />
-          </Field>
-
-          <Field label="Likelihood">
-            <InlineSelect<Likelihood>
-              value={extra.likelihood}
-              options={LIKELIHOOD_OPTIONS}
-              emptyLabel="—"
-              onSave={(v) => patch({ likelihood: v })}
-            />
-          </Field>
-
-          <Field label="Builders" className="col-span-2">
-            <BuilderPicker dealId={deal.id} builderIds={deal.builder_ids} />
-          </Field>
-
-          <Field label="Contacts" className="col-span-2">
-            {detailQ.isLoading ? (
-              <span className="text-[12px] text-ink-4">Loading…</span>
-            ) : (
-              <ContactPicker
-                dealId={deal.id}
-                sfContactIds={deal.sf_contact_ids}
-                linkedContacts={contacts}
-              />
-            )}
-          </Field>
-
-          <Field label="Description / Notes" className="col-span-2">
-            <InlineText
-              value={deal.description}
-              placeholder="Add notes…"
-              multiline
-              onSave={(v) => patch({ description: v || null })}
-            />
-          </Field>
-        </div>
-
-        <div className="col-span-2 border-t border-border-strong pt-4">
-          <OppRolesSection oppId={deal.id} />
-        </div>
-
-        <div className="col-span-2 border-t border-border-strong pt-4">
-          <OppBuilderActivity oppId={deal.id} />
-        </div>
-      </div>
-
-      {/* Right — tabs */}
-      <div className="flex flex-col">
-        <div className="flex border-b border-border-strong bg-surface px-3 pt-2">
-          {(["activity", "tasks", "comments", "history", "contacts"] as const).map((tab) => (
-            <button
-              key={tab}
-              type="button"
-              onClick={() => setActiveTab(tab)}
-              className={cn(
-                "border-b-2 px-3 pb-1.5 pt-1 text-[12px] font-medium transition-colors",
-                activeTab === tab
-                  ? "border-accent text-ink"
-                  : "border-transparent text-ink-3 hover:text-ink-2",
-              )}
-            >
-              {tab === "activity" && "Activity"}
-              {tab === "tasks" && "Tasks"}
-              {tab === "comments" && "Comments"}
-              {tab === "history" && "History"}
-              {tab === "contacts" && (
-                <>
-                  Contacts
-                  {(detail?.contacts?.length ?? 0) > 0 && (
-                    <span className="ml-1 text-[10.5px] text-ink-4">
-                      ({detail!.contacts.length})
-                    </span>
-                  )}
-                </>
-              )}
-            </button>
-          ))}
-        </div>
-
-        <div className="flex flex-1 flex-col overflow-y-auto">
-          {detailQ.isLoading ? (
-            <div className="flex items-center justify-center py-8 text-[12px] text-ink-3">
-              Loading…
-            </div>
-          ) : activeTab === "activity" ? (
-            <>
-              <ActivityTab entries={detail?.activity ?? []} />
-              <LogActivityForm dealId={deal.id} />
-            </>
-          ) : activeTab === "tasks" ? (
-            <div className="p-3"><JobsTasks parentType="opportunity" parentId={deal.id} /></div>
-          ) : activeTab === "comments" ? (
-            <div className="p-3"><JobsComments parentType="opportunity" parentId={deal.id} /></div>
-          ) : activeTab === "history" ? (
-            <HistoryTab entries={detail?.stage_history ?? []} />
+        <Field label="Contacts" className="col-span-2">
+          {loading ? (
+            <span className="text-[12px] text-ink-4">Loading…</span>
           ) : (
-            <ContactsTab contacts={detail?.contacts ?? []} />
+            <ContactPicker
+              dealId={deal.id}
+              sfContactIds={deal.sf_contact_ids}
+              linkedContacts={contacts}
+            />
           )}
-        </div>
+        </Field>
+
+        <Field label="Description / Notes" className="col-span-2">
+          <InlineText
+            value={deal.description}
+            placeholder="Add notes…"
+            multiline
+            onSave={(v) => patch({ description: v || null })}
+          />
+        </Field>
       </div>
     </div>
   );
@@ -1220,6 +1062,17 @@ function ContactsTab({ contacts }: { contacts: JobContact[] }) {
 
 // ── Deal row ──────────────────────────────────────────────────────────────────
 
+const STAGE_OPTIONS: { value: JobStage; label: string }[] = STAGES_ORDERED.map((s) => ({
+  value: s,
+  label: STAGE_LABELS[s],
+}));
+
+const DEAL_TYPE_OPTIONS: { value: DealType; label: string }[] = (
+  Object.entries(DEAL_TYPE_LABELS) as [DealType, string][]
+).map(([value, label]) => ({ value, label }));
+
+const TOTAL_COLS = 8;
+
 function DealRow({
   deal,
   isExpanded,
@@ -1233,17 +1086,50 @@ function DealRow({
   onRecordPlacements: (deal: { id: string; account_name: string }) => void;
   onCommittedRoles: (deal: { id: string; account_name: string }) => void;
 }) {
+  const updateOpp = useUpdateOpportunity();
+
+  // Only full-time / part-time-contract wins produce job placements.
+  // Capstone, volunteer, workshop, pilot wins are outcomes but not secured jobs.
+  const isPlacementType = deal.deal_type === "ft" || deal.deal_type === "pt_contract";
+
+  function patch(fields: Record<string, unknown>) {
+    return new Promise<void>((resolve, reject) => {
+      updateOpp.mutate({ id: deal.id, ...fields }, { onSuccess: () => resolve(), onError: reject });
+    });
+  }
+
+  /** Stage change fires the committed-roles / placements modal handshake. */
+  function saveStage(stage: JobStage) {
+    if (stage === deal.stage) return Promise.resolve();
+    return new Promise<void>((resolve, reject) => {
+      updateOpp.mutate(
+        { id: deal.id, stage },
+        {
+          onSuccess: () => {
+            if (stage === "closed_won" && isPlacementType) {
+              onRecordPlacements({ id: deal.id, account_name: deal.account_name });
+            } else if (stage === "active_opportunity_confirmed") {
+              onCommittedRoles({ id: deal.id, account_name: deal.account_name });
+            }
+            resolve();
+          },
+          onError: reject,
+        },
+      );
+    });
+  }
+
   return (
     <Fragment>
       <tr
         className={cn(
-          "h-[44px] cursor-pointer border-t border-border-strong transition-colors",
+          "cursor-pointer border-t border-border-strong transition-colors",
           isExpanded ? "bg-surface-2/60" : "hover:bg-surface-2/40",
         )}
         onClick={onToggle}
       >
         {/* Chevron */}
-        <td className="w-7 px-2 align-middle">
+        <td className="w-7 px-2 py-1.5 align-middle">
           {isExpanded ? (
             <ChevronDown size={13} className="text-ink-4" />
           ) : (
@@ -1251,52 +1137,77 @@ function DealRow({
           )}
         </td>
 
-        {/* Company */}
-        <td className="px-3 align-middle">
-          <div className="flex items-center gap-2">
-            <Building2 size={13} className="shrink-0 text-ink-4" />
-            <span className="truncate text-[14px] font-semibold text-ink">
+        {/* Company + deal-title subline */}
+        <td className="px-3 py-1.5 align-middle">
+          <div className="min-w-0">
+            <span className="block truncate text-[13px] font-semibold text-ink">
               {deal.account_name}
             </span>
-          </div>
-        </td>
-
-        {/* Stage chip */}
-        <td className="w-[170px] px-3 align-middle">
-          <JobStageChip stage={deal.stage} />
-        </td>
-
-        {/* Deal type chip */}
-        <td className="w-[110px] px-3 align-middle">
-          {deal.deal_type ? (
-            <DealTypeChip type={deal.deal_type} />
-          ) : (
-            <span className="text-[11px] text-ink-4">—</span>
-          )}
-        </td>
-
-        {/* Owner avatar */}
-        <td className="w-[48px] px-3 align-middle">
-          <OwnerAvatar email={deal.owner_email} />
-        </td>
-
-        {/* Badges */}
-        <td className="w-[120px] px-1 align-middle">
-          <div className="flex items-center">
-            {deal.builder_ids.length > 0 ? (
-              <CountBadge count={deal.builder_ids.length} icon={Users} title="Builders" />
-            ) : null}
-            {(deal.activity_count ?? 0) > 0 ? (
-              <CountBadge count={deal.activity_count!} icon={Activity} title="Activities" />
-            ) : null}
-            {deal.touch_count > 0 ? (
-              <CountBadge count={deal.touch_count} icon={Clock} title="Touches" />
+            {deal.title ? (
+              <span className="block truncate text-[11px] text-ink-3">{deal.title}</span>
             ) : null}
           </div>
+        </td>
+
+        {/* Stage — inline select */}
+        <td className="w-[180px] px-3 py-1.5 align-middle" onClick={(e) => e.stopPropagation()}>
+          <InlineSelect<JobStage>
+            value={deal.stage}
+            options={STAGE_OPTIONS}
+            onSave={saveStage}
+            renderValue={(v) =>
+              v ? <JobStageChip stage={v} /> : <span className="text-ink-4">—</span>
+            }
+          />
+        </td>
+
+        {/* Deal Type — inline select */}
+        <td className="w-[130px] px-3 py-1.5 align-middle" onClick={(e) => e.stopPropagation()}>
+          <InlineSelect<DealType>
+            value={deal.deal_type}
+            options={DEAL_TYPE_OPTIONS}
+            emptyLabel="—"
+            onSave={(v) => patch({ deal_type: v })}
+          />
+        </td>
+
+        {/* Likelihood — inline select */}
+        <td className="w-[100px] px-3 py-1.5 align-middle" onClick={(e) => e.stopPropagation()}>
+          <InlineSelect<Likelihood>
+            value={deal.likelihood}
+            options={LIKELIHOOD_OPTIONS}
+            emptyLabel="—"
+            onSave={(v) => patch({ likelihood: v })}
+          />
+        </td>
+
+        {/* # Roles — inline text (numeric) */}
+        <td
+          className="w-[80px] px-3 py-1.5 text-right align-middle tabular-nums"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <InlineText
+            value={deal.num_roles != null ? String(deal.num_roles) : ""}
+            placeholder="—"
+            className="justify-end text-right"
+            onSave={(v) => {
+              if (v.trim() === "") return patch({ num_roles: null });
+              const n = parseInt(v.replace(/[^0-9]/g, ""), 10);
+              return patch({ num_roles: isNaN(n) ? null : n });
+            }}
+          />
+        </td>
+
+        {/* Owner — StaffPicker */}
+        <td className="w-[150px] px-3 py-1.5 align-middle" onClick={(e) => e.stopPropagation()}>
+          <StaffPicker
+            value={deal.owner_email}
+            onChange={(email) => patch({ owner_email: email })}
+          />
         </td>
 
         {/* Updated */}
-        <td className="w-[120px] px-3 align-middle text-right">
+        <td className="w-[120px] px-3 py-1.5 align-middle text-right">
           <span className="font-mono text-[11px] text-ink-4" title={fmtShortDate(deal.updated_at)}>
             {fmtRelative(deal.updated_at)}
           </span>
@@ -1305,12 +1216,8 @@ function DealRow({
 
       {isExpanded ? (
         <tr>
-          <td colSpan={7} className="p-0">
-            <DealDetailPanel
-              deal={deal}
-              onRecordPlacements={onRecordPlacements}
-              onCommittedRoles={onCommittedRoles}
-            />
+          <td colSpan={TOTAL_COLS} className="p-0">
+            <DealExpandPanel deal={deal} />
           </td>
         </tr>
       ) : null}
@@ -1818,7 +1725,9 @@ function PlacementsModal({
 // ── Main component ────────────────────────────────────────────────────────────
 
 type DealTypeFilter = "all" | DealType;
-type SortKey = "company" | "stage" | "type" | "updated";
+type SortKey = "company" | "stage" | "type" | "likelihood" | "num_roles" | "updated";
+
+const LIKELIHOOD_RANK: Record<Likelihood, number> = { low: 1, medium: 2, high: 3 };
 
 const DEAL_TYPE_FILTERS: DealTypeFilter[] = ["all", "ft", "pt_contract", "capstone", "volunteer", "workshop", "pilot"];
 
@@ -1850,10 +1759,12 @@ export function JobsTeam() {
       ? filtered
       : sortBy(filtered, sort, (d, key) => {
           switch (key) {
-            case "company": return d.account_name ?? "";
-            case "stage":   return STAGE_LABELS[d.stage] ?? "";
-            case "type":    return d.deal_type ? DEAL_TYPE_LABELS[d.deal_type] : "";
-            case "updated": return d.updated_at ?? "";
+            case "company":    return d.account_name ?? "";
+            case "stage":      return STAGE_LABELS[d.stage] ?? "";
+            case "type":       return d.deal_type ? DEAL_TYPE_LABELS[d.deal_type] : "";
+            case "likelihood": return d.likelihood ? LIKELIHOOD_RANK[d.likelihood] : 0;
+            case "num_roles":  return d.num_roles ?? 0;
+            case "updated":    return d.updated_at ?? "";
           }
         });
 
@@ -1923,27 +1834,6 @@ export function JobsTeam() {
           ))}
         </div>
 
-        <div className="h-4 w-px bg-border-strong" />
-
-        {/* Deal-type quick filter */}
-        <div className="flex items-center gap-1.5">
-          {DEAL_TYPE_FILTERS.map((f) => (
-            <button
-              key={f}
-              type="button"
-              onClick={() => setDealTypeFilter(f)}
-              className={cn(
-                "rounded-full border px-2.5 py-1 text-[12px] font-medium transition-colors",
-                dealTypeFilter === f
-                  ? "border-accent bg-accent/5 text-accent"
-                  : "border-border-strong bg-surface text-ink-3 hover:text-ink-2",
-              )}
-            >
-              {dealTypeFilterLabel(f)}
-            </button>
-          ))}
-        </div>
-
         {/* Count badge */}
         <span className="ml-auto font-mono text-[12px] text-ink-4">
           {isLoading ? "…" : `${visible.length} deal${visible.length === 1 ? "" : "s"}`}
@@ -1958,6 +1848,31 @@ export function JobsTeam() {
           <Plus size={12} />
           New Deal
         </button>
+      </div>
+
+      {/* Deal-type quick filter — own dedicated row so the pills are clearly
+          visible and never get clipped in the crowded toolbar above. */}
+      <div className="flex items-center gap-2 border-b border-border-strong bg-surface-2/40 px-5 py-2">
+        <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
+          Deal Type
+        </span>
+        <div className="flex flex-wrap items-center gap-1.5">
+          {DEAL_TYPE_FILTERS.map((f) => (
+            <button
+              key={f}
+              type="button"
+              onClick={() => setDealTypeFilter(f)}
+              className={cn(
+                "rounded-full border px-3 py-1 text-[12px] font-medium transition-colors",
+                dealTypeFilter === f
+                  ? "border-accent bg-accent/5 text-accent"
+                  : "border-border-strong bg-surface text-ink-3 hover:text-ink-2",
+              )}
+            >
+              {dealTypeFilterLabel(f)}
+            </button>
+          ))}
+        </div>
       </div>
 
       {showNewDeal && (
@@ -2000,14 +1915,19 @@ export function JobsTeam() {
               <th className="px-3 py-2 text-left font-semibold">
                 <SortableHeader label="Company" sortKey="company" sort={sort} onToggle={toggle} />
               </th>
-              <th className="w-[170px] px-3 py-2 text-left font-semibold">
+              <th className="w-[180px] px-3 py-2 text-left font-semibold">
                 <SortableHeader label="Stage" sortKey="stage" sort={sort} onToggle={toggle} />
               </th>
-              <th className="w-[110px] px-3 py-2 text-left font-semibold">
-                <SortableHeader label="Type" sortKey="type" sort={sort} onToggle={toggle} />
+              <th className="w-[130px] px-3 py-2 text-left font-semibold">
+                <SortableHeader label="Deal Type" sortKey="type" sort={sort} onToggle={toggle} />
               </th>
-              <th className="w-[48px] px-3 py-2 text-left font-semibold">Owner</th>
-              <th className="w-[120px] px-1 py-2 text-left font-semibold">Signals</th>
+              <th className="w-[100px] px-3 py-2 text-left font-semibold">
+                <SortableHeader label="Likelihood" sortKey="likelihood" sort={sort} onToggle={toggle} />
+              </th>
+              <th className="w-[80px] px-3 py-2 text-right font-semibold">
+                <SortableHeader label="# Roles" sortKey="num_roles" sort={sort} onToggle={toggle} align="right" />
+              </th>
+              <th className="w-[150px] px-3 py-2 text-left font-semibold">Owner</th>
               <th className="w-[120px] px-3 py-2 text-right font-semibold">
                 <SortableHeader label="Updated" sortKey="updated" sort={sort} onToggle={toggle} align="right" />
               </th>

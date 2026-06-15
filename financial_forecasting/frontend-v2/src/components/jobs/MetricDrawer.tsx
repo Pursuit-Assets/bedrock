@@ -23,7 +23,11 @@ function formatCell(colKey: string, value: string | null): string {
   if (colKey === "deal_type" && value in DEAL_TYPE_LABELS) {
     return DEAL_TYPE_LABELS[value as DealType];
   }
-  if (colKey === "activity_date" || colKey === "date_applied") {
+  // Format any date/datetime column (named *_date / *_touch / when, or an
+  // ISO-shaped value) to a readable "Jun 10, 2026" — never show raw ISO.
+  const looksDateCol = /(_date|_touch|^when$|^date$)/.test(colKey);
+  const looksIso = /^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2})?/.test(value);
+  if (looksDateCol || looksIso) {
     const d = new Date(value);
     if (!Number.isNaN(d.getTime())) {
       return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });

@@ -51,8 +51,8 @@ export function JobsFunnels() {
 
   return (
     <div className="flex flex-col gap-4">
-      {/* Funnel-type switcher */}
-      <div className="inline-flex w-fit rounded-lg border border-border-strong bg-surface-2 p-1">
+      {/* Funnel-type switcher — bubbly pill toggle */}
+      <div className="inline-flex w-fit rounded-full border border-border-strong bg-surface-2 p-1">
         {FUNNEL_TABS.map((tab) => {
           const active = tab.type === funnel;
           return (
@@ -61,11 +61,16 @@ export function JobsFunnels() {
               type="button"
               onClick={() => setFunnel(tab.type)}
               className={cn(
-                "rounded-md px-3 py-1.5 text-[12px] font-medium transition-colors",
+                "rounded-full px-3.5 py-1.5 text-[12px] font-semibold transition-all duration-200",
                 active
-                  ? "bg-surface text-ink shadow-sm"
+                  ? "text-white shadow-sm"
                   : "text-ink-3 hover:text-ink-2",
               )}
+              style={
+                active
+                  ? { background: "linear-gradient(135deg, #6d5efc 0%, #8b7dff 100%)" }
+                  : undefined
+              }
             >
               {tab.label}
             </button>
@@ -107,10 +112,16 @@ function FunnelCard({
   const [expanded, setExpanded] = useState<string | null>(null);
 
   return (
-    <section className="overflow-hidden rounded-lg border border-border-strong bg-surface shadow-sm">
-      {/* Header bar */}
-      <div className="border-b border-border-strong bg-surface-2 px-5 py-2">
-        <div className="text-[12px] font-semibold uppercase tracking-wider text-ink-3">
+    <section
+      className="overflow-hidden rounded-2xl border border-white/60 shadow-[0_1px_2px_rgba(20,18,14,0.04),0_8px_24px_-16px_rgba(20,18,14,0.3)]"
+      style={{ background: "var(--surface)" }}
+    >
+      {/* Header bar — soft gradient band */}
+      <div
+        className="border-b border-border-strong px-5 py-2.5"
+        style={{ background: "linear-gradient(135deg, #f4f3ff 0%, #fbfaff 70%)" }}
+      >
+        <div className="text-[12px] font-semibold uppercase tracking-wider text-[#4f3fe0]">
           {FUNNEL_TITLE[funnel]} Pipeline
         </div>
         <div className="mt-0.5 text-[11.5px] text-ink-3">
@@ -142,7 +153,9 @@ function FunnelCard({
           {stages.map((stage) => {
             const isExpanded = expanded === stage.key;
             const isWon = WON_STAGE_KEYS.has(stage.key);
-            const barColor = isWon ? "var(--green)" : "var(--accent)";
+            const barGradient = isWon
+              ? "linear-gradient(90deg, #15b87f 0%, #3ad29a 100%)"
+              : "linear-gradient(90deg, #6d5efc 0%, #8b7dff 100%)";
 
             return (
               <div key={stage.key}>
@@ -169,15 +182,15 @@ function FunnelCard({
                   </span>
 
                   <div
-                    className="h-2.5 flex-shrink-0 overflow-hidden rounded-full bg-surface-2"
+                    className="h-3 flex-shrink-0 overflow-hidden rounded-full bg-surface-2"
                     style={{ width: "30%" }}
                     title={`${stage.count} ${FUNNEL_NOUN[funnel]} · ${Math.round(stage.pct_of_max)}% of largest stage`}
                   >
                     <div
-                      className="h-full rounded-full transition-[width] duration-300"
+                      className="h-full rounded-full transition-[width] duration-500"
                       style={{
                         width: `${stage.pct_of_max}%`,
-                        backgroundColor: barColor,
+                        background: barGradient,
                       }}
                     />
                   </div>

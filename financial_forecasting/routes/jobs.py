@@ -406,6 +406,15 @@ async def get_placements(user=Depends(require_auth), conn=Depends(get_db)):
     infl_ft       = len(ft_uids & infl_uids)
     infl_any      = len(any_uids & infl_uids)
 
+    # Committed FT roles still OPEN (unfilled reqs) on full-time opportunities —
+    # demand the team has locked in but not yet placed a builder into.
+    committed_ft_roles = await conn.fetchval("""
+        SELECT count(*) FROM bedrock.jobs_role r
+        JOIN bedrock.jobs_opportunity o ON o.id = r.opportunity_id
+        WHERE r.status = 'open' AND o.deleted_at IS NULL
+          AND (r.employment_type = 'full_time' OR (r.employment_type IS NULL AND o.deal_type = 'ft'))
+    """) or 0
+
     # One row per builder for the drill list (their representative placement)
     out = []
     for uid, r in sorted(by_builder.items(),
@@ -433,6 +442,8 @@ async def get_placements(user=Depends(require_auth), conn=Depends(get_db)):
             "any_builders": any_builders,
             "influenced_ft":  infl_ft,
             "influenced_any": infl_any,
+            "committed_ft_roles": committed_ft_roles,
+            "ft_roles_secured": ft_builders + committed_ft_roles,
             "rows": out,
         },
     }
@@ -1140,6 +1151,59 @@ async def get_contacts_summary(user=Depends(require_auth), conn=Depends(get_db))
             "active_companies": active_companies,
         },
     }
+
+
+@router.get("/this-week-summary")
+async def this_week_summary(user=Depends(require_auth), conn=Depends(get_db)):
+    """A narrative of the jobs team's last 7 days: who Avni/Damon emailed &
+    met (first touches this week), and which opportunities progressed."""
+    emailed = await conn.fetch(f"""
+        {_first_touch_email_cte()}
+        SELECT ext.counterpart AS email, ext.first_touch,
+               p.full_name, p.current_company
+        FROM ext
+        LEFT JOIN LATERAL (
+            SELECT full_name, current_company FROM public.contacts c
+            WHERE lower(c.email) = ext.counterpart AND c.is_jobs_contact = true LIMIT 1
+        ) p ON true
+        WHERE ext.first_touch >= now() - interval '7 days'
+        ORDER BY ext.first_touch DESC
+    """)
+    met = await conn.fetch(f"""
+        {_first_touch_meeting_cte()}
+        SELECT ext.counterpart AS email, ext.first_touch,
+               p.full_name, p.current_company
+        FROM ext
+        LEFT JOIN LATERAL (
+            SELECT full_name, current_company FROM public.contacts c
+            WHERE lower(c.email) = ext.counterpart AND c.is_jobs_contact = true LIMIT 1
+        ) p ON true
+        WHERE ext.first_touch >= now() - interval '7 days'
+        ORDER BY ext.first_touch DESC
+    """)
+    progressed = await conn.fetch("""
+        SELECT o.account_name, h.from_stage, h.to_stage, h.changed_at
+        FROM bedrock.jobs_stage_history h
+        JOIN bedrock.jobs_opportunity o ON o.id = h.opportunity_id
+        WHERE h.changed_at >= now() - interval '7 days' AND o.deleted_at IS NULL
+        ORDER BY h.changed_at DESC
+    """)
+
+    def _person(r):
+        return {"email": r["email"], "name": r["full_name"],
+                "company": r["current_company"], "when": r["first_touch"]}
+
+    return {"success": True, "data": {
+        "emailed":  [_person(r) for r in emailed],
+        "met":      [_person(r) for r in met],
+        "progressed": [{
+            "account": r["account_name"],
+            "from_stage": STAGE_LABELS.get(r["from_stage"], r["from_stage"]),
+            "to_stage": STAGE_LABELS.get(r["to_stage"], r["to_stage"]),
+            "when": r["changed_at"],
+        } for r in progressed],
+        "counts": {"emailed": len(emailed), "met": len(met), "progressed": len(progressed)},
+    }}
 
 
 class ContactCreate(BaseModel):

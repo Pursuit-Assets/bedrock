@@ -1,5 +1,15 @@
 import { useMemo, useState } from "react";
-import { Users, Target, DollarSign, Building2, ChevronUp, ChevronDown } from "lucide-react";
+import {
+  Users,
+  Trophy,
+  DollarSign,
+  Building2,
+  ChevronUp,
+  ChevronDown,
+  Phone,
+  Send,
+  UserCheck,
+} from "lucide-react";
 
 import {
   useJobsPipeline,
@@ -16,6 +26,8 @@ import {
 import { cn } from "@/lib/utils";
 import { JobsFunnels } from "@/components/jobs/JobsFunnels";
 import { MetricDrawer } from "@/components/jobs/MetricDrawer";
+import { JobsStatBubble, type BubbleTone } from "@/components/jobs/JobsStatBubble";
+import { ThisWeekRecap } from "@/components/jobs/ThisWeekRecap";
 
 // ── SOP targets ───────────────────────────────────────────────────────────
 
@@ -31,16 +43,9 @@ function fmtSalary(n: number | null | undefined): string {
   return `$${Math.round(n).toLocaleString("en-US")}`;
 }
 
-function statusColor(value: number, lo: number): string {
-  if (value >= lo) return "text-[var(--green)]";
-  if (value >= lo * 0.75) return "text-[var(--amber)]";
-  return "text-[var(--red)]";
-}
-
-function progressBarColor(value: number, lo: number): string {
-  if (value >= lo) return "bg-[var(--green)]";
-  if (value >= lo * 0.75) return "bg-[var(--amber)]";
-  return "bg-[var(--red)]";
+function pct(value: number, max: number): number {
+  if (!max) return 0;
+  return Math.max(0, Math.min(100, Math.round((value / max) * 100)));
 }
 
 // ── Section wrapper ───────────────────────────────────────────────────────
@@ -103,11 +108,13 @@ export function JobsLeadership() {
   // 3 builders) only once and so understates the figure.
   const avgSalary = rolesQ.data?.avg_salary_ft ?? null;
 
-  // ── Builders placed (distinct builders, paid work) ──────────────────────
-  // Two tracked numbers: placed full-time, and placed in any paid work.
+  // ── FT roles secured (placed + committed) ───────────────────────────────
+  // Headline outcome = roles secured (placed FT + committed FT). Breakdown
+  // splits it back into placed vs committed.
 
+  const ftRolesSecured = placementsQ.data?.ft_roles_secured ?? 0;
   const placedFt = placementsQ.data?.ft_builders ?? 0;
-  const placedAny = placementsQ.data?.any_builders ?? 0;
+  const committedFtRoles = placementsQ.data?.committed_ft_roles ?? 0;
 
   // ── Contacts & Outreach derived values ─────────────────────────────────
 
@@ -119,77 +126,57 @@ export function JobsLeadership() {
   const callsAllTime = contactsQ.data?.activity.calls_total ?? null;
   const callsThisWeek = contactsQ.data?.activity.calls_this_week ?? null;
 
-  // ── Salary color ────────────────────────────────────────────────────────
-
-  const salaryColor =
-    avgSalary == null
-      ? "text-ink-4"
-      : avgSalary >= TARGET_AVG_SALARY
-        ? "text-[var(--green)]"
-        : avgSalary >= TARGET_AVG_SALARY * 0.9
-          ? "text-[var(--amber)]"
-          : "text-[var(--red)]";
-
   return (
-    <div className="flex flex-col gap-6">
+    <div className="flex flex-col gap-7">
       {/* ── ZONE 1 · North Star (outcomes) ────────────────────────────── */}
       <SectionWrap title="North Star · Outcomes">
-        <div className="grid grid-cols-2 gap-px overflow-hidden rounded-[8px] border border-border-strong bg-border-strong shadow-[var(--shadow-sm)] sm:grid-cols-4">
-          <NorthStarCell
-            label="Builders Placed FT"
-            value={placementsQ.isLoading ? "—" : placedFt}
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <JobsStatBubble
+            label="FT Roles Secured"
+            value={ftRolesSecured}
+            tone="violet"
+            icon={<Trophy size={14} />}
             isLoading={placementsQ.isLoading}
-            valueColor={statusColor(placedFt, TARGET_PLACEMENTS * 0.7)}
+            celebrate={!placementsQ.isLoading && ftRolesSecured > 0}
+            subLead={
+              placementsQ.isLoading
+                ? undefined
+                : `${placedFt} placed · ${committedFtRoles} committed`
+            }
             sub={`of ${TARGET_PLACEMENTS} by end of July`}
-            subLead={placementsQ.isLoading ? undefined : `${placedAny} in any paid work`}
-            progress={{
-              value: placedFt,
-              max: TARGET_PLACEMENTS,
-              colorClass: progressBarColor(placedFt, TARGET_PLACEMENTS * 0.7),
-            }}
-            icon={<Target size={14} />}
+            progressPct={pct(ftRolesSecured, TARGET_PLACEMENTS)}
+            progressLabel={`${pct(ftRolesSecured, TARGET_PLACEMENTS)}%`}
             onClick={() => setOpenMetric("placements")}
           />
-          <NorthStarCell
+          <JobsStatBubble
             label="Avg FT Salary"
-            value={fmtSalary(avgSalary)}
-            isLoading={isLoading}
-            valueColor={salaryColor}
-            sub={`target ${fmtSalary(TARGET_AVG_SALARY)}+`}
-            progress={{
-              value: avgSalary ?? 0,
-              max: TARGET_AVG_SALARY,
-              colorClass:
-                avgSalary == null
-                  ? "bg-surface-2"
-                  : avgSalary >= TARGET_AVG_SALARY
-                    ? "bg-[var(--green)]"
-                    : avgSalary >= TARGET_AVG_SALARY * 0.9
-                      ? "bg-[var(--amber)]"
-                      : "bg-[var(--red)]",
-            }}
+            value={avgSalary ?? 0}
+            tone="emerald"
             icon={<DollarSign size={14} />}
+            format="salary"
+            isLoading={isLoading}
+            sub={`target ${fmtSalary(TARGET_AVG_SALARY)}+`}
+            progressPct={pct(avgSalary ?? 0, TARGET_AVG_SALARY)}
+            progressLabel={`${pct(avgSalary ?? 0, TARGET_AVG_SALARY)}%`}
           />
-          <NorthStarCell
+          <JobsStatBubble
             label="Active Orgs"
             value={activeOrgsCount}
-            isLoading={isLoading}
-            valueColor={statusColor(activeOrgsCount, TARGET_ACTIVE_ORGS_LO)}
-            sub={`target ${TARGET_ACTIVE_ORGS_LO}–${TARGET_ACTIVE_ORGS_HI}`}
-            progress={{
-              value: activeOrgsCount,
-              max: TARGET_ACTIVE_ORGS_HI,
-              colorClass: progressBarColor(activeOrgsCount, TARGET_ACTIVE_ORGS_LO),
-            }}
+            tone="sky"
             icon={<Building2 size={14} />}
+            isLoading={isLoading}
+            sub={`target ${TARGET_ACTIVE_ORGS_LO}–${TARGET_ACTIVE_ORGS_HI}`}
+            progressPct={pct(activeOrgsCount, TARGET_ACTIVE_ORGS_HI)}
+            progressLabel={`${pct(activeOrgsCount, TARGET_ACTIVE_ORGS_HI)}%`}
             onClick={() => setOpenMetric("active_orgs")}
           />
-          <NorthStarCell
+          <JobsStatBubble
             label="Builder Interviews"
             value={builderInterviewCount}
+            tone="amber"
+            icon={<Users size={14} />}
             isLoading={isLoading}
             sub="target 2–3 / week"
-            icon={<Users size={14} />}
             onClick={() => setOpenMetric("builder_interviews")}
           />
         </div>
@@ -207,10 +194,12 @@ export function JobsLeadership() {
           Top-of-funnel engagement feeding the pipeline. Outreach counts first
           touches by the jobs team only — each contact counts once, ever.
         </div>
-        <div className="mt-1 flex flex-col divide-y divide-border-strong overflow-hidden rounded-[8px] border border-border-strong bg-surface shadow-[var(--shadow-sm)] sm:flex-row sm:divide-y-0 sm:divide-x">
-          <ActivityStat
+        <div className="mt-1 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <JobsStatBubble
             label="Total Leads"
-            value={totalLeads ?? "—"}
+            value={totalLeads ?? 0}
+            tone="violet"
+            icon={<Users size={14} />}
             isLoading={contactsLoading}
             sub={
               totalLeads != null && engagedLeads != null && totalLeads > 0
@@ -219,29 +208,38 @@ export function JobsLeadership() {
             }
             onClick={() => setOpenMetric("total_leads")}
           />
-          <ActivityStat
+          <JobsStatBubble
             label="Engaged"
-            value={engagedLeads ?? "—"}
+            value={engagedLeads ?? 0}
+            tone="sky"
+            icon={<UserCheck size={14} />}
             isLoading={contactsLoading}
             sub="prospects we've contacted"
             onClick={() => setOpenMetric("engaged_leads")}
           />
-          <ActivityStat
+          <JobsStatBubble
             label="New Outreach · wk"
-            value={outreachThisWeek ?? "—"}
+            value={outreachThisWeek ?? 0}
+            tone="rose"
+            icon={<Send size={14} />}
             isLoading={contactsLoading}
             sub={`${outreachAllTime ?? "—"} contacts reached all time`}
             onClick={() => setOpenMetric("outreach_week")}
           />
-          <ActivityStat
+          <JobsStatBubble
             label="New Calls/Mtgs · wk"
-            value={callsThisWeek ?? "—"}
+            value={callsThisWeek ?? 0}
+            tone="amber"
+            icon={<Phone size={14} />}
             isLoading={contactsLoading}
             sub={`${callsAllTime ?? "—"} contacts met all time`}
             onClick={() => setOpenMetric("calls_week")}
           />
         </div>
       </div>
+
+      {/* ── ZONE 3b · This Week recap ─────────────────────────────────── */}
+      <ThisWeekRecap />
 
       {/* ── ZONE 4 · Details (secondary, collapsible) ─────────────────── */}
       <Collapsible
@@ -253,105 +251,6 @@ export function JobsLeadership() {
       </Collapsible>
 
       <MetricDrawer metricKey={openMetric} onClose={() => setOpenMetric(null)} />
-    </div>
-  );
-}
-
-// ── North Star cell (Zone 1 — biggest numbers) ──────────────────────────────
-
-function NorthStarCell({
-  label,
-  value,
-  isLoading,
-  valueColor,
-  sub,
-  subLead,
-  progress,
-  icon,
-  onClick,
-}: {
-  label: string;
-  value: string | number;
-  isLoading: boolean;
-  valueColor?: string;
-  sub?: string;
-  subLead?: string;
-  progress?: { value: number; max: number; colorClass: string };
-  icon?: React.ReactNode;
-  onClick?: () => void;
-}) {
-  return (
-    <div
-      onClick={onClick}
-      className={cn(
-        "flex flex-col gap-2 bg-surface p-4",
-        onClick && "cursor-pointer transition-colors hover:bg-surface-2/40",
-      )}
-    >
-      <div className="flex items-center justify-between">
-        <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
-          {label}
-        </span>
-        <span className="text-ink-4">{icon}</span>
-      </div>
-      <span
-        className={cn(
-          "font-mono text-[30px] font-semibold leading-none tabular-nums",
-          isLoading ? "text-ink-4" : (valueColor ?? "text-ink"),
-        )}
-      >
-        {isLoading ? "—" : value}
-      </span>
-      {subLead ? (
-        <span className="text-[11px] text-ink-3">{subLead}</span>
-      ) : null}
-      {progress ? (
-        <div className="h-1 w-full overflow-hidden rounded-full bg-surface-2">
-          <div
-            className={cn("h-full rounded-full", progress.colorClass)}
-            style={{
-              width: `${Math.min(100, (progress.value / progress.max) * 100)}%`,
-            }}
-          />
-        </div>
-      ) : null}
-      {sub ? <span className="text-[10.5px] text-ink-4">{sub}</span> : null}
-    </div>
-  );
-}
-
-// ── Activity stat (Zone 3 — compact prospect-activity strip cell) ───────────
-
-function ActivityStat({
-  label,
-  value,
-  isLoading,
-  sub,
-  onClick,
-}: {
-  label: string;
-  value: string | number;
-  isLoading: boolean;
-  sub?: string;
-  onClick?: () => void;
-}) {
-  return (
-    <div
-      onClick={onClick}
-      className={cn(
-        "flex flex-1 flex-col gap-0.5 px-4 py-2.5",
-        onClick && "cursor-pointer transition-colors hover:bg-surface-2/40",
-      )}
-    >
-      <span className="text-[9.5px] font-semibold uppercase tracking-wider text-ink-3">
-        {label}
-      </span>
-      <span className="font-mono text-[20px] font-semibold leading-none tabular-nums text-ink">
-        {isLoading ? "—" : value}
-      </span>
-      {sub ? (
-        <span className="text-[10px] text-ink-4">{isLoading ? "—" : sub}</span>
-      ) : null}
     </div>
   );
 }
@@ -460,17 +359,40 @@ function JobsRolesSection({ rolesQ }: { rolesQ: RolesQuery }) {
     }
   }
 
-  const cards: { label: string; value: string | number; sub?: string }[] = [
-    { label: "Hired — Full-Time", value: rolesQ.data?.hired_ft ?? 0 },
-    { label: "Hired — Other Paid", value: rolesQ.data?.hired_contract ?? 0, sub: "any paid work, not FT" },
+  const cards: {
+    label: string;
+    value: number;
+    tone: BubbleTone;
+    icon: React.ReactNode;
+    format?: "int" | "salary";
+    sub?: string;
+  }[] = [
+    {
+      label: "Hired — Full-Time",
+      value: rolesQ.data?.hired_ft ?? 0,
+      tone: "violet",
+      icon: <Trophy size={14} />,
+    },
+    {
+      label: "Hired — Other Paid",
+      value: rolesQ.data?.hired_contract ?? 0,
+      tone: "sky",
+      icon: <UserCheck size={14} />,
+      sub: "any paid work, not FT",
+    },
     {
       label: "Committed Roles",
       value: rolesQ.data?.committed ?? 0,
+      tone: "amber",
+      icon: <Users size={14} />,
       sub: "hired + interviewing",
     },
     {
       label: "Avg $ (FT Placed)",
-      value: fmtSalary(rolesQ.data?.avg_salary_ft),
+      value: rolesQ.data?.avg_salary_ft ?? 0,
+      tone: "emerald",
+      icon: <DollarSign size={14} />,
+      format: "salary",
     },
   ];
 
@@ -484,18 +406,19 @@ function JobsRolesSection({ rolesQ }: { rolesQ: RolesQuery }) {
 
   return (
     <div className="flex flex-col gap-4">
-      {/* Breakdown strip */}
-      <div className="flex flex-col divide-y divide-border-strong overflow-hidden rounded-[8px] border border-border-strong bg-surface shadow-[var(--shadow-sm)] sm:flex-row sm:divide-y-0 sm:divide-x">
+      {/* Breakdown strip — bubble cards */}
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         {cards.map((c) => (
-          <div key={c.label} className="flex flex-1 flex-col gap-1 px-4 py-3">
-            <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
-              {c.label}
-            </span>
-            <span className="font-mono text-[20px] font-semibold leading-none tabular-nums text-ink">
-              {rolesQ.isLoading ? "—" : c.value}
-            </span>
-            {c.sub ? <span className="text-[10px] text-ink-4">{c.sub}</span> : null}
-          </div>
+          <JobsStatBubble
+            key={c.label}
+            label={c.label}
+            value={c.value}
+            tone={c.tone}
+            icon={c.icon}
+            format={c.format}
+            sub={c.sub}
+            isLoading={rolesQ.isLoading}
+          />
         ))}
       </div>
 
