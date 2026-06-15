@@ -28,7 +28,14 @@ import {
   type OppPlacement,
 } from "@/services/jobs";
 import { JobStageChip, DealTypeChip } from "@/components/jobs/JobStageChip";
-import { InlineText, InlineDate } from "@/components/ui/InlineEdit";
+import { OppRolesSection } from "@/components/jobs/OppRolesSection";
+import { OppBuilderActivity } from "@/components/jobs/OppBuilderActivity";
+import { JobsTasks } from "@/components/jobs/JobsTasks";
+import { JobsComments } from "@/components/jobs/JobsComments";
+import { CommittedRolesModal } from "@/components/jobs/CommittedRolesModal";
+import { InlineText, InlineDate, InlineSelect } from "@/components/ui/InlineEdit";
+import { useSort, sortBy } from "@/lib/sort";
+import { SortableHeader } from "@/components/ui/SortableHeader";
 import { ChevronDown, ChevronRight, Building2, Users, Activity, Clock, Mail, Linkedin, Trash2, X, Plus, Check } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { format, formatDistanceToNow } from "date-fns";
@@ -520,19 +527,42 @@ function StaffPicker({
 
 // ── Expanded detail panel ────────────────────────────────────────────────────
 
+// num_roles / likelihood live on the opp but are not yet typed in services/jobs.ts.
+type Likelihood = "low" | "medium" | "high";
+interface OppExtra {
+  num_roles: number | null;
+  likelihood: Likelihood | null;
+}
+function oppExtra(deal: JobsOpportunity): OppExtra {
+  const d = deal as unknown as Partial<OppExtra>;
+  return {
+    num_roles: d.num_roles ?? null,
+    likelihood: d.likelihood ?? null,
+  };
+}
+
+const LIKELIHOOD_OPTIONS: { value: Likelihood; label: string }[] = [
+  { value: "low",    label: "Low" },
+  { value: "medium", label: "Medium" },
+  { value: "high",   label: "High" },
+];
+
 function DealDetailPanel({
   deal,
   onRecordPlacements,
+  onCommittedRoles,
 }: {
   deal: JobsOpportunity;
   onRecordPlacements: (deal: { id: string; account_name: string }) => void;
+  onCommittedRoles: (deal: { id: string; account_name: string }) => void;
 }) {
-  const [activeTab, setActiveTab] = useState<"activity" | "history" | "contacts">("activity");
+  const [activeTab, setActiveTab] = useState<"activity" | "tasks" | "comments" | "history" | "contacts">("activity");
   const detailQ = useJobsOpportunity(deal.id);
   const updateOpp = useUpdateOpportunity();
 
   const detail = detailQ.data;
   const isPending = updateOpp.isPending;
+  const extra = oppExtra(deal);
 
   // Only full-time / part-time-contract wins produce job placements.
   // Capstone, volunteer, workshop, pilot wins are outcomes but not secured jobs.
@@ -547,6 +577,8 @@ function DealDetailPanel({
         onSuccess: () => {
           if (newStage === "closed_won" && isPlacementType) {
             onRecordPlacements({ id: deal.id, account_name: deal.account_name });
+          } else if (newStage === "active_opportunity_confirmed") {
+            onCommittedRoles({ id: deal.id, account_name: deal.account_name });
           }
         },
       },
@@ -672,6 +704,27 @@ function DealDetailPanel({
             />
           </Field>
 
+          <Field label="# Roles">
+            <InlineText
+              value={extra.num_roles != null ? String(extra.num_roles) : ""}
+              placeholder="—"
+              onSave={(v) => {
+                if (v.trim() === "") return patch({ num_roles: null });
+                const n = parseInt(v.replace(/[^0-9]/g, ""), 10);
+                return patch({ num_roles: isNaN(n) ? null : n });
+              }}
+            />
+          </Field>
+
+          <Field label="Likelihood">
+            <InlineSelect<Likelihood>
+              value={extra.likelihood}
+              options={LIKELIHOOD_OPTIONS}
+              emptyLabel="—"
+              onSave={(v) => patch({ likelihood: v })}
+            />
+          </Field>
+
           <Field label="Builders" className="col-span-2">
             <BuilderPicker dealId={deal.id} builderIds={deal.builder_ids} />
           </Field>
@@ -697,12 +750,20 @@ function DealDetailPanel({
             />
           </Field>
         </div>
+
+        <div className="col-span-2 border-t border-border-strong pt-4">
+          <OppRolesSection oppId={deal.id} />
+        </div>
+
+        <div className="col-span-2 border-t border-border-strong pt-4">
+          <OppBuilderActivity oppId={deal.id} />
+        </div>
       </div>
 
       {/* Right — tabs */}
       <div className="flex flex-col">
         <div className="flex border-b border-border-strong bg-surface px-3 pt-2">
-          {(["activity", "history", "contacts"] as const).map((tab) => (
+          {(["activity", "tasks", "comments", "history", "contacts"] as const).map((tab) => (
             <button
               key={tab}
               type="button"
@@ -715,6 +776,8 @@ function DealDetailPanel({
               )}
             >
               {tab === "activity" && "Activity"}
+              {tab === "tasks" && "Tasks"}
+              {tab === "comments" && "Comments"}
               {tab === "history" && "History"}
               {tab === "contacts" && (
                 <>
@@ -740,6 +803,10 @@ function DealDetailPanel({
               <ActivityTab entries={detail?.activity ?? []} />
               <LogActivityForm dealId={deal.id} />
             </>
+          ) : activeTab === "tasks" ? (
+            <div className="p-3"><JobsTasks parentType="opportunity" parentId={deal.id} /></div>
+          ) : activeTab === "comments" ? (
+            <div className="p-3"><JobsComments parentType="opportunity" parentId={deal.id} /></div>
           ) : activeTab === "history" ? (
             <HistoryTab entries={detail?.stage_history ?? []} />
           ) : (
@@ -770,13 +837,12 @@ function Field({
 
 // ── Log Activity inline form ──────────────────────────────────────────────────
 
-type ActivityType = ActivityCreateBody["type"];
+type ActivityType = "call" | "text" | "linkedin";
 
 const ACTIVITY_TYPES: { value: ActivityType; label: string }[] = [
-  { value: "email",   label: "Email" },
-  { value: "call",    label: "Call" },
-  { value: "meeting", label: "Meeting" },
-  { value: "note",    label: "Note" },
+  { value: "call",     label: "Call" },
+  { value: "text",     label: "Text" },
+  { value: "linkedin", label: "LinkedIn" },
 ];
 
 function todayIso(): string {
@@ -785,14 +851,14 @@ function todayIso(): string {
 
 function LogActivityForm({ dealId }: { dealId: string }) {
   const [open, setOpen] = useState(false);
-  const [type, setType]   = useState<ActivityType>("email");
+  const [type, setType]   = useState<ActivityType>("call");
   const [date, setDate]   = useState(todayIso);
   const [desc, setDesc]   = useState("");
 
   const logActivity = useLogActivity();
 
   function reset() {
-    setType("email");
+    setType("call");
     setDate(todayIso());
     setDesc("");
     setOpen(false);
@@ -803,7 +869,8 @@ function LogActivityForm({ dealId }: { dealId: string }) {
     if (!desc.trim()) return;
     await logActivity.mutateAsync({
       jobs_opportunity_id: dealId,
-      type,
+      // Server accepts call/text/linkedin; ActivityCreateBody type is narrower.
+      type: type as ActivityCreateBody["type"],
       description: desc.trim(),
       activity_date: date || todayIso(),
     });
@@ -1158,11 +1225,13 @@ function DealRow({
   isExpanded,
   onToggle,
   onRecordPlacements,
+  onCommittedRoles,
 }: {
   deal: JobsOpportunity;
   isExpanded: boolean;
   onToggle: () => void;
   onRecordPlacements: (deal: { id: string; account_name: string }) => void;
+  onCommittedRoles: (deal: { id: string; account_name: string }) => void;
 }) {
   return (
     <Fragment>
@@ -1237,7 +1306,11 @@ function DealRow({
       {isExpanded ? (
         <tr>
           <td colSpan={7} className="p-0">
-            <DealDetailPanel deal={deal} onRecordPlacements={onRecordPlacements} />
+            <DealDetailPanel
+              deal={deal}
+              onRecordPlacements={onRecordPlacements}
+              onCommittedRoles={onCommittedRoles}
+            />
           </td>
         </tr>
       ) : null}
@@ -1744,20 +1817,45 @@ function PlacementsModal({
 
 // ── Main component ────────────────────────────────────────────────────────────
 
+type DealTypeFilter = "all" | DealType;
+type SortKey = "company" | "stage" | "type" | "updated";
+
+const DEAL_TYPE_FILTERS: DealTypeFilter[] = ["all", "ft", "pt_contract", "capstone", "volunteer", "workshop", "pilot"];
+
+function dealTypeFilterLabel(f: DealTypeFilter): string {
+  return f === "all" ? "All" : DEAL_TYPE_LABELS[f];
+}
+
 export function JobsTeam() {
   const [ownerFilter, setOwnerFilter] = useState<string | null>(null);
   const [stageGroup, setStageGroup] = useState<StageGroup>("all");
+  const [dealTypeFilter, setDealTypeFilter] = useState<DealTypeFilter>("ft");
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [showNewDeal, setShowNewDeal] = useState(false);
   const [placementModalDeal, setPlacementModalDeal] = useState<{ id: string; account_name: string } | null>(null);
+  const [committedRolesDeal, setCommittedRolesDeal] = useState<{ id: string; account_name: string } | null>(null);
+  const { sort, toggle } = useSort<SortKey>();
 
-  const { data: rawData, isLoading } = useJobsOpportunities(
-    ownerFilter ? { owner_email: ownerFilter } : {},
-  );
+  const { data: rawData, isLoading } = useJobsOpportunities({
+    ...(ownerFilter ? { owner_email: ownerFilter } : {}),
+    ...(dealTypeFilter !== "all" ? { deal_type: dealTypeFilter } : {}),
+  });
 
   const allDeals: JobsOpportunity[] = (rawData as { data: JobsOpportunity[]; total: number } | undefined)?.data ?? [];
 
-  const visible = allDeals.filter((d) => stageMatchesGroup(d.stage, stageGroup));
+  const filtered = allDeals.filter((d) => stageMatchesGroup(d.stage, stageGroup));
+
+  const visible =
+    sort.key == null
+      ? filtered
+      : sortBy(filtered, sort, (d, key) => {
+          switch (key) {
+            case "company": return d.account_name ?? "";
+            case "stage":   return STAGE_LABELS[d.stage] ?? "";
+            case "type":    return d.deal_type ? DEAL_TYPE_LABELS[d.deal_type] : "";
+            case "updated": return d.updated_at ?? "";
+          }
+        });
 
   const stageGroups: StageGroup[] = ["all", "active", "on_hold", "closed"];
 
@@ -1825,6 +1923,27 @@ export function JobsTeam() {
           ))}
         </div>
 
+        <div className="h-4 w-px bg-border-strong" />
+
+        {/* Deal-type quick filter */}
+        <div className="flex items-center gap-1.5">
+          {DEAL_TYPE_FILTERS.map((f) => (
+            <button
+              key={f}
+              type="button"
+              onClick={() => setDealTypeFilter(f)}
+              className={cn(
+                "rounded-full border px-2.5 py-1 text-[12px] font-medium transition-colors",
+                dealTypeFilter === f
+                  ? "border-accent bg-accent/5 text-accent"
+                  : "border-border-strong bg-surface text-ink-3 hover:text-ink-2",
+              )}
+            >
+              {dealTypeFilterLabel(f)}
+            </button>
+          ))}
+        </div>
+
         {/* Count badge */}
         <span className="ml-auto font-mono text-[12px] text-ink-4">
           {isLoading ? "…" : `${visible.length} deal${visible.length === 1 ? "" : "s"}`}
@@ -1852,6 +1971,13 @@ export function JobsTeam() {
         />
       )}
 
+      {committedRolesDeal && (
+        <CommittedRolesModal
+          deal={committedRolesDeal}
+          onClose={() => setCommittedRolesDeal(null)}
+        />
+      )}
+
       {/* Table */}
       {isLoading ? (
         <EmptyState>Loading deals…</EmptyState>
@@ -1861,7 +1987,7 @@ export function JobsTeam() {
           <button
             type="button"
             className="text-accent underline underline-offset-2"
-            onClick={() => { setOwnerFilter(null); setStageGroup("all"); }}
+            onClick={() => { setOwnerFilter(null); setStageGroup("all"); setDealTypeFilter("all"); }}
           >
             Clear filters
           </button>
@@ -1871,12 +1997,20 @@ export function JobsTeam() {
           <thead className="sticky top-0 z-10 bg-surface-2 text-[10.5px] uppercase tracking-wider text-ink-3">
             <tr>
               <th className="w-7 px-2 py-2" />
-              <th className="px-3 py-2 text-left font-semibold">Company</th>
-              <th className="w-[170px] px-3 py-2 text-left font-semibold">Stage</th>
-              <th className="w-[110px] px-3 py-2 text-left font-semibold">Type</th>
+              <th className="px-3 py-2 text-left font-semibold">
+                <SortableHeader label="Company" sortKey="company" sort={sort} onToggle={toggle} />
+              </th>
+              <th className="w-[170px] px-3 py-2 text-left font-semibold">
+                <SortableHeader label="Stage" sortKey="stage" sort={sort} onToggle={toggle} />
+              </th>
+              <th className="w-[110px] px-3 py-2 text-left font-semibold">
+                <SortableHeader label="Type" sortKey="type" sort={sort} onToggle={toggle} />
+              </th>
               <th className="w-[48px] px-3 py-2 text-left font-semibold">Owner</th>
               <th className="w-[120px] px-1 py-2 text-left font-semibold">Signals</th>
-              <th className="w-[120px] px-3 py-2 text-right font-semibold">Updated</th>
+              <th className="w-[120px] px-3 py-2 text-right font-semibold">
+                <SortableHeader label="Updated" sortKey="updated" sort={sort} onToggle={toggle} align="right" />
+              </th>
             </tr>
           </thead>
           <tbody>
@@ -1887,6 +2021,7 @@ export function JobsTeam() {
                 isExpanded={expandedId === deal.id}
                 onToggle={() => setExpandedId(expandedId === deal.id ? null : deal.id)}
                 onRecordPlacements={setPlacementModalDeal}
+                onCommittedRoles={setCommittedRolesDeal}
               />
             ))}
           </tbody>

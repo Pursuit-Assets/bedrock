@@ -1,22 +1,31 @@
-import { useState, useRef } from "react";
-import { Search, Mail, Linkedin, Building2, ChevronRight, ChevronDown, Phone, FileText, Calendar, MessageSquare, Plus, Trash2, X, UserSearch } from "lucide-react";
+import { useMemo, useState, useRef } from "react";
+import { Search, Mail, Linkedin, Building2, ChevronRight, ChevronDown, Phone, FileText, Calendar, MessageSquare, MessageCircle, Plus, Trash2, X, UserSearch } from "lucide-react";
 import { formatDistanceToNow, format } from "date-fns";
 import { cn } from "@/lib/utils";
 import {
-  useJobsContacts,
   useContactDetail,
   useUpdateContact,
   useCreateContact,
-  useLogActivity,
   useDeleteActivity,
   useContactSearch,
   useAddContactToJobs,
   STAGE_LABELS,
-  type JobContactWithDeal,
   type JobStage,
   type ContactCreateBody,
   type ContactSearchResult,
 } from "@/services/jobs";
+import {
+  useAccountsByAccount,
+  useLogProspectActivity,
+} from "@/services/jobsAccounts";
+import { JobsTasks } from "@/components/jobs/JobsTasks";
+import { JobsComments } from "@/components/jobs/JobsComments";
+import {
+  type AccountGroup,
+  type AccountGroupContact,
+} from "@/services/jobsAccounts";
+import { SortableHeader } from "@/components/ui/SortableHeader";
+import { sortBy, useSort } from "@/lib/sort";
 import { InlineText, InlineSelect } from "@/components/ui/InlineEdit";
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -54,10 +63,12 @@ const DEAL_STAGE_STYLES: Record<string, string> = {
 };
 
 const ACTIVITY_ICONS: Record<string, React.ElementType> = {
-  email:   Mail,
-  call:    Phone,
-  meeting: Calendar,
-  note:    FileText,
+  email:    Mail,
+  call:     Phone,
+  text:     MessageCircle,
+  linkedin: Linkedin,
+  meeting:  Calendar,
+  note:     FileText,
 };
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -78,30 +89,24 @@ function ownerName(email: string | null) {
 // ── Activity log form ────────────────────────────────────────────────────────
 
 const ACTIVITY_TYPE_OPTIONS = [
-  { value: "email",   label: "Email" },
-  { value: "call",    label: "Call" },
-  { value: "meeting", label: "Meeting" },
-  { value: "note",    label: "Note" },
+  { value: "call",     label: "Call" },
+  { value: "text",     label: "Text" },
+  { value: "linkedin", label: "LinkedIn" },
 ] as const;
 
 type ActivityType = typeof ACTIVITY_TYPE_OPTIONS[number]["value"];
 
-function todayIso() {
-  return new Date().toISOString().slice(0, 10);
-}
-
 function LogActivityForm({
-  dealId,
+  contactId,
   onClose,
 }: {
-  dealId: string;
+  contactId: number;
   onClose: () => void;
 }) {
-  const [type, setType] = useState<ActivityType>("email");
-  const [date, setDate] = useState(todayIso());
+  const [type, setType] = useState<ActivityType>("call");
   const [description, setDescription] = useState("");
   const [submitting, setSubmitting] = useState(false);
-  const { mutateAsync: logActivity } = useLogActivity();
+  const { mutateAsync: logActivity } = useLogProspectActivity();
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -109,10 +114,9 @@ function LogActivityForm({
     setSubmitting(true);
     try {
       await logActivity({
-        jobs_opportunity_id: dealId,
+        contact_id: contactId,
         type,
         description: description.trim(),
-        activity_date: date,
       });
       onClose();
     } finally {
@@ -139,17 +143,6 @@ function LogActivityForm({
             {opt.label}
           </button>
         ))}
-      </div>
-
-      {/* Date */}
-      <div>
-        <label className="text-[10px] font-semibold uppercase tracking-wide text-ink-4 mb-0.5 block">Date</label>
-        <input
-          type="date"
-          value={date}
-          onChange={e => setDate(e.target.value)}
-          className="text-[12px] border border-border-strong rounded px-2 py-1 bg-surface text-ink focus:outline-none focus:ring-1 focus:ring-accent"
-        />
       </div>
 
       {/* Description */}
@@ -371,26 +364,20 @@ function ContactDetail({ contactId }: { contactId: number }) {
             <div className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">
               Engagement History ({data.activity.length})
             </div>
-            {data.deal ? (
-              <button
-                type="button"
-                onClick={() => setShowLogForm(v => !v)}
-                className="flex items-center gap-1 px-2.5 py-1 rounded-md border border-border-strong bg-surface text-[11px] font-medium text-ink-2 hover:border-accent hover:text-accent transition-colors"
-              >
-                <Plus size={11} />
-                Log Activity
-              </button>
-            ) : (
-              <span className="text-[11px] text-ink-4 italic">
-                Link contact to a deal first to log activity.
-              </span>
-            )}
+            <button
+              type="button"
+              onClick={() => setShowLogForm(v => !v)}
+              className="flex items-center gap-1 px-2.5 py-1 rounded-md border border-border-strong bg-surface text-[11px] font-medium text-ink-2 hover:border-accent hover:text-accent transition-colors"
+            >
+              <Plus size={11} />
+              Log Activity
+            </button>
           </div>
 
           {/* Inline log form */}
-          {showLogForm && data.deal && (
+          {showLogForm && (
             <LogActivityForm
-              dealId={data.deal.id}
+              contactId={contactId}
               onClose={() => setShowLogForm(false)}
             />
           )}
@@ -529,20 +516,32 @@ function ContactDetail({ contactId }: { contactId: number }) {
               </div>
             );
           })()}
+
+          {/* ── Tasks + Comments ── */}
+          <div className="mt-6 flex flex-col gap-6 border-t border-border-strong pt-5">
+            <div>
+              <div className="text-[11px] font-semibold uppercase tracking-wider text-ink-3 mb-2">Tasks</div>
+              <JobsTasks parentType="prospect" parentId={String(contactId)} />
+            </div>
+            <div>
+              <div className="text-[11px] font-semibold uppercase tracking-wider text-ink-3 mb-2">Comments</div>
+              <JobsComments parentType="prospect" parentId={String(contactId)} />
+            </div>
+          </div>
         </div>
       </div>
     </div>
   );
 }
 
-// ── Contact row ───────────────────────────────────────────────────────────────
+// ── Nested contact row (inside an account group) ───────────────────────────────
 
-function ContactRow({
+function NestedContactRow({
   contact,
   expanded,
   onToggle,
 }: {
-  contact: JobContactWithDeal;
+  contact: AccountGroupContact;
   expanded: boolean;
   onToggle: () => void;
 }) {
@@ -550,26 +549,18 @@ function ContactRow({
     ? CONTACT_STAGE_STYLES[contact.contact_stage]
     : null;
 
-  const dealStageStyle = contact.deal?.stage
-    ? DEAL_STAGE_STYLES[contact.deal.stage] ?? "bg-stone-100 text-stone-500"
-    : null;
-
-  const dealLabel = contact.deal?.stage
-    ? STAGE_LABELS[contact.deal.stage as JobStage] ?? contact.deal.stage
-    : null;
-
   return (
     <>
       <div
         onClick={onToggle}
         className={cn(
-          "flex items-center gap-3 px-4 py-3 border-b border-border-strong last:border-0 cursor-pointer transition-colors",
-          expanded ? "bg-surface-2" : "hover:bg-surface-2"
+          "flex items-center gap-3 pl-10 pr-4 py-2.5 border-b border-border-strong last:border-0 cursor-pointer transition-colors",
+          expanded ? "bg-surface" : "bg-surface-2 hover:bg-surface"
         )}
       >
         {/* Chevron */}
         <div className="flex-shrink-0 text-ink-4">
-          {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+          {expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
         </div>
 
         {/* Avatar */}
@@ -590,27 +581,8 @@ function ContactRow({
             )}
           </div>
           <div className="text-[12px] text-ink-3 truncate mt-0.5">
-            {[contact.current_title, contact.current_company].filter(Boolean).join(" · ") || "—"}
+            {contact.current_title || "—"}
           </div>
-        </div>
-
-        {/* Linked deal */}
-        <div className="flex-shrink-0 min-w-[180px] max-w-[220px] hidden md:block">
-          {contact.deal ? (
-            <div className="flex flex-col gap-1">
-              <div className="flex items-center gap-1.5 text-[12px] text-ink-2 truncate">
-                <Building2 size={11} className="text-ink-4 flex-shrink-0" />
-                <span className="truncate">{contact.deal.account_name}</span>
-              </div>
-              {dealStageStyle && (
-                <span className={cn("inline-flex items-center self-start rounded-full px-1.5 py-0.5 text-[10px] leading-4 font-medium", dealStageStyle)}>
-                  {dealLabel}
-                </span>
-              )}
-            </div>
-          ) : (
-            <span className="text-[11px] text-ink-4 italic">No deal linked</span>
-          )}
         </div>
 
         {/* Links — stop propagation so clicks don't toggle row */}
@@ -629,9 +601,63 @@ function ContactRow({
         </div>
       </div>
 
-      {/* Expanded detail panel */}
+      {/* Expanded detail drawer (existing ContactDetail) */}
       {expanded && <ContactDetail contactId={contact.contact_id} />}
     </>
+  );
+}
+
+// ── Account group row ──────────────────────────────────────────────────────────
+
+function AccountRow({
+  group,
+  open,
+  onToggleOpen,
+  expandedContactId,
+  onToggleContact,
+}: {
+  group: AccountGroup;
+  open: boolean;
+  onToggleOpen: () => void;
+  expandedContactId: number | null;
+  onToggleContact: (id: number) => void;
+}) {
+  return (
+    <div className="border-b border-border-strong last:border-0">
+      {/* Account header row */}
+      <div
+        onClick={onToggleOpen}
+        className={cn(
+          "flex items-center gap-3 px-4 py-3 cursor-pointer transition-colors",
+          open ? "bg-surface-2" : "hover:bg-surface-2"
+        )}
+      >
+        <div className="flex-shrink-0 text-ink-4">
+          {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+        </div>
+        <Building2 size={14} className="flex-shrink-0 text-ink-4" />
+        <span className="flex-1 min-w-0 truncate text-[13px] font-semibold text-ink">
+          {group.account || "—"}
+        </span>
+        <span className="flex-shrink-0 inline-flex items-center rounded-full bg-accent-soft px-2 py-0.5 text-[11px] font-medium text-accent-ink">
+          {group.contact_count}
+        </span>
+      </div>
+
+      {/* Nested contacts */}
+      {open && (
+        <div className="border-t border-border-strong">
+          {group.contacts.map(c => (
+            <NestedContactRow
+              key={c.contact_id}
+              contact={c}
+              expanded={expandedContactId === c.contact_id}
+              onToggle={() => onToggleContact(c.contact_id)}
+            />
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -843,12 +869,15 @@ function NewContactModal({ onClose }: { onClose: () => void }) {
 
 // ── Main component ────────────────────────────────────────────────────────────
 
+type AccountSortKey = "account" | "count";
+
 export function JobsContacts() {
   const [search, setSearch] = useState("");
   const [stage, setStage] = useState("");
-  const [debouncedSearch, setDebouncedSearch] = useState("");
   const [expandedId, setExpandedId] = useState<number | null>(null);
+  const [openAccount, setOpenAccount] = useState<string | null>(null);
   const [showNewContact, setShowNewContact] = useState(false);
+  const { sort, toggle: toggleSort } = useSort<AccountSortKey>();
 
   // Global contact search state
   const [globalSearch, setGlobalSearch] = useState("");
@@ -864,24 +893,50 @@ export function JobsContacts() {
   const searchResults = globalSearchResults ?? [];
   const { mutate: addContactToJobs } = useAddContactToJobs();
 
-  const handleSearch = (val: string) => {
-    setSearch(val);
-    clearTimeout((handleSearch as any)._t);
-    (handleSearch as any)._t = setTimeout(() => setDebouncedSearch(val), 300);
-  };
+  const { data: accountGroups, isLoading } = useAccountsByAccount();
 
-  const { data, isLoading } = useJobsContacts({
-    search: debouncedSearch || undefined,
-    stage:  stage || undefined,
-    limit:  300,
-  });
+  // Filter + sort account groups client-side. A group survives the search
+  // when its account name matches, OR any contact name/email within matches.
+  // The stage filter keeps only groups that still have a matching contact and
+  // narrows the visible nested contacts to those in that stage.
+  const visibleGroups = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    const groups = accountGroups ?? [];
 
-  const contacts  = data?.data ?? [];
-  const total     = data?.total ?? 0;
-  const withLink  = contacts.filter(c => c.deal);
-  const noLink    = contacts.filter(c => !c.deal);
+    const filtered: AccountGroup[] = [];
+    for (const g of groups) {
+      const accountMatch = (g.account ?? "").toLowerCase().includes(q);
 
-  const toggle = (id: number) => setExpandedId(prev => prev === id ? null : id);
+      let contacts = g.contacts;
+      if (stage) {
+        contacts = contacts.filter(c => c.contact_stage === stage);
+      }
+      if (q && !accountMatch) {
+        contacts = contacts.filter(c =>
+          (c.full_name ?? "").toLowerCase().includes(q) ||
+          (c.email ?? "").toLowerCase().includes(q)
+        );
+      }
+
+      // If a stage filter is active, drop accounts with no surviving contacts.
+      // If only the search is active and it matched the account name, keep the
+      // (stage-filtered) contacts list as-is.
+      if (stage && contacts.length === 0) continue;
+      if (q && !accountMatch && contacts.length === 0) continue;
+
+      filtered.push({ ...g, contacts, contact_count: contacts.length });
+    }
+
+    if (sort.key == null) return filtered; // already ordered by count desc
+    return sortBy(filtered, sort, (g, key) =>
+      key === "account" ? g.account : g.contact_count,
+    );
+  }, [accountGroups, search, stage, sort]);
+
+  const total = visibleGroups.reduce((sum, g) => sum + g.contact_count, 0);
+
+  const toggleContact = (id: number) =>
+    setExpandedId(prev => (prev === id ? null : id));
 
   return (
     <div className="flex flex-col gap-4">
@@ -1067,8 +1122,8 @@ export function JobsContacts() {
           <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-4" />
           <input
             value={search}
-            onChange={e => handleSearch(e.target.value)}
-            placeholder="Search name, company, title, email…"
+            onChange={e => setSearch(e.target.value)}
+            placeholder="Search account or contact name / email…"
             className="w-full pl-8 pr-3 py-2 text-[13px] border border-border-strong rounded-lg bg-surface focus:outline-none focus:ring-1 focus:ring-accent"
           />
         </div>
@@ -1099,7 +1154,7 @@ export function JobsContacts() {
         </div>
 
         <span className="text-[12px] text-ink-3 ml-auto">
-          {isLoading ? "Loading…" : `${total} contacts`}
+          {isLoading ? "Loading…" : `${visibleGroups.length} accounts · ${total} contacts`}
         </span>
       </div>
 
@@ -1117,48 +1172,37 @@ export function JobsContacts() {
             </div>
           ))}
         </div>
-      ) : contacts.length === 0 ? (
+      ) : visibleGroups.length === 0 ? (
         <div className="rounded-lg border border-border-strong bg-surface px-6 py-12 text-center text-[13px] text-ink-3">
-          No contacts match your filters.
+          No accounts match your filters.
         </div>
       ) : (
-        <>
-          {withLink.length > 0 && (
-            <div>
-              <div className="text-[11px] font-semibold uppercase tracking-wider text-ink-3 mb-2">
-                Linked to Deals ({withLink.length})
-              </div>
-              <div className="rounded-lg border border-border-strong bg-surface overflow-hidden">
-                {withLink.map(c => (
-                  <ContactRow
-                    key={c.contact_id}
-                    contact={c}
-                    expanded={expandedId === c.contact_id}
-                    onToggle={() => toggle(c.contact_id)}
-                  />
-                ))}
-              </div>
+        <div className="rounded-lg border border-border-strong bg-surface overflow-hidden">
+          {/* Sortable column header */}
+          <div className="flex items-center gap-3 px-4 py-2 border-b border-border-strong bg-surface-2">
+            <div className="w-[14px] flex-shrink-0" />
+            <div className="w-[14px] flex-shrink-0" />
+            <div className="flex-1 min-w-0">
+              <SortableHeader label="Account" sortKey="account" sort={sort} onToggle={toggleSort} />
             </div>
-          )}
+            <div className="flex-shrink-0">
+              <SortableHeader label="Contacts" sortKey="count" sort={sort} onToggle={toggleSort} align="right" />
+            </div>
+          </div>
 
-          {noLink.length > 0 && (
-            <div>
-              <div className="text-[11px] font-semibold uppercase tracking-wider text-ink-3 mb-2">
-                Not Yet Linked ({noLink.length})
-              </div>
-              <div className="rounded-lg border border-border-strong bg-surface overflow-hidden">
-                {noLink.map(c => (
-                  <ContactRow
-                    key={c.contact_id}
-                    contact={c}
-                    expanded={expandedId === c.contact_id}
-                    onToggle={() => toggle(c.contact_id)}
-                  />
-                ))}
-              </div>
-            </div>
-          )}
-        </>
+          {visibleGroups.map(g => (
+            <AccountRow
+              key={g.account}
+              group={g}
+              open={openAccount === g.account}
+              onToggleOpen={() =>
+                setOpenAccount(prev => (prev === g.account ? null : g.account))
+              }
+              expandedContactId={expandedId}
+              onToggleContact={toggleContact}
+            />
+          ))}
+        </div>
       )}
     </div>
   );

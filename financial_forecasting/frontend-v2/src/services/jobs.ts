@@ -35,6 +35,8 @@ export interface JobsOpportunity {
   touch_count: number;
   follow_up_date: string | null;
   airtable_id: string | null;
+  num_roles: number | null;
+  likelihood: "low" | "medium" | "high" | null;
   created_at: string;
   updated_at: string;
   closed_at: string | null;
@@ -643,7 +645,7 @@ export function useUpdateContact() {
 
 export interface ActivityCreateBody {
   jobs_opportunity_id: string;
-  type: "email" | "call" | "meeting" | "note";
+  type: "call" | "text" | "linkedin";
   description: string;
   activity_date?: string;
   subject?: string;
