@@ -31,12 +31,13 @@ export interface AccountGroup {
  * GET /api/jobs/contacts/by-account → AccountGroup[]
  * Prospects grouped by account, already ordered by contact_count desc.
  */
-export function useAccountsByAccount() {
+export function useAccountsByAccount(dealType?: string) {
   return useQuery<AccountGroup[]>({
-    queryKey: ["jobs", "contacts-by-account"],
+    queryKey: ["jobs", "contacts-by-account", dealType ?? "all"],
     queryFn: async () => {
+      const qs = dealType && dealType !== "all" ? `?deal_type=${dealType}` : "";
       const { data } = await api.get<ApiResponse<AccountGroup[]>>(
-        "/api/jobs/contacts/by-account",
+        `/api/jobs/contacts/by-account${qs}`,
       );
       return data.data;
     },

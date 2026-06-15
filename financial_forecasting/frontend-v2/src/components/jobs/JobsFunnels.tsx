@@ -45,37 +45,72 @@ const RECORD_CAP = 60;
 
 // ── Component ───────────────────────────────────────────────────────────────
 
+const DEAL_TYPE_FILTERS: { value: string; label: string }[] = [
+  { value: "all", label: "All" },
+  ...(Object.entries(DEAL_TYPE_LABELS) as [DealType, string][]).map(
+    ([value, label]) => ({ value, label }),
+  ),
+];
+
 export function JobsFunnels() {
   const [funnel, setFunnel] = useState<FunnelType>("opportunities");
-  const { data, isLoading } = useJobsFunnel(funnel);
+  // Deal-type lens, defaults to Full-Time. Scopes the funnel (and its recent
+  // movement) to that deal type across opportunities/prospects/builders.
+  const [dealType, setDealType] = useState<string>("ft");
+  const { data, isLoading } = useJobsFunnel(funnel, dealType);
 
   return (
     <div className="flex flex-col gap-4">
-      {/* Funnel-type switcher — bubbly pill toggle */}
-      <div className="inline-flex w-fit rounded-full border border-border-strong bg-surface-2 p-1">
-        {FUNNEL_TABS.map((tab) => {
-          const active = tab.type === funnel;
-          return (
-            <button
-              key={tab.type}
-              type="button"
-              onClick={() => setFunnel(tab.type)}
-              className={cn(
-                "rounded-full px-3.5 py-1.5 text-[12px] font-semibold transition-all duration-200",
-                active
-                  ? "text-white shadow-sm"
-                  : "text-ink-3 hover:text-ink-2",
-              )}
-              style={
-                active
-                  ? { background: "linear-gradient(135deg, #6d5efc 0%, #8b7dff 100%)" }
-                  : undefined
-              }
-            >
-              {tab.label}
-            </button>
-          );
-        })}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        {/* Funnel-type switcher — bubbly pill toggle */}
+        <div className="inline-flex w-fit rounded-full border border-border-strong bg-surface-2 p-1">
+          {FUNNEL_TABS.map((tab) => {
+            const active = tab.type === funnel;
+            return (
+              <button
+                key={tab.type}
+                type="button"
+                onClick={() => setFunnel(tab.type)}
+                className={cn(
+                  "rounded-full px-3.5 py-1.5 text-[12px] font-semibold transition-all duration-200",
+                  active
+                    ? "text-white shadow-sm"
+                    : "text-ink-3 hover:text-ink-2",
+                )}
+                style={
+                  active
+                    ? { background: "linear-gradient(135deg, #6d5efc 0%, #8b7dff 100%)" }
+                    : undefined
+                }
+              >
+                {tab.label}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Deal-type lens — defaults to Full-Time */}
+        <div className="flex items-center gap-1.5">
+          <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-4">Deal type</span>
+          <div className="inline-flex flex-wrap rounded-full border border-border-strong bg-surface-2 p-0.5">
+            {DEAL_TYPE_FILTERS.map((d) => {
+              const active = d.value === dealType;
+              return (
+                <button
+                  key={d.value}
+                  type="button"
+                  onClick={() => setDealType(d.value)}
+                  className={cn(
+                    "rounded-full px-2.5 py-1 text-[11px] font-semibold transition-colors",
+                    active ? "bg-[var(--accent)] text-white shadow-sm" : "text-ink-3 hover:text-ink-2",
+                  )}
+                >
+                  {d.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
       </div>
 
       {/* Funnel card */}

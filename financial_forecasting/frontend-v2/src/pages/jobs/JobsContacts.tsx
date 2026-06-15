@@ -27,6 +27,8 @@ import {
   useAddContactToJobs,
   useContactSearch,
   useCreateContact,
+  DEAL_TYPE_LABELS,
+  type DealType,
   type ContactCreateBody,
   type ContactSearchResult,
 } from "@/services/jobs";
@@ -298,6 +300,7 @@ type AccountSortKey = "account" | "count";
 export function JobsContacts() {
   const [search, setSearch] = useState("");
   const [stage, setStage] = useState("");
+  const [dealType, setDealType] = useState("all");  // deal-type lens; "all" so unlinked prospects aren't hidden
   const [openAccount, setOpenAccount] = useState<string | null>(null);
   const [showNewContact, setShowNewContact] = useState(false);
   const { sort, toggle: toggleSort } = useSort<AccountSortKey>();
@@ -314,7 +317,7 @@ export function JobsContacts() {
   const searchResults = globalSearchResults ?? [];
   const { mutate: addContactToJobs } = useAddContactToJobs();
 
-  const { data: accountGroups, isLoading } = useAccountsByAccount();
+  const { data: accountGroups, isLoading } = useAccountsByAccount(dealType);
 
   // Filter + sort account groups client-side. A group survives the search
   // when its account name matches, OR any contact name/email within matches.
@@ -560,6 +563,28 @@ export function JobsContacts() {
         <span className="ml-auto text-[12px] text-ink-3">
           {isLoading ? "Loading…" : `${visibleGroups.length} accounts · ${total} contacts`}
         </span>
+      </div>
+
+      {/* Deal-type lens — narrows to prospects at companies with a deal of that type */}
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-4">Deal type</span>
+        <div className="inline-flex flex-wrap rounded-full border border-border-strong bg-surface-2 p-0.5">
+          {([["all", "All"], ...(Object.entries(DEAL_TYPE_LABELS) as [DealType, string][])] as [string, string][]).map(
+            ([value, label]) => (
+              <button
+                key={value}
+                type="button"
+                onClick={() => setDealType(value)}
+                className={cn(
+                  "rounded-full px-2.5 py-1 text-[11px] font-semibold transition-colors",
+                  dealType === value ? "bg-[var(--accent)] text-white shadow-sm" : "text-ink-3 hover:text-ink-2",
+                )}
+              >
+                {label}
+              </button>
+            ),
+          )}
+        </div>
       </div>
 
       {/* Results */}

@@ -456,11 +456,12 @@ export interface FunnelData {
   record_columns: { key: string; label: string }[];
 }
 
-export function useJobsFunnel(ftype: FunnelType) {
+export function useJobsFunnel(ftype: FunnelType, dealType?: string) {
   return useQuery<FunnelData>({
-    queryKey: ["jobs", "funnel", ftype],
+    queryKey: ["jobs", "funnel", ftype, dealType ?? "all"],
     queryFn: async () => {
-      const { data } = await api.get<ApiResponse<FunnelData>>(`/api/jobs/funnel/${ftype}`);
+      const qs = dealType && dealType !== "all" ? `?deal_type=${dealType}` : "";
+      const { data } = await api.get<ApiResponse<FunnelData>>(`/api/jobs/funnel/${ftype}${qs}`);
       return data.data;
     },
     staleTime: 30_000,

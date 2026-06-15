@@ -847,13 +847,23 @@ async def opp_builder_activity(
 
 
 @router.get("/funnel/{ftype}")
-async def get_funnel(ftype: str, user=Depends(require_auth), conn=Depends(get_db)):
+async def get_funnel(
+    ftype: str,
+    deal_type: Optional[str] = Query(None),
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
     """Unified funnel for the three pipelines: opportunities | prospects | builders.
 
     Returns ordered stages with counts, conversion-to-next, and the records in
     each stage (for inline expand). Opportunities also include recent
     progression (advanced/regressed) from bedrock.jobs_stage_history.
+
+    `deal_type` (ft | pt_contract | ...) scopes every funnel to that lens:
+    opportunities by their own deal_type; prospects to contacts at companies
+    that have a deal of that type; builders to applications on such opps.
     """
+    dt = deal_type if deal_type and deal_type != "all" else None
     movement_by_stage: dict = {}  # stage_key -> list of recent transitions touching it
 
     if ftype == "opportunities":
@@ -873,8 +883,9 @@ async def get_funnel(ftype: str, user=Depends(require_auth), conn=Depends(get_db
         rows = await conn.fetch("""
             SELECT stage, account_name AS name, deal_type, owner_email AS owner
             FROM bedrock.jobs_opportunity
-            WHERE deleted_at IS NULL ORDER BY account_name
-        """)
+            WHERE deleted_at IS NULL AND ($1::text IS NULL OR deal_type = $1)
+            ORDER BY account_name
+        """, dt)
         by_stage: dict = {}
         for r in rows:
             by_stage.setdefault(r["stage"], []).append(
@@ -889,8 +900,9 @@ async def get_funnel(ftype: str, user=Depends(require_auth), conn=Depends(get_db
             JOIN bedrock.jobs_opportunity o ON o.id = h.opportunity_id
             WHERE h.from_stage IS NOT NULL
               AND h.changed_at >= now() - interval '30 days'
+              AND ($1::text IS NULL OR o.deal_type = $1)
             ORDER BY h.changed_at DESC LIMIT 100
-        """)
+        """, dt)
         for h in hist:
             fi, ti = idx.get(h["from_stage"]), idx.get(h["to_stage"])
             direction = "advanced" if (fi is not None and ti is not None and ti > fi) else "regressed"
@@ -918,8 +930,13 @@ async def get_funnel(ftype: str, user=Depends(require_auth), conn=Depends(get_db
         ]
         rows = await conn.fetch("""
             SELECT contact_stage AS stage, full_name AS name, current_company AS company
-            FROM public.contacts WHERE is_jobs_contact=true ORDER BY full_name
-        """)
+            FROM public.contacts
+            WHERE is_jobs_contact=true
+              AND ($1::text IS NULL OR lower(current_company) IN (
+                    SELECT lower(account_name) FROM bedrock.jobs_opportunity
+                    WHERE deleted_at IS NULL AND deal_type = $1 AND account_name IS NOT NULL))
+            ORDER BY full_name
+        """, dt)
         by_stage = {}
         for r in rows:
             by_stage.setdefault(r["stage"], []).append({"name": r["name"], "company": r["company"]})
@@ -936,11 +953,15 @@ async def get_funnel(ftype: str, user=Depends(require_auth), conn=Depends(get_db
             {"key": "role", "label": "Role"},
         ]
         rows = await conn.fetch("""
-            SELECT stage, trim(split_part(notes,':',1)) AS name,
-                   company_name AS company, role_title AS role
-            FROM public.job_applications WHERE source_type='Pursuit_referred'
-            ORDER BY company_name
-        """)
+            SELECT ja.stage, trim(split_part(ja.notes,':',1)) AS name,
+                   ja.company_name AS company, ja.role_title AS role
+            FROM public.job_applications ja
+            WHERE ja.source_type='Pursuit_referred'
+              AND ($1::text IS NULL OR EXISTS (
+                    SELECT 1 FROM bedrock.jobs_opportunity o
+                    WHERE o.id = ja.jobs_opportunity_id AND o.deal_type = $1))
+            ORDER BY ja.company_name
+        """, dt)
         by_stage = {}
         for r in rows:
             by_stage.setdefault(r["stage"], []).append(
@@ -1289,6 +1310,7 @@ async def search_all_contacts(
 
 @router.get("/contacts/by-account")
 async def contacts_by_account(
+    deal_type: Optional[str] = Query(None),
     user=Depends(require_auth),
     conn=Depends(get_db),
 ):
@@ -1297,7 +1319,10 @@ async def contacts_by_account(
     No hard account_id on contacts, so we group by the company text
     (COALESCE(NULLIF(trim(current_company),''),'(no company)')). Accounts are
     ordered by contact_count desc, then name.
+
+    `deal_type` narrows to prospects at companies that have a deal of that type.
     """
+    dt = deal_type if deal_type and deal_type != "all" else None
     rows = await conn.fetch(
         """
         SELECT
@@ -1305,8 +1330,12 @@ async def contacts_by_account(
             contact_id, full_name, email, current_title, contact_stage, linkedin_url
         FROM public.contacts
         WHERE is_jobs_contact = true
+          AND ($1::text IS NULL OR lower(current_company) IN (
+                SELECT lower(account_name) FROM bedrock.jobs_opportunity
+                WHERE deleted_at IS NULL AND deal_type = $1 AND account_name IS NOT NULL))
         ORDER BY account, full_name
-        """
+        """,
+        dt,
     )
     accounts: dict = {}
     for r in rows:
