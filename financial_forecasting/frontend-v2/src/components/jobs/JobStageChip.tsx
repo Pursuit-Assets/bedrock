@@ -26,16 +26,16 @@ const DEAL_TYPE_STYLES: Record<DealType, string> = {
 
 export function JobStageChip({ stage, className }: { stage: JobStage; className?: string }) {
   return (
-    <span className={cn("inline-flex items-center rounded-full px-2 py-0.5 text-[11px] leading-4 tracking-wide", STAGE_STYLES[stage], className)}>
-      {STAGE_LABELS[stage]}
+    <span className={cn("inline-flex items-center rounded-full px-2 py-0.5 text-[11px] leading-4 tracking-wide", STAGE_STYLES[stage] ?? "bg-surface-2 text-ink-3", className)}>
+      {STAGE_LABELS[stage] ?? stage ?? "—"}
     </span>
   );
 }
 
 export function DealTypeChip({ type, className }: { type: DealType; className?: string }) {
   return (
-    <span className={cn("inline-flex items-center rounded-full px-2 py-0.5 text-[11px] leading-4 tracking-wide", DEAL_TYPE_STYLES[type], className)}>
-      {DEAL_TYPE_LABELS[type]}
+    <span className={cn("inline-flex items-center rounded-full px-2 py-0.5 text-[11px] leading-4 tracking-wide", DEAL_TYPE_STYLES[type] ?? "bg-surface-2 text-ink-3", className)}>
+      {DEAL_TYPE_LABELS[type] ?? type ?? "—"}
     </span>
   );
 }

@@ -306,7 +306,11 @@ function RoleRow({ role, oppId }: { role: Role; oppId: string }) {
           <button
             type="button"
             title="Delete role"
-            onClick={() => deleteRole.mutate({ roleId: role.id, oppId })}
+            onClick={() => {
+              if (window.confirm(`Delete the "${role.title ?? "untitled"}" role? This can't be undone.`)) {
+                deleteRole.mutate({ roleId: role.id, oppId });
+              }
+            }}
             className="text-ink-4 hover:text-red-500 transition-colors"
           >
             <Trash2 size={13} />

@@ -632,7 +632,7 @@ function DetailsTab({
         </Field>
 
         <Field label="Builders" className="col-span-2">
-          <BuilderPicker dealId={deal.id} builderIds={deal.builder_ids} />
+          <BuilderPicker dealId={deal.id} builderIds={deal.builder_ids ?? []} />
         </Field>
 
         <Field label="Contacts" className="col-span-2">
@@ -641,7 +641,7 @@ function DetailsTab({
           ) : (
             <ContactPicker
               dealId={deal.id}
-              sfContactIds={deal.sf_contact_ids}
+              sfContactIds={deal.sf_contact_ids ?? []}
               linkedContacts={contacts}
             />
           )}
@@ -1108,7 +1108,11 @@ function DealRow({
           onSuccess: () => {
             if (stage === "closed_won" && isPlacementType) {
               onRecordPlacements({ id: deal.id, account_name: deal.account_name });
-            } else if (stage === "active_opportunity_confirmed") {
+            } else if (stage === "active_opportunity_confirmed" && (deal.num_roles ?? 0) === 0) {
+              // Only prompt for committed roles the FIRST time a deal is
+              // confirmed (no roles captured yet). Re-confirming a deal that
+              // already has roles won't re-open the modal and duplicate them;
+              // roles are managed in the Roles tab thereafter.
               onCommittedRoles({ id: deal.id, account_name: deal.account_name });
             }
             resolve();

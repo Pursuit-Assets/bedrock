@@ -2,6 +2,15 @@ import { format } from "date-fns";
 import { cn } from "@/lib/utils";
 import { useOppBuilderActivity } from "@/services/jobsOpps2";
 
+// Application stages (public.job_applications) → readable labels.
+const APP_STAGE_LABELS: Record<string, string> = {
+  applied: "Applied",
+  interview: "Interviewing",
+  accepted: "Hired",
+  rejected: "Rejected",
+  withdrawn: "Withdrawn",
+};
+
 function fmtDate(iso: string | null): string {
   if (!iso) return "—";
   try {
@@ -65,7 +74,7 @@ export function OppBuilderActivity({ oppId }: { oppId: string }) {
                   <div className="flex shrink-0 items-center gap-2">
                     {r.stage ? (
                       <span className="rounded-full bg-surface-2 px-2 py-0.5 text-[10px] font-medium text-ink-2">
-                        {r.stage}
+                        {APP_STAGE_LABELS[r.stage] ?? r.stage}
                       </span>
                     ) : null}
                     <span className="font-mono text-[10.5px] text-ink-4">{fmtDate(r.date_applied)}</span>

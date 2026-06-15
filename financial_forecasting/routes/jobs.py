@@ -1678,6 +1678,14 @@ async def get_pipeline_summary(user=Depends(require_auth), conn=Depends(get_db))
 
 
 @router.get("/opportunities")
+def _norm_opp(d: dict) -> dict:
+    """Guarantee array fields are never None (the columns allow NULL, which
+    would crash the frontend pickers that call .map/.length on them)."""
+    d["builder_ids"] = d.get("builder_ids") or []
+    d["sf_contact_ids"] = d.get("sf_contact_ids") or []
+    return d
+
+
 async def list_opportunities(
     stage: Optional[str] = Query(None),
     stage_group: Optional[str] = Query(None, description="active | on_hold | closed"),
@@ -1724,7 +1732,7 @@ async def list_opportunities(
     total = await conn.fetchval(
         f"SELECT count(*) FROM bedrock.jobs_opportunity o WHERE {where}", *params
     )
-    return {"success": True, "data": [dict(r) for r in rows], "total": total}
+    return {"success": True, "data": [_norm_opp(dict(r)) for r in rows], "total": total}
 
 
 @router.post("/opportunities")
@@ -1819,7 +1827,7 @@ async def get_opportunity(
     return {
         "success": True,
         "data": {
-            **dict(row),
+            **_norm_opp(dict(row)),
             "stage_history": [dict(h) for h in history],
             "activity":      [dict(a) for a in activity],
             "contacts":      contacts,

@@ -550,11 +550,15 @@ export function useUpdateOpportunity() {
   return useMutation({
     mutationFn: async ({ id, ...body }: { id: string; [k: string]: unknown }) => {
       const { data } = await api.patch<ApiResponse<JobsOpportunity>>(`/api/jobs/opportunities/${id}`, body);
-      return data.data;
+      return { updated: data.data, changedStage: "stage" in body };
     },
-    onSuccess: (updated) => {
+    onSuccess: ({ updated, changedStage }) => {
       qc.invalidateQueries({ queryKey: ["jobs"] });
-      toast.success(`Updated → ${STAGE_LABELS[updated.stage]}`);
+      // Only announce the stage when the stage was the field that changed —
+      // otherwise (owner, salary, # roles, …) a plain "Updated" is honest.
+      toast.success(
+        changedStage ? `Stage → ${STAGE_LABELS[updated.stage] ?? updated.stage}` : "Updated",
+      );
     },
     onError: () => toast.error("Update failed"),
   });
