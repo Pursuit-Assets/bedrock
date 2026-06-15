@@ -1207,6 +1207,7 @@ async def this_week_summary(user=Depends(require_auth), conn=Depends(get_db)):
         FROM bedrock.jobs_stage_history h
         JOIN bedrock.jobs_opportunity o ON o.id = h.opportunity_id
         WHERE h.changed_at >= now() - interval '7 days' AND o.deleted_at IS NULL
+          AND h.from_stage IS NOT NULL
         ORDER BY h.changed_at DESC
     """)
 

@@ -21,7 +21,8 @@ function fmtWhen(iso: string | null): string | null {
   return format(t, "MMM d");
 }
 
-function stageLabel(key: string): string {
+function stageLabel(key: string | null | undefined): string {
+  if (!key) return "—";
   return STAGE_LABELS[key as JobStage] ?? key.replace(/_/g, " ");
 }
 
