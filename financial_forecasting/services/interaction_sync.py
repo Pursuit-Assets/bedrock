@@ -99,9 +99,24 @@ async def run_interaction_sync(conn_or_pool, days_back: int = 90) -> dict[str, A
     except Exception as e:
         logger.error("jobs-prospect activity link failed: %s", e)
 
+    # Auto-add pass — flag EXISTING contacts the jobs team has engaged as jobs
+    # prospects so the dashboard picks them up without manual tagging.
+    prospects_flagged = 0
+    try:
+        from services.jobs_activity_link import auto_flag_jobs_prospects
+        flag_conn = await _get_conn()
+        try:
+            flag_result = await auto_flag_jobs_prospects(flag_conn)
+            prospects_flagged = flag_result.get("flagged", 0)
+        finally:
+            await _release_conn(flag_conn)
+        logger.info("auto-flagged %d existing contacts as jobs prospects", prospects_flagged)
+    except Exception as e:
+        logger.error("jobs-prospect auto-flag failed: %s", e)
+
     logger.info(
-        "interaction sync complete: %d staff, %d gmail, %d calendar, %d domains auto-mapped, %d jobs prospects linked",
-        len(results), total_gmail, total_cal, domains_mapped, prospects_linked,
+        "interaction sync complete: %d staff, %d gmail, %d calendar, %d domains auto-mapped, %d jobs prospects linked, %d jobs prospects flagged",
+        len(results), total_gmail, total_cal, domains_mapped, prospects_linked, prospects_flagged,
     )
     return {
         "staff_count": len(results),
@@ -109,5 +124,6 @@ async def run_interaction_sync(conn_or_pool, days_back: int = 90) -> dict[str, A
         "calendar_upserted": total_cal,
         "domains_auto_mapped": domains_mapped,
         "jobs_prospects_linked": prospects_linked,
+        "jobs_prospects_flagged": prospects_flagged,
         "by_staff": results,
     }

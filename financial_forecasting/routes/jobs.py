@@ -9,7 +9,7 @@
 """
 
 import logging
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Optional
 from uuid import UUID
 
@@ -111,6 +111,9 @@ STAGE_LABELS = {
 }
 
 
+VALID_LIKELIHOODS = {"low", "medium", "high"}
+
+
 class OpportunityCreate(BaseModel):
     account_id: str
     account_name: Optional[str] = None
@@ -119,6 +122,8 @@ class OpportunityCreate(BaseModel):
     title: Optional[str] = None
     description: Optional[str] = None
     salary_expected: Optional[int] = None
+    num_roles: Optional[int] = None
+    likelihood: Optional[str] = None
     source: Optional[str] = None
     owner_email: Optional[str] = None
     sf_contact_ids: list[str] = []
@@ -133,6 +138,8 @@ class OpportunityUpdate(BaseModel):
     title: Optional[str] = None
     description: Optional[str] = None
     salary_expected: Optional[int] = None
+    num_roles: Optional[int] = None
+    likelihood: Optional[str] = None
     source: Optional[str] = None
     owner_email: Optional[str] = None
     sf_contact_ids: Optional[list[str]] = None
@@ -300,6 +307,7 @@ async def metric_drilldown(
                 "salary": f"${int(r['payment_amount']):,}" if r["payment_amount"] else "—",
                 "influence": ("Influenced" if r["influenced"] is True
                               else "Self-sourced" if r["influenced"] is False else "Unclassified"),
+                "source": r["source"],
             })
         out = []
         for g in sorted(groups.values(), key=lambda x: (not x["ft"], x["builder"] or "")):
@@ -320,6 +328,7 @@ async def metric_drilldown(
             {"key": "employment_type", "label": "Type"},
             {"key": "salary", "label": "Pay"},
             {"key": "influence", "label": "Influence"},
+            {"key": "source", "label": "Source"},
         ]
         return {"columns": cols, "child_columns": child_cols}, out, "placement"
 
@@ -414,6 +423,7 @@ async def get_placements(user=Depends(require_auth), conn=Depends(get_db)):
             "ft_placed": uid in ft_uids,
             "influenced": r["influenced"],
             "salary": int(r["payment_amount"]) if r["payment_amount"] else None,
+            "source": r["source"],
         })
 
     return {
@@ -606,6 +616,223 @@ async def update_placement(
     if result == "UPDATE 0":
         raise HTTPException(404, "Placement not found")
     return {"success": True, "data": {"id": placement_id, "influenced": body.influenced}}
+
+
+# ── Roles (jobs_role) — open roles on an opportunity ──────────────────────────
+
+VALID_ROLE_STATUSES = {"open", "filled", "cancelled"}
+
+
+def _role_dict(r) -> dict:
+    """Serialize a bedrock.jobs_role row for the API."""
+    d = dict(r)
+    d["id"] = str(d["id"])
+    if d.get("opportunity_id") is not None:
+        d["opportunity_id"] = str(d["opportunity_id"])
+    for k in ("start_date", "created_at", "updated_at"):
+        v = d.get(k)
+        if v is not None and hasattr(v, "isoformat"):
+            d[k] = v.isoformat()
+    return d
+
+
+class RoleCreate(BaseModel):
+    title:           str
+    approx_salary:   Optional[int] = None
+    employment_type: Optional[str] = None
+    start_date:      Optional[date] = None
+    notes:           Optional[str] = None
+
+
+class RoleUpdate(BaseModel):
+    title:           Optional[str] = None
+    approx_salary:   Optional[int] = None
+    employment_type: Optional[str] = None
+    start_date:      Optional[date] = None
+    status:          Optional[str] = None
+    notes:           Optional[str] = None
+
+
+@router.get("/opportunities/{opp_id}/roles")
+async def list_opp_roles(
+    opp_id: UUID,
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """All roles (any status) for an opportunity, oldest first."""
+    rows = await conn.fetch(
+        "SELECT * FROM bedrock.jobs_role WHERE opportunity_id=$1 ORDER BY created_at",
+        opp_id,
+    )
+    return {"success": True, "data": [_role_dict(r) for r in rows]}
+
+
+@router.post("/opportunities/{opp_id}/roles")
+async def create_opp_role(
+    opp_id: UUID,
+    body: RoleCreate,
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Create an open role on an opportunity."""
+    opp = await conn.fetchrow(
+        "SELECT id FROM bedrock.jobs_opportunity WHERE id=$1 AND deleted_at IS NULL",
+        opp_id,
+    )
+    if not opp:
+        raise HTTPException(404, "Opportunity not found")
+
+    row = await conn.fetchrow(
+        """
+        INSERT INTO bedrock.jobs_role
+            (opportunity_id, title, approx_salary, employment_type, start_date, status, notes)
+        VALUES ($1,$2,$3,$4,$5,'open',$6)
+        RETURNING *
+        """,
+        opp_id, body.title, body.approx_salary, body.employment_type,
+        body.start_date, body.notes,
+    )
+    return {"success": True, "data": _role_dict(row)}
+
+
+@router.patch("/roles/{role_id}")
+async def update_role(
+    role_id: UUID,
+    body: RoleUpdate,
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Update any of title/approx_salary/employment_type/start_date/status/notes."""
+    if body.status is not None and body.status not in VALID_ROLE_STATUSES:
+        raise HTTPException(400, f"Invalid status: {body.status}")
+
+    existing = await conn.fetchrow("SELECT * FROM bedrock.jobs_role WHERE id=$1", role_id)
+    if not existing:
+        raise HTTPException(404, "Role not found")
+
+    sets, params = [], []
+    i = 1
+    for field in ("title", "approx_salary", "employment_type", "start_date", "status", "notes"):
+        val = getattr(body, field, None)
+        if val is not None:
+            sets.append(f"{field} = ${i}"); params.append(val); i += 1
+
+    if not sets:
+        return {"success": True, "data": _role_dict(existing)}
+
+    params.append(role_id)
+    row = await conn.fetchrow(
+        f"UPDATE bedrock.jobs_role SET {', '.join(sets)}, updated_at=now() WHERE id=${i} RETURNING *",
+        *params,
+    )
+    return {"success": True, "data": _role_dict(row)}
+
+
+@router.delete("/roles/{role_id}")
+async def delete_role(
+    role_id: UUID,
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Hard-delete a role (jobs-team owned, low volume)."""
+    result = await conn.execute("DELETE FROM bedrock.jobs_role WHERE id=$1", role_id)
+    if result == "DELETE 0":
+        raise HTTPException(404, "Role not found")
+    return {"success": True, "data": {"deleted": True}}
+
+
+class RoleHire(BaseModel):
+    user_id:         int
+    start_date:      Optional[date] = None
+    salary:          Optional[int] = None
+    employment_type: Optional[str] = None
+
+
+@router.post("/roles/{role_id}/hire")
+async def hire_into_role(
+    role_id: UUID,
+    body: RoleHire,
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Fill a role: create the employment_record placement and mark the role filled."""
+    role = await conn.fetchrow("SELECT * FROM bedrock.jobs_role WHERE id=$1", role_id)
+    if not role:
+        raise HTTPException(404, "Role not found")
+    opp = await conn.fetchrow(
+        "SELECT id, account_name FROM bedrock.jobs_opportunity WHERE id=$1 AND deleted_at IS NULL",
+        role["opportunity_id"],
+    )
+    if not opp:
+        raise HTTPException(404, "Opportunity not found")
+
+    employment_type = body.employment_type or role["employment_type"] or "full_time"
+    payment_amount  = body.salary if body.salary is not None else role["approx_salary"]
+    start_date      = body.start_date or role["start_date"]
+
+    async with conn.transaction():
+        new_id = await conn.fetchval(
+            """
+            INSERT INTO public.employment_records
+                (user_id, role_title, company_name, employment_type, engagement_stage,
+                 payment_amount, source, opportunity_id, influenced, start_date)
+            VALUES ($1,$2,$3,$4,'active',$5,'staff_created',$6,true,$7)
+            RETURNING id
+            """,
+            body.user_id, role["title"], opp["account_name"], employment_type,
+            payment_amount, opp["id"], start_date,
+        )
+        updated = await conn.fetchrow(
+            """
+            UPDATE bedrock.jobs_role
+            SET status='filled', filled_by_user_id=$1, employment_record_id=$2, updated_at=now()
+            WHERE id=$3
+            RETURNING *
+            """,
+            body.user_id, new_id, role_id,
+        )
+    return {"success": True, "data": {"role": _role_dict(updated), "employment_record_id": new_id}}
+
+
+# ── Builder activity on an opportunity ────────────────────────────────────────
+
+@router.get("/opportunities/{opp_id}/builder-activity")
+async def opp_builder_activity(
+    opp_id: UUID,
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Builder submissions/interviews/hires tied to this opportunity.
+
+    Rows come from public.job_applications where jobs_opportunity_id matches.
+    Includes a stage summary {applied, interview, accepted}.
+    """
+    rows = await conn.fetch(
+        """
+        SELECT job_application_id,
+               trim(split_part(notes, ':', 1)) AS builder,
+               company_name, role_title, stage, jobs_role_id, date_applied
+        FROM public.job_applications
+        WHERE jobs_opportunity_id = $1
+        ORDER BY date_applied DESC NULLS LAST
+        """,
+        opp_id,
+    )
+    out = []
+    summary = {"applied": 0, "interview": 0, "accepted": 0}
+    for r in rows:
+        if r["stage"] in summary:
+            summary[r["stage"]] += 1
+        out.append({
+            "job_application_id": r["job_application_id"],
+            "builder":            r["builder"],
+            "company_name":       r["company_name"],
+            "role_title":         r["role_title"],
+            "stage":              r["stage"],
+            "jobs_role_id":       str(r["jobs_role_id"]) if r["jobs_role_id"] else None,
+            "date_applied":       r["date_applied"].isoformat() if r["date_applied"] else None,
+        })
+    return {"success": True, "data": {"rows": out, "summary": summary}}
 
 
 @router.get("/funnel/{ftype}")
@@ -996,6 +1223,44 @@ async def search_all_contacts(
     }
 
 
+@router.get("/contacts/by-account")
+async def contacts_by_account(
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Jobs prospects grouped into account rows by company name.
+
+    No hard account_id on contacts, so we group by the company text
+    (COALESCE(NULLIF(trim(current_company),''),'(no company)')). Accounts are
+    ordered by contact_count desc, then name.
+    """
+    rows = await conn.fetch(
+        """
+        SELECT
+            COALESCE(NULLIF(trim(current_company), ''), '(no company)') AS account,
+            contact_id, full_name, email, current_title, contact_stage, linkedin_url
+        FROM public.contacts
+        WHERE is_jobs_contact = true
+        ORDER BY account, full_name
+        """
+    )
+    accounts: dict = {}
+    for r in rows:
+        acct = r["account"]
+        g = accounts.setdefault(acct, {"account": acct, "contact_count": 0, "contacts": []})
+        g["contact_count"] += 1
+        g["contacts"].append({
+            "contact_id":    r["contact_id"],
+            "full_name":     r["full_name"],
+            "email":         r["email"],
+            "current_title": r["current_title"],
+            "contact_stage": r["contact_stage"],
+            "linkedin_url":  r["linkedin_url"],
+        })
+    out = sorted(accounts.values(), key=lambda a: (-a["contact_count"], a["account"]))
+    return {"success": True, "data": out}
+
+
 @router.get("/contacts")
 async def list_contacts(
     stage: Optional[str] = Query(None),
@@ -1378,6 +1643,8 @@ async def create_opportunity(
         raise HTTPException(400, f"Invalid stage: {body.stage}")
     if body.deal_type and body.deal_type not in VALID_DEAL_TYPES:
         raise HTTPException(400, f"Invalid deal_type: {body.deal_type}")
+    if body.likelihood and body.likelihood not in VALID_LIKELIHOODS:
+        raise HTTPException(400, f"Invalid likelihood: {body.likelihood}")
 
     user_email = user.get("email") if isinstance(user, dict) else getattr(user, "email", None)
 
@@ -1386,13 +1653,13 @@ async def create_opportunity(
             """
             INSERT INTO bedrock.jobs_opportunity (
                 account_id, account_name, stage, deal_type,
-                title, description, salary_expected,
+                title, description, salary_expected, num_roles, likelihood,
                 source, owner_email, sf_contact_ids, builder_ids, follow_up_date
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
             RETURNING id
             """,
             body.account_id, body.account_name, body.stage, body.deal_type,
-            body.title, body.description, body.salary_expected,
+            body.title, body.description, body.salary_expected, body.num_roles, body.likelihood,
             body.source, body.owner_email,
             body.sf_contact_ids, body.builder_ids, body.follow_up_date,
         )
@@ -1483,6 +1750,8 @@ async def update_opportunity(
         raise HTTPException(400, f"Invalid stage: {body.stage}")
     if body.deal_type and body.deal_type not in VALID_DEAL_TYPES:
         raise HTTPException(400, f"Invalid deal_type: {body.deal_type}")
+    if body.likelihood and body.likelihood not in VALID_LIKELIHOODS:
+        raise HTTPException(400, f"Invalid likelihood: {body.likelihood}")
 
     user_email = user.get("email") if isinstance(user, dict) else getattr(user, "email", None)
     stage_changed = body.stage and body.stage != existing["stage"]
@@ -1492,6 +1761,7 @@ async def update_opportunity(
     i = 1
 
     for field in ("stage", "deal_type", "title", "description", "salary_expected",
+                  "num_roles", "likelihood",
                   "source", "owner_email", "sf_contact_ids", "builder_ids",
                   "follow_up_date", "touch_count", "sf_opportunity_id"):
         val = getattr(body, field, None)
@@ -1672,8 +1942,9 @@ async def update_contact(
 # ── Activity logging ─────────────────────────────────────────────────────────
 
 class ActivityCreate(BaseModel):
-    jobs_opportunity_id: str
-    type:                str          # email | call | meeting | note
+    jobs_opportunity_id: Optional[str] = None
+    contact_id:          Optional[int] = None   # log against a prospect instead of a deal
+    type:                str                     # call | text | linkedin
     description:         str
     activity_date:       Optional[datetime] = None
     subject:             Optional[str] = None
@@ -1686,26 +1957,47 @@ async def log_activity(
     conn=Depends(get_db),
 ):
     user_email = user.get("email") if isinstance(user, dict) else getattr(user, "email", None)
-    if body.type not in ("email", "call", "meeting", "note"):
+    if body.type not in ("call", "text", "linkedin"):
         raise HTTPException(400, f"Invalid type: {body.type}")
+    if not body.jobs_opportunity_id and not body.contact_id:
+        raise HTTPException(400, "Provide jobs_opportunity_id or contact_id")
 
     import uuid as _uuid
-    opp_id = _uuid.UUID(body.jobs_opportunity_id)
 
-    row_id = await conn.fetchval(
-        """
-        INSERT INTO bedrock.activity
-            (type, subject, description, activity_date, source, jobs_opportunity_id, logged_by)
-        VALUES ($1, $2, $3, COALESCE($4, now()), 'manual', $5, $6)
-        RETURNING id
-        """,
-        body.type,
-        body.subject or f"{body.type.capitalize()} — {user_email}",
-        body.description,
-        body.activity_date,
-        opp_id,
-        user_email,
-    )
+    if body.jobs_opportunity_id:
+        opp_id = _uuid.UUID(body.jobs_opportunity_id)
+        row_id = await conn.fetchval(
+            """
+            INSERT INTO bedrock.activity
+                (type, subject, description, activity_date, source, jobs_opportunity_id, logged_by)
+            VALUES ($1, $2, $3, COALESCE($4, now()), 'manual', $5, $6)
+            RETURNING id
+            """,
+            body.type,
+            body.subject or f"{body.type.capitalize()} — {user_email}",
+            body.description,
+            body.activity_date,
+            opp_id,
+            user_email,
+        )
+    else:
+        # Prospect-scoped log: tie to the public.contacts row, leave the deal null.
+        row_id = await conn.fetchval(
+            """
+            INSERT INTO bedrock.activity
+                (type, subject, description, activity_date, source,
+                 participant_public_contact_id, logged_by)
+            VALUES ($1, $2, $3, COALESCE($4, now()), 'manual', $5, $6)
+            RETURNING id
+            """,
+            body.type,
+            body.subject or f"{body.type.capitalize()} — {user_email}",
+            body.description,
+            body.activity_date,
+            body.contact_id,
+            user_email,
+        )
+
     row = await conn.fetchrow("SELECT * FROM bedrock.activity WHERE id=$1", row_id)
     return {"success": True, "data": dict(row)}
 

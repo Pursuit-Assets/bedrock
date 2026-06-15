@@ -71,7 +71,10 @@ from routes.airtable_jobs import router as airtable_jobs_router
 from routes.sputnik import router as sputnik_router
 from routes.admin_interaction_sync import router as admin_interaction_sync_router
 from routes.jobs import router as jobs_router
+from routes.jobs_tasks import router as jobs_tasks_router
+from routes.jobs_comments import router as jobs_comments_router
 from routes.candidates import router as candidates_router
+from routes.world_model import router as world_model_router
 from auth import get_current_user_dep, require_auth, IS_PRODUCTION, JWT_SECRET_KEY
 from security import validate_salesforce_id, escape_soql_string
 from services.crm_parser import refresh_opp_cache as _refresh_opp_cache
@@ -158,7 +161,10 @@ app.include_router(airtable_jobs_router)
 app.include_router(sputnik_router)
 app.include_router(admin_interaction_sync_router)
 app.include_router(jobs_router)
+app.include_router(jobs_tasks_router)
+app.include_router(jobs_comments_router)
 app.include_router(candidates_router)
+app.include_router(world_model_router)
 
 # Service singletons — shared with dependencies.py so route files can use
 # Depends(require_sf_mcp_client) without circular imports.
