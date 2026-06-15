@@ -31,7 +31,7 @@ stop
 
 echo "Starting backend on :8000 ..."
 cd "$BACKEND_DIR"
-nohup python main.py > "$BACKEND_LOG" 2>&1 &
+nohup python3 main.py > "$BACKEND_LOG" 2>&1 &
 echo $! > "$BACKEND_PID_FILE"
 
 echo "Starting frontend on :4200 ..."
