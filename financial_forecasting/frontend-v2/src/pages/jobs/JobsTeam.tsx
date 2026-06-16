@@ -433,11 +433,17 @@ function StaffPicker({
   }
 
   return (
-    <div className="relative">
+    <div
+      className="relative"
+      // Close only when focus leaves the whole picker. The dropdown's autofocus
+      // search input would otherwise blur the toggle button and snap it shut.
+      onBlur={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setOpen(false);
+      }}
+    >
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        onBlur={() => setTimeout(() => setOpen(false), 150)}
         className="group flex w-full items-center gap-1.5 rounded px-1 py-0.5 text-left text-[12px] text-ink-2 hover:bg-surface-2"
       >
         <span className={cn(value ? "text-ink-2" : "text-ink-4")}>{displayLabel}</span>
@@ -811,21 +817,26 @@ function ActivityRow({
           ) : null}
           {isExpanded && (
             <div className="mt-1.5 flex flex-col gap-1">
-              {e.description ? (
-                <p className="text-[11.5px] text-ink-2 whitespace-pre-wrap">{e.description}</p>
-              ) : null}
-              {!e.description && e.email_snippet ? (
-                <p className="text-[11.5px] text-ink-2 whitespace-pre-wrap">{e.email_snippet}</p>
-              ) : null}
               {e.email_from ? (
                 <span className="text-[11px] text-ink-3">
                   <span className="font-medium">From:</span> {e.email_from}
+                </span>
+              ) : null}
+              {e.email_to ? (
+                <span className="text-[11px] text-ink-3">
+                  <span className="font-medium">To:</span> {e.email_to}
                 </span>
               ) : null}
               {e.meeting_duration_minutes != null ? (
                 <span className="text-[11px] text-ink-3">
                   <span className="font-medium">Duration:</span> {e.meeting_duration_minutes} min
                 </span>
+              ) : null}
+              {/* Full body: prefer the synced email body, then description, then snippet. */}
+              {(e.email_body_text || e.description || e.email_snippet) ? (
+                <p className="mt-0.5 max-h-72 overflow-y-auto whitespace-pre-wrap rounded bg-surface-2/40 p-2 text-[11.5px] leading-relaxed text-ink-2">
+                  {e.email_body_text || e.description || e.email_snippet}
+                </p>
               ) : null}
             </div>
           )}

@@ -1911,7 +1911,8 @@ async def get_opportunity(
         """
         SELECT
             a.id, a.type, a.subject, a.description, a.activity_date,
-            a.source, a.logged_by, a.synced_at, a.email_from, a.email_snippet,
+            a.source, a.logged_by, a.synced_at, a.email_from, a.email_to,
+            a.email_snippet, a.email_body_text,
             a.meeting_duration_minutes, a.meeting_attendees, a.deleted_at,
             (a.jobs_opportunity_id = $1) AS is_jobs
         FROM bedrock.activity a
