@@ -9,8 +9,9 @@
 
 import asyncio
 import logging
+import os
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException
 from pydantic import BaseModel
 
 from db import get_db, get_pool
@@ -106,6 +107,21 @@ async def add_staff(
         body.display_name,
     )
     return {"success": True, "data": {"email": body.email, "enabled": True}}
+
+
+@router.post("/run-internal")
+async def trigger_sync_internal(
+    background_tasks: BackgroundTasks,
+    x_sync_secret: str | None = Header(default=None, alias="X-Sync-Secret"),
+):
+    """Cloud Scheduler endpoint — authenticated via X-Sync-Secret header."""
+    expected = os.environ.get("INTERNAL_SYNC_SECRET", "")
+    if not expected or x_sync_secret != expected:
+        raise HTTPException(401, "Invalid or missing X-Sync-Secret")
+    if _sync_status["running"]:
+        return {"success": False, "data": {"message": "Sync already running"}}
+    background_tasks.add_task(_run_sync_background)
+    return {"success": True, "data": {"message": "Nightly sync started"}}
 
 
 @router.delete("/staff/{email:path}")

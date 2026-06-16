@@ -1,0 +1,149 @@
+{
+  "captured": "2026-06-08",
+  "note": "builder_ids held imported staff/deal-team emails; cleared per owner+builders model. owner_email is authoritative for owner.",
+  "rows": [
+    {
+      "id": "55e8b462-bb22-4217-9d04-833a4b5ed184",
+      "account": "Accenture",
+      "owner_email": "avni@pursuit.org",
+      "deal_team_emails": [
+        "rajiv.sukhnandan@pursuit.org",
+        "maurice.dixon@pursuit.org",
+        "michelle.brooks@pursuit.org"
+      ]
+    },
+    {
+      "id": "82a6870c-762a-4eff-b3e6-6e07c9873a4c",
+      "account": "Acture Solutions",
+      "owner_email": "devika@pursuit.org",
+      "deal_team_emails": [
+        "maurice.dixon@pursuit.org",
+        "ethan.davey@pursuit.org",
+        "rajiv.sukhnandan@pursuit.org"
+      ]
+    },
+    {
+      "id": "05ad459e-9fb3-4731-85d6-e1f754bfc85e",
+      "account": "Adonis AI",
+      "owner_email": "avni@pursuit.org",
+      "deal_team_emails": [
+        "joel.philip@pursuit.org"
+      ]
+    },
+    {
+      "id": "05128de4-9c45-4590-aa88-60a96b4cfe04",
+      "account": "CareerVillage",
+      "owner_email": "devika@pursuit.org",
+      "deal_team_emails": [
+        "cherice.heron@pursuit.org",
+        "ethan.davey@pursuit.org",
+        "ashley.vigo@pursuit.org"
+      ]
+    },
+    {
+      "id": "ac3d10fd-22ef-4507-9dce-c7ea266d90ce",
+      "account": "Charter Communications",
+      "owner_email": "devika@pursuit.org",
+      "deal_team_emails": [
+        "ashley.vigo@pursuit.org"
+      ]
+    },
+    {
+      "id": "f3592e8f-6e45-4835-b451-1561c221ebfb",
+      "account": "Con Ed",
+      "owner_email": "avni@pursuit.org",
+      "deal_team_emails": [
+        "maurice.dixon@pursuit.org",
+        "brandon.jackson@pursuit.org",
+        "rajiv.sukhnandan@pursuit.org"
+      ]
+    },
+    {
+      "id": "280d5b0e-dd5b-4ffd-a971-21a942cd23ac",
+      "account": "Emerge Career",
+      "owner_email": "avni@pursuit.org",
+      "deal_team_emails": [
+        "brandon.jackson@pursuit.org"
+      ]
+    },
+    {
+      "id": "7682c653-37e1-4376-8d52-2c88e113e156",
+      "account": "Fowler Laundry Solutions",
+      "owner_email": "avni@pursuit.org",
+      "deal_team_emails": [
+        "cherice.heron@pursuit.org",
+        "ethan.davey@pursuit.org",
+        "josue.villalona@pursuit.org",
+        "michelle.brooks@pursuit.org"
+      ]
+    },
+    {
+      "id": "0c3d58c6-6e08-4e9a-b374-10c071c963d8",
+      "account": "Hatra Group",
+      "owner_email": "avni@pursuit.org",
+      "deal_team_emails": [
+        "rajiv.sukhnandan@pursuit.org"
+      ]
+    },
+    {
+      "id": "d20196c6-00a4-4992-adae-ebfece76145a",
+      "account": "Macquarie",
+      "owner_email": "devika@pursuit.org",
+      "deal_team_emails": [
+        "ashley.vigo@pursuit.org",
+        "michelle.brooks@pursuit.org"
+      ]
+    },
+    {
+      "id": "46c95102-8f82-44bf-afc7-14c07d0a7cbf",
+      "account": "OpenAI",
+      "owner_email": "devika@pursuit.org",
+      "deal_team_emails": [
+        "maurice.dixon@pursuit.org",
+        "ashley.vigo@pursuit.org"
+      ]
+    },
+    {
+      "id": "1340d544-2ff7-4336-b66f-4fe8c53eca16",
+      "account": "Salesforce",
+      "owner_email": "avni@pursuit.org",
+      "deal_team_emails": [
+        "brandon.jackson@pursuit.org"
+      ]
+    },
+    {
+      "id": "a1acfff9-70c2-455c-9bd9-49644c6a7c72",
+      "account": "Tiger Tracks",
+      "owner_email": "avni@pursuit.org",
+      "deal_team_emails": [
+        "michelle.brooks@pursuit.org",
+        "ethan.davey@pursuit.org",
+        "rajiv.sukhnandan@pursuit.org"
+      ]
+    },
+    {
+      "id": "0cc5f2db-dfe2-496f-8787-7978a27c5730",
+      "account": "US Chamber of Commerce",
+      "owner_email": "devika@pursuit.org",
+      "deal_team_emails": [
+        "ethan.davey@pursuit.org",
+        "maurice.dixon@pursuit.org",
+        "michelle.brooks@pursuit.org",
+        "brandon.jackson@pursuit.org",
+        "ashley.vigo@pursuit.org"
+      ]
+    },
+    {
+      "id": "c41148be-5114-40f5-aee9-0def8b5e1d06",
+      "account": "Vocal Media",
+      "owner_email": "avni@pursuit.org",
+      "deal_team_emails": [
+        "daniel.chillemi@pursuit.org",
+        "rajiv.sukhnandan@pursuit.org",
+        "cherice.heron@pursuit.org",
+        "ashley.vigo@pursuit.org",
+        "michelle.brooks@pursuit.org"
+      ]
+    }
+  ]
+}
