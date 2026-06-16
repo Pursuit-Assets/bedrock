@@ -30,7 +30,7 @@ import {
   type ContactSearchResult,
   type OppPlacement,
 } from "@/services/jobs";
-import { JobStageChip } from "@/components/jobs/JobStageChip";
+import { ActivitySourceIcon } from "@/components/ActivitySourceIcon";
 import { OppRolesSection } from "@/components/jobs/OppRolesSection";
 import { OppBuilderActivity } from "@/components/jobs/OppBuilderActivity";
 import { JobsTasks } from "@/components/jobs/JobsTasks";
@@ -40,7 +40,7 @@ import { RowExpandPanel, type ExpandTab } from "@/components/RowExpandPanel";
 import { InlineText, InlineSelect } from "@/components/ui/InlineEdit";
 import { useSort, sortBy } from "@/lib/sort";
 import { SortableHeader } from "@/components/ui/SortableHeader";
-import { ChevronDown, ChevronRight, Mail, Linkedin, Trash2, X, Plus, Check } from "lucide-react";
+import { ChevronDown, ChevronRight, Mail, Linkedin, Trash2, X, Plus, Check, Search } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { format, formatDistanceToNow } from "date-fns";
 
@@ -127,13 +127,15 @@ function fmtRelative(iso: string | null): string {
   }
 }
 
-function fmtShortDate(iso: string | null): string {
-  if (!iso) return "—";
-  try {
-    return format(new Date(iso), "MMM d, yyyy");
-  } catch {
-    return "—";
-  }
+// Synced email bodies arrive with raw HTML entities (e.g. "you&#39;re").
+// Decode them for display via a detached textarea (no DOM injection).
+let _entityDecoder: HTMLTextAreaElement | null = null;
+function decodeEntities(s: string | null | undefined): string {
+  if (!s) return "";
+  if (typeof document === "undefined") return s;
+  _entityDecoder = _entityDecoder ?? document.createElement("textarea");
+  _entityDecoder.innerHTML = s;
+  return _entityDecoder.value;
 }
 
 // ── Sub-components ────────────────────────────────────────────────────────────
@@ -751,41 +753,12 @@ function LogActivityForm({ dealId }: { dealId: string }) {
   );
 }
 
-function ActivitySourceBadge({ entry }: { entry: import("@/services/jobs").ActivityEntry }) {
-  if (entry.is_jobs) {
-    return (
-      <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium bg-accent-soft text-accent-ink">
-        Jobs
-      </span>
-    );
-  }
-  if (entry.source === "gmail-sync") {
-    return (
-      <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium bg-blue-50 text-blue-600">
-        Gmail
-      </span>
-    );
-  }
-  if (entry.source === "calendar-sync") {
-    return (
-      <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium bg-violet-50 text-violet-600">
-        Calendar
-      </span>
-    );
-  }
-  if (entry.source === "salesforce") {
-    return (
-      <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium bg-sky-50 text-sky-600">
-        SF
-      </span>
-    );
-  }
-  // manual and not is_jobs
-  return (
-    <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium bg-stone-100 text-stone-500">
-      Manual
-    </span>
-  );
+/** Map a jobs activity row to the source/type the shared icon understands. */
+function activityIconProps(e: import("@/services/jobs").ActivityEntry): { source: string; type: string } {
+  if (e.source === "gmail-sync") return { source: "gmail", type: "email" };
+  if (e.source === "calendar-sync") return { source: "calendar", type: "meeting" };
+  if (e.source === "salesforce") return { source: "salesforce", type: e.type ?? "" };
+  return { source: e.source ?? "", type: e.type ?? "" };
 }
 
 function ActivityRow({
@@ -799,18 +772,24 @@ function ActivityRow({
   onToggle: () => void;
   onDelete: () => void;
 }) {
+  const icon = activityIconProps(e);
+  const preview = decodeEntities(e.description || e.email_snippet);
+  const body = decodeEntities(e.email_body_text || e.description || e.email_snippet);
   return (
     <li
       className="cursor-pointer px-4 py-2.5 hover:bg-surface-2/40 transition-colors"
       onClick={onToggle}
     >
-      <div className="flex items-start justify-between gap-2">
+      <div className="flex items-start gap-2.5">
+        <span className="mt-0.5 shrink-0">
+          <ActivitySourceIcon source={icon.source} type={icon.type} size={15} />
+        </span>
         <div className="flex flex-col gap-0.5 min-w-0 flex-1">
           <span className="text-[12px] font-medium text-ink">
-            {e.subject ?? e.type ?? "Activity"}
+            {decodeEntities(e.subject) || e.type || "Activity"}
           </span>
-          {!isExpanded && (e.description || e.email_snippet) ? (
-            <span className="text-[11.5px] text-ink-3 line-clamp-2">{e.description || e.email_snippet}</span>
+          {!isExpanded && preview ? (
+            <span className="text-[11.5px] text-ink-3 line-clamp-2">{preview}</span>
           ) : null}
           {e.logged_by ? (
             <span className="text-[10.5px] text-ink-4">by {e.logged_by}</span>
@@ -832,17 +811,15 @@ function ActivityRow({
                   <span className="font-medium">Duration:</span> {e.meeting_duration_minutes} min
                 </span>
               ) : null}
-              {/* Full body: prefer the synced email body, then description, then snippet. */}
-              {(e.email_body_text || e.description || e.email_snippet) ? (
+              {body ? (
                 <p className="mt-0.5 max-h-72 overflow-y-auto whitespace-pre-wrap rounded bg-surface-2/40 p-2 text-[11.5px] leading-relaxed text-ink-2">
-                  {e.email_body_text || e.description || e.email_snippet}
+                  {body}
                 </p>
               ) : null}
             </div>
           )}
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
-          <ActivitySourceBadge entry={e} />
           <span className="font-mono text-[10.5px] text-ink-4">
             {e.activity_date ? format(new Date(e.activity_date), "MMM d") : "—"}
           </span>
@@ -896,6 +873,7 @@ function ActivityTab({
   entries: import("@/services/jobs").ActivityEntry[];
 }) {
   const [expandedActivityId, setExpandedActivityId] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
   const deleteActivity = useDeleteActivity();
 
   if (entries.length === 0) {
@@ -906,8 +884,17 @@ function ActivityTab({
     );
   }
 
-  const jobsEntries = entries.filter((e) => e.is_jobs);
-  const syncedEntries = entries.filter((e) => !e.is_jobs);
+  // Search by participant (from/to/logged-by) and content (subject/body/snippet).
+  const q = query.trim().toLowerCase();
+  const matches = q
+    ? entries.filter((e) =>
+        [e.email_from, e.email_to, e.logged_by, e.subject, e.description, e.email_snippet, e.email_body_text]
+          .some((f) => (f ?? "").toLowerCase().includes(q)),
+      )
+    : entries;
+
+  const jobsEntries = matches.filter((e) => e.is_jobs);
+  const syncedEntries = matches.filter((e) => !e.is_jobs);
 
   const renderRow = (e: import("@/services/jobs").ActivityEntry) => (
     <ActivityRow
@@ -921,15 +908,44 @@ function ActivityTab({
 
   return (
     <div className="flex flex-col">
-      {jobsEntries.length > 0 && (
-        <ActivitySection label="Jobs activity" count={jobsEntries.length}>
-          {jobsEntries.map(renderRow)}
-        </ActivitySection>
-      )}
-      {syncedEntries.length > 0 && (
-        <ActivitySection label="Email & calendar" count={syncedEntries.length}>
-          {syncedEntries.map(renderRow)}
-        </ActivitySection>
+      {/* Participant / content search */}
+      <div className="flex items-center gap-2 border-b border-border-strong px-4 py-2">
+        <div className="relative flex-1">
+          <Search size={12} className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-ink-4" />
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search by participant or content…"
+            className="h-7 w-full rounded border border-border-strong bg-surface pl-7 pr-6 text-[12px] text-ink-2 placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40"
+          />
+          {query ? (
+            <button
+              type="button"
+              onClick={() => setQuery("")}
+              className="absolute right-1.5 top-1/2 -translate-y-1/2 text-ink-4 hover:text-ink-2"
+              title="Clear"
+            >
+              <X size={12} />
+            </button>
+          ) : null}
+        </div>
+      </div>
+
+      {matches.length === 0 ? (
+        <div className="px-4 py-6 text-center text-[12px] text-ink-3">No activity matches “{query}”.</div>
+      ) : (
+        <>
+          {jobsEntries.length > 0 && (
+            <ActivitySection label="Jobs activity" count={jobsEntries.length}>
+              {jobsEntries.map(renderRow)}
+            </ActivitySection>
+          )}
+          {syncedEntries.length > 0 && (
+            <ActivitySection label="Email & calendar" count={syncedEntries.length}>
+              {syncedEntries.map(renderRow)}
+            </ActivitySection>
+          )}
+        </>
       )}
     </div>
   );
@@ -1208,19 +1224,24 @@ function DealRow({
           </div>
         </td>
 
-        {/* Stage — inline select + calculated status chip */}
-        <td className="w-[180px] px-3 py-1.5 align-middle" onClick={(e) => e.stopPropagation()}>
-          <div className="flex flex-col gap-1">
-            <InlineSelect<JobStage>
-              value={deal.stage}
-              options={STAGE_OPTIONS}
-              onSave={saveStage}
-              renderValue={(v) =>
-                v ? <JobStageChip stage={v} /> : <span className="text-ink-4">—</span>
-              }
-            />
-            <StatusChip stage={deal.stage} />
-          </div>
+        {/* Stage — inline dropdown (plain label + caret so it reads as editable) */}
+        <td className="w-[170px] px-3 py-1.5 align-middle" onClick={(e) => e.stopPropagation()}>
+          <InlineSelect<JobStage>
+            value={deal.stage}
+            options={STAGE_OPTIONS}
+            onSave={saveStage}
+            renderValue={(v) => (
+              <span className="flex items-center gap-1 text-[12.5px] text-ink-2">
+                <span className="truncate">{v ? STAGE_LABELS[v] : "—"}</span>
+                <ChevronDown size={12} className="shrink-0 text-ink-4" />
+              </span>
+            )}
+          />
+        </td>
+
+        {/* Status — calculated, read-only roll-up of the stage */}
+        <td className="w-[90px] px-3 py-1.5 align-middle">
+          <StatusChip stage={deal.stage} />
         </td>
 
         {/* Deal Type — inline select */}
@@ -1266,13 +1287,6 @@ function DealRow({
             value={deal.owner_email}
             onChange={(email) => patch({ owner_email: email })}
           />
-        </td>
-
-        {/* Updated */}
-        <td className="w-[120px] px-3 py-1.5 align-middle text-right">
-          <span className="font-mono text-[11px] text-ink-4" title={fmtShortDate(deal.updated_at)}>
-            {fmtRelative(deal.updated_at)}
-          </span>
         </td>
       </tr>
 
@@ -2008,9 +2022,10 @@ export function JobsTeam() {
                 <SortableHeader label="Company" sortKey="company" sort={sort} onToggle={toggle} />
               </th>
               <th className="w-[190px] px-3 py-2 text-left font-semibold">Role / Salary</th>
-              <th className="w-[180px] px-3 py-2 text-left font-semibold">
+              <th className="w-[170px] px-3 py-2 text-left font-semibold">
                 <SortableHeader label="Stage" sortKey="stage" sort={sort} onToggle={toggle} />
               </th>
+              <th className="w-[90px] px-3 py-2 text-left font-semibold">Status</th>
               <th className="w-[130px] px-3 py-2 text-left font-semibold">
                 <SortableHeader label="Deal Type" sortKey="type" sort={sort} onToggle={toggle} />
               </th>
@@ -2021,9 +2036,6 @@ export function JobsTeam() {
                 <SortableHeader label="# Roles" sortKey="num_roles" sort={sort} onToggle={toggle} align="right" />
               </th>
               <th className="w-[150px] px-3 py-2 text-left font-semibold">Owner</th>
-              <th className="w-[120px] px-3 py-2 text-right font-semibold">
-                <SortableHeader label="Updated" sortKey="updated" sort={sort} onToggle={toggle} align="right" />
-              </th>
             </tr>
           </thead>
           <tbody>
