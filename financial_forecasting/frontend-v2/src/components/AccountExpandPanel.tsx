@@ -4,6 +4,7 @@ import { Link } from "react-router-dom";
 import { ActivityTab } from "@/components/expand/ActivityTab";
 import { TaskListTab } from "@/components/expand/TaskListTab";
 import { RowExpandPanel, ROW_EXPAND_HEIGHT } from "@/components/RowExpandPanel";
+import { EntityComments } from "@/components/EntityComments";
 import { StageGateDialog } from "@/components/StageGateDialog";
 import { InlineDate, InlineSelect, InlineText } from "@/components/ui/InlineEdit";
 import { SortableHeader } from "@/components/ui/SortableHeader";
@@ -67,6 +68,11 @@ export function AccountExpandPanel({ accountId }: { accountId: string }) {
               emptyMessage="No emails, meetings, or notes recorded for this account yet."
             />
           ),
+        },
+        {
+          id: "comments",
+          label: "Comments",
+          render: () => <EntityComments entityType="account" entityId={accountId} />,
         },
       ]}
     />

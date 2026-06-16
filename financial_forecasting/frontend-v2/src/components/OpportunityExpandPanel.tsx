@@ -4,6 +4,7 @@ import { ActivityTab } from "@/components/expand/ActivityTab";
 import { TaskListTab } from "@/components/expand/TaskListTab";
 import { PaymentScheduleBuilder } from "@/components/PaymentScheduleBuilder";
 import { RowExpandPanel, ROW_EXPAND_HEIGHT } from "@/components/RowExpandPanel";
+import { EntityComments } from "@/components/EntityComments";
 import { Tag } from "@/components/ui/Tag";
 import { fmtDate, fmtMoney } from "@/lib/format";
 import {
@@ -56,6 +57,11 @@ export function OpportunityExpandPanel({
               emptyMessage="No emails, meetings, or notes recorded for this opportunity yet."
             />
           ),
+        },
+        {
+          id: "comments",
+          label: "Comments",
+          render: () => <EntityComments entityType="opportunity" entityId={opportunityId} />,
         },
       ]}
     />
