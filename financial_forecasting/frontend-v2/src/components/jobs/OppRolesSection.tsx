@@ -27,6 +27,24 @@ const ROLE_STATUS_LABELS: Record<RoleStatus, string> = {
   cancelled: "Cancelled",
 };
 
+// Employment-type options for the role dropdown (mirrors the placements modal).
+const EMPLOYMENT_TYPE_OPTIONS: { value: string; label: string }[] = [
+  { value: "full_time",  label: "Full-Time" },
+  { value: "contract",   label: "Contract" },
+  { value: "freelance",  label: "Freelance" },
+  { value: "internship", label: "Internship" },
+  { value: "pro_bono",   label: "Pro Bono" },
+];
+
+const EMPLOYMENT_TYPE_LABELS: Record<string, string> = Object.fromEntries(
+  EMPLOYMENT_TYPE_OPTIONS.map((t) => [t.value, t.label]),
+);
+
+function empTypeLabel(t: string | null): string | null {
+  if (!t) return null;
+  return EMPLOYMENT_TYPE_LABELS[t] ?? t;
+}
+
 function fmtSalary(n: number | null): string {
   if (n == null) return "—";
   return `$${n.toLocaleString("en-US")}`;
@@ -191,6 +209,7 @@ function RoleRow({ role, oppId }: { role: Role; oppId: string }) {
   const [salary, setSalary] = useState(role.approx_salary != null ? String(role.approx_salary) : "");
   const [empType, setEmpType] = useState(role.employment_type ?? "");
   const [startDate, setStartDate] = useState(role.start_date ?? "");
+  const [notes, setNotes] = useState(role.notes ?? "");
 
   const updateRole = useUpdateRole();
   const deleteRole = useDeleteRole();
@@ -205,6 +224,7 @@ function RoleRow({ role, oppId }: { role: Role; oppId: string }) {
         approx_salary: salaryNum != null && !isNaN(salaryNum) ? salaryNum : null,
         employment_type: empType.trim() || null,
         start_date: startDate || null,
+        notes: notes.trim() || null,
       },
       { onSuccess: () => setEditing(false) },
     );
@@ -221,28 +241,47 @@ function RoleRow({ role, oppId }: { role: Role; oppId: string }) {
           className="w-full rounded border border-border-strong bg-surface px-2 py-1 text-[12px] text-ink-2 placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40"
         />
         <div className="grid grid-cols-3 gap-2">
-          <input
-            type="number"
-            value={salary}
-            onChange={(e) => setSalary(e.target.value)}
-            placeholder="Salary"
-            min={0}
-            className="w-full rounded border border-border-strong bg-surface px-2 py-1 text-[11.5px] text-ink-2 placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40"
-          />
-          <input
-            type="text"
-            value={empType}
-            onChange={(e) => setEmpType(e.target.value)}
-            placeholder="Type"
-            className="w-full rounded border border-border-strong bg-surface px-2 py-1 text-[11.5px] text-ink-2 placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40"
-          />
-          <input
-            type="date"
-            value={startDate}
-            onChange={(e) => setStartDate(e.target.value)}
-            className="w-full rounded border border-border-strong bg-surface px-2 py-1 text-[11.5px] text-ink-2 focus:outline-none focus:ring-1 focus:ring-accent/40"
-          />
+          <label className="flex flex-col gap-0.5">
+            <span className="text-[10px] font-medium text-ink-4">Salary</span>
+            <input
+              type="number"
+              value={salary}
+              onChange={(e) => setSalary(e.target.value)}
+              placeholder="85000"
+              min={0}
+              className="w-full rounded border border-border-strong bg-surface px-2 py-1 text-[11.5px] text-ink-2 placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40"
+            />
+          </label>
+          <label className="flex flex-col gap-0.5">
+            <span className="text-[10px] font-medium text-ink-4">Type</span>
+            <select
+              value={empType}
+              onChange={(e) => setEmpType(e.target.value)}
+              className="w-full rounded border border-border-strong bg-surface px-2 py-1 text-[11.5px] text-ink-2 focus:outline-none focus:ring-1 focus:ring-accent/40"
+            >
+              <option value="">—</option>
+              {EMPLOYMENT_TYPE_OPTIONS.map((t) => (
+                <option key={t.value} value={t.value}>{t.label}</option>
+              ))}
+            </select>
+          </label>
+          <label className="flex flex-col gap-0.5">
+            <span className="text-[10px] font-medium text-ink-4">Expected start</span>
+            <input
+              type="date"
+              value={startDate}
+              onChange={(e) => setStartDate(e.target.value)}
+              className="w-full rounded border border-border-strong bg-surface px-2 py-1 text-[11.5px] text-ink-2 focus:outline-none focus:ring-1 focus:ring-accent/40"
+            />
+          </label>
         </div>
+        <textarea
+          rows={2}
+          value={notes}
+          onChange={(e) => setNotes(e.target.value)}
+          placeholder="Role details / notes…"
+          className="w-full resize-none rounded border border-border-strong bg-surface px-2 py-1 text-[11.5px] text-ink-2 placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40"
+        />
         <div className="flex items-center gap-3">
           <button
             type="button"
@@ -271,10 +310,13 @@ function RoleRow({ role, oppId }: { role: Role; oppId: string }) {
         <div className="flex min-w-0 flex-col gap-0.5">
           <span className="truncate text-[13px] font-medium text-ink">{role.title}</span>
           <span className="truncate text-[11.5px] text-ink-3">
-            {[fmtSalary(role.approx_salary), role.employment_type, role.start_date ? fmtDate(role.start_date) : null]
+            {[fmtSalary(role.approx_salary), empTypeLabel(role.employment_type), role.start_date ? fmtDate(role.start_date) : null]
               .filter((x) => x && x !== "—")
               .join(" · ") || "—"}
           </span>
+          {role.notes ? (
+            <span className="mt-0.5 whitespace-pre-wrap text-[11px] text-ink-3">{role.notes}</span>
+          ) : null}
         </div>
         <div className="flex shrink-0 items-center gap-2">
           <span
@@ -332,6 +374,7 @@ function AddRoleForm({ oppId }: { oppId: string }) {
   const [salary, setSalary] = useState("");
   const [empType, setEmpType] = useState("");
   const [startDate, setStartDate] = useState("");
+  const [notes, setNotes] = useState("");
   const createRole = useCreateRole();
 
   function reset() {
@@ -339,6 +382,7 @@ function AddRoleForm({ oppId }: { oppId: string }) {
     setSalary("");
     setEmpType("");
     setStartDate("");
+    setNotes("");
     setOpen(false);
   }
 
@@ -353,6 +397,7 @@ function AddRoleForm({ oppId }: { oppId: string }) {
         approx_salary: salaryNum != null && !isNaN(salaryNum) ? salaryNum : undefined,
         employment_type: empType.trim() || undefined,
         start_date: startDate || undefined,
+        notes: notes.trim() || undefined,
       },
       { onSuccess: () => reset() },
     );
@@ -381,28 +426,47 @@ function AddRoleForm({ oppId }: { oppId: string }) {
         className="w-full rounded border border-border-strong bg-surface px-2 py-1 text-[12px] text-ink-2 placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40"
       />
       <div className="grid grid-cols-3 gap-2">
-        <input
-          type="number"
-          value={salary}
-          onChange={(e) => setSalary(e.target.value)}
-          placeholder="Salary"
-          min={0}
-          className="w-full rounded border border-border-strong bg-surface px-2 py-1 text-[11.5px] text-ink-2 placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40"
-        />
-        <input
-          type="text"
-          value={empType}
-          onChange={(e) => setEmpType(e.target.value)}
-          placeholder="Type"
-          className="w-full rounded border border-border-strong bg-surface px-2 py-1 text-[11.5px] text-ink-2 placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40"
-        />
-        <input
-          type="date"
-          value={startDate}
-          onChange={(e) => setStartDate(e.target.value)}
-          className="w-full rounded border border-border-strong bg-surface px-2 py-1 text-[11.5px] text-ink-2 focus:outline-none focus:ring-1 focus:ring-accent/40"
-        />
+        <label className="flex flex-col gap-0.5">
+          <span className="text-[10px] font-medium text-ink-4">Salary</span>
+          <input
+            type="number"
+            value={salary}
+            onChange={(e) => setSalary(e.target.value)}
+            placeholder="85000"
+            min={0}
+            className="w-full rounded border border-border-strong bg-surface px-2 py-1 text-[11.5px] text-ink-2 placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40"
+          />
+        </label>
+        <label className="flex flex-col gap-0.5">
+          <span className="text-[10px] font-medium text-ink-4">Type</span>
+          <select
+            value={empType}
+            onChange={(e) => setEmpType(e.target.value)}
+            className="w-full rounded border border-border-strong bg-surface px-2 py-1 text-[11.5px] text-ink-2 focus:outline-none focus:ring-1 focus:ring-accent/40"
+          >
+            <option value="">—</option>
+            {EMPLOYMENT_TYPE_OPTIONS.map((t) => (
+              <option key={t.value} value={t.value}>{t.label}</option>
+            ))}
+          </select>
+        </label>
+        <label className="flex flex-col gap-0.5">
+          <span className="text-[10px] font-medium text-ink-4">Expected start</span>
+          <input
+            type="date"
+            value={startDate}
+            onChange={(e) => setStartDate(e.target.value)}
+            className="w-full rounded border border-border-strong bg-surface px-2 py-1 text-[11.5px] text-ink-2 focus:outline-none focus:ring-1 focus:ring-accent/40"
+          />
+        </label>
       </div>
+      <textarea
+        rows={2}
+        value={notes}
+        onChange={(e) => setNotes(e.target.value)}
+        placeholder="Role details / notes…"
+        className="w-full resize-none rounded border border-border-strong bg-surface px-2 py-1 text-[11.5px] text-ink-2 placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40"
+      />
       <div className="flex items-center gap-3">
         <button
           type="submit"

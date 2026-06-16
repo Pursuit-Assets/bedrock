@@ -159,3 +159,56 @@ export function useOppBuilderActivity(oppId: string | null) {
     staleTime: 15_000,
   });
 }
+
+export type AppStage = "applied" | "interview" | "accepted" | "rejected" | "withdrawn";
+
+export const APP_STAGE_OPTIONS: { value: AppStage; label: string }[] = [
+  { value: "applied",   label: "Applied" },
+  { value: "interview", label: "Interviewing" },
+  { value: "accepted",  label: "Hired" },
+  { value: "rejected",  label: "Rejected" },
+  { value: "withdrawn", label: "Withdrawn" },
+];
+
+export interface BuilderActivityCreateBody {
+  user_id: number;
+  builder_name?: string;
+  role_title?: string;
+  stage?: AppStage;
+  jobs_role_id?: string;
+  date_applied?: string;
+}
+
+export function useCreateBuilderActivity(oppId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (body: BuilderActivityCreateBody) => {
+      const { data } = await api.post<ApiResponse<{ job_application_id: number }>>(
+        `/api/jobs/opportunities/${oppId}/builder-activity`,
+        body,
+      );
+      return data.data;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["jobs", "opp-builder-activity", oppId] });
+      qc.invalidateQueries({ queryKey: ["jobs"] });
+      toast.success("Builder logged");
+    },
+    onError: () => toast.error("Failed to log builder"),
+  });
+}
+
+export function useUpdateBuilderActivity(oppId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ appId, stage }: { appId: number; stage: AppStage }) => {
+      await api.patch(`/api/jobs/builder-activity/${appId}`, { stage });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["jobs", "opp-builder-activity", oppId] });
+      qc.invalidateQueries({ queryKey: ["jobs"] });
+      toast.success("Status updated");
+    },
+    onError: () => toast.error("Update failed"),
+  });
+}

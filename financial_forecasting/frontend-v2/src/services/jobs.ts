@@ -42,6 +42,8 @@ export interface JobsOpportunity {
   closed_at: string | null;
   deleted_at: string | null;
   activity_count?: number;
+  last_activity_at?: string | null;
+  recent_activity_count?: number;
 }
 
 export interface JobContact {

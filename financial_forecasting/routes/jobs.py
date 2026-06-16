@@ -846,6 +846,92 @@ async def opp_builder_activity(
     return {"success": True, "data": {"rows": out, "summary": summary}}
 
 
+# public.job_applications.stage vocabulary (builder-side submission funnel).
+VALID_APP_STAGES = {"applied", "interview", "accepted", "rejected", "withdrawn"}
+
+
+class BuilderActivityCreate(BaseModel):
+    user_id:       int                       # builder user_id (from the builder picker)
+    builder_name:  Optional[str] = None      # stored in notes prefix for display
+    role_title:    Optional[str] = None
+    stage:         str = "applied"
+    jobs_role_id:  Optional[str] = None
+    date_applied:  Optional[date] = None
+
+
+class BuilderActivityUpdate(BaseModel):
+    stage: str
+
+
+@router.post("/opportunities/{opp_id}/builder-activity")
+async def create_builder_activity(
+    opp_id: UUID,
+    body: BuilderActivityCreate,
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Log a builder application / interview against this opportunity.
+
+    Writes to public.job_applications (the builder submission funnel) tagged with
+    jobs_opportunity_id so it surfaces in the Builders tab and the funnel. The
+    builder's display name is stored in the notes prefix because the read path
+    derives it via split_part(notes, ':', 1).
+    """
+    if body.stage not in VALID_APP_STAGES:
+        raise HTTPException(400, f"Invalid stage: {body.stage}")
+    opp = await conn.fetchrow(
+        "SELECT account_name FROM bedrock.jobs_opportunity WHERE id=$1 AND deleted_at IS NULL",
+        opp_id,
+    )
+    if not opp:
+        raise HTTPException(404, "Opportunity not found")
+
+    role_id = UUID(body.jobs_role_id) if body.jobs_role_id else None
+    notes = f"{body.builder_name}: logged via Opportunities" if body.builder_name else None
+    app_id = await conn.fetchval(
+        """
+        INSERT INTO public.job_applications
+            (builder_id, company_name, role_title, stage, date_applied,
+             source_type, jobs_opportunity_id, jobs_role_id, notes)
+        VALUES ($1, $2, $3, $4, COALESCE($5, CURRENT_DATE),
+                'Pursuit_referred', $6, $7, $8)
+        RETURNING job_application_id
+        """,
+        body.user_id,
+        opp["account_name"],
+        body.role_title or "Role",
+        body.stage,
+        body.date_applied,
+        opp_id,
+        role_id,
+        notes,
+    )
+    return {"success": True, "data": {"job_application_id": app_id, "stage": body.stage}}
+
+
+@router.patch("/builder-activity/{app_id}")
+async def update_builder_activity(
+    app_id: int,
+    body: BuilderActivityUpdate,
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Update an application's stage inline (applied → interview → accepted, …)."""
+    if body.stage not in VALID_APP_STAGES:
+        raise HTTPException(400, f"Invalid stage: {body.stage}")
+    result = await conn.execute(
+        """
+        UPDATE public.job_applications
+        SET stage=$1, updated_at=now()
+        WHERE job_application_id=$2 AND jobs_opportunity_id IS NOT NULL
+        """,
+        body.stage, app_id,
+    )
+    if result == "UPDATE 0":
+        raise HTTPException(404, "Application not found")
+    return {"success": True, "data": {"job_application_id": app_id, "stage": body.stage}}
+
+
 @router.get("/funnel/{ftype}")
 async def get_funnel(
     ftype: str,
@@ -1718,11 +1804,27 @@ async def list_opportunities(
         f"""
         SELECT
             o.*,
-            (
-                SELECT count(*) FROM bedrock.activity a
-                WHERE a.jobs_opportunity_id = o.id
-            ) AS activity_count
+            act.activity_count,
+            act.last_activity_at,
+            act.recent_activity_count
         FROM bedrock.jobs_opportunity o
+        LEFT JOIN LATERAL (
+            -- Same scope as the detail Activity tab: deal-tagged OR company-level
+            -- activity. Powers the row "recent activity" indicator so the team can
+            -- see at a glance which accounts moved this week.
+            SELECT
+                count(*)                                              AS activity_count,
+                max(a.activity_date)                                  AS last_activity_at,
+                count(*) FILTER (
+                    WHERE a.activity_date >= now() - interval '7 days'
+                )                                                     AS recent_activity_count
+            FROM bedrock.activity a
+            WHERE a.deleted_at IS NULL
+              AND (
+                a.jobs_opportunity_id = o.id
+                OR (o.account_id <> 'UNKNOWN' AND a.account_id = o.account_id)
+              )
+        ) act ON true
         WHERE {where}
         ORDER BY o.updated_at DESC
         LIMIT ${i} OFFSET ${i+1}

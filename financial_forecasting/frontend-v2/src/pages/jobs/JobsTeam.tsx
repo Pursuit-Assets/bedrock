@@ -8,6 +8,8 @@ import {
   useDeleteActivity,
   useBuilders,
   useContactSearch,
+  useUpdateContact,
+  useContactDetail,
   useOppPlacements,
   useUnlinkedPlacements,
   useCreatePlacement,
@@ -35,7 +37,7 @@ import { JobsTasks } from "@/components/jobs/JobsTasks";
 import { JobsComments } from "@/components/jobs/JobsComments";
 import { CommittedRolesModal } from "@/components/jobs/CommittedRolesModal";
 import { RowExpandPanel, type ExpandTab } from "@/components/RowExpandPanel";
-import { InlineText, InlineDate, InlineSelect } from "@/components/ui/InlineEdit";
+import { InlineText, InlineSelect } from "@/components/ui/InlineEdit";
 import { useSort, sortBy } from "@/lib/sort";
 import { SortableHeader } from "@/components/ui/SortableHeader";
 import { ChevronDown, ChevronRight, Mail, Linkedin, Trash2, X, Plus, Check } from "lucide-react";
@@ -74,6 +76,44 @@ function stageMatchesGroup(stage: JobStage, group: StageGroup): boolean {
   if (group === "on_hold") return stage.startsWith("on_hold");
   if (group === "closed") return stage.startsWith("closed");
   return true;
+}
+
+// ── Calculated status (read-only roll-up of the 9-stage field) ─────────────────
+
+const STATUS_STYLES: Record<"active" | "on_hold" | "closed", { label: string; className: string }> = {
+  active:  { label: "Active",  className: "bg-emerald-50 text-emerald-700" },
+  on_hold: { label: "On Hold", className: "bg-amber-50 text-amber-600" },
+  closed:  { label: "Closed",  className: "bg-stone-100 text-stone-500" },
+};
+
+function stageStatus(stage: JobStage): "active" | "on_hold" | "closed" {
+  if (stage.startsWith("closed")) return "closed";
+  if (stage.startsWith("on_hold")) return "on_hold";
+  return "active";
+}
+
+function StatusChip({ stage }: { stage: JobStage }) {
+  const s = STATUS_STYLES[stageStatus(stage)];
+  return (
+    <span className={cn("inline-flex w-fit items-center rounded px-1.5 py-0.5 text-[9.5px] font-semibold uppercase tracking-wide leading-none", s.className)}>
+      {s.label}
+    </span>
+  );
+}
+
+/** Row indicator: shows recent (trailing-7d) activity so the team can spot which
+ *  accounts moved this week at a glance. */
+function RecentActivityDot({ recent, last }: { recent: number | undefined; last: string | null | undefined }) {
+  if (!recent || recent <= 0) return null;
+  return (
+    <span
+      className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-1.5 py-0.5 text-[9.5px] font-semibold leading-none text-emerald-700"
+      title={last ? `Last activity ${fmtRelative(last)}` : "Recent activity"}
+    >
+      <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+      {recent} this wk
+    </span>
+  );
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -484,29 +524,6 @@ function DealExpandPanel({
 
   const tabs: ExpandTab[] = [
     {
-      id: "details",
-      label: "Details",
-      render: () => <DetailsTab deal={deal} detail={detail} loading={detailQ.isLoading} />,
-    },
-    {
-      id: "roles",
-      label: "Roles",
-      render: () => (
-        <div className="px-4 py-3">
-          <OppRolesSection oppId={deal.id} />
-        </div>
-      ),
-    },
-    {
-      id: "builder-activity",
-      label: "Builder Activity",
-      render: () => (
-        <div className="px-4 py-3">
-          <OppBuilderActivity oppId={deal.id} />
-        </div>
-      ),
-    },
-    {
       id: "activity",
       label: "Activity",
       count: detail?.activity?.length ?? null,
@@ -519,6 +536,34 @@ function DealExpandPanel({
             <LogActivityForm dealId={deal.id} />
           </div>
         ),
+    },
+    {
+      id: "roles",
+      label: "Roles",
+      render: () => (
+        <div className="px-4 py-3">
+          <OppRolesSection oppId={deal.id} />
+        </div>
+      ),
+    },
+    {
+      id: "builders",
+      label: "Builders",
+      render: () => (
+        <div className="px-4 py-3">
+          <BuildersTab deal={deal} />
+        </div>
+      ),
+    },
+    {
+      id: "contacts",
+      label: "Contacts",
+      count: detail?.contacts?.length ?? null,
+      render: () => (
+        <div className="px-4 py-3">
+          <ContactsTab deal={deal} detail={detail} loading={detailQ.isLoading} />
+        </div>
+      ),
     },
     {
       id: "tasks",
@@ -538,22 +583,9 @@ function DealExpandPanel({
         </div>
       ),
     },
-    {
-      id: "history",
-      label: "History",
-      render: () =>
-        detailQ.isLoading ? <TabLoading /> : <HistoryTab entries={detail?.stage_history ?? []} />,
-    },
-    {
-      id: "contacts",
-      label: "Contacts",
-      count: detail?.contacts?.length ?? null,
-      render: () =>
-        detailQ.isLoading ? <TabLoading /> : <ContactsTab contacts={detail?.contacts ?? []} />,
-    },
   ];
 
-  return <RowExpandPanel tabs={tabs} defaultTab="details" />;
+  return <RowExpandPanel tabs={tabs} defaultTab="activity" />;
 }
 
 function TabLoading() {
@@ -563,99 +595,17 @@ function TabLoading() {
 }
 
 /**
- * Details tab — the inline-edit fields that aren't shown in the row:
- * role title, follow-up date, expected salary, touch count, description /
- * notes, builders picker, contacts picker. Stage / deal type / likelihood /
- * # roles / owner are edited inline in the row itself.
+ * Builders tab — link builders to the deal (builder_ids) and log/track their
+ * applications + interviews against the opportunity. The linked-builder picker
+ * moved here from the old Details tab.
  */
-function DetailsTab({
-  deal,
-  detail,
-  loading,
-}: {
-  deal: JobsOpportunity;
-  detail: JobsOpportunityDetail | undefined;
-  loading: boolean;
-}) {
-  const updateOpp = useUpdateOpportunity();
-  const contacts = detail?.contacts ?? [];
-
-  function patch(fields: Record<string, unknown>) {
-    return new Promise<void>((resolve, reject) => {
-      updateOpp.mutate({ id: deal.id, ...fields }, { onSuccess: () => resolve(), onError: reject });
-    });
-  }
-
+function BuildersTab({ deal }: { deal: JobsOpportunity }) {
   return (
-    <div className="px-5 py-4">
-      <div className="grid grid-cols-2 gap-x-6 gap-y-3">
-        <Field label="Role Title" className="col-span-2">
-          <InlineText
-            value={deal.title}
-            placeholder="Add role title…"
-            onSave={(v) => patch({ title: v || null })}
-          />
-        </Field>
-
-        <Field label="Follow-up Date">
-          <InlineDate
-            value={deal.follow_up_date}
-            onSave={(v) => patch({ follow_up_date: v })}
-            variant="long"
-          />
-        </Field>
-
-        <Field label="Expected Salary $">
-          <InlineText
-            value={deal.salary_expected != null ? String(deal.salary_expected) : ""}
-            placeholder="—"
-            formatDisplay={(raw) => {
-              const n = Number(raw.replace(/[^0-9.]/g, ""));
-              return isNaN(n) ? raw : `$${n.toLocaleString("en-US")}`;
-            }}
-            onSave={(v) => {
-              const n = v === "" ? null : Number(v.replace(/[^0-9.]/g, ""));
-              return patch({ salary_expected: n === null || isNaN(n) ? null : n });
-            }}
-          />
-        </Field>
-
-        <Field label="Touch Count">
-          <InlineText
-            value={deal.touch_count > 0 ? String(deal.touch_count) : ""}
-            placeholder="0"
-            onSave={(v) => {
-              const n = v === "" ? 0 : parseInt(v, 10);
-              return patch({ touch_count: isNaN(n) ? 0 : n });
-            }}
-          />
-        </Field>
-
-        <Field label="Builders" className="col-span-2">
-          <BuilderPicker dealId={deal.id} builderIds={deal.builder_ids ?? []} />
-        </Field>
-
-        <Field label="Contacts" className="col-span-2">
-          {loading ? (
-            <span className="text-[12px] text-ink-4">Loading…</span>
-          ) : (
-            <ContactPicker
-              dealId={deal.id}
-              sfContactIds={deal.sf_contact_ids ?? []}
-              linkedContacts={contacts}
-            />
-          )}
-        </Field>
-
-        <Field label="Description / Notes" className="col-span-2">
-          <InlineText
-            value={deal.description}
-            placeholder="Add notes…"
-            multiline
-            onSave={(v) => patch({ description: v || null })}
-          />
-        </Field>
-      </div>
+    <div className="flex flex-col gap-4">
+      <Field label="Linked Builders">
+        <BuilderPicker dealId={deal.id} builderIds={deal.builder_ids ?? []} />
+      </Field>
+      <OppBuilderActivity oppId={deal.id} />
     </div>
   );
 }
@@ -832,6 +782,103 @@ function ActivitySourceBadge({ entry }: { entry: import("@/services/jobs").Activ
   );
 }
 
+function ActivityRow({
+  e,
+  isExpanded,
+  onToggle,
+  onDelete,
+}: {
+  e: import("@/services/jobs").ActivityEntry;
+  isExpanded: boolean;
+  onToggle: () => void;
+  onDelete: () => void;
+}) {
+  return (
+    <li
+      className="cursor-pointer px-4 py-2.5 hover:bg-surface-2/40 transition-colors"
+      onClick={onToggle}
+    >
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex flex-col gap-0.5 min-w-0 flex-1">
+          <span className="text-[12px] font-medium text-ink">
+            {e.subject ?? e.type ?? "Activity"}
+          </span>
+          {!isExpanded && (e.description || e.email_snippet) ? (
+            <span className="text-[11.5px] text-ink-3 line-clamp-2">{e.description || e.email_snippet}</span>
+          ) : null}
+          {e.logged_by ? (
+            <span className="text-[10.5px] text-ink-4">by {e.logged_by}</span>
+          ) : null}
+          {isExpanded && (
+            <div className="mt-1.5 flex flex-col gap-1">
+              {e.description ? (
+                <p className="text-[11.5px] text-ink-2 whitespace-pre-wrap">{e.description}</p>
+              ) : null}
+              {!e.description && e.email_snippet ? (
+                <p className="text-[11.5px] text-ink-2 whitespace-pre-wrap">{e.email_snippet}</p>
+              ) : null}
+              {e.email_from ? (
+                <span className="text-[11px] text-ink-3">
+                  <span className="font-medium">From:</span> {e.email_from}
+                </span>
+              ) : null}
+              {e.meeting_duration_minutes != null ? (
+                <span className="text-[11px] text-ink-3">
+                  <span className="font-medium">Duration:</span> {e.meeting_duration_minutes} min
+                </span>
+              ) : null}
+            </div>
+          )}
+        </div>
+        <div className="flex shrink-0 items-center gap-1.5">
+          <ActivitySourceBadge entry={e} />
+          <span className="font-mono text-[10.5px] text-ink-4">
+            {e.activity_date ? format(new Date(e.activity_date), "MMM d") : "—"}
+          </span>
+          {e.is_jobs ? (
+            <button
+              type="button"
+              title="Delete activity"
+              onClick={(ev) => {
+                ev.stopPropagation();
+                onDelete();
+              }}
+              className="text-ink-4 hover:text-red-500 transition-colors"
+            >
+              <Trash2 size={13} />
+            </button>
+          ) : null}
+        </div>
+      </div>
+    </li>
+  );
+}
+
+function ActivitySection({
+  label,
+  count,
+  children,
+}: {
+  label: string;
+  count: number;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="flex flex-col">
+      <div className="flex items-center gap-2 bg-surface-2/50 px-4 py-1.5">
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-ink-3">{label}</span>
+        <span className="font-mono text-[10px] text-ink-4">{count}</span>
+      </div>
+      <ul className="divide-y divide-border-strong">{children}</ul>
+    </div>
+  );
+}
+
+/**
+ * Activity tab — jobs-team logs separated from synced email/calendar so the
+ * team can see what they did vs. what flowed in automatically. All activity for
+ * the company (deal-tagged + account-level) is pulled in by the detail endpoint.
+ */
 function ActivityTab({
   entries,
 }: {
@@ -847,113 +894,33 @@ function ActivityTab({
       </div>
     );
   }
-  return (
-    <ul className="divide-y divide-border-strong">
-      {entries.map((e) => {
-        const isExpanded = expandedActivityId === e.id;
-        return (
-          <li
-            key={e.id}
-            className="cursor-pointer px-4 py-2.5 hover:bg-surface-2/40 transition-colors"
-            onClick={() => setExpandedActivityId(isExpanded ? null : e.id)}
-          >
-            <div className="flex items-start justify-between gap-2">
-              <div className="flex flex-col gap-0.5 min-w-0 flex-1">
-                <span className="text-[12px] font-medium text-ink">
-                  {e.subject ?? e.type ?? "Activity"}
-                </span>
-                {!isExpanded && e.description ? (
-                  <span className="text-[11.5px] text-ink-3 line-clamp-2">{e.description}</span>
-                ) : null}
-                {e.logged_by ? (
-                  <span className="text-[10.5px] text-ink-4">by {e.logged_by}</span>
-                ) : null}
-                {isExpanded && (
-                  <div className="mt-1.5 flex flex-col gap-1">
-                    {e.description ? (
-                      <p className="text-[11.5px] text-ink-2 whitespace-pre-wrap">{e.description}</p>
-                    ) : null}
-                    {e.email_from ? (
-                      <span className="text-[11px] text-ink-3">
-                        <span className="font-medium">From:</span> {e.email_from}
-                      </span>
-                    ) : null}
-                    {e.meeting_duration_minutes != null ? (
-                      <span className="text-[11px] text-ink-3">
-                        <span className="font-medium">Duration:</span> {e.meeting_duration_minutes} min
-                      </span>
-                    ) : null}
-                  </div>
-                )}
-              </div>
-              <div className="flex shrink-0 items-center gap-1.5">
-                <ActivitySourceBadge entry={e} />
-                <span className="font-mono text-[10.5px] text-ink-4">
-                  {e.activity_date ? format(new Date(e.activity_date), "MMM d") : "—"}
-                </span>
-                {e.is_jobs ? (
-                  <button
-                    type="button"
-                    title="Delete activity"
-                    onClick={(ev) => {
-                      ev.stopPropagation();
-                      deleteActivity.mutate(e.id);
-                    }}
-                    className="text-ink-4 hover:text-red-500 transition-colors"
-                  >
-                    <Trash2 size={13} />
-                  </button>
-                ) : null}
-              </div>
-            </div>
-          </li>
-        );
-      })}
-    </ul>
-  );
-}
 
-function HistoryTab({
-  entries,
-}: {
-  entries: import("@/services/jobs").StageHistoryEntry[];
-}) {
-  if (entries.length === 0) {
-    return (
-      <div className="px-4 py-6 text-center text-[12px] text-ink-3">
-        No stage changes recorded yet.
-      </div>
-    );
-  }
+  const jobsEntries = entries.filter((e) => e.is_jobs);
+  const syncedEntries = entries.filter((e) => !e.is_jobs);
+
+  const renderRow = (e: import("@/services/jobs").ActivityEntry) => (
+    <ActivityRow
+      key={e.id}
+      e={e}
+      isExpanded={expandedActivityId === e.id}
+      onToggle={() => setExpandedActivityId(expandedActivityId === e.id ? null : e.id)}
+      onDelete={() => deleteActivity.mutate(e.id)}
+    />
+  );
+
   return (
-    <ul className="divide-y divide-border-strong">
-      {entries.map((e) => (
-        <li key={e.id} className="px-4 py-2.5">
-          <div className="flex items-start justify-between gap-2">
-            <div className="flex flex-col gap-1">
-              <div className="flex items-center gap-1.5 text-[11.5px]">
-                {e.from_stage ? (
-                  <>
-                    <span className="text-ink-3">{STAGE_LABELS[e.from_stage]}</span>
-                    <span className="text-ink-4">→</span>
-                  </>
-                ) : null}
-                <span className="font-medium text-ink">{STAGE_LABELS[e.to_stage]}</span>
-              </div>
-              {e.note ? (
-                <span className="text-[11px] text-ink-3 italic">{e.note}</span>
-              ) : null}
-              {e.changed_by ? (
-                <span className="text-[10.5px] text-ink-4">by {e.changed_by}</span>
-              ) : null}
-            </div>
-            <span className="shrink-0 font-mono text-[10.5px] text-ink-4">
-              {format(new Date(e.changed_at), "MMM d")}
-            </span>
-          </div>
-        </li>
-      ))}
-    </ul>
+    <div className="flex flex-col">
+      {jobsEntries.length > 0 && (
+        <ActivitySection label="Jobs activity" count={jobsEntries.length}>
+          {jobsEntries.map(renderRow)}
+        </ActivitySection>
+      )}
+      {syncedEntries.length > 0 && (
+        <ActivitySection label="Email & calendar" count={syncedEntries.length}>
+          {syncedEntries.map(renderRow)}
+        </ActivitySection>
+      )}
+    </div>
   );
 }
 
@@ -969,21 +936,10 @@ const CONTACT_STAGE_STYLES: Record<
   on_hold:          { label: "On Hold",          className: "bg-amber-50 text-amber-600" },
 };
 
-function ContactStagePill({ stage }: { stage: string | null }) {
-  if (!stage) return null;
-  const style = CONTACT_STAGE_STYLES[stage];
-  if (!style) return null;
-  return (
-    <span
-      className={cn(
-        "inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium leading-none",
-        style.className,
-      )}
-    >
-      {style.label}
-    </span>
-  );
-}
+const CONTACT_STAGE_OPTIONS = Object.entries(CONTACT_STAGE_STYLES).map(([value, s]) => ({
+  value,
+  label: s.label,
+}));
 
 function contactInitials(contact: JobContact): string {
   if (contact.first_name && contact.last_name) {
@@ -999,64 +955,130 @@ function contactInitials(contact: JobContact): string {
   return "??";
 }
 
-function ContactsTab({ contacts }: { contacts: JobContact[] }) {
-  if (contacts.length === 0) {
-    return (
-      <div className="px-4 py-6 text-center text-[12px] text-ink-3">
-        No contacts linked to this deal.
-      </div>
-    );
-  }
+/** A single linked contact: inline stage editor + expandable per-contact activity. */
+function ContactRow({ contact }: { contact: JobContact }) {
+  const [expanded, setExpanded] = useState(false);
+  const updateContact = useUpdateContact();
+  const detailQ = useContactDetail(expanded ? contact.contact_id : null);
+  const activity = detailQ.data?.activity ?? [];
+
+  const name =
+    contact.full_name ?? (`${contact.first_name ?? ""} ${contact.last_name ?? ""}`.trim() || "—");
+
   return (
-    <ul className="divide-y divide-border-strong">
-      {contacts.map((c) => (
-        <li key={c.contact_id} className="flex items-center gap-3 px-4 py-2.5">
-          {/* Initials avatar */}
-          <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-accent-soft text-[11px] font-semibold leading-none text-accent-ink">
-            {contactInitials(c)}
-          </span>
+    <li className="flex flex-col">
+      <div className="flex items-center gap-3 px-3 py-2.5">
+        <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-accent-soft text-[11px] font-semibold leading-none text-accent-ink">
+          {contactInitials(contact)}
+        </span>
 
-          {/* Middle — name / title / stage */}
-          <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-            <span className="truncate text-[13px] font-semibold text-ink">
-              {c.full_name ?? (`${c.first_name ?? ""} ${c.last_name ?? ""}`.trim() || "—")}
+        <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+          <span className="truncate text-[13px] font-semibold text-ink">{name}</span>
+          {(contact.current_title || contact.current_company) ? (
+            <span className="truncate text-[12px] text-ink-3">
+              {[contact.current_title, contact.current_company].filter(Boolean).join(" @ ")}
             </span>
-            {(c.current_title || c.current_company) ? (
-              <span className="truncate text-[12px] text-ink-3">
-                {[c.current_title, c.current_company].filter(Boolean).join(" @ ")}
-              </span>
-            ) : null}
-            <ContactStagePill stage={c.contact_stage} />
-          </div>
+          ) : null}
+        </div>
 
-          {/* Right — email + LinkedIn */}
-          <div className="flex shrink-0 items-center gap-2">
-            {c.email ? (
-              <a
-                href={`mailto:${c.email}`}
-                title={c.email}
-                className="text-ink-3 transition-colors hover:text-accent"
-                onClick={(e) => e.stopPropagation()}
-              >
-                <Mail size={14} />
-              </a>
-            ) : null}
-            {c.linkedin_url ? (
-              <a
-                href={c.linkedin_url}
-                target="_blank"
-                rel="noreferrer"
-                title="LinkedIn"
-                className="text-ink-3 transition-colors hover:text-accent"
-                onClick={(e) => e.stopPropagation()}
-              >
-                <Linkedin size={14} />
-              </a>
-            ) : null}
-          </div>
-        </li>
-      ))}
-    </ul>
+        <div className="flex shrink-0 items-center gap-2">
+          {/* Inline stage editor */}
+          <select
+            value={contact.contact_stage ?? ""}
+            onChange={(e) =>
+              updateContact.mutate({ id: contact.contact_id, contact_stage: e.target.value })
+            }
+            disabled={updateContact.isPending}
+            className="rounded-full border border-border-strong bg-surface-2 px-2 py-0.5 text-[10px] font-medium text-ink-2 focus:outline-none focus:ring-1 focus:ring-accent/40"
+            title="Update contact stage"
+          >
+            <option value="">— stage —</option>
+            {CONTACT_STAGE_OPTIONS.map((s) => (
+              <option key={s.value} value={s.value}>{s.label}</option>
+            ))}
+          </select>
+          {contact.email ? (
+            <a href={`mailto:${contact.email}`} title={contact.email} className="text-ink-3 hover:text-accent">
+              <Mail size={14} />
+            </a>
+          ) : null}
+          {contact.linkedin_url ? (
+            <a href={contact.linkedin_url} target="_blank" rel="noreferrer" title="LinkedIn" className="text-ink-3 hover:text-accent">
+              <Linkedin size={14} />
+            </a>
+          ) : null}
+          <button
+            type="button"
+            onClick={() => setExpanded((v) => !v)}
+            className="text-ink-4 hover:text-ink-2"
+            title="Show activity"
+          >
+            {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+          </button>
+        </div>
+      </div>
+
+      {expanded && (
+        <div className="border-t border-border-strong bg-surface-2/30 px-4 py-2">
+          {detailQ.isLoading ? (
+            <span className="text-[11.5px] text-ink-4">Loading activity…</span>
+          ) : activity.length === 0 ? (
+            <span className="text-[11.5px] text-ink-4">No activity for this contact.</span>
+          ) : (
+            <ul className="flex flex-col gap-1.5">
+              {activity.slice(0, 12).map((a) => (
+                <li key={a.id} className="flex items-start justify-between gap-2">
+                  <span className="min-w-0 flex-1 text-[11.5px] text-ink-2">
+                    <span className="font-medium">{a.subject ?? a.type}</span>
+                    {a.description ? <span className="text-ink-3"> — {a.description}</span> : null}
+                  </span>
+                  <span className="shrink-0 font-mono text-[10px] text-ink-4">
+                    {a.activity_date ? format(new Date(a.activity_date), "MMM d") : "—"}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+    </li>
+  );
+}
+
+function ContactsTab({
+  deal,
+  detail,
+  loading,
+}: {
+  deal: JobsOpportunity;
+  detail: JobsOpportunityDetail | undefined;
+  loading: boolean;
+}) {
+  const contacts = detail?.contacts ?? [];
+  return (
+    <div className="flex flex-col gap-3">
+      <Field label="Link a contact">
+        {loading ? (
+          <span className="text-[12px] text-ink-4">Loading…</span>
+        ) : (
+          <ContactPicker
+            dealId={deal.id}
+            sfContactIds={deal.sf_contact_ids ?? []}
+            linkedContacts={contacts}
+          />
+        )}
+      </Field>
+
+      {contacts.length === 0 ? (
+        <div className="py-4 text-center text-[12px] text-ink-3">No contacts linked to this deal.</div>
+      ) : (
+        <ul className="flex flex-col divide-y divide-border-strong rounded-md border border-border-strong">
+          {contacts.map((c) => (
+            <ContactRow key={c.contact_id} contact={c} />
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }
 
@@ -1071,7 +1093,7 @@ const DEAL_TYPE_OPTIONS: { value: DealType; label: string }[] = (
   Object.entries(DEAL_TYPE_LABELS) as [DealType, string][]
 ).map(([value, label]) => ({ value, label }));
 
-const TOTAL_COLS = 8;
+const TOTAL_COLS = 9;
 
 function DealRow({
   deal,
@@ -1141,28 +1163,53 @@ function DealRow({
           )}
         </td>
 
-        {/* Company + deal-title subline */}
+        {/* Company + recent-activity indicator */}
         <td className="px-3 py-1.5 align-middle">
-          <div className="min-w-0">
+          <div className="flex min-w-0 items-center gap-2">
             <span className="block truncate text-[13px] font-semibold text-ink">
               {deal.account_name}
             </span>
-            {deal.title ? (
-              <span className="block truncate text-[11px] text-ink-3">{deal.title}</span>
-            ) : null}
+            <RecentActivityDot recent={deal.recent_activity_count} last={deal.last_activity_at} />
           </div>
         </td>
 
-        {/* Stage — inline select */}
+        {/* Role title + expected salary — inline edit */}
+        <td className="w-[190px] px-3 py-1.5 align-middle" onClick={(e) => e.stopPropagation()}>
+          <div className="flex flex-col gap-0.5">
+            <InlineText
+              value={deal.title}
+              placeholder="Add role title…"
+              onSave={(v) => patch({ title: v || null })}
+            />
+            <InlineText
+              value={deal.salary_expected != null ? String(deal.salary_expected) : ""}
+              placeholder="Add salary…"
+              className="text-[11px] text-ink-3"
+              formatDisplay={(raw) => {
+                const n = Number(raw.replace(/[^0-9.]/g, ""));
+                return isNaN(n) ? raw : `$${n.toLocaleString("en-US")}`;
+              }}
+              onSave={(v) => {
+                const n = v === "" ? null : Number(v.replace(/[^0-9.]/g, ""));
+                return patch({ salary_expected: n === null || isNaN(n) ? null : n });
+              }}
+            />
+          </div>
+        </td>
+
+        {/* Stage — inline select + calculated status chip */}
         <td className="w-[180px] px-3 py-1.5 align-middle" onClick={(e) => e.stopPropagation()}>
-          <InlineSelect<JobStage>
-            value={deal.stage}
-            options={STAGE_OPTIONS}
-            onSave={saveStage}
-            renderValue={(v) =>
-              v ? <JobStageChip stage={v} /> : <span className="text-ink-4">—</span>
-            }
-          />
+          <div className="flex flex-col gap-1">
+            <InlineSelect<JobStage>
+              value={deal.stage}
+              options={STAGE_OPTIONS}
+              onSave={saveStage}
+              renderValue={(v) =>
+                v ? <JobStageChip stage={v} /> : <span className="text-ink-4">—</span>
+              }
+            />
+            <StatusChip stage={deal.stage} />
+          </div>
         </td>
 
         {/* Deal Type — inline select */}
@@ -1743,6 +1790,7 @@ export function JobsTeam() {
   const [ownerFilter, setOwnerFilter] = useState<string | null>(null);
   const [stageGroup, setStageGroup] = useState<StageGroup>("all");
   const [dealTypeFilter, setDealTypeFilter] = useState<DealTypeFilter>("ft");
+  const [query, setQuery] = useState("");
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [showNewDeal, setShowNewDeal] = useState(false);
   const [placementModalDeal, setPlacementModalDeal] = useState<{ id: string; account_name: string } | null>(null);
@@ -1756,7 +1804,15 @@ export function JobsTeam() {
 
   const allDeals: JobsOpportunity[] = (rawData as { data: JobsOpportunity[]; total: number } | undefined)?.data ?? [];
 
-  const filtered = allDeals.filter((d) => stageMatchesGroup(d.stage, stageGroup));
+  const q = query.trim().toLowerCase();
+  const filtered = allDeals.filter(
+    (d) =>
+      stageMatchesGroup(d.stage, stageGroup) &&
+      (q === "" ||
+        d.account_name.toLowerCase().includes(q) ||
+        (d.title ?? "").toLowerCase().includes(q) ||
+        (d.owner_email ?? "").toLowerCase().includes(q)),
+  );
 
   const visible =
     sort.key == null
@@ -1838,8 +1894,29 @@ export function JobsTeam() {
           ))}
         </div>
 
+        {/* Search */}
+        <div className="relative ml-auto">
+          <input
+            type="text"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search company, role, owner…"
+            className="w-56 rounded-md border border-border-strong bg-surface px-2.5 py-1 text-[12px] text-ink-2 placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40"
+          />
+          {query ? (
+            <button
+              type="button"
+              onClick={() => setQuery("")}
+              className="absolute right-1.5 top-1/2 -translate-y-1/2 text-ink-4 hover:text-ink-2"
+              title="Clear search"
+            >
+              <X size={13} />
+            </button>
+          ) : null}
+        </div>
+
         {/* Count badge */}
-        <span className="ml-auto font-mono text-[12px] text-ink-4">
+        <span className="font-mono text-[12px] text-ink-4">
           {isLoading ? "…" : `${visible.length} deal${visible.length === 1 ? "" : "s"}`}
         </span>
 
@@ -1919,6 +1996,7 @@ export function JobsTeam() {
               <th className="px-3 py-2 text-left font-semibold">
                 <SortableHeader label="Company" sortKey="company" sort={sort} onToggle={toggle} />
               </th>
+              <th className="w-[190px] px-3 py-2 text-left font-semibold">Role / Salary</th>
               <th className="w-[180px] px-3 py-2 text-left font-semibold">
                 <SortableHeader label="Stage" sortKey="stage" sort={sort} onToggle={toggle} />
               </th>
