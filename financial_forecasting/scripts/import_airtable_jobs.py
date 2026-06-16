@@ -28,19 +28,37 @@ ENGAGEMENTS_TABLE = "tblRcbb5SzvuWBCCh"
 COMPANIES_TABLE = "tblOyUDqF6kcntIYk"
 
 STAGE_MAP = {
+    # Legacy stage names (kept for older records)
     "R+D (pre-contact)":            "lead_submitted",
     "Reached Out":                   "initial_outreach",
     "In Discussion":                 "active_in_discussions",
     "In Contract":                   "active_in_discussions",
-    "Active: Builder Matching":      "active_opportunity_confirmed",
-    "Active: Builder Interviews":    "active_builder_interview",
     "Candidates Submitted":          "active_builder_interview",
     "Interviewing":                  "active_builder_interview",
     "Closed - Won/FTE":              "closed_won",
     "Closed - Won/Contract":         "closed_won",
     "Closed - Won/Capstone or Volunteer": "closed_won",
     "Closed - Lost":                 "closed_lost",
+    # Current Airtable vocabulary ("Active: …" prefix + On Hold)
+    "Active: In Discussion":         "active_in_discussions",
+    "Active: In Contract":           "active_in_discussions",
+    "Active: Builder Matching":      "active_opportunity_confirmed",
+    "Active: Builder Interviews":    "active_builder_interview",
+    "Active: Candidates Submitted":  "active_builder_interview",
+    "On Hold":                       "on_hold_not_responsive",
+    "Closed - Won":                  "closed_won",
 }
+
+
+def _map_stage(at_stage: str | None) -> str:
+    """Map an Airtable Deal Stage to our stage enum, resilient to the
+    'Active: ' prefix drift (e.g. 'Active: In Discussion' → 'In Discussion')."""
+    if not at_stage:
+        return "lead_submitted"
+    if at_stage in STAGE_MAP:
+        return STAGE_MAP[at_stage]
+    stripped = at_stage.replace("Active: ", "").strip()
+    return STAGE_MAP.get(stripped, "lead_submitted")
 
 DEAL_TYPE_MAP = {
     "Closed - Won/FTE":              "ft",
@@ -161,7 +179,7 @@ async def main():
         f = deal["fields"]
         at_id = deal["id"]
         at_stage = f.get("Deal Stage", "")
-        stage = STAGE_MAP.get(at_stage, "lead_submitted")
+        stage = _map_stage(at_stage)
 
         # Derive deal_type: from stage first, then from Deal Type field
         deal_type = DEAL_TYPE_MAP.get(at_stage)
