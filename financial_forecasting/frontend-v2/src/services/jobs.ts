@@ -103,7 +103,7 @@ export interface ActivityEntry {
   logged_by: string | null;
   synced_at: string | null;
   email_from: string | null;
-  email_to: string | null;
+  email_to: string[] | null;
   email_snippet: string | null;
   email_body_text: string | null;
   meeting_duration_minutes: number | null;

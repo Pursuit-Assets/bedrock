@@ -801,9 +801,9 @@ function ActivityRow({
                   <span className="font-medium">From:</span> {e.email_from}
                 </span>
               ) : null}
-              {e.email_to ? (
+              {e.email_to && e.email_to.length > 0 ? (
                 <span className="text-[11px] text-ink-3">
-                  <span className="font-medium">To:</span> {e.email_to}
+                  <span className="font-medium">To:</span> {e.email_to.join(", ")}
                 </span>
               ) : null}
               {e.meeting_duration_minutes != null ? (
@@ -885,11 +885,14 @@ function ActivityTab({
   }
 
   // Search by participant (from/to/logged-by) and content (subject/body/snippet).
+  // Fields may be null, strings, or arrays (email_to is text[]) — coerce safely.
   const q = query.trim().toLowerCase();
+  const fieldText = (f: unknown): string =>
+    Array.isArray(f) ? f.join(" ") : f == null ? "" : String(f);
   const matches = q
     ? entries.filter((e) =>
         [e.email_from, e.email_to, e.logged_by, e.subject, e.description, e.email_snippet, e.email_body_text]
-          .some((f) => (f ?? "").toLowerCase().includes(q)),
+          .some((f) => fieldText(f).toLowerCase().includes(q)),
       )
     : entries;
 
