@@ -1677,7 +1677,6 @@ async def get_pipeline_summary(user=Depends(require_auth), conn=Depends(get_db))
     return {"success": True, "data": list(pipeline.values())}
 
 
-@router.get("/opportunities")
 def _norm_opp(d: dict) -> dict:
     """Guarantee array fields are never None (the columns allow NULL, which
     would crash the frontend pickers that call .map/.length on them)."""
@@ -1686,6 +1685,7 @@ def _norm_opp(d: dict) -> dict:
     return d
 
 
+@router.get("/opportunities")
 async def list_opportunities(
     stage: Optional[str] = Query(None),
     stage_group: Optional[str] = Query(None, description="active | on_hold | closed"),
