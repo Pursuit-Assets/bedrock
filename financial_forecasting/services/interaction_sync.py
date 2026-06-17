@@ -55,14 +55,16 @@ async def run_interaction_sync(conn_or_pool, days_back: int = 90) -> dict[str, A
             try:
                 gmail_result = await sync_gmail_for_staff(staff_conn, email, days_back=days_back)
             except Exception as e:
-                logger.error("gmail sync failed for %s: %s", email, e)
-                gmail_result = {"staff_email": email, "error": str(e)}
+                # repr(), not str(): connection-reset / cancelled-task errors
+                # have an empty str() and were logging as "failed for X: " (blank).
+                logger.error("gmail sync failed for %s: %r", email, e)
+                gmail_result = {"staff_email": email, "error": repr(e) or type(e).__name__}
 
             try:
                 cal_result = await sync_calendar_for_staff(staff_conn, email, days_back=days_back)
             except Exception as e:
-                logger.error("calendar sync failed for %s: %s", email, e)
-                cal_result = {"staff_email": email, "error": str(e)}
+                logger.error("calendar sync failed for %s: %r", email, e)
+                cal_result = {"staff_email": email, "error": repr(e) or type(e).__name__}
         finally:
             await _release_conn(staff_conn)
 

@@ -218,7 +218,14 @@ async def startup_event():
             _services["data_sync_service"] = DataSyncService(client)
         asyncio.create_task(background_sync_task())
         asyncio.create_task(background_award_reconciler_task())
-        asyncio.create_task(background_interaction_sync_task())
+        # NOTE: the nightly interaction sync is triggered solely by Cloud
+        # Scheduler (`bedrock-interaction-sync`, 04:00 UTC) hitting
+        # /api/admin/interaction-sync. We intentionally do NOT also run it
+        # in-process: this task fires once *per Cloud Run instance*, so on any
+        # overnight scale-up it collided with the scheduler run (and itself) —
+        # two+ concurrent syncs exhausted the Gmail API / DB pool and produced
+        # broken-pipe + empty-error failures and 2h timeouts. One trigger only.
+        # asyncio.create_task(background_interaction_sync_task())
 
     # Cache the db pool on _services so background tasks (notification
     # Slack dispatcher) can acquire connections without going through
