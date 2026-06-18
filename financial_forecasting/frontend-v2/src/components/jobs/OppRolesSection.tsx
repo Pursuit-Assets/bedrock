@@ -70,6 +70,7 @@ const RATE_PERIOD_SHORT: Record<string, string> = Object.fromEntries(
 interface RoleExtras {
   commitment: Commitment;
   isTrial: boolean;
+  convertsTo: string;        // role id this trial converts into, or ""
   payRate: string;
   ratePeriod: string;
   endDate: string;
@@ -80,7 +81,7 @@ interface RoleExtras {
 }
 
 const EMPTY_EXTRAS: RoleExtras = {
-  commitment: "committed", isTrial: false, payRate: "", ratePeriod: "",
+  commitment: "committed", isTrial: false, convertsTo: "", payRate: "", ratePeriod: "",
   endDate: "", payCadence: "", benefits: "", negotiation: "", jdUrl: "",
 };
 
@@ -88,6 +89,7 @@ function extrasFromRole(r: Role): RoleExtras {
   return {
     commitment: r.commitment ?? "committed",
     isTrial: Boolean(r.is_trial),
+    convertsTo: r.converts_to_role_id ?? "",
     payRate: r.pay_rate != null ? String(r.pay_rate) : "",
     ratePeriod: r.rate_period ?? "",
     endDate: r.end_date ?? "",
@@ -104,6 +106,8 @@ function extrasToBody(x: RoleExtras): Partial<RolePatchBody> {
   return {
     commitment: x.commitment,
     is_trial: x.isTrial,
+    // Only a trial role carries a conversion link; clearing the trial drops it.
+    converts_to_role_id: x.isTrial && x.convertsTo ? x.convertsTo : null,
     pay_rate: rate != null && !isNaN(rate) ? rate : null,
     rate_period: (x.ratePeriod || null) as RatePeriod | null,
     end_date: x.endDate || null,
@@ -117,8 +121,17 @@ function extrasToBody(x: RoleExtras): Partial<RolePatchBody> {
 const INPUT_CLS =
   "w-full rounded border border-border-strong bg-surface px-2 py-1 text-[11.5px] text-ink-2 placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40";
 
-/** Commitment + trial + compensation fields, shared by the add and edit forms. */
-function RoleExtraFields({ value, onChange }: { value: RoleExtras; onChange: (x: RoleExtras) => void }) {
+/** Commitment + trial + compensation fields, shared by the add and edit forms.
+ *  `candidates` are sibling roles a trial can convert into (self excluded). */
+function RoleExtraFields({
+  value,
+  onChange,
+  candidates = [],
+}: {
+  value: RoleExtras;
+  onChange: (x: RoleExtras) => void;
+  candidates?: Role[];
+}) {
   const set = <K extends keyof RoleExtras>(k: K, v: RoleExtras[K]) => onChange({ ...value, [k]: v });
   return (
     <div className="flex flex-col gap-2 rounded border border-dashed border-border-strong p-2">
@@ -138,6 +151,23 @@ function RoleExtraFields({ value, onChange }: { value: RoleExtras; onChange: (x:
           <input type="checkbox" checked={value.isTrial} onChange={(e) => set("isTrial", e.target.checked)} />
           Trial / work-trial
         </label>
+        {value.isTrial ? (
+          <label className="flex items-center gap-1.5">
+            <span className="text-[10px] font-medium text-ink-4">Converts to</span>
+            <select
+              value={value.convertsTo}
+              onChange={(e) => set("convertsTo", e.target.value)}
+              className="rounded border border-border-strong bg-surface px-2 py-1 text-[11.5px] text-ink-2 focus:outline-none focus:ring-1 focus:ring-accent/40"
+            >
+              <option value="">— full-time role —</option>
+              {candidates.map((r) => (
+                <option key={r.id} value={r.id}>
+                  {r.title}{r.employment_type ? ` (${empTypeLabel(r.employment_type)})` : ""}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : null}
       </div>
       <div className="grid grid-cols-3 gap-2">
         <label className="flex flex-col gap-0.5">
@@ -329,7 +359,10 @@ function HireForm({ role, oppId, onClose }: { role: Role; oppId: string; onClose
 
 // ── Single role row ───────────────────────────────────────────────────────────
 
-function RoleRow({ role, oppId }: { role: Role; oppId: string }) {
+function RoleRow({ role, oppId, roles }: { role: Role; oppId: string; roles: Role[] }) {
+  const convertsToRole = role.converts_to_role_id
+    ? roles.find((r) => r.id === role.converts_to_role_id)
+    : undefined;
   const [editing, setEditing] = useState(false);
   const [hiring, setHiring] = useState(false);
   const [title, setTitle] = useState(role.title);
@@ -411,7 +444,7 @@ function RoleRow({ role, oppId }: { role: Role; oppId: string }) {
           placeholder="Role details / notes…"
           className="w-full resize-none rounded border border-border-strong bg-surface px-2 py-1 text-[11.5px] text-ink-2 placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40"
         />
-        <RoleExtraFields value={extras} onChange={setExtras} />
+        <RoleExtraFields value={extras} onChange={setExtras} candidates={roles.filter((r) => r.id !== role.id)} />
         <div className="flex items-center gap-3">
           <button
             type="button"
@@ -458,6 +491,9 @@ function RoleRow({ role, oppId }: { role: Role; oppId: string }) {
               .filter((x) => x && x !== "—")
               .join(" · ") || "—"}
           </span>
+          {role.is_trial && convertsToRole ? (
+            <span className="mt-0.5 text-[10.5px] text-ink-4">→ converts to <span className="text-ink-3">{convertsToRole.title}</span></span>
+          ) : null}
           {role.notes ? (
             <span className="mt-0.5 whitespace-pre-wrap text-[11px] text-ink-3">{role.notes}</span>
           ) : null}
@@ -512,7 +548,7 @@ function RoleRow({ role, oppId }: { role: Role; oppId: string }) {
 
 // ── Add-role inline form ───────────────────────────────────────────────────────
 
-function AddRoleForm({ oppId }: { oppId: string }) {
+function AddRoleForm({ oppId, roles }: { oppId: string; roles: Role[] }) {
   const [open, setOpen] = useState(false);
   const [title, setTitle] = useState("");
   const [salary, setSalary] = useState("");
@@ -614,7 +650,7 @@ function AddRoleForm({ oppId }: { oppId: string }) {
         placeholder="Role details / notes…"
         className="w-full resize-none rounded border border-border-strong bg-surface px-2 py-1 text-[11.5px] text-ink-2 placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40"
       />
-      <RoleExtraFields value={extras} onChange={setExtras} />
+      <RoleExtraFields value={extras} onChange={setExtras} candidates={roles} />
       <div className="flex items-center gap-3">
         <button
           type="submit"
@@ -648,11 +684,11 @@ export function OppRolesSection({ oppId }: { oppId: string }) {
       ) : (
         <ul className="flex flex-col divide-y divide-border-strong rounded-md border border-border-strong">
           {roles.map((r) => (
-            <RoleRow key={r.id} role={r} oppId={oppId} />
+            <RoleRow key={r.id} role={r} oppId={oppId} roles={roles} />
           ))}
         </ul>
       )}
-      <AddRoleForm oppId={oppId} />
+      <AddRoleForm oppId={oppId} roles={roles} />
     </div>
   );
 }
