@@ -116,6 +116,26 @@ function RecentActivityDot({ recent, last }: { recent: number | undefined; last:
   );
 }
 
+// priority stored 1–5 (5 = highest). Display as P1 (highest) … P5 (lowest).
+const PRIORITY_BADGE: Record<number, { label: string; className: string }> = {
+  5: { label: "P1", className: "bg-red-100 text-red-700" },
+  4: { label: "P2", className: "bg-orange-100 text-orange-700" },
+  3: { label: "P3", className: "bg-amber-100 text-amber-700" },
+  2: { label: "P4", className: "bg-stone-100 text-stone-600" },
+  1: { label: "P5", className: "bg-stone-100 text-stone-400" },
+};
+
+function PriorityBadge({ priority }: { priority: number | null | undefined }) {
+  if (priority == null) return null;
+  const p = PRIORITY_BADGE[priority];
+  if (!p) return null;
+  return (
+    <span className={cn("inline-flex items-center rounded px-1 py-0.5 text-[9.5px] font-bold leading-none", p.className)} title={`Priority ${p.label}`}>
+      {p.label}
+    </span>
+  );
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function fmtRelative(iso: string | null): string {
@@ -514,6 +534,74 @@ const LIKELIHOOD_OPTIONS: { value: Likelihood; label: string }[] = [
   { value: "high",   label: "High" },
 ];
 
+const PRIORITY_OPTIONS: { value: string; label: string }[] = [
+  { value: "5", label: "P1 — Highest" },
+  { value: "4", label: "P2 — High" },
+  { value: "3", label: "P3 — Medium" },
+  { value: "2", label: "P4 — Low" },
+  { value: "1", label: "P5 — Lowest" },
+];
+
+const SEGMENT_OPTIONS: { value: string; label: string }[] = [
+  { value: "vc_pe",      label: "VC / PE" },
+  { value: "enterprise", label: "Enterprise" },
+  { value: "startup",    label: "Startup" },
+  { value: "smb",        label: "SMB" },
+  { value: "nonprofit",  label: "Nonprofit" },
+  { value: "government", label: "Government" },
+  { value: "other",      label: "Other" },
+];
+
+const SEGMENT_LABELS: Record<string, string> = Object.fromEntries(SEGMENT_OPTIONS.map((s) => [s.value, s.label]));
+const CLOSED_LOST_LABELS: Record<string, string> = {
+  budget: "No budget", timing: "Timing / not now", hired_elsewhere: "Hired elsewhere",
+  not_a_fit: "Not a fit", no_response: "Went cold", role_cancelled: "Role cancelled", other: "Other",
+};
+
+/** Compact editable context strip at the top of an expanded deal: priority,
+ *  segment, warm-intro attribution, and the closed-lost reason when applicable. */
+function DealContextStrip({ deal }: { deal: JobsOpportunity }) {
+  const updateOpp = useUpdateOpportunity();
+  const patch = (fields: Record<string, unknown>) =>
+    new Promise<void>((resolve, reject) =>
+      updateOpp.mutate({ id: deal.id, ...fields }, { onSuccess: () => resolve(), onError: reject }),
+    );
+  const isClosedLost = deal.stage === "closed_lost";
+  return (
+    <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5 border-b border-border-strong bg-surface-2/30 px-4 py-2">
+      <Field label="Priority">
+        <InlineSelect<string>
+          value={deal.priority != null ? String(deal.priority) : null}
+          options={PRIORITY_OPTIONS}
+          emptyLabel="—"
+          renderValue={(v) => (v ? (PRIORITY_OPTIONS.find((o) => o.value === v)?.label ?? v) : <span className="text-ink-4">—</span>)}
+          onSave={(v) => patch({ priority: v ? Number(v) : null })}
+        />
+      </Field>
+      <Field label="Segment">
+        <InlineSelect<string>
+          value={deal.segment ?? null}
+          options={SEGMENT_OPTIONS}
+          emptyLabel="—"
+          renderValue={(v) => (v ? (SEGMENT_LABELS[v] ?? v) : <span className="text-ink-4">—</span>)}
+          onSave={(v) => patch({ segment: v || null })}
+        />
+      </Field>
+      <Field label="Warm intro by">
+        <InlineText value={deal.intro_by} placeholder="—" onSave={(v) => patch({ intro_by: v || null })} />
+      </Field>
+      {isClosedLost ? (
+        <Field label="Closed-lost reason">
+          <span className="text-[12px] text-ink-2">
+            {deal.closed_lost_reason ? (CLOSED_LOST_LABELS[deal.closed_lost_reason] ?? deal.closed_lost_reason) : "—"}
+            {deal.closed_lost_note ? <span className="text-ink-3"> — {deal.closed_lost_note}</span> : null}
+          </span>
+        </Field>
+      ) : null}
+    </div>
+  );
+}
+
 /**
  * Tabbed expand panel matching PortfolioOpportunities. Drops below an
  * expanded deal row. Reuses the shared {@link RowExpandPanel} shell so the
@@ -593,7 +681,12 @@ function DealExpandPanel({
     },
   ];
 
-  return <RowExpandPanel tabs={tabs} defaultTab="activity" />;
+  return (
+    <div className="flex flex-col">
+      <DealContextStrip deal={deal} />
+      <RowExpandPanel tabs={tabs} defaultTab="activity" />
+    </div>
+  );
 }
 
 function TabLoading() {
@@ -1226,6 +1319,7 @@ function DealRow({
             <span className="block truncate text-[13px] font-semibold text-ink">
               {deal.account_name}
             </span>
+            <PriorityBadge priority={deal.priority} />
             <RecentActivityDot recent={deal.recent_activity_count} last={deal.last_activity_at} />
           </div>
         </td>
