@@ -1865,20 +1865,17 @@ async def account_comments(key: str = Query(...), user=Depends(require_auth), co
 async def account_builders(key: str = Query(...), user=Depends(require_auth), conn=Depends(get_db)):
     """Builder applications across all of an account's opportunities."""
     k = key.strip().lower()
-    opp_ids = [
-        r["id"] for r in await conn.fetch(
-            "SELECT id FROM bedrock.jobs_opportunity WHERE deleted_at IS NULL AND lower(trim(account_name)) = $1", k,
-        )
-    ]
     rows = await conn.fetch(
         """
-        SELECT job_application_id, trim(split_part(notes, ':', 1)) AS builder,
-               company_name, role_title, stage, jobs_role_id, date_applied
-        FROM public.job_applications
-        WHERE jobs_opportunity_id = ANY($1::uuid[])
-        ORDER BY date_applied DESC NULLS LAST
+        SELECT ja.job_application_id, trim(split_part(ja.notes, ':', 1)) AS builder,
+               ja.company_name, ja.role_title, ja.stage, ja.jobs_role_id, ja.date_applied,
+               ja.jobs_opportunity_id, o.title AS opp_title
+        FROM public.job_applications ja
+        JOIN bedrock.jobs_opportunity o ON o.id = ja.jobs_opportunity_id
+        WHERE o.deleted_at IS NULL AND lower(trim(o.account_name)) = $1
+        ORDER BY ja.date_applied DESC NULLS LAST
         """,
-        opp_ids,
+        k,
     )
     summary = {"applied": 0, "interview": 0, "accepted": 0}
     out = []
@@ -1890,6 +1887,8 @@ async def account_builders(key: str = Query(...), user=Depends(require_auth), co
             "company_name": r["company_name"], "role_title": r["role_title"], "stage": r["stage"],
             "jobs_role_id": str(r["jobs_role_id"]) if r["jobs_role_id"] else None,
             "date_applied": r["date_applied"].isoformat() if r["date_applied"] else None,
+            "opportunity_id": str(r["jobs_opportunity_id"]) if r["jobs_opportunity_id"] else None,
+            "opp_title": r["opp_title"],
         })
     return {"success": True, "data": {"rows": out, "summary": summary}}
 

@@ -393,6 +393,7 @@ export interface AccountComment {
 export interface AccountBuilderRow {
   job_application_id: number; builder: string | null; company_name: string | null;
   role_title: string | null; stage: string | null; jobs_role_id: string | null; date_applied: string | null;
+  opportunity_id: string | null; opp_title: string | null;
 }
 export interface AccountRole {
   id: string; opportunity_id: string; opp_title: string | null; title: string | null;

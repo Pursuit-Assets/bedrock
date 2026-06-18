@@ -368,7 +368,6 @@ function AccountBuildersTab({ account }: { account: JobsAccount }) {
   const [oppId, setOppId] = useState("");
   const rows = data?.rows ?? [];
   const s = data?.summary ?? {};
-  // opp_title per opportunity for tagging (rows carry company/role, not opp id+title cleanly) → map via account.opportunities by role? rollup rows lack opp id; tag by role_title/company.
   return (
     <div className="flex flex-col gap-2 p-3">
       {!isLoading && rows.length > 0 && (
@@ -376,16 +375,21 @@ function AccountBuildersTab({ account }: { account: JobsAccount }) {
       )}
       {isLoading ? <Loading /> : rows.length === 0 ? <Empty>No builders have applied to this account's opportunities yet.</Empty> : (
         <table className="w-full table-fixed border-collapse">
-          <colgroup><col style={{ width: "34%" }} /><col style={{ width: "34%" }} /><col style={{ width: "16%" }} /><col style={{ width: "16%" }} /></colgroup>
+          <colgroup><col style={{ width: "30%" }} /><col style={{ width: "38%" }} /><col style={{ width: "16%" }} /><col style={{ width: "16%" }} /></colgroup>
           <thead className="text-[10px] uppercase tracking-wider text-ink-4"><tr>
-            <th className="px-2 py-1 text-left font-semibold">Builder</th><th className="px-2 py-1 text-left font-semibold">Role</th>
+            <th className="px-2 py-1 text-left font-semibold">Builder</th><th className="px-2 py-1 text-left font-semibold">Opportunity / Role</th>
             <th className="px-2 py-1 text-left font-semibold">Stage</th><th className="px-2 py-1 text-left font-semibold">Applied</th>
           </tr></thead>
           <tbody>
             {rows.map((b: AccountBuilderRow) => (
               <tr key={b.job_application_id} className="border-t border-border-strong/60">
                 <td className="overflow-hidden px-2 py-1.5"><span className="truncate text-[12.5px] font-medium text-ink">{b.builder || "—"}</span></td>
-                <td className="overflow-hidden px-2 py-1.5"><span className="truncate text-[11.5px] text-ink-3">{b.role_title || b.company_name || "—"}</span></td>
+                <td className="overflow-hidden px-2 py-1.5">
+                  <span className="flex min-w-0 items-center gap-1.5">
+                    {b.opportunity_id ? <OppTag oppId={b.opportunity_id} title={b.opp_title} /> : null}
+                    {b.role_title && <span className="truncate text-[11px] text-ink-4">{b.role_title}</span>}
+                  </span>
+                </td>
                 <td className="overflow-hidden px-2 py-1.5">
                   <InlineSelect<string> value={b.stage} options={APP_STAGE_OPTIONS} emptyLabel="—"
                     renderValue={(v) => <span className={cn("inline-flex rounded-full px-2 py-0.5 text-[10px] font-medium leading-none", APP_STAGE_BADGE[v ?? ""] ?? "bg-stone-100 text-stone-500")}>{v ?? "—"}</span>}
