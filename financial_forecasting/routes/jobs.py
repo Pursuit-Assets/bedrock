@@ -1739,18 +1739,186 @@ async def update_jobs_account(
     return {"success": True}
 
 
-@router.get("/staff")
-async def jobs_staff(user=Depends(require_auth), conn=Depends(get_db)):
-    """Pursuit staff for owner pickers — name + email from the staff map."""
+@router.get("/account-activity")
+async def account_activity(
+    key: str = Query(...),
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """All engagement activity across an account's opportunities + contacts."""
+    k = key.strip().lower()
+    opps = await conn.fetch(
+        "SELECT id, account_id FROM bedrock.jobs_opportunity WHERE deleted_at IS NULL AND lower(trim(account_name)) = $1",
+        k,
+    )
+    opp_ids = [r["id"] for r in opps]
+    account_ids = [r["account_id"] for r in opps if r["account_id"] and str(r["account_id"]).startswith("001")]
+    contact_ids = [
+        r["contact_id"] for r in await conn.fetch(
+            "SELECT contact_id FROM public.contacts WHERE is_jobs_contact = true AND lower(trim(current_company)) = $1",
+            k,
+        )
+    ]
     rows = await conn.fetch(
         """
-        SELECT email, display_name AS name
-        FROM bedrock.staff_user_id_map
-        WHERE email IS NOT NULL AND display_name IS NOT NULL
-        ORDER BY display_name
+        SELECT a.id, a.type, a.subject, a.description, a.activity_date, a.source, a.logged_by,
+               a.synced_at, a.email_from, a.email_to, a.email_snippet, a.email_body_text,
+               a.meeting_duration_minutes,
+               (a.jobs_opportunity_id IS NOT NULL OR a.type IN ('call','text','linkedin')) AS is_jobs,
+               a.deleted_at
+        FROM bedrock.activity a
+        WHERE a.deleted_at IS NULL AND (
+            ($1::uuid[] <> '{}' AND a.jobs_opportunity_id = ANY($1::uuid[]))
+            OR ($2::text[] <> '{}' AND a.account_id = ANY($2::text[]))
+            OR ($3::int[] <> '{}' AND a.participant_public_contact_id = ANY($3::int[]))
+        )
+        ORDER BY a.activity_date DESC NULLS LAST
+        LIMIT 250
         """,
+        opp_ids, account_ids, contact_ids,
     )
-    return {"success": True, "data": [dict(r) for r in rows]}
+    return {
+        "success": True,
+        "data": [
+            {**dict(r), "activity_date": r["activity_date"].isoformat() if r["activity_date"] else None,
+             "synced_at": r["synced_at"].isoformat() if r["synced_at"] else None,
+             "id": str(r["id"]), "email_to": list(r["email_to"]) if r["email_to"] else None}
+            for r in rows
+        ],
+    }
+
+
+async def _account_opp_contact_ids(conn, key: str):
+    """(opp rows [id,title], contact rows [contact_id,full_name]) for an account."""
+    k = key.strip().lower()
+    opps = await conn.fetch(
+        "SELECT id, title FROM bedrock.jobs_opportunity WHERE deleted_at IS NULL AND lower(trim(account_name)) = $1",
+        k,
+    )
+    contacts = await conn.fetch(
+        "SELECT contact_id, full_name FROM public.contacts WHERE is_jobs_contact = true AND lower(trim(current_company)) = $1",
+        k,
+    )
+    return opps, contacts
+
+
+@router.get("/account-tasks")
+async def account_tasks(key: str = Query(...), user=Depends(require_auth), conn=Depends(get_db)):
+    """Tasks tagged to any of an account's opportunities or contacts, each
+    annotated with what it's tagged to (scope + label)."""
+    opps, contacts = await _account_opp_contact_ids(conn, key)
+    opp_label = {str(o["id"]): (o["title"] or "Opportunity") for o in opps}
+    contact_label = {str(c["contact_id"]): (c["full_name"] or "Contact") for c in contacts}
+    rows = await conn.fetch(
+        """
+        SELECT id, parent_type, parent_id, title, status, deadline, created_at
+        FROM bedrock.jobs_task
+        WHERE deleted_at IS NULL AND (
+            (parent_type = 'opportunity' AND parent_id = ANY($1::text[]))
+            OR (parent_type = 'prospect' AND parent_id = ANY($2::text[]))
+        )
+        ORDER BY (status = 'done'), deadline ASC NULLS LAST, created_at DESC
+        """,
+        list(opp_label.keys()), list(contact_label.keys()),
+    )
+    out = []
+    for r in rows:
+        scope = "opportunity" if r["parent_type"] == "opportunity" else "contact"
+        label = (opp_label if scope == "opportunity" else contact_label).get(r["parent_id"], "")
+        out.append({
+            "id": str(r["id"]), "title": r["title"], "status": r["status"],
+            "deadline": r["deadline"].isoformat() if r["deadline"] else None,
+            "scope": scope, "parent_id": r["parent_id"], "scope_label": label,
+        })
+    return {"success": True, "data": out}
+
+
+@router.get("/account-comments")
+async def account_comments(key: str = Query(...), user=Depends(require_auth), conn=Depends(get_db)):
+    """Comments across an account's opportunities + contacts (read rollup)."""
+    opps, contacts = await _account_opp_contact_ids(conn, key)
+    opp_label = {str(o["id"]): (o["title"] or "Opportunity") for o in opps}
+    contact_label = {str(c["contact_id"]): (c["full_name"] or "Contact") for c in contacts}
+    rows = await conn.fetch(
+        """
+        SELECT id, parent_type, parent_id, author_email, content, created_at
+        FROM bedrock.jobs_comment
+        WHERE (parent_type = 'opportunity' AND parent_id = ANY($1::text[]))
+           OR (parent_type = 'prospect' AND parent_id = ANY($2::text[]))
+        ORDER BY created_at DESC
+        """,
+        list(opp_label.keys()), list(contact_label.keys()),
+    )
+    out = []
+    for r in rows:
+        scope = "opportunity" if r["parent_type"] == "opportunity" else "contact"
+        label = (opp_label if scope == "opportunity" else contact_label).get(r["parent_id"], "")
+        out.append({
+            "id": str(r["id"]), "author_email": r["author_email"], "content": r["content"],
+            "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+            "scope": scope, "scope_label": label,
+        })
+    return {"success": True, "data": out}
+
+
+@router.get("/account-builders")
+async def account_builders(key: str = Query(...), user=Depends(require_auth), conn=Depends(get_db)):
+    """Builder applications across all of an account's opportunities."""
+    k = key.strip().lower()
+    opp_ids = [
+        r["id"] for r in await conn.fetch(
+            "SELECT id FROM bedrock.jobs_opportunity WHERE deleted_at IS NULL AND lower(trim(account_name)) = $1", k,
+        )
+    ]
+    rows = await conn.fetch(
+        """
+        SELECT job_application_id, trim(split_part(notes, ':', 1)) AS builder,
+               company_name, role_title, stage, jobs_role_id, date_applied
+        FROM public.job_applications
+        WHERE jobs_opportunity_id = ANY($1::uuid[])
+        ORDER BY date_applied DESC NULLS LAST
+        """,
+        opp_ids,
+    )
+    summary = {"applied": 0, "interview": 0, "accepted": 0}
+    out = []
+    for r in rows:
+        if r["stage"] in summary:
+            summary[r["stage"]] += 1
+        out.append({
+            "job_application_id": r["job_application_id"], "builder": r["builder"],
+            "company_name": r["company_name"], "role_title": r["role_title"], "stage": r["stage"],
+            "jobs_role_id": str(r["jobs_role_id"]) if r["jobs_role_id"] else None,
+            "date_applied": r["date_applied"].isoformat() if r["date_applied"] else None,
+        })
+    return {"success": True, "data": {"rows": out, "summary": summary}}
+
+
+@router.get("/account-roles")
+async def account_roles(key: str = Query(...), user=Depends(require_auth), conn=Depends(get_db)):
+    """Committed roles across all of an account's opportunities."""
+    k = key.strip().lower()
+    rows = await conn.fetch(
+        """
+        SELECT r.id, r.opportunity_id, r.title, r.status, r.employment_type,
+               r.approx_salary, r.commitment, r.is_trial, r.filled_by_user_id, o.title AS opp_title
+        FROM bedrock.jobs_role r
+        JOIN bedrock.jobs_opportunity o ON o.id = r.opportunity_id
+        WHERE o.deleted_at IS NULL AND lower(trim(o.account_name)) = $1
+        ORDER BY r.created_at DESC
+        """,
+        k,
+    )
+    return {
+        "success": True,
+        "data": [
+            {"id": str(r["id"]), "opportunity_id": str(r["opportunity_id"]), "opp_title": r["opp_title"],
+             "title": r["title"], "status": r["status"], "employment_type": r["employment_type"],
+             "approx_salary": r["approx_salary"], "commitment": r["commitment"], "is_trial": r["is_trial"],
+             "filled_by_user_id": r["filled_by_user_id"]}
+            for r in rows
+        ],
+    }
 
 
 @router.get("/contacts")

@@ -378,6 +378,45 @@ export function useContactOpportunities(id: number | null) {
   });
 }
 
+// ── Account roll-ups (read aggregations across an account's opps + contacts) ──
+type AccountScope = "opportunity" | "contact";
+
+export interface AccountTask {
+  id: string; title: string | null; status: string | null; deadline: string | null;
+  scope: AccountScope; parent_id: string; scope_label: string;
+}
+export interface AccountComment {
+  id: string; author_email: string | null; content: string; created_at: string | null;
+  scope: AccountScope; scope_label: string;
+}
+export interface AccountBuilderRow {
+  job_application_id: number; builder: string | null; company_name: string | null;
+  role_title: string | null; stage: string | null; jobs_role_id: string | null; date_applied: string | null;
+}
+export interface AccountRole {
+  id: string; opportunity_id: string; opp_title: string | null; title: string | null;
+  status: string | null; employment_type: string | null; approx_salary: number | null;
+  commitment: string | null; is_trial: boolean | null; filled_by_user_id: number | null;
+}
+
+function accountRollup<T>(kind: string, key: string | null) {
+  return useQuery<T>({
+    queryKey: ["jobs", "account-rollup", kind, key],
+    queryFn: async () => {
+      const { data } = await api.get<ApiResponse<T>>(`/api/jobs/account-${kind}?key=${encodeURIComponent(key ?? "")}`);
+      return data.data;
+    },
+    enabled: Boolean(key),
+    staleTime: 30_000,
+  });
+}
+
+export const useAccountActivity = (key: string | null) => accountRollup<ActivityEntry[]>("activity", key);
+export const useAccountTasks    = (key: string | null) => accountRollup<AccountTask[]>("tasks", key);
+export const useAccountComments = (key: string | null) => accountRollup<AccountComment[]>("comments", key);
+export const useAccountBuilders = (key: string | null) => accountRollup<{ rows: AccountBuilderRow[]; summary: Record<string, number> }>("builders", key);
+export const useAccountRoles    = (key: string | null) => accountRollup<AccountRole[]>("roles", key);
+
 export interface JobsStaff { email: string; name: string }
 
 export function useJobsStaff() {

@@ -16,7 +16,7 @@ import {
   useUpdateJobsAccount,
 } from "@/services/jobs";
 
-import { ContactsTab, OppsTab, OwnerSelect } from "./JobsAccountHub";
+import { ContactsLinkTab, OppsTab, OwnerSelect } from "@/components/jobs/jobsEntity";
 
 function relativeDays(iso: string | null): string {
   if (!iso) return "—";
@@ -93,7 +93,7 @@ export function JobsAccountDetailPage() {
       </SectionCard>
 
       <SectionCard title={`Contacts (${account.prospect_count})`} storageScope="jobs-account" defaultOpen>
-        <ContactsTab prospects={account.prospects} />
+        <ContactsLinkTab contacts={account.prospects} />
       </SectionCard>
     </div>
   );
