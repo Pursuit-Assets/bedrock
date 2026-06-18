@@ -330,6 +330,7 @@ export interface JobsAccountProspect {
 
 export interface JobsAccount {
   account: string;
+  account_key: string;
   account_id: string | null;
   owner_email: string | null;
   account_status: JobsAccountStatus;
@@ -350,6 +351,39 @@ export function useJobsAccounts(dealType?: string) {
       return data.data;
     },
     staleTime: 60_000,
+  });
+}
+
+export interface JobsStaff { email: string; name: string }
+
+export function useJobsStaff() {
+  return useQuery<JobsStaff[]>({
+    queryKey: ["jobs", "staff"],
+    queryFn: async () => {
+      const { data } = await api.get<ApiResponse<JobsStaff[]>>("/api/jobs/staff");
+      return data.data;
+    },
+    staleTime: 300_000,
+  });
+}
+
+export interface JobsAccountUpdate {
+  account: string;
+  owner_email?: string;
+  status_override?: string;
+  notes?: string;
+}
+
+export function useUpdateJobsAccount() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (body: JobsAccountUpdate) => {
+      await api.patch("/api/jobs/accounts", body);
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["jobs", "accounts"] });
+    },
+    onError: () => toast.error("Couldn't save account change"),
   });
 }
 

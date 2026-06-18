@@ -12,10 +12,10 @@ import { JobsBuilders } from "./jobs/JobsBuilders";
 type View = "accounts" | "performance" | "team" | "contacts" | "builders";
 
 const VIEWS = [
-  { id: "accounts" as View,    label: "Accounts",    icon: Building2, desc: "Account-level hub — opps + prospects" },
   { id: "performance" as View, label: "Performance", icon: BarChart3, desc: "Pipeline health & metrics" },
+  { id: "accounts" as View,    label: "Accounts",    icon: Building2, desc: "Account-level hub — opps + contacts" },
   { id: "team" as View,        label: "Opportunities", icon: Kanban,  desc: "Day-to-day deal management" },
-  { id: "contacts" as View,    label: "Prospects",   icon: Users,     desc: "All employer prospects" },
+  { id: "contacts" as View,    label: "Contacts",    icon: Users,     desc: "All employer contacts" },
   { id: "builders" as View,    label: "Builders",    icon: GraduationCap, desc: "Per-builder job search" },
 ];
 

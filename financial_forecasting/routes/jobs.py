@@ -1639,19 +1639,31 @@ async def jobs_accounts(
             "linkedin_url":  r["linkedin_url"],
         })
 
+    # Persistent account record (owner, optional manual status override).
+    ja_rows = await conn.fetch(
+        "SELECT account_key, owner_email, status_override FROM bedrock.jobs_account",
+    )
+    ja = {r["account_key"]: r for r in ja_rows}
+
     dt = deal_type if deal_type and deal_type != "all" else None
     now = datetime.now(timezone.utc)
     out = []
-    for g in accounts.values():
+    for key, g in accounts.items():
         opps = g["opportunities"]
         if dt and not any(o["deal_type"] == dt for o in opps):
             continue
+        rec = ja.get(key)
+        # A stored owner wins over the one derived from the opportunities.
+        if rec and rec["owner_email"]:
+            g["owner_email"] = rec["owner_email"]
         stages = {o["stage"] for o in opps}
         has_active = any(s and s.startswith("active") for s in stages)
         has_won = "closed_won" in stages
         last = g.pop("_last")
         recent = bool(last and (now - last).days <= 90)
-        if has_won:
+        if rec and rec["status_override"]:
+            status = rec["status_override"]
+        elif has_won:
             status = "Stewarding"
         elif has_active:
             status = "Pursuing"
@@ -1659,6 +1671,7 @@ async def jobs_accounts(
             status = "Re-activating" if recent else "Dormant"
         else:
             status = "Prospect"
+        g["account_key"] = key
         g["account_status"] = status
         g["opp_count"] = len(opps)
         g["prospect_count"] = len(g["prospects"])
@@ -1671,6 +1684,73 @@ async def jobs_accounts(
         a["account"].lower(),
     ))
     return {"success": True, "data": out}
+
+
+_VALID_ACCOUNT_STATUS = {"Prospect", "Pursuing", "Stewarding", "Re-activating", "Dormant"}
+
+
+class JobsAccountUpdate(BaseModel):
+    account: str                              # the account display/company name
+    owner_email: Optional[str] = None
+    status_override: Optional[str] = None     # "" clears the override (back to derived)
+    notes: Optional[str] = None
+
+
+@router.patch("/accounts")
+async def update_jobs_account(
+    body: JobsAccountUpdate,
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Upsert the persistent account record (owner / manual status / notes).
+
+    Keyed by the normalized company name so it lines up with GET /accounts.
+    Only the provided fields are written; status_override="" clears it.
+    """
+    key = body.account.strip().lower()
+    if not key:
+        raise HTTPException(status_code=400, detail="account is required")
+    if body.status_override and body.status_override not in _VALID_ACCOUNT_STATUS:
+        raise HTTPException(status_code=400, detail=f"invalid status_override: {body.status_override}")
+
+    # Fixed positional params; only the provided columns are touched on UPDATE
+    # (EXCLUDED = the attempted-insert values), so a partial PATCH never nulls
+    # the fields it didn't send. A new row inserts NULL for anything omitted.
+    sets = ["display_name = EXCLUDED.display_name", "updated_at = now()"]
+    if body.owner_email is not None:
+        sets.append("owner_email = EXCLUDED.owner_email")
+    if body.status_override is not None:
+        sets.append("status_override = EXCLUDED.status_override")
+    if body.notes is not None:
+        sets.append("notes = EXCLUDED.notes")
+
+    await conn.execute(
+        f"""
+        INSERT INTO bedrock.jobs_account (account_key, display_name, owner_email, status_override, notes)
+        VALUES ($1, $2, $3, $4, $5)
+        ON CONFLICT (account_key) DO UPDATE SET {', '.join(sets)}
+        """,
+        key,
+        body.account.strip(),
+        body.owner_email or None,
+        body.status_override or None,
+        body.notes or None,
+    )
+    return {"success": True}
+
+
+@router.get("/staff")
+async def jobs_staff(user=Depends(require_auth), conn=Depends(get_db)):
+    """Pursuit staff for owner pickers — name + email from the staff map."""
+    rows = await conn.fetch(
+        """
+        SELECT email, display_name AS name
+        FROM bedrock.staff_user_id_map
+        WHERE email IS NOT NULL AND display_name IS NOT NULL
+        ORDER BY display_name
+        """,
+    )
+    return {"success": True, "data": [dict(r) for r in rows]}
 
 
 @router.get("/contacts")

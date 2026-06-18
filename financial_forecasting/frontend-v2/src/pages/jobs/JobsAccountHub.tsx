@@ -8,16 +8,22 @@
  * is managed from one view. Clicking a prospect expands their full detail inline.
  */
 import { Fragment, useCallback, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 
-import { Briefcase, ChevronDown, ChevronRight, Linkedin, Users } from "lucide-react";
+import { Briefcase, ChevronDown, ChevronRight, ExternalLink, Linkedin, Users } from "lucide-react";
 
 import { AccountAvatar } from "@/components/AccountAvatar";
 import { ContactDetail, initials } from "@/components/jobs/ProspectAccountExpandPanel";
+import { withReferrer } from "@/components/detail";
+import { RowExpandPanel } from "@/components/RowExpandPanel";
+import { InlineSelect } from "@/components/ui/InlineEdit";
 import { Tag } from "@/components/ui/Tag";
 import { accountStatusVariant } from "@/lib/accountStatus";
 import { cn } from "@/lib/utils";
 import {
   useJobsAccounts,
+  useJobsStaff,
+  useUpdateJobsAccount,
   STAGE_LABELS,
   type JobStage,
   type DealType,
@@ -25,7 +31,11 @@ import {
   type JobsAccountOpp,
   type JobsAccountProspect,
   type JobsAccountStatus,
+  type JobsStaff,
 } from "@/services/jobs";
+
+/** Route to a Jobs account detail page; account_key is the normalized name. */
+export const jobsAccountPath = (key: string) => `/jobs/accounts/${encodeURIComponent(key)}`;
 
 // ── Shared metadata ──────────────────────────────────────────────────────────
 
@@ -127,10 +137,69 @@ function ProspectRow({ contact, expanded, onToggle }: { contact: JobsAccountPros
   );
 }
 
+// ── Expand-panel tabs (portfolio RowExpandPanel pattern) ────────────────────────
+
+export function OppsTab({ opps }: { opps: JobsAccountOpp[] }) {
+  if (opps.length === 0) return <div className="px-4 py-6 text-[12.5px] text-ink-3">No opportunities yet.</div>;
+  return <div className="flex flex-col gap-1.5 p-4">{opps.map((o) => <OppRow key={o.id} opp={o} />)}</div>;
+}
+
+export function ContactsTab({ prospects }: { prospects: JobsAccountProspect[] }) {
+  const [expandedId, setExpandedId] = useState<number | null>(null);
+  if (prospects.length === 0) return <div className="px-4 py-6 text-[12.5px] text-ink-3">No contacts yet.</div>;
+  return (
+    <div className="flex flex-col gap-1.5 p-4">
+      {prospects.map((c) => (
+        <ProspectRow
+          key={c.contact_id}
+          contact={c}
+          expanded={expandedId === c.contact_id}
+          onToggle={() => setExpandedId((prev) => (prev === c.contact_id ? null : c.contact_id))}
+        />
+      ))}
+    </div>
+  );
+}
+
+// ── Inline owner editor ──────────────────────────────────────────────────────────
+
+export function OwnerSelect({
+  owner, staff, onSave, className,
+}: {
+  owner: string | null;
+  staff: JobsStaff[];
+  onSave: (email: string) => Promise<void>;
+  className?: string;
+}) {
+  const options = useMemo(() => staff.map((s) => ({ value: s.email, label: s.name })), [staff]);
+  return (
+    <span onClick={(e) => e.stopPropagation()} className={className}>
+      <InlineSelect<string>
+        value={owner}
+        options={options}
+        emptyLabel="Unassigned"
+        renderValue={(v) => (
+          <span className="text-[12px] text-ink-2">
+            {v ? (staff.find((s) => s.email === v)?.name ?? v.split("@")[0]) : <span className="text-ink-4">Unassigned</span>}
+          </span>
+        )}
+        onSave={onSave}
+      />
+    </span>
+  );
+}
+
 // ── Account row ──────────────────────────────────────────────────────────────────
 
-function AccountRow({ account, expanded, onToggle }: { account: JobsAccount; expanded: boolean; onToggle: () => void }) {
-  const [expandedContactId, setExpandedContactId] = useState<number | null>(null);
+function AccountRow({
+  account, expanded, onToggle, staff, onSaveOwner,
+}: {
+  account: JobsAccount;
+  expanded: boolean;
+  onToggle: () => void;
+  staff: JobsStaff[];
+  onSaveOwner: (account: string, email: string) => Promise<void>;
+}) {
   return (
     <Fragment>
       <tr className="cursor-pointer border-t border-border-strong bg-surface hover:bg-surface-2/50" onClick={onToggle}>
@@ -141,10 +210,22 @@ function AccountRow({ account, expanded, onToggle }: { account: JobsAccount; exp
           <span className="flex min-w-0 items-center gap-2.5">
             <AccountAvatar name={account.account} logoUrl={null} size={20} />
             <span className="truncate text-[13.5px] font-semibold text-ink">{account.account}</span>
+            <Link
+              to={jobsAccountPath(account.account_key)}
+              state={withReferrer({ pathname: "/jobs", label: "Jobs" })}
+              onClick={(e) => e.stopPropagation()}
+              className="shrink-0 text-ink-4 hover:text-accent"
+              title="Open account detail"
+            >
+              <ExternalLink size={12} />
+            </Link>
           </span>
         </td>
         <td className="px-2 py-2 align-middle">
           <Tag variant={accountStatusVariant(account.account_status)}>{account.account_status}</Tag>
+        </td>
+        <td className="px-2 py-2 align-middle">
+          <OwnerSelect owner={account.owner_email} staff={staff} onSave={(email) => onSaveOwner(account.account, email)} />
         </td>
         <td className="px-2 py-2 align-middle text-[12px] text-ink-2">
           {account.opp_count > 0 ? <span className="inline-flex items-center gap-1"><Briefcase size={11} className="text-ink-4" />{account.opp_count}</span> : <span className="text-ink-4">—</span>}
@@ -152,43 +233,17 @@ function AccountRow({ account, expanded, onToggle }: { account: JobsAccount; exp
         <td className="px-2 py-2 align-middle text-[12px] text-ink-2">
           {account.prospect_count > 0 ? <span className="inline-flex items-center gap-1"><Users size={11} className="text-ink-4" />{account.prospect_count}</span> : <span className="text-ink-4">—</span>}
         </td>
-        <td className="px-2 py-2 align-middle text-[12px] text-ink-3">{account.owner_email?.split("@")[0] ?? "—"}</td>
         <td className="px-3 py-2 align-middle text-[11.5px] text-ink-4">{relativeDays(account.last_activity)}</td>
       </tr>
       {expanded && (
-        <tr className="border-t border-border-strong bg-surface-2/30">
+        <tr className="bg-surface-2/30">
           <td colSpan={7} className="p-0">
-            <div className="flex flex-col gap-4 border-l-2 border-accent/30 px-5 py-4">
-              <section className="flex flex-col gap-1.5">
-                <h4 className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-ink-3">
-                  <Briefcase size={12} /> Opportunities <span className="font-mono text-ink-4">{account.opp_count}</span>
-                </h4>
-                {account.opportunities.length === 0 ? (
-                  <p className="text-[12px] text-ink-4">No opportunities yet.</p>
-                ) : (
-                  <div className="flex flex-col gap-1.5">{account.opportunities.map((o) => <OppRow key={o.id} opp={o} />)}</div>
-                )}
-              </section>
-              <section className="flex flex-col gap-1.5">
-                <h4 className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-ink-3">
-                  <Users size={12} /> Prospects <span className="font-mono text-ink-4">{account.prospect_count}</span>
-                </h4>
-                {account.prospects.length === 0 ? (
-                  <p className="text-[12px] text-ink-4">No prospects yet.</p>
-                ) : (
-                  <div className="flex flex-col gap-1.5">
-                    {account.prospects.map((c) => (
-                      <ProspectRow
-                        key={c.contact_id}
-                        contact={c}
-                        expanded={expandedContactId === c.contact_id}
-                        onToggle={() => setExpandedContactId((prev) => (prev === c.contact_id ? null : c.contact_id))}
-                      />
-                    ))}
-                  </div>
-                )}
-              </section>
-            </div>
+            <RowExpandPanel
+              tabs={[
+                { id: "opps", label: "Opportunities", count: account.opp_count, render: () => <OppsTab opps={account.opportunities} /> },
+                { id: "contacts", label: "Contacts", count: account.prospect_count, render: () => <ContactsTab prospects={account.prospects} /> },
+              ]}
+            />
           </td>
         </tr>
       )}
@@ -205,6 +260,12 @@ export function JobsAccountHub({ initialQuery }: { initialQuery?: string } = {})
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
   const { data: accounts = [], isLoading } = useJobsAccounts(dealType);
+  const { data: staff = [] } = useJobsStaff();
+  const updateAccount = useUpdateJobsAccount();
+  const saveOwner = useCallback(
+    (account: string, email: string) => updateAccount.mutateAsync({ account, owner_email: email }),
+    [updateAccount],
+  );
 
   const toggle = useCallback((acct: string) => {
     setExpanded((prev) => {
@@ -267,9 +328,9 @@ export function JobsAccountHub({ initialQuery }: { initialQuery?: string } = {})
               <th className="w-[34px] py-1.5 pl-3" />
               <th className="px-2 py-1.5 text-left font-semibold">Account</th>
               <th className="w-[120px] px-2 py-1.5 text-left font-semibold">Status</th>
-              <th className="w-[90px] px-2 py-1.5 text-left font-semibold">Opps</th>
-              <th className="w-[100px] px-2 py-1.5 text-left font-semibold">Prospects</th>
-              <th className="w-[120px] px-2 py-1.5 text-left font-semibold">Owner</th>
+              <th className="w-[150px] px-2 py-1.5 text-left font-semibold">Owner</th>
+              <th className="w-[80px] px-2 py-1.5 text-left font-semibold">Opps</th>
+              <th className="w-[90px] px-2 py-1.5 text-left font-semibold">Contacts</th>
               <th className="w-[100px] px-3 py-1.5 text-left font-semibold">Last activity</th>
             </tr>
           </thead>
@@ -285,7 +346,14 @@ export function JobsAccountHub({ initialQuery }: { initialQuery?: string } = {})
               </tr>
             ) : (
               filtered.map((a) => (
-                <AccountRow key={a.account} account={a} expanded={expanded.has(a.account)} onToggle={() => toggle(a.account)} />
+                <AccountRow
+                  key={a.account}
+                  account={a}
+                  expanded={expanded.has(a.account)}
+                  onToggle={() => toggle(a.account)}
+                  staff={staff}
+                  onSaveOwner={saveOwner}
+                />
               ))
             )}
           </tbody>
