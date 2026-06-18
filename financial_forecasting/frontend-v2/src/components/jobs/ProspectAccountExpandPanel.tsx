@@ -263,6 +263,22 @@ export function ContactDetail({ contactId }: { contactId: number }) {
     await updateContact({ id: contactId, [field]: value });
   };
 
+  // Who on staff is connected to this contact — derived from every Pursuit
+  // address that has logged / sent / received activity with them.
+  const staffConnections = (() => {
+    const set = new Set<string>();
+    const grab = (s: string | null | undefined) => {
+      const m = (s ?? "").toLowerCase().match(/[\w.+-]+@pursuit\.org/);
+      if (m) set.add(m[0]);
+    };
+    for (const a of data.activity) {
+      grab(a.logged_by);
+      grab(a.email_from);
+      for (const t of a.email_to ?? []) grab(t);
+    }
+    return [...set];
+  })();
+
   return (
     <div className="border-t border-border-strong bg-surface-2">
       <div className="flex gap-6 p-5">
@@ -339,6 +355,25 @@ export function ContactDetail({ contactId }: { contactId: number }) {
                   Owner: {ownerName(data.deal.owner_email)}
                 </div>
               )}
+            </div>
+          )}
+
+          {staffConnections.length > 0 && (
+            <div className="rounded-lg border border-border-strong bg-surface p-3">
+              <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-ink-4">
+                Connected staff ({staffConnections.length})
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {staffConnections.map((e) => (
+                  <span
+                    key={e}
+                    title={e}
+                    className="inline-flex items-center rounded-full border border-border-strong bg-surface-2 px-2 py-0.5 text-[11px] text-ink-2"
+                  >
+                    {ownerName(e)}
+                  </span>
+                ))}
+              </div>
             </div>
           )}
         </div>

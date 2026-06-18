@@ -7,7 +7,7 @@
  * the contact detail drawer are preserved above the table; clicking a table row
  * opens the same drawer.
  */
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Linkedin, Plus, Search, UserSearch, X } from "lucide-react";
 
 import { ContactDetail, initials } from "@/components/jobs/ProspectAccountExpandPanel";
@@ -35,6 +35,7 @@ import {
   useUpdateContact,
   useAddContactToJobs,
   useContactSearch,
+  useContactDetail,
   useCreateContact,
   STAGE_LABELS,
   type JobStage,
@@ -355,7 +356,9 @@ function ProspectRow({
 
 const EMPTY_COLLAPSED: string[] = [];
 
-export function JobsContacts({ initialQuery }: { initialQuery?: string } = {}) {
+export function JobsContacts(
+  { initialQuery, initialContactId }: { initialQuery?: string; initialContactId?: number } = {},
+) {
   // Table state (mirrors Opportunities/Accounts)
   const [query, setQuery] = useState(initialQuery ?? "");
   const [rules, setRules] = useState<FilterRule<ProspectField>[]>([]);
@@ -386,6 +389,16 @@ export function JobsContacts({ initialQuery }: { initialQuery?: string } = {}) {
   const { data: globalSearchResults } = useContactSearch(globalSearch);
   const searchResults = globalSearchResults ?? [];
   const { mutate: addContactToJobs } = useAddContactToJobs();
+
+  // Deep-link open: ?contact=<id> from the top-bar search opens that contact's
+  // detail drawer once (even LinkedIn-only contacts that aren't jobs prospects).
+  const deepLinkDetail = useContactDetail(initialContactId ?? null);
+  const openedDeepLink = useRef(false);
+  useEffect(() => {
+    if (openedDeepLink.current || !deepLinkDetail.data) return;
+    openedDeepLink.current = true;
+    setSelectedContact(toSearchResult(deepLinkDetail.data));
+  }, [deepLinkDetail.data]);
 
   // Flat prospect list (all jobs-pipeline contacts) — filter/sort/group client-side.
   const { data: rawData, isLoading } = useJobsContacts({ limit: 500 });

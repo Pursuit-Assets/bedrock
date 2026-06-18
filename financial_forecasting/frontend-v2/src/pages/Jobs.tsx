@@ -21,10 +21,14 @@ const VALID_VIEWS = new Set<View>(["performance", "team", "contacts", "builders"
 
 export function JobsPage() {
   const [searchParams] = useSearchParams();
-  // Deep-link support (e.g. from global search): ?view=contacts&q=<name|email>
+  // Deep-link support (e.g. from global search):
+  //   ?view=contacts&q=<text>           — seed the find-any search
+  //   ?view=contacts&contact=<id>       — open that contact's detail drawer
   const paramView = searchParams.get("view") as View | null;
   const initialView: View = paramView && VALID_VIEWS.has(paramView) ? paramView : "performance";
   const initialQuery = searchParams.get("q") ?? undefined;
+  const contactParam = searchParams.get("contact");
+  const initialContactId = contactParam && /^\d+$/.test(contactParam) ? Number(contactParam) : undefined;
   const [view, setView] = useState<View>(initialView);
 
   return (
@@ -59,7 +63,7 @@ export function JobsPage() {
       <div className="mt-1">
         {view === "performance" && <JobsLeadership />}
         {view === "team"        && <JobsTeam />}
-        {view === "contacts"    && <JobsContacts initialQuery={initialQuery} />}
+        {view === "contacts"    && <JobsContacts initialQuery={initialQuery} initialContactId={initialContactId} />}
         {view === "builders"    && <JobsBuilders />}
       </div>
     </div>

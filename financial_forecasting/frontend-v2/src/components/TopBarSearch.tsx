@@ -123,7 +123,8 @@ function buildItems(results: SearchResults, bedrockContacts: BedrockContact[] = 
       group: "Contacts",
       label: name,
       sub: [c.current_title, c.current_company].filter(Boolean).join(" · ") || c.email || null,
-      href: `/jobs?view=contacts&q=${encodeURIComponent(c.email || name)}`,
+      // Deep-link straight to the contact's detail drawer (opens on arrival).
+      href: `/jobs?view=contacts&contact=${c.contact_id}`,
     });
   }
   for (const r of results.Opportunity ?? []) {
