@@ -1221,7 +1221,7 @@ const STAGE_OPTIONS: { value: JobStage; label: string }[] = STAGES_ORDERED.map((
 // Lead Submitted + Initial Outreach happen at the prospect/contact level — a deal
 // becomes an Opportunity once it's active. So the opp stage picker drops them, but
 // still shows a legacy value if a deal somehow already sits there.
-const HIDDEN_OPP_STAGES = new Set<JobStage>(["lead_submitted", "initial_outreach"]);
+const HIDDEN_OPP_STAGES = new Set<JobStage>(["lead_submitted"]);
 const OPP_STAGE_OPTIONS = STAGE_OPTIONS.filter((o) => !HIDDEN_OPP_STAGES.has(o.value));
 function stageOptionsFor(stage: JobStage): { value: JobStage; label: string }[] {
   return HIDDEN_OPP_STAGES.has(stage)

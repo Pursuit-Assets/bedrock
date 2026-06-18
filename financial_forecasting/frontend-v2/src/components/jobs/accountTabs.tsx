@@ -58,7 +58,7 @@ import {
 } from "./jobsEntity";
 
 const OPP_STAGE_OPTIONS: { value: JobStage; label: string }[] = ([
-  "active_in_discussions", "active_opportunity_confirmed", "active_builder_interview",
+  "initial_outreach", "active_in_discussions", "active_opportunity_confirmed", "active_builder_interview",
   "closed_won", "closed_lost", "on_hold_not_selected", "on_hold_not_interested", "on_hold_not_responsive",
 ] as JobStage[]).map((s) => ({ value: s, label: STAGE_LABELS[s] ?? s }));
 

@@ -117,7 +117,7 @@ export function JobsOppRow({ opp, source }: { opp: OppRowData; source?: "jobs" |
 }
 
 const STAGE_OPTIONS: { value: JobStage; label: string }[] = [
-  "active_in_discussions", "active_opportunity_confirmed", "active_builder_interview",
+  "initial_outreach", "active_in_discussions", "active_opportunity_confirmed", "active_builder_interview",
   "closed_won", "closed_lost", "on_hold_not_selected", "on_hold_not_interested", "on_hold_not_responsive",
 ].map((s) => ({ value: s as JobStage, label: STAGE_LABELS[s as JobStage] ?? s }));
 
