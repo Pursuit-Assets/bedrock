@@ -286,7 +286,28 @@ async def main():
             if row and row["account_id"] != "UNKNOWN":
                 sf_account_id = row["account_id"]
 
+        subject = f"Outreach: {company_name}" if company_name else "Employer Engagement"
         try:
+            # The old `ON CONFLICT DO NOTHING` had no conflict target (the random-
+            # uuid PK never collides), so every re-run re-inserted identical rows.
+            # Guard on content identity instead: skip if an equivalent manual row
+            # already exists.
+            exists = await conn.fetchval(
+                """
+                SELECT 1 FROM bedrock.activity
+                WHERE deleted_at IS NULL AND source = 'manual'
+                  AND type IS NOT DISTINCT FROM $1
+                  AND subject IS NOT DISTINCT FROM $2
+                  AND activity_date IS NOT DISTINCT FROM $3
+                  AND jobs_opportunity_id IS NOT DISTINCT FROM $4
+                  AND account_id IS NOT DISTINCT FROM $5
+                  AND left(coalesce(description,''),500) = left(coalesce($6,''),500)
+                LIMIT 1
+                """,
+                activity_type, subject, activity_date, jobs_opp_id, sf_account_id, description,
+            )
+            if exists:
+                continue
             await conn.execute(
                 """
                 INSERT INTO bedrock.activity (
@@ -298,10 +319,9 @@ async def main():
                     'manual', $5, $6,
                     $7
                 )
-                ON CONFLICT DO NOTHING
                 """,
                 activity_type,
-                f"Outreach: {company_name}" if company_name else "Employer Engagement",
+                subject,
                 description,
                 activity_date,
                 sf_account_id,

@@ -417,6 +417,32 @@ async def sync_gmail_for_staff(
 
             contact_ids, account_id = await _resolve_emails_to_contacts(conn, real_external)
 
+            # Cross-mailbox dedup: Gmail thread_id is per-mailbox, so the same
+            # email synced from two staff inboxes carries different thread_ids and
+            # the ON CONFLICT (source, source_thread_id) below never fires —
+            # yielding one row per recipient mailbox. Guard on the email's content
+            # identity (subject + sender + date + recipients + body): if an
+            # equivalent row already exists from another thread/mailbox, skip.
+            dup_id = await conn.fetchval(
+                """
+                SELECT id FROM bedrock.activity
+                WHERE deleted_at IS NULL
+                  AND source IN ('gmail-sync','calendar-sync')
+                  AND source_thread_id IS DISTINCT FROM $3
+                  AND subject IS NOT DISTINCT FROM $1
+                  AND activity_date IS NOT DISTINCT FROM $2
+                  AND email_from IS NOT DISTINCT FROM $4
+                  AND array_to_string(coalesce(email_to,'{}'),',') = array_to_string($5::text[],',')
+                  AND left(coalesce(email_body_text,''),500) = left(coalesce($6,''),500)
+                LIMIT 1
+                """,
+                meta["subject"], meta["date"], meta["thread_id"],
+                meta["email_from"], real_external, meta["email_body_text"] or None,
+            )
+            if dup_id is not None:
+                upserted += 1
+                continue
+
             try:
                 await conn.execute(
                     """
