@@ -24,6 +24,8 @@ import { PlatformIntakePage } from "./pages/PlatformIntake";
 import { PortfolioPage } from "./pages/Portfolio";
 import { JobsPage } from "./pages/Jobs";
 import { JobsAccountDetailPage } from "./pages/jobs/JobsAccountDetail";
+import { JobsContactDetailPage } from "./pages/jobs/JobsContactDetail";
+import { JobsOpportunityDetailPage } from "./pages/jobs/JobsOpportunityDetail";
 import { HomePage, HomeIndexPage } from "./pages/home";
 
 export default function App() {
@@ -62,6 +64,8 @@ export default function App() {
         <Route path="/portfolio/:identifier" element={<PortfolioPage />} />
         <Route path="/jobs" element={<JobsPage />} />
         <Route path="/jobs/accounts/:accountKey" element={<JobsAccountDetailPage />} />
+        <Route path="/jobs/contacts/:id" element={<JobsContactDetailPage />} />
+        <Route path="/jobs/opportunities/:id" element={<JobsOpportunityDetailPage />} />
         <Route path="/feedback" element={<PlatformIntakePage />} />
         <Route path="/home" element={<HomeIndexPage />} />
         <Route path="/home/:slug" element={<HomePage />} />

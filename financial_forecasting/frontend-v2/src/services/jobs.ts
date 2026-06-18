@@ -354,6 +354,30 @@ export function useJobsAccounts(dealType?: string) {
   });
 }
 
+export interface ContactOpportunity {
+  id: string;
+  account_name: string;
+  title: string | null;
+  stage: JobStage;
+  deal_type: DealType | null;
+  owner_email: string | null;
+  num_roles: number | null;
+  priority: number | null;
+  updated_at: string | null;
+}
+
+export function useContactOpportunities(id: number | null) {
+  return useQuery<ContactOpportunity[]>({
+    queryKey: ["jobs", "contact-opps", id],
+    queryFn: async () => {
+      const { data } = await api.get<ApiResponse<ContactOpportunity[]>>(`/api/jobs/contacts/${id}/opportunities`);
+      return data.data;
+    },
+    enabled: id !== null,
+    staleTime: 60_000,
+  });
+}
+
 export interface JobsStaff { email: string; name: string }
 
 export function useJobsStaff() {

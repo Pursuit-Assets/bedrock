@@ -9,9 +9,12 @@
  * shows a preview with an Add-to-Jobs CTA.
  */
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Linkedin, Plus, Search, UserSearch, X } from "lucide-react";
+import { Link } from "react-router-dom";
+import { ExternalLink, Linkedin, Plus, Search, UserSearch, X } from "lucide-react";
 
 import { ContactDetail, initials } from "@/components/jobs/ProspectAccountExpandPanel";
+import { ContactExpandTabs, jobsContactPath } from "@/components/jobs/jobsEntity";
+import { withReferrer } from "@/components/detail";
 import { InlineSelect } from "@/components/ui/InlineEdit";
 import { SortableHeader } from "@/components/ui/SortableHeader";
 import { useSort, sortBy } from "@/lib/sort";
@@ -192,6 +195,7 @@ function ContactRow({ contact, expanded, onOpen }: { contact: JobContactWithDeal
           <span className="flex min-w-0 items-center gap-2">
             <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-accent-soft text-[10px] font-bold leading-none text-accent-ink">{initials(contact.full_name)}</span>
             <span className="truncate text-[13px] font-medium text-ink">{contact.full_name || "—"}</span>
+            <Link to={jobsContactPath(contact.contact_id)} state={withReferrer({ pathname: "/jobs", label: "Jobs" })} onClick={(e) => e.stopPropagation()} className="shrink-0 text-ink-4 hover:text-accent" title="Open contact detail"><ExternalLink size={12} /></Link>
           </span>
         </td>
         <td className="px-3 py-1.5 align-middle"><span className="truncate text-[12.5px] text-ink-2">{contact.current_title || "—"}</span></td>
@@ -224,9 +228,9 @@ function ContactRow({ contact, expanded, onOpen }: { contact: JobContactWithDeal
         </td>
       </tr>
       {expanded && (
-        <tr className="border-t border-border-strong bg-surface-2/20">
+        <tr className="bg-surface-2/20">
           <td colSpan={7} className="p-0">
-            <div className="border-l-2 border-accent/30 bg-surface"><ContactDetail contactId={contact.contact_id} /></div>
+            <ContactExpandTabs contactId={contact.contact_id} />
           </td>
         </tr>
       )}

@@ -1854,6 +1854,52 @@ async def list_contacts(
     }
 
 
+@router.get("/contacts/{contact_id}/opportunities")
+async def contact_opportunities(
+    contact_id: int,
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Opportunities this contact is attached to — directly (sf_contact_ids) or
+    via a company-name match to the opportunity's account."""
+    rows = await conn.fetch(
+        """
+        WITH c AS (
+            SELECT contact_id, airtable_id, current_company
+            FROM public.contacts WHERE contact_id = $1
+        )
+        SELECT o.id, o.account_name, o.title, o.stage, o.deal_type,
+               o.owner_email, o.num_roles, o.priority, o.updated_at
+        FROM bedrock.jobs_opportunity o, c
+        WHERE o.deleted_at IS NULL AND (
+            ('pub:' || c.contact_id::text) = ANY(o.sf_contact_ids)
+            OR (c.airtable_id IS NOT NULL AND ('airtable:' || c.airtable_id) = ANY(o.sf_contact_ids))
+            OR (coalesce(trim(c.current_company), '') <> ''
+                AND lower(trim(o.account_name)) = lower(trim(c.current_company)))
+        )
+        ORDER BY o.updated_at DESC NULLS LAST
+        """,
+        contact_id,
+    )
+    return {
+        "success": True,
+        "data": [
+            {
+                "id": str(r["id"]),
+                "account_name": r["account_name"],
+                "title": r["title"],
+                "stage": r["stage"],
+                "deal_type": r["deal_type"],
+                "owner_email": r["owner_email"],
+                "num_roles": r["num_roles"],
+                "priority": r["priority"],
+                "updated_at": r["updated_at"].isoformat() if r["updated_at"] else None,
+            }
+            for r in rows
+        ],
+    }
+
+
 @router.get("/contacts/{contact_id}")
 async def get_contact(
     contact_id: int,
