@@ -71,12 +71,15 @@ def _serialize(r) -> dict:
     }
 
 
-_SELECT_SQL = """
-    SELECT id, parent_type, parent_id, title, status, owner, owner_ids,
+_COLS = """id, parent_type, parent_id, title, status, owner, owner_ids,
            deadline, start_date, description, links, sort_order,
-           created_at, updated_at
-    FROM bedrock.jobs_task
-"""
+           created_at, updated_at"""
+
+# Account-level tasks live in a bedrock_user-owned mirror table (no parent_type
+# CHECK), since the original jobs_task is postgres-owned and locked to
+# opportunity|prospect. Everything else stays in jobs_task.
+def _table(parent_type: str) -> str:
+    return "bedrock.jobs_account_task" if parent_type == "account" else "bedrock.jobs_task"
 
 
 def _check_parent_type(parent_type: str) -> None:
@@ -93,8 +96,8 @@ async def list_jobs_tasks(
 ):
     _check_parent_type(parent_type)
     rows = await conn.fetch(
-        _SELECT_SQL
-        + " WHERE parent_type = $1 AND parent_id = $2 AND deleted_at IS NULL "
+        f"SELECT {_COLS} FROM {_table(parent_type)}"
+        " WHERE parent_type = $1 AND parent_id = $2 AND deleted_at IS NULL "
         "ORDER BY sort_order ASC, created_at ASC",
         parent_type, parent_id,
     )
@@ -117,12 +120,10 @@ async def create_jobs_task(
     owner_ids = [uuid.UUID(x) for x in body.owner_ids]
 
     row = await conn.fetchrow(
-        """INSERT INTO bedrock.jobs_task
+        f"""INSERT INTO {_table(body.parent_type)}
                (parent_type, parent_id, title, owner_ids, deadline, start_date, description)
            VALUES ($1, $2, $3, $4, $5, $6, $7)
-           RETURNING id, parent_type, parent_id, title, status, owner, owner_ids,
-                     deadline, start_date, description, links, sort_order,
-                     created_at, updated_at""",
+           RETURNING {_COLS}""",
         body.parent_type, body.parent_id, title, owner_ids, deadline,
         start_date_val, body.description,
     )
@@ -153,13 +154,17 @@ async def update_jobs_task(
 
     sets = ", ".join(f"{k} = ${i + 2}" for i, k in enumerate(fields))
     vals = [tid] + list(fields.values())
-    row = await conn.fetchrow(
-        f"UPDATE bedrock.jobs_task SET {sets}, updated_at = now() "
-        "WHERE id = $1 AND deleted_at IS NULL "
-        "RETURNING id, parent_type, parent_id, title, status, owner, owner_ids, "
-        "deadline, start_date, description, links, sort_order, created_at, updated_at",
-        *vals,
-    )
+    # task_id alone doesn't say which table; try the main one, then the
+    # account mirror.
+    row = None
+    for tbl in ("bedrock.jobs_task", "bedrock.jobs_account_task"):
+        row = await conn.fetchrow(
+            f"UPDATE {tbl} SET {sets}, updated_at = now() "
+            f"WHERE id = $1 AND deleted_at IS NULL RETURNING {_COLS}",
+            *vals,
+        )
+        if row:
+            break
     if not row:
         raise HTTPException(status_code=404, detail="Task not found")
     return {"success": True, "data": _serialize(row)}
@@ -173,11 +178,12 @@ async def delete_jobs_task(
 ):
     tid = uuid.UUID(task_id)
     email = user.get("email", "") if isinstance(user, dict) else ""
-    result = await conn.execute(
-        "UPDATE bedrock.jobs_task SET deleted_at = now(), deleted_by = $2 "
-        "WHERE id = $1 AND deleted_at IS NULL",
-        tid, email,
-    )
-    if result == "UPDATE 0":
-        raise HTTPException(status_code=404, detail="Task not found")
-    return {"success": True, "data": {"message": "Task deleted"}}
+    for tbl in ("bedrock.jobs_task", "bedrock.jobs_account_task"):
+        result = await conn.execute(
+            f"UPDATE {tbl} SET deleted_at = now(), deleted_by = $2 "
+            "WHERE id = $1 AND deleted_at IS NULL",
+            tid, email,
+        )
+        if result != "UPDATE 0":
+            return {"success": True, "data": {"message": "Task deleted"}}
+    raise HTTPException(status_code=404, detail="Task not found")

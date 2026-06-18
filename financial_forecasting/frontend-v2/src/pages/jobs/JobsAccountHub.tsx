@@ -148,7 +148,14 @@ export function JobsAccountHub({ initialQuery }: { initialQuery?: string } = {})
   const [dealType, setDealType] = useState("all");
   const [groupBy, setGroupBy] = useSessionState<string>("jobs-accounts:groupBy", "");
   const [collapsedGroups, setCollapsedGroups] = useSessionState<string[]>("jobs-accounts:groupCollapsed", EMPTY);
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  // Persisted so returning from a contact/opportunity detail page restores the
+  // same account rows expanded.
+  const [expandedList, setExpandedList] = useSessionState<string[]>("jobs-accounts:expanded", EMPTY);
+  const expanded = useMemo(() => new Set(expandedList), [expandedList]);
+  const setExpanded = useCallback(
+    (updater: (prev: Set<string>) => Set<string>) => setExpandedList((prev) => [...updater(new Set(prev))]),
+    [setExpandedList],
+  );
 
   const { sort, toggle, setSort } = useSort<ColKey>({ key: "status", direction: "asc" });
   const { visible: visibleCols, toggle: toggleCol, replaceAll: replaceVisibleCols } =
@@ -174,7 +181,7 @@ export function JobsAccountHub({ initialQuery }: { initialQuery?: string } = {})
 
   const collapsedSet = useMemo(() => new Set(collapsedGroups), [collapsedGroups]);
   const toggleGroup = useCallback((k: string) => setCollapsedGroups((p) => p.includes(k) ? p.filter((x) => x !== k) : [...p, k]), [setCollapsedGroups]);
-  const toggleRow = useCallback((acct: string) => setExpanded((p) => { const n = new Set(p); n.has(acct) ? n.delete(acct) : n.add(acct); return n; }), []);
+  const toggleRow = useCallback((acct: string) => setExpanded((p) => { const n = new Set(p); n.has(acct) ? n.delete(acct) : n.add(acct); return n; }), [setExpanded]);
 
   const q = query.trim().toLowerCase();
   const filtered = useMemo(() => {
@@ -230,8 +237,8 @@ export function JobsAccountHub({ initialQuery }: { initialQuery?: string } = {})
         </select>
         <span className="font-mono text-[12px] text-ink-4">{isLoading ? "…" : `${filtered.length} acct · ${totals.opps} opp · ${totals.contacts} contact`}</span>
         <div className="ml-auto flex items-center gap-2">
-          <button type="button" onClick={() => setExpanded(new Set(filtered.map((a) => a.account)))} className="h-7 rounded border border-border-strong bg-surface px-2.5 text-[12px] text-ink-3 hover:text-ink">Expand all</button>
-          <button type="button" onClick={() => setExpanded(new Set())} className="h-7 rounded border border-border-strong bg-surface px-2.5 text-[12px] text-ink-3 hover:text-ink">Collapse</button>
+          <button type="button" onClick={() => setExpandedList(filtered.map((a) => a.account))} className="h-7 rounded border border-border-strong bg-surface px-2.5 text-[12px] text-ink-3 hover:text-ink">Expand all</button>
+          <button type="button" onClick={() => setExpandedList([])} className="h-7 rounded border border-border-strong bg-surface px-2.5 text-[12px] text-ink-3 hover:text-ink">Collapse</button>
           <ColumnChooser allColumns={COLUMN_ORDER} labels={COL_LABELS} visible={visibleCols} required={["account"]} onToggle={toggleCol} />
           <SavedViewsPicker<JobsAccountsView>
             scopeKey="jobs-accounts"

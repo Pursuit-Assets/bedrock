@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { useEffect } from "react";
 import { useSearchParams } from "react-router-dom";
 import { BarChart3, Building2, Kanban, Users, GraduationCap } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
+import { useSessionState } from "@/lib/useSessionState";
 import { cn } from "@/lib/utils";
 import { JobsAccountHub } from "./jobs/JobsAccountHub";
 import { JobsTeam } from "./jobs/JobsTeam";
@@ -31,7 +32,13 @@ export function JobsPage() {
   const initialQuery = searchParams.get("q") ?? undefined;
   const contactParam = searchParams.get("contact");
   const initialContactId = contactParam && /^\d+$/.test(contactParam) ? Number(contactParam) : undefined;
-  const [view, setView] = useState<View>(initialView);
+  // Persisted so returning (Back) from a detail page restores the same tab.
+  const [view, setView] = useSessionState<View>("jobs:view", initialView);
+  // An explicit ?view= deep-link still wins.
+  useEffect(() => {
+    if (paramView && VALID_VIEWS.has(paramView)) setView(paramView);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [paramView]);
 
   return (
     <div className="flex flex-col gap-0 px-7 py-4 pb-12">

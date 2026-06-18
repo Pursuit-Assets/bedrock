@@ -86,17 +86,19 @@ function AccountOppsTab({ account }: { account: JobsAccount }) {
   const update = useUpdateOpportunity();
   const patch = (id: string, field: string, val: unknown) => update.mutateAsync({ id, [field]: val }).then(() => undefined);
 
-  // create form (all fields required; role can be "TBD")
+  // create form (role/stage/owner/deal type/likelihood/# roles all required; role can be "TBD")
   const [role, setRole] = useState("");
   const [stage, setStage] = useState<JobStage>("active_in_discussions");
   const [owner, setOwner] = useState("");
   const [dealType, setDealType] = useState<DealType | "">("");
-  const canCreate = role.trim() !== "" && owner !== "" && dealType !== "";
+  const [likelihood, setLikelihood] = useState<"" | "low" | "medium" | "high">("");
+  const [numRoles, setNumRoles] = useState("1");
+  const canCreate = role.trim() !== "" && owner !== "" && dealType !== "" && likelihood !== "" && numRoles.trim() !== "";
   const submit = () => {
     if (!canCreate) return;
     create.mutate(
-      { account_id: account.account_id ?? "UNKNOWN", account_name: account.account, title: role.trim(), stage, owner_email: owner, deal_type: dealType as DealType },
-      { onSuccess: () => { setRole(""); setOwner(""); setDealType(""); setStage("active_in_discussions"); } },
+      { account_id: account.account_id ?? "UNKNOWN", account_name: account.account, title: role.trim(), stage, owner_email: owner, deal_type: dealType as DealType, likelihood: likelihood as "low" | "medium" | "high", num_roles: Number(numRoles) || 1 },
+      { onSuccess: () => { setRole(""); setOwner(""); setDealType(""); setLikelihood(""); setNumRoles("1"); setStage("active_in_discussions"); } },
     );
   };
 
@@ -104,10 +106,11 @@ function AccountOppsTab({ account }: { account: JobsAccount }) {
     <div className="p-3">
       <div className="overflow-hidden rounded border border-border-strong bg-surface">
         <table className="w-full table-fixed text-[12px]">
-          <colgroup><col /><col style={{ width: "20%" }} /><col style={{ width: "20%" }} /><col style={{ width: "16%" }} /><col style={{ width: 36 }} /></colgroup>
+          <colgroup><col /><col style={{ width: "17%" }} /><col style={{ width: "16%" }} /><col style={{ width: "13%" }} /><col style={{ width: "12%" }} /><col style={{ width: "8%" }} /><col style={{ width: 32 }} /></colgroup>
           <thead className="bg-surface-2 text-[10.5px] uppercase tracking-wider text-ink-3"><tr>
             <th className="px-2 py-1.5 text-left font-semibold">Role</th><th className="px-2 py-1.5 text-left font-semibold">Stage</th>
-            <th className="px-2 py-1.5 text-left font-semibold">Owner</th><th className="px-2 py-1.5 text-left font-semibold">Deal type</th><th className="px-2 py-1.5" />
+            <th className="px-2 py-1.5 text-left font-semibold">Owner</th><th className="px-2 py-1.5 text-left font-semibold">Deal type</th>
+            <th className="px-2 py-1.5 text-left font-semibold">Likelihood</th><th className="px-2 py-1.5 text-left font-semibold"># Roles</th><th className="px-2 py-1.5" />
           </tr></thead>
           <tbody>
             {/* create row — action above the data */}
@@ -116,16 +119,20 @@ function AccountOppsTab({ account }: { account: JobsAccount }) {
               <td className="px-2 py-1.5"><select value={stage} onChange={(e) => setStage(e.target.value as JobStage)} className="h-6 w-full rounded border border-border-strong bg-surface px-1 text-[11.5px] outline-none focus:border-accent">{OPP_STAGE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}</select></td>
               <td className="px-2 py-1.5"><select value={owner} onChange={(e) => setOwner(e.target.value)} className={cn("h-6 w-full rounded border bg-surface px-1 text-[11.5px] outline-none focus:border-accent", owner ? "border-border-strong" : "border-amber-300")}><option value="">Owner *</option>{staff.map((s) => <option key={s.email} value={s.email}>{s.name}</option>)}</select></td>
               <td className="px-2 py-1.5"><select value={dealType} onChange={(e) => setDealType(e.target.value as DealType | "")} className={cn("h-6 w-full rounded border bg-surface px-1 text-[11.5px] outline-none focus:border-accent", dealType ? "border-border-strong" : "border-amber-300")}><option value="">Type *</option>{DEAL_TYPE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}</select></td>
+              <td className="px-2 py-1.5"><select value={likelihood} onChange={(e) => setLikelihood(e.target.value as "" | "low" | "medium" | "high")} className={cn("h-6 w-full rounded border bg-surface px-1 text-[11.5px] outline-none focus:border-accent", likelihood ? "border-border-strong" : "border-amber-300")}><option value="">— *</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select></td>
+              <td className="px-2 py-1.5"><input type="number" min="1" value={numRoles} onChange={(e) => setNumRoles(e.target.value)} className="h-6 w-full rounded border border-border-strong bg-surface px-1 text-[11.5px] outline-none focus:border-accent" /></td>
               <td className="px-1 py-1.5 text-center"><button type="button" disabled={!canCreate || create.isPending} onClick={submit} title="Create opportunity" className="text-ink-3 hover:text-accent disabled:opacity-30"><Plus size={15} /></button></td>
             </tr>
             {account.opportunities.length === 0 ? (
-              <tr><td colSpan={5} className="px-4 py-4 text-center text-[12px] italic text-ink-3">No opportunities yet — add one above.</td></tr>
+              <tr><td colSpan={7} className="px-4 py-4 text-center text-[12px] italic text-ink-3">No opportunities yet — add one above.</td></tr>
             ) : account.opportunities.map((o) => (
               <tr key={o.id} className="border-t border-border-strong/60">
                 <td className="overflow-hidden px-2 py-1.5"><InlineText value={o.title ?? null} placeholder={oppRoleLabel(o)} onSave={(v) => patch(o.id, "title", v)} className="text-[12.5px] font-medium text-ink" /></td>
                 <td className="overflow-hidden px-2 py-1.5"><InlineSelect<JobStage> value={o.stage} options={OPP_STAGE_OPTIONS} renderValue={(v) => <DealStagePill stage={(v ?? o.stage) as JobStage} />} onSave={(v) => patch(o.id, "stage", v)} /></td>
                 <td className="overflow-hidden px-2 py-1.5"><OwnerSelect owner={o.owner_email} staff={staff} onSave={(email) => patch(o.id, "owner_email", email)} /></td>
                 <td className="overflow-hidden px-2 py-1.5"><InlineSelect<string> value={o.deal_type ?? null} options={DEAL_TYPE_OPTIONS} emptyLabel="—" onSave={(v) => patch(o.id, "deal_type", v || null)} /></td>
+                <td className="overflow-hidden px-2 py-1.5"><InlineSelect<string> value={o.likelihood ?? null} options={[{ value: "low", label: "Low" }, { value: "medium", label: "Medium" }, { value: "high", label: "High" }]} emptyLabel="—" onSave={(v) => patch(o.id, "likelihood", v || null)} /></td>
+                <td className="overflow-hidden px-2 py-1.5"><InlineText value={o.num_roles != null ? String(o.num_roles) : null} placeholder="—" onSave={(v) => patch(o.id, "num_roles", v ? Number(v) : null)} className="text-[12px] text-ink-2" /></td>
                 <td className="px-1 py-1.5 text-center"><Link to={jobsOpportunityPath(o.id)} state={jobsRef} className="text-ink-4 hover:text-accent" title="Open opportunity"><ExternalLink size={12} /></Link></td>
               </tr>
             ))}

@@ -103,14 +103,15 @@ const FILTERABLE: Record<Field, FieldMeta<JobContactWithDeal>> = {
   company: { label: "Company", type: "text", getValue: (c) => c.current_company ?? "" },
   stage: { label: "Stage", type: "select", getValue: (c) => c.contact_stage ?? "" },
   has_deal: { label: "Linked deal", type: "select", getValue: (c) => (c.deal ? "yes" : "no") },
-  connected: { label: "Connected staff", type: "select", getValue: (c) => ((c.connected_staff_names?.length ?? 0) > 0 ? "yes" : "no") },
+  // Text so you can filter "Connected staff contains <person>" (search by person),
+  // plus is_empty / is_not_empty for has-any / none.
+  connected: { label: "Connected staff", type: "text", getValue: (c) => (c.connected_staff_names ?? []).join(", ") },
 };
 const GROUP_OPTIONS = [
   { value: "", label: "No grouping" },
   { value: "stage", label: "Group by Stage" },
   { value: "company", label: "Group by Company" },
   { value: "has_deal", label: "Group by Linked deal" },
-  { value: "connected", label: "Group by Connected staff" },
 ];
 const YESNO = [{ value: "yes", label: "Yes" }, { value: "no", label: "No" }];
 
@@ -254,7 +255,7 @@ export function JobsContacts({ initialQuery, initialContactId }: { initialQuery?
   }, [deepLinkDetail.data, openContact]);
 
   const selectOptions: Partial<Record<Field, { value: string; label: string }[]>> = useMemo(() => ({
-    stage: CONTACT_STAGE_SELECT, has_deal: YESNO, connected: YESNO,
+    stage: CONTACT_STAGE_SELECT, has_deal: YESNO,
   }), []);
 
   const collapsedSet = useMemo(() => new Set(collapsedGroups), [collapsedGroups]);
@@ -275,7 +276,6 @@ export function JobsContacts({ initialQuery, initialContactId }: { initialQuery?
     if (k === "") return "—";
     if (groupBy === "stage") return CONTACT_STAGE_STYLES[k]?.label ?? k;
     if (groupBy === "has_deal") return k === "yes" ? "Has linked deal" : "No linked deal";
-    if (groupBy === "connected") return k === "yes" ? "Has connected staff" : "No connected staff";
     return k;
   }, [groupBy]);
 

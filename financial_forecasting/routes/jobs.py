@@ -1566,7 +1566,7 @@ async def jobs_accounts(
     opp_rows = await conn.fetch(
         """
         SELECT id, account_id, account_name, stage, deal_type, title,
-               owner_email, priority, num_roles, updated_at
+               owner_email, priority, num_roles, likelihood, updated_at
         FROM bedrock.jobs_opportunity
         WHERE deleted_at IS NULL AND coalesce(trim(account_name), '') <> ''
         ORDER BY updated_at DESC NULLS LAST
@@ -1623,6 +1623,7 @@ async def jobs_accounts(
             "owner_email": r["owner_email"],
             "priority":   r["priority"],
             "num_roles":  r["num_roles"],
+            "likelihood": r["likelihood"],
             "updated_at": r["updated_at"].isoformat() if r["updated_at"] else None,
         })
 

@@ -318,6 +318,7 @@ export interface JobsAccountOpp {
   owner_email: string | null;
   priority: number | null;
   num_roles: number | null;
+  likelihood: "low" | "medium" | "high" | null;
   updated_at: string | null;
 }
 
