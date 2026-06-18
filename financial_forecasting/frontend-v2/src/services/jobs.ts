@@ -197,8 +197,18 @@ export interface ContactFilters {
   limit?: number;
 }
 
+export interface ConnectedStaff {
+  staff_user_id: number;
+  name: string | null;
+  email: string | null;
+  source: string | null;
+  strength: string | null;
+  connected_date: string | null;
+}
+
 export interface ContactDetail extends JobContactWithDeal {
   activity: ActivityEntry[];
+  connected_staff?: ConnectedStaff[];
 }
 
 export function useContactDetail(id: number | null) {

@@ -1645,77 +1645,72 @@ async def get_contact(
     contact_name  = row["full_name"] or ""
     first_name    = contact_name.split()[0] if contact_name else ""
 
-    # Pull ALL activity for this contact:
-    # 1. Jobs-tagged activity on their linked deal
-    # 2. Gmail/Calendar/SF activity where email matches
-    # 3. Activity where their name appears in description
-    seen_ids: set = set()
-    all_activity: list = []
-
-    if deal_id:
-        rows_deal = await conn.fetch(
-            """
-            SELECT a.id, a.type, a.subject, a.description, a.activity_date,
-                   a.logged_by, a.source, a.email_from, a.email_snippet,
-                   a.meeting_duration_minutes, a.deleted_at,
-                   true AS is_jobs
-            FROM bedrock.activity a
-            WHERE a.deleted_at IS NULL AND a.jobs_opportunity_id = $1
-            ORDER BY a.activity_date DESC NULLS LAST LIMIT 100
-            """,
-            deal_id,
-        )
-        for r in rows_deal:
-            seen_ids.add(r["id"])
-            all_activity.append(dict(r))
-
-    if contact_email:
-        rows_email = await conn.fetch(
-            """
-            SELECT a.id, a.type, a.subject, a.description, a.activity_date,
-                   a.logged_by, a.source, a.email_from, a.email_snippet,
-                   a.meeting_duration_minutes, a.deleted_at,
-                   (a.jobs_opportunity_id IS NOT NULL) AS is_jobs
-            FROM bedrock.activity a
-            WHERE a.deleted_at IS NULL
-              AND a.id != ALL($2::uuid[])
-              AND (
-                lower(a.email_from) LIKE lower($1)
-                OR lower(a.email_from) LIKE '%<' || lower($1) || '>%'
+    # Activity the contact was ACTUALLY a participant in — set by the nightly
+    # relink (participant_public_contact_id) or their email being on the thread
+    # (from / to / cc). We deliberately do NOT pull deal- or account-level
+    # activity: a contact at a company must not inherit calls/emails they
+    # weren't part of (that previously showed e.g. every Adonis call on one
+    # Adonis contact). first_name fuzzy-matching is dropped for the same reason.
+    rows_act = await conn.fetch(
+        """
+        SELECT a.id, a.type, a.subject, a.description, a.activity_date,
+               a.logged_by, a.source, a.email_from, a.email_snippet,
+               a.meeting_duration_minutes, a.deleted_at,
+               (a.jobs_opportunity_id IS NOT NULL) AS is_jobs
+        FROM bedrock.activity a
+        WHERE a.deleted_at IS NULL
+          AND (
+            a.participant_public_contact_id = $1
+            OR (
+              $2 <> '' AND (
+                lower(a.email_from) LIKE '%' || lower($2) || '%'
+                OR EXISTS (
+                  SELECT 1 FROM unnest(coalesce(a.email_to, '{}') || coalesce(a.email_cc, '{}')) e
+                  WHERE lower(e) = lower($2)
+                )
               )
-            ORDER BY a.activity_date DESC NULLS LAST LIMIT 100
-            """,
-            f"%{contact_email}%",
-            list(seen_ids) or [__import__("uuid").uuid4()],
-        )
-        for r in rows_email:
-            seen_ids.add(r["id"])
-            all_activity.append(dict(r))
-
-    if first_name and len(first_name) > 3:
-        rows_name = await conn.fetch(
-            """
-            SELECT a.id, a.type, a.subject, a.description, a.activity_date,
-                   a.logged_by, a.source, a.email_from, a.email_snippet,
-                   a.meeting_duration_minutes, a.deleted_at,
-                   (a.jobs_opportunity_id IS NOT NULL) AS is_jobs
-            FROM bedrock.activity a
-            WHERE a.deleted_at IS NULL
-              AND a.id != ALL($2::uuid[])
-              AND jobs_opportunity_id IS NOT NULL
-              AND (lower(description) LIKE lower($1) OR lower(subject) LIKE lower($1))
-            ORDER BY a.activity_date DESC NULLS LAST LIMIT 30
-            """,
-            f"%{first_name}%",
-            list(seen_ids) or [__import__("uuid").uuid4()],
-        )
-        for r in rows_name:
-            if r["id"] not in seen_ids:
-                seen_ids.add(r["id"])
-                all_activity.append(dict(r))
+            )
+          )
+        ORDER BY a.activity_date DESC NULLS LAST LIMIT 100
+        """,
+        contact_id,
+        contact_email or "",
+    )
+    all_activity: list = [dict(r) for r in rows_act]
 
     all_activity.sort(key=lambda x: x.get("activity_date") or "", reverse=True)
     activity = all_activity[:150]
+
+    # Who on staff is connected to this contact — from LinkedIn connections
+    # (public.staff_contact_relationships), resolved to names via
+    # bedrock.staff_user_id_map. (The map may be sparsely populated; unresolved
+    # staff are returned with name=null so the UI can choose to hide them.)
+    conn_rows = await conn.fetch(
+        """
+        SELECT scr.staff_user_id,
+               m.display_name,
+               m.email,
+               scr.source,
+               scr.relationship_strength,
+               scr.connected_date
+        FROM public.staff_contact_relationships scr
+        LEFT JOIN bedrock.staff_user_id_map m ON m.staff_user_id = scr.staff_user_id
+        WHERE scr.contact_id = $1
+        ORDER BY (m.display_name IS NULL), m.display_name
+        """,
+        contact_id,
+    )
+    connected_staff = [
+        {
+            "staff_user_id":  r["staff_user_id"],
+            "name":           r["display_name"],
+            "email":          r["email"],
+            "source":         r["source"],
+            "strength":       r["relationship_strength"],
+            "connected_date": r["connected_date"].isoformat() if r["connected_date"] else None,
+        }
+        for r in conn_rows
+    ]
 
     deal = None
     if row["deal_id"]:
@@ -1739,6 +1734,7 @@ async def get_contact(
             "airtable_id":     row["airtable_id"],
             "deal":            deal,
             "activity":        [dict(a) for a in activity],
+            "connected_staff": connected_staff,
         },
     }
 
