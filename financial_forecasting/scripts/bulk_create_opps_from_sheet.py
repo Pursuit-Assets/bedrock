@@ -126,6 +126,30 @@ ROWS = [
     ("Big Human","","","",1,"","$105,000","","","","8. Placed",""),
 ]
 
+# Confirmed-duplicate sheet companies that already exist under a variant name
+# (user reviewed the fuzzy matches) — skip creating these.
+SKIP_AS_DUPLICATE = {
+    "acture", "cypress hills", "kohlberg", "crux capital", "assured health partners",
+    "bed stuy restoration corp", "emerge careers",          # clear dupes
+    "charter", "fowler", "cbs", "big brothers big sisters",  # confirmed dupes
+}
+
+# Reviewed contact decisions (keyed by company, lowercased):
+#  - FORCE_LINK: attach this existing contact_id (verified same person, incl.
+#    job-changers / name variants the user approved).
+#  - LEAVE_CONTACT_BLANK: exists elsewhere (e.g. Salesforce only) — don't create
+#    a jobs contact; leave the opp contact-less for manual linking.
+FORCE_LINK_CONTACT = {
+    "rodeo": 33064,                                   # Art Linares @ Rodeo
+    "nyc public housing preservation trust": 17677,   # Jillian McLaughlin (name variant)
+    "afimac global": 30546,                           # Jonathan Kogan (job change)
+    "zero ai": 12647,                                 # Brian Luscombe (ZeroClick.ai)
+    "shoken": 17664,                                  # Jennifer Geiling (job change)
+    "taproot foundation": 2751,                       # Cat Ward (job change)
+    "echoing green": 16975,                           # Louisa Caçoilo (accent — avoid dup)
+}
+LEAVE_CONTACT_BLANK = {"openrouter"}                  # Alex Atallah is in Salesforce only
+
 # Excluded (no usable company / internal): person-only rows + ambiguous internal.
 EXCLUDED = ["(Isaac Botier — no company)", "(Winston Huang — no company)",
             "(Julia Simmons — no company)", "(Miranda D. — no company)",
@@ -167,6 +191,9 @@ async def main(commit: bool):
         if company.strip().lower() in existing:
             skipped.append(f"{company} (already exists)")
             continue
+        if company.strip().lower() in SKIP_AS_DUPLICATE:
+            skipped.append(f"{company} (dupe of existing variant)")
+            continue
         plan.append({
             "company": company.strip(),
             "owner": owner_email(rel, lead),
@@ -200,15 +227,31 @@ async def main(commit: bool):
         for p in plan:
             cname, cemail = p["contact"]
             contact_id = None
+            ckey = p["company"].strip().lower()
+            if ckey in LEAVE_CONTACT_BLANK:
+                cname = ""  # don't match or create; leave opp contact-less
+            elif ckey in FORCE_LINK_CONTACT:
+                contact_id = FORCE_LINK_CONTACT[ckey]
+                await conn.execute("UPDATE public.contacts SET is_jobs_contact=true WHERE contact_id=$1", contact_id)
+                cname = ""  # already resolved; skip matching/creation
             if cname:
-                # match existing jobs/linkedin contact by full name (+ email if present)
+                # 1) email is the strongest signal
                 if cemail:
                     contact_id = await conn.fetchval(
                         "SELECT contact_id FROM public.contacts WHERE lower(email)=lower($1) LIMIT 1", cemail)
+                # 2) name match — only LINK when we're confident it's the same
+                #    person: company agrees, or the record has no company on file
+                #    and it's the sole same-name match. Otherwise create a fresh
+                #    contact rather than mislink to a same-name person elsewhere.
                 if not contact_id:
-                    contact_id = await conn.fetchval(
-                        "SELECT contact_id FROM public.contacts WHERE lower(trim(full_name))=lower($1) ORDER BY is_jobs_contact DESC LIMIT 1",
-                        cname)
+                    matches = await conn.fetch(
+                        "SELECT contact_id, current_company FROM public.contacts WHERE lower(trim(full_name))=lower($1)", cname)
+                    co = p["company"].lower()
+                    agree = [m for m in matches if m["current_company"] and (co in m["current_company"].lower() or m["current_company"].lower() in co)]
+                    if len(agree) >= 1:
+                        contact_id = agree[0]["contact_id"]
+                    elif len(matches) == 1 and not matches[0]["current_company"]:
+                        contact_id = matches[0]["contact_id"]
                 if not contact_id:
                     contact_id = await conn.fetchval(
                         """INSERT INTO public.contacts (full_name, email, current_company, contact_stage, is_jobs_contact, source)
