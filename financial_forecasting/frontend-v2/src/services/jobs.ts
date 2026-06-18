@@ -270,6 +270,39 @@ export function useJobsContacts(filters: ContactFilters = {}) {
   });
 }
 
+// Prospects grouped into account rows (by company name) for the account-level
+// Prospects view. Each account carries its current opportunity, if any.
+export interface ProspectAccountContact {
+  contact_id: number;
+  full_name: string | null;
+  email: string | null;
+  current_title: string | null;
+  contact_stage: string | null;
+  linkedin_url: string | null;
+}
+
+export interface ProspectAccount {
+  account: string;
+  contact_count: number;
+  contacts: ProspectAccountContact[];
+  deal: { id: string; stage: JobStage; deal_type: DealType | null; owner_email: string | null } | null;
+}
+
+export function useContactsByAccount(dealType?: string) {
+  const params = new URLSearchParams();
+  if (dealType && dealType !== "all") params.set("deal_type", dealType);
+  return useQuery<ProspectAccount[]>({
+    queryKey: ["jobs", "contacts-by-account", dealType ?? "all"],
+    queryFn: async () => {
+      const { data } = await api.get<ApiResponse<ProspectAccount[]>>(
+        `/api/jobs/contacts/by-account?${params}`,
+      );
+      return data.data;
+    },
+    staleTime: 60_000,
+  });
+}
+
 export interface MetricDrill {
   title: string;
   columns: { key: string; label: string }[];

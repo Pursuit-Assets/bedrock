@@ -1499,6 +1499,42 @@ async def contacts_by_account(
             "contact_stage": r["contact_stage"],
             "linkedin_url":  r["linkedin_url"],
         })
+
+    # Attach each account's current opportunity (matched by company name). When a
+    # company has more than one deal, prefer an active one, then won, on-hold, lost,
+    # and break ties by most-recently-updated — so the account row shows the deal
+    # the team is actually working.
+    deal_rows = await conn.fetch(
+        """
+        SELECT DISTINCT ON (lower(account_name))
+            account_name, id, stage, deal_type, owner_email
+        FROM bedrock.jobs_opportunity
+        WHERE deleted_at IS NULL AND account_name IS NOT NULL
+        ORDER BY lower(account_name),
+            CASE
+                WHEN stage LIKE 'active%'  THEN 0
+                WHEN stage = 'closed_won'  THEN 1
+                WHEN stage LIKE 'on_hold%' THEN 2
+                WHEN stage = 'closed_lost' THEN 3
+                ELSE 4
+            END,
+            updated_at DESC NULLS LAST
+        """,
+    )
+    deal_by_company = {r["account_name"].strip().lower(): r for r in deal_rows}
+    for acct, g in accounts.items():
+        d = deal_by_company.get(acct.strip().lower())
+        g["deal"] = (
+            {
+                "id":          str(d["id"]),
+                "stage":       d["stage"],
+                "deal_type":   d["deal_type"],
+                "owner_email": d["owner_email"],
+            }
+            if d
+            else None
+        )
+
     out = sorted(accounts.values(), key=lambda a: (-a["contact_count"], a["account"]))
     return {"success": True, "data": out}
 
