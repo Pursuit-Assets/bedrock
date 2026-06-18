@@ -26,7 +26,7 @@ from db import get_db
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 
-VALID_PARENT_TYPES = {"opportunity", "prospect"}
+VALID_PARENT_TYPES = {"opportunity", "prospect", "account"}
 VALID_STATUSES = {"Not Started", "In Progress", "Completed", "Blocked", "On Hold"}
 
 
