@@ -30,12 +30,13 @@ Each is `tsc`-clean + smoke-tested; no prod deploys (awaiting your review).
    Migration `db/migrations/2026-06-17-jobs-opp-feedback.sql` (applied; bedrock_user-owned).
 5. **Prioritization UI** (`abedde6`) — expanded-deal context strip edits priority /
    segment / warm-intro + shows closed-lost reason; a P# badge shows on each row.
+6. **Auto-priority suggestion** (`b7cab4d`) — list computes `priority_suggested`
+   (1–5) from signals (committed roles, multiple contacts, recent activity, builders
+   applying); editor shows "suggest P# · use" when unset — one-click, overridable.
 
 ## 📋 Specced next (not yet built — safe, no approval needed)
-- **Auto-priority suggestion** (`priority_auto`) — column exists; compute a 1–5
-  suggestion from signals (C-suite contact, multiple contacts, open role, builders
-  applying, recent activity) shown as "suggested" with manual override.
-- **Segment / priority filters** on the Opportunities toolbar (columns + sort).
+- **Segment / priority filters** on the Opportunities toolbar (filter by VC/PE,
+  focus high-priority). Contained client-side filter in JobsTeam.
 - **Interview tracking** — per-role interview funnel (applied→round1/2/3→offer) +
   time-in-stage, building on `public.job_applications` (+ its `stage_history` jsonb).
 - **Account→Opportunity conversion** + **surface builder activity on accounts**
