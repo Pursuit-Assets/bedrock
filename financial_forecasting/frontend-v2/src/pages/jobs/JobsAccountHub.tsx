@@ -237,8 +237,6 @@ export function JobsAccountHub({ initialQuery }: { initialQuery?: string } = {})
         </select>
         <span className="font-mono text-[12px] text-ink-4">{isLoading ? "…" : `${filtered.length} acct · ${totals.opps} opp · ${totals.contacts} contact`}</span>
         <div className="ml-auto flex items-center gap-2">
-          <button type="button" onClick={() => setExpandedList(filtered.map((a) => a.account))} className="h-7 rounded border border-border-strong bg-surface px-2.5 text-[12px] text-ink-3 hover:text-ink">Expand all</button>
-          <button type="button" onClick={() => setExpandedList([])} className="h-7 rounded border border-border-strong bg-surface px-2.5 text-[12px] text-ink-3 hover:text-ink">Collapse</button>
           <ColumnChooser allColumns={COLUMN_ORDER} labels={COL_LABELS} visible={visibleCols} required={["account"]} onToggle={toggleCol} />
           <SavedViewsPicker<JobsAccountsView>
             scopeKey="jobs-accounts"
