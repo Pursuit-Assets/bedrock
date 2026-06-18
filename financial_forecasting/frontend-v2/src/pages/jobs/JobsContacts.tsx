@@ -1,50 +1,177 @@
 /**
- * Jobs · Prospects.
+ * Jobs · Prospects — configurable contacts table, mirroring the portfolio
+ * Accounts page and the Opportunities tab: column chooser, per-column filter
+ * rules, group-by, resizable columns, sortable headers, and Saved Views.
  *
- * Account-grouped prospect view modelled on the portfolio Accounts page:
- * each account is a chevron-to-expand row that opens a tabbed
- * {@link ProspectAccountExpandPanel} (Contacts / Tasks / Comments / Activity).
- * A global contact search lets you find any contact across SF / LinkedIn /
- * the Jobs pipeline and add them in; the per-account search box filters the
- * grouped table by account name or nested contact name/email.
+ * The "find any contact" search (across SF / LinkedIn / Jobs) + add-to-jobs +
+ * the contact detail drawer are preserved above the table; clicking a table row
+ * opens the same drawer.
  */
-import { Fragment, useMemo, useRef, useState } from "react";
-import {
-  Building2,
-  ChevronDown,
-  ChevronRight,
-  Plus,
-  Search,
-  UserSearch,
-  X,
-} from "lucide-react";
+import { useCallback, useMemo, useRef, useState } from "react";
+import { Linkedin, Plus, Search, UserSearch, X } from "lucide-react";
 
-import { ProspectAccountExpandPanel, ContactDetail, initials } from "@/components/jobs/ProspectAccountExpandPanel";
+import { ContactDetail, initials } from "@/components/jobs/ProspectAccountExpandPanel";
+import { InlineSelect } from "@/components/ui/InlineEdit";
 import { SortableHeader } from "@/components/ui/SortableHeader";
-import { sortBy, useSort } from "@/lib/sort";
+import { SavedViewsPicker } from "@/components/ui/SavedViewsPicker";
+import { ColumnChooser } from "@/components/ui/ColumnChooser";
+import { ColGroup, ResizableTh } from "@/components/ui/ResizableTable";
+import { Toolbar } from "@/components/ui/Toolbar";
+import { useColumnVisibility } from "@/lib/columnVisibility";
+import { totalWidth, useColumnWidths } from "@/lib/columnWidths";
+import { useSessionState } from "@/lib/useSessionState";
+import { useSort, sortBy, type SortState } from "@/lib/sort";
+import {
+  AddFilterButton,
+  FilterChip,
+  describeRule,
+  ruleApplies,
+  type FieldMeta,
+  type FilterRule,
+} from "@/pages/cleanup/Filters";
 import { cn } from "@/lib/utils";
 import {
+  useJobsContacts,
+  useUpdateContact,
   useAddContactToJobs,
   useContactSearch,
   useCreateContact,
-  DEAL_TYPE_LABELS,
-  type DealType,
-  type ContactCreateBody,
+  STAGE_LABELS,
+  type JobStage,
+  type JobContactWithDeal,
   type ContactSearchResult,
+  type ContactCreateBody,
 } from "@/services/jobs";
-import { useAccountsByAccount, type AccountGroup } from "@/services/jobsAccounts";
 
-// ── Constants ────────────────────────────────────────────────────────────────
+// ── Contact-stage metadata ─────────────────────────────────────────────────────
 
-const CONTACT_STAGE_OPTIONS = [
-  { value: "",                 label: "All" },
+const CONTACT_STAGE_SELECT: { value: string; label: string }[] = [
   { value: "active",           label: "Active" },
-  { value: "initial_outreach", label: "Outreach" },
+  { value: "initial_outreach", label: "Initial Outreach" },
   { value: "lead",             label: "Lead" },
   { value: "on_hold",          label: "On Hold" },
 ];
 
-// ── New Contact modal ─────────────────────────────────────────────────────────
+const CONTACT_STAGE_STYLES: Record<string, { label: string; className: string }> = {
+  active:           { label: "Active",   className: "bg-green-50 text-green-700" },
+  initial_outreach: { label: "Outreach", className: "bg-accent-soft text-accent-ink" },
+  lead:             { label: "Lead",     className: "bg-stone-100 text-stone-500" },
+  on_hold:          { label: "On Hold",  className: "bg-amber-50 text-amber-600" },
+};
+
+function ContactStagePill({ stage }: { stage: string | null }) {
+  if (!stage) return <span className="text-ink-4">—</span>;
+  const s = CONTACT_STAGE_STYLES[stage];
+  if (!s) return <span className="text-[12px] text-ink-2">{stage}</span>;
+  return (
+    <span className={cn("inline-flex w-fit items-center rounded-full px-2 py-0.5 text-[10px] font-medium leading-none", s.className)}>
+      {s.label}
+    </span>
+  );
+}
+
+// Source is derived — the flat contact list doesn't carry a source column.
+type SourceKey = "jobs" | "linkedin" | "other";
+const SOURCE_OPTIONS: { value: string; label: string }[] = [
+  { value: "jobs",     label: "Jobs" },
+  { value: "linkedin", label: "LinkedIn" },
+  { value: "other",    label: "Other" },
+];
+const SOURCE_LABELS: Record<string, string> = Object.fromEntries(SOURCE_OPTIONS.map((s) => [s.value, s.label]));
+function sourceOf(c: JobContactWithDeal): SourceKey {
+  if (c.airtable_id) return "jobs";
+  if (c.linkedin_url) return "linkedin";
+  return "other";
+}
+
+const SOURCE_BADGE: Record<SourceKey, string> = {
+  jobs:     "bg-accent-soft text-accent-ink",
+  linkedin: "bg-indigo-50 text-indigo-600",
+  other:    "bg-stone-100 text-stone-500",
+};
+
+// ── Columns ────────────────────────────────────────────────────────────────────
+
+type ProspectColKey = "name" | "title" | "company" | "email" | "contact_stage" | "source" | "deal" | "linkedin";
+
+const COLUMN_ORDER: ProspectColKey[] = ["name", "title", "company", "email", "contact_stage", "source", "deal", "linkedin"];
+const DEFAULT_VISIBLE: ProspectColKey[] = ["name", "title", "company", "email", "contact_stage", "deal"];
+const COL_LABELS: Record<ProspectColKey, string> = {
+  name: "Name", title: "Title", company: "Company", email: "Email",
+  contact_stage: "Stage", source: "Source", deal: "Linked deal", linkedin: "LinkedIn",
+};
+const DEFAULT_WIDTHS: Record<ProspectColKey, number> = {
+  name: 220, title: 200, company: 200, email: 250, contact_stage: 150, source: 110, deal: 230, linkedin: 90,
+};
+
+const EDITABLE_COLS = new Set<ProspectColKey>(["contact_stage"]);
+
+function extractProspect(c: JobContactWithDeal, key: ProspectColKey): string | number {
+  switch (key) {
+    case "name":          return c.full_name ?? "";
+    case "title":         return c.current_title ?? "";
+    case "company":       return c.current_company ?? "";
+    case "email":         return c.email ?? "";
+    case "contact_stage": return c.contact_stage ?? "";
+    case "source":        return sourceOf(c);
+    case "deal":          return c.deal?.account_name ?? "";
+    case "linkedin":      return c.linkedin_url ? 1 : 0;
+  }
+}
+
+// ── Filter rules + group-by metadata ───────────────────────────────────────────
+
+type ProspectField = "name" | "title" | "company" | "email" | "contact_stage" | "source" | "has_deal";
+
+const FILTERABLE: Record<ProspectField, FieldMeta<JobContactWithDeal>> = {
+  name:          { label: "Name",        type: "text",   getValue: (c) => c.full_name ?? "" },
+  title:         { label: "Title",       type: "text",   getValue: (c) => c.current_title ?? "" },
+  company:       { label: "Company",     type: "text",   getValue: (c) => c.current_company ?? "" },
+  email:         { label: "Email",       type: "text",   getValue: (c) => c.email ?? "" },
+  contact_stage: { label: "Stage",       type: "select", getValue: (c) => c.contact_stage ?? "" },
+  source:        { label: "Source",      type: "select", getValue: (c) => sourceOf(c) },
+  has_deal:      { label: "Linked deal", type: "select", getValue: (c) => (c.deal ? "yes" : "no") },
+};
+
+const GROUP_OPTIONS: { value: string; label: string }[] = [
+  { value: "",              label: "No grouping" },
+  { value: "company",       label: "Group by Company" },
+  { value: "contact_stage", label: "Group by Stage" },
+  { value: "source",        label: "Group by Source" },
+  { value: "has_deal",      label: "Group by Linked deal" },
+];
+
+const HAS_DEAL_OPTIONS = [
+  { value: "yes", label: "Has linked deal" },
+  { value: "no",  label: "No linked deal" },
+];
+
+interface JobsProspectView {
+  query?: string;
+  rules?: FilterRule<ProspectField>[];
+  visibleCols?: ProspectColKey[];
+  widths?: Partial<Record<ProspectColKey, number>>;
+  groupBy?: string;
+  sort?: SortState<ProspectColKey>;
+}
+
+/** JobContactWithDeal → the ContactSearchResult shape the detail drawer expects. */
+function toSearchResult(c: JobContactWithDeal): ContactSearchResult {
+  return {
+    contact_id: c.contact_id,
+    full_name: c.full_name,
+    email: c.email,
+    current_title: c.current_title,
+    current_company: c.current_company,
+    source: null,
+    airtable_id: c.airtable_id,
+    contact_stage: c.contact_stage,
+    in_sf: false,
+    contact_ref: c.airtable_id ? `airtable:${c.airtable_id}` : `pub:${c.contact_id}`,
+  };
+}
+
+// ── New Contact modal ───────────────────────────────────────────────────────────
 
 type ContactStageValue = "active" | "initial_outreach" | "lead" | "on_hold";
 
@@ -56,23 +183,12 @@ const NEW_CONTACT_STAGE_OPTIONS: { value: ContactStageValue; label: string }[] =
 ];
 
 interface NewContactForm {
-  fullName: string;
-  email: string;
-  title: string;
-  company: string;
-  linkedIn: string;
-  stage: ContactStageValue;
-  notes: string;
+  fullName: string; email: string; title: string; company: string;
+  linkedIn: string; stage: ContactStageValue; notes: string;
 }
 
 const DEFAULT_NEW_CONTACT_FORM: NewContactForm = {
-  fullName: "",
-  email: "",
-  title: "",
-  company: "",
-  linkedIn: "",
-  stage: "lead",
-  notes: "",
+  fullName: "", email: "", title: "", company: "", linkedIn: "", stage: "lead", notes: "",
 };
 
 function Spinner() {
@@ -95,7 +211,6 @@ function NewContactModal({ onClose }: { onClose: () => void }) {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!form.fullName.trim()) return;
-
     const body: ContactCreateBody = {
       full_name: form.fullName.trim(),
       email: form.email.trim() || undefined,
@@ -105,129 +220,55 @@ function NewContactModal({ onClose }: { onClose: () => void }) {
       contact_stage: form.stage,
       notes: form.notes.trim() || undefined,
     };
-
     await createContact.mutateAsync(body);
     onClose();
   }
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/30"
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
-    >
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div className="w-full max-w-md rounded-xl border border-border-strong bg-surface shadow-xl">
         <div className="flex items-center justify-between border-b border-border-strong px-5 py-4">
           <h2 className="text-[15px] font-semibold text-ink">New Contact</h2>
-          <button
-            type="button"
-            onClick={onClose}
-            className="text-ink-3 transition-colors hover:text-ink"
-            aria-label="Close"
-          >
-            <X size={16} />
-          </button>
+          <button type="button" onClick={onClose} className="text-ink-3 transition-colors hover:text-ink" aria-label="Close"><X size={16} /></button>
         </div>
-
         <form onSubmit={(e) => void handleSubmit(e)} className="flex flex-col gap-4 px-5 py-4">
           <div className="flex flex-col gap-1">
-            <label className="text-[11px] font-semibold uppercase tracking-wider text-ink-4">
-              Full Name <span className="text-red-500">*</span>
-            </label>
-            <input
-              type="text"
-              required
-              value={form.fullName}
-              onChange={(e) => set("fullName", e.target.value)}
-              placeholder="Jane Smith"
-              className="w-full rounded-md border border-border-strong bg-surface px-3 py-2 text-[13px] text-ink placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40"
-            />
+            <label className="text-[11px] font-semibold uppercase tracking-wider text-ink-4">Full Name <span className="text-red-500">*</span></label>
+            <input type="text" required value={form.fullName} onChange={(e) => set("fullName", e.target.value)} placeholder="Jane Smith" className="w-full rounded-md border border-border-strong bg-surface px-3 py-2 text-[13px] text-ink placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40" />
           </div>
-
           <div className="grid grid-cols-2 gap-3">
             <div className="flex flex-col gap-1">
               <label className="text-[11px] font-semibold uppercase tracking-wider text-ink-4">Email</label>
-              <input
-                type="email"
-                value={form.email}
-                onChange={(e) => set("email", e.target.value)}
-                placeholder="jane@acme.com"
-                className="w-full rounded-md border border-border-strong bg-surface px-3 py-2 text-[13px] text-ink placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40"
-              />
+              <input type="email" value={form.email} onChange={(e) => set("email", e.target.value)} placeholder="jane@acme.com" className="w-full rounded-md border border-border-strong bg-surface px-3 py-2 text-[13px] text-ink placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40" />
             </div>
-
             <div className="flex flex-col gap-1">
               <label className="text-[11px] font-semibold uppercase tracking-wider text-ink-4">Stage</label>
-              <select
-                value={form.stage}
-                onChange={(e) => set("stage", e.target.value as ContactStageValue)}
-                className="w-full rounded-md border border-border-strong bg-surface px-3 py-2 text-[13px] text-ink focus:outline-none focus:ring-1 focus:ring-accent/40"
-              >
-                {NEW_CONTACT_STAGE_OPTIONS.map((o) => (
-                  <option key={o.value} value={o.value}>{o.label}</option>
-                ))}
+              <select value={form.stage} onChange={(e) => set("stage", e.target.value as ContactStageValue)} className="w-full rounded-md border border-border-strong bg-surface px-3 py-2 text-[13px] text-ink focus:outline-none focus:ring-1 focus:ring-accent/40">
+                {NEW_CONTACT_STAGE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
               </select>
             </div>
           </div>
-
           <div className="grid grid-cols-2 gap-3">
             <div className="flex flex-col gap-1">
               <label className="text-[11px] font-semibold uppercase tracking-wider text-ink-4">Title</label>
-              <input
-                type="text"
-                value={form.title}
-                onChange={(e) => set("title", e.target.value)}
-                placeholder="Engineering Manager"
-                className="w-full rounded-md border border-border-strong bg-surface px-3 py-2 text-[13px] text-ink placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40"
-              />
+              <input type="text" value={form.title} onChange={(e) => set("title", e.target.value)} placeholder="Engineering Manager" className="w-full rounded-md border border-border-strong bg-surface px-3 py-2 text-[13px] text-ink placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40" />
             </div>
-
             <div className="flex flex-col gap-1">
               <label className="text-[11px] font-semibold uppercase tracking-wider text-ink-4">Company</label>
-              <input
-                type="text"
-                value={form.company}
-                onChange={(e) => set("company", e.target.value)}
-                placeholder="Acme Corp"
-                className="w-full rounded-md border border-border-strong bg-surface px-3 py-2 text-[13px] text-ink placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40"
-              />
+              <input type="text" value={form.company} onChange={(e) => set("company", e.target.value)} placeholder="Acme Corp" className="w-full rounded-md border border-border-strong bg-surface px-3 py-2 text-[13px] text-ink placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40" />
             </div>
           </div>
-
           <div className="flex flex-col gap-1">
             <label className="text-[11px] font-semibold uppercase tracking-wider text-ink-4">LinkedIn URL</label>
-            <input
-              type="url"
-              value={form.linkedIn}
-              onChange={(e) => set("linkedIn", e.target.value)}
-              placeholder="https://linkedin.com/in/janesmith"
-              className="w-full rounded-md border border-border-strong bg-surface px-3 py-2 text-[13px] text-ink placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40"
-            />
+            <input type="url" value={form.linkedIn} onChange={(e) => set("linkedIn", e.target.value)} placeholder="https://linkedin.com/in/janesmith" className="w-full rounded-md border border-border-strong bg-surface px-3 py-2 text-[13px] text-ink placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40" />
           </div>
-
           <div className="flex flex-col gap-1">
             <label className="text-[11px] font-semibold uppercase tracking-wider text-ink-4">Notes</label>
-            <textarea
-              rows={3}
-              value={form.notes}
-              onChange={(e) => set("notes", e.target.value)}
-              placeholder="Add any initial notes…"
-              className="w-full resize-none rounded-md border border-border-strong bg-surface px-3 py-2 text-[13px] text-ink placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40"
-            />
+            <textarea rows={3} value={form.notes} onChange={(e) => set("notes", e.target.value)} placeholder="Add any initial notes…" className="w-full resize-none rounded-md border border-border-strong bg-surface px-3 py-2 text-[13px] text-ink placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40" />
           </div>
-
           <div className="flex items-center justify-end gap-3 pt-1">
-            <button
-              type="button"
-              onClick={onClose}
-              className="px-4 py-2 text-[13px] font-medium text-ink-3 transition-colors hover:text-ink"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={createContact.isPending || !form.fullName.trim()}
-              className="flex items-center gap-1.5 rounded-lg bg-accent px-4 py-2 text-[13px] font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
-            >
+            <button type="button" onClick={onClose} className="px-4 py-2 text-[13px] font-medium text-ink-3 transition-colors hover:text-ink">Cancel</button>
+            <button type="submit" disabled={createContact.isPending || !form.fullName.trim()} className="flex items-center gap-1.5 rounded-lg bg-accent px-4 py-2 text-[13px] font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50">
               {createContact.isPending ? <Spinner /> : <Plus size={13} />}
               {createContact.isPending ? "Creating…" : "Create Contact"}
             </button>
@@ -238,74 +279,103 @@ function NewContactModal({ onClose }: { onClose: () => void }) {
   );
 }
 
-// ── Account row ────────────────────────────────────────────────────────────────
+// ── Prospect row ─────────────────────────────────────────────────────────────────
 
-function AccountRow({
-  group,
-  expanded,
-  onToggle,
+function ProspectRow({
+  contact,
+  visibleCols,
+  onOpen,
 }: {
-  group: AccountGroup;
-  expanded: boolean;
-  onToggle: () => void;
+  contact: JobContactWithDeal;
+  visibleCols: ProspectColKey[];
+  onOpen: (c: JobContactWithDeal) => void;
 }) {
-  const withEmail = group.contacts.filter((c) => !!c.email).length;
+  const updateContact = useUpdateContact();
+  const src = sourceOf(contact);
+
+  const cells: Record<ProspectColKey, React.ReactNode> = {
+    name: (
+      <span className="flex min-w-0 items-center gap-2">
+        <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-accent-soft text-[10px] font-bold leading-none text-accent-ink">
+          {initials(contact.full_name)}
+        </span>
+        <span className="truncate text-[13px] font-medium text-ink">{contact.full_name || "—"}</span>
+      </span>
+    ),
+    title: <span className="truncate text-[12.5px] text-ink-2">{contact.current_title || "—"}</span>,
+    company: <span className="truncate text-[12.5px] text-ink-2">{contact.current_company || "—"}</span>,
+    email: contact.email
+      ? <a href={`mailto:${contact.email}`} onClick={(e) => e.stopPropagation()} className="truncate text-[12.5px] text-ink-2 hover:text-accent hover:underline">{contact.email}</a>
+      : <span className="text-ink-4">—</span>,
+    contact_stage: (
+      <InlineSelect<string>
+        value={contact.contact_stage}
+        options={CONTACT_STAGE_SELECT}
+        emptyLabel="—"
+        renderValue={(v) => <ContactStagePill stage={v ?? null} />}
+        onSave={(v) => new Promise<void>((resolve, reject) =>
+          updateContact.mutate({ id: contact.contact_id, contact_stage: v || null }, { onSuccess: () => resolve(), onError: reject }),
+        )}
+      />
+    ),
+    source: (
+      <span className={cn("inline-flex w-fit items-center rounded px-1.5 py-0.5 text-[9.5px] font-semibold uppercase tracking-wide leading-none", SOURCE_BADGE[src])}>
+        {SOURCE_LABELS[src]}
+      </span>
+    ),
+    deal: contact.deal
+      ? (
+        <span className="flex min-w-0 flex-col leading-tight">
+          <span className="truncate text-[12px] text-ink-2">{contact.deal.account_name}</span>
+          <span className="truncate text-[10.5px] text-ink-4">{STAGE_LABELS[contact.deal.stage as JobStage] ?? contact.deal.stage}</span>
+        </span>
+      )
+      : <span className="text-ink-4">—</span>,
+    linkedin: contact.linkedin_url
+      ? <a href={contact.linkedin_url} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} className="text-ink-3 hover:text-accent"><Linkedin size={14} /></a>
+      : <span className="text-ink-4">—</span>,
+  };
 
   return (
-    <Fragment>
-      <tr
-        className="cursor-pointer border-t border-border-strong hover:bg-surface-2/50"
-        onClick={onToggle}
-      >
-        <td className="px-3 py-1.5 align-middle">
-          {expanded ? (
-            <ChevronDown size={12} className="text-ink-3" />
-          ) : (
-            <ChevronRight size={12} className="text-ink-3" />
-          )}
+    <tr className="cursor-pointer border-t border-border-strong hover:bg-surface-2/40" onClick={() => onOpen(contact)}>
+      {visibleCols.map((key) => (
+        <td
+          key={key}
+          className="overflow-hidden px-3 py-1.5 align-middle"
+          onClick={EDITABLE_COLS.has(key) ? (e) => e.stopPropagation() : undefined}
+        >
+          {cells[key]}
         </td>
-        <td className="px-3 py-1.5 align-middle">
-          <div className="flex items-center gap-2.5">
-            <Building2 size={14} className="flex-shrink-0 text-ink-4" />
-            <span className="block min-w-0 flex-1 truncate text-[13px] font-medium text-ink">
-              {group.account || "—"}
-            </span>
-            <span className="flex-shrink-0 inline-flex items-center rounded-full bg-accent-soft px-2 py-0.5 text-[11px] font-medium text-accent-ink">
-              {group.contact_count}
-            </span>
-          </div>
-        </td>
-        <td className="px-3 py-1.5 text-right align-middle text-[12px] text-ink-2 tabular-nums">
-          {group.contact_count}
-        </td>
-        <td className="px-3 py-1.5 text-right align-middle text-[12px] text-ink-2 tabular-nums">
-          {withEmail}
-        </td>
-      </tr>
-      {expanded ? (
-        <tr>
-          <td colSpan={4} className="p-0">
-            <ProspectAccountExpandPanel group={group} />
-          </td>
-        </tr>
-      ) : null}
-    </Fragment>
+      ))}
+    </tr>
   );
 }
 
-// ── Main component ────────────────────────────────────────────────────────────
+// ── Main component ────────────────────────────────────────────────────────────────
 
-type AccountSortKey = "account" | "count";
+const EMPTY_COLLAPSED: string[] = [];
 
 export function JobsContacts({ initialQuery }: { initialQuery?: string } = {}) {
-  const [search, setSearch] = useState("");
-  const [stage, setStage] = useState("");
-  const [dealType, setDealType] = useState("all");  // deal-type lens; "all" so unlinked prospects aren't hidden
-  const [openAccount, setOpenAccount] = useState<string | null>(null);
+  // Table state (mirrors Opportunities/Accounts)
+  const [query, setQuery] = useState(initialQuery ?? "");
+  const [rules, setRules] = useState<FilterRule<ProspectField>[]>([]);
+  const [groupBy, setGroupBy] = useSessionState<string>("jobs-prospects:groupBy", "");
+  const [collapsedGroups, setCollapsedGroups] = useSessionState<string[]>("jobs-prospects:groupCollapsed", EMPTY_COLLAPSED);
   const [showNewContact, setShowNewContact] = useState(false);
-  const { sort, toggle: toggleSort } = useSort<AccountSortKey>();
 
-  // Global contact search state — seedable via ?q= deep-link (e.g. from global search)
+  const { sort, toggle, setSort } = useSort<ProspectColKey>({ key: "name", direction: "asc" });
+  const { visible: visibleCols, toggle: toggleCol, replaceAll: replaceVisibleCols } =
+    useColumnVisibility<ProspectColKey>("bedrock-v2:vis:jobs-prospects", COLUMN_ORDER, DEFAULT_VISIBLE);
+  const { widths, startResize, replaceAll: replaceWidths } =
+    useColumnWidths<ProspectColKey>("bedrock-v2:cols:jobs-prospects:v1", DEFAULT_WIDTHS);
+
+  const collapsedSet = useMemo(() => new Set(collapsedGroups), [collapsedGroups]);
+  const toggleGroup = useCallback(
+    (key: string) => setCollapsedGroups((prev) => (prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key])),
+    [setCollapsedGroups],
+  );
+
+  // Find-any-contact search (preserved) — seed from ?q= deep-link.
   const [globalSearch, setGlobalSearch] = useState(initialQuery ?? "");
   const [selectedContact, setSelectedContact] = useState<ContactSearchResult | null>(null);
   const [showDropdown, setShowDropdown] = useState(Boolean(initialQuery));
@@ -317,75 +387,98 @@ export function JobsContacts({ initialQuery }: { initialQuery?: string } = {}) {
   const searchResults = globalSearchResults ?? [];
   const { mutate: addContactToJobs } = useAddContactToJobs();
 
-  const { data: accountGroups, isLoading } = useAccountsByAccount(dealType);
+  // Flat prospect list (all jobs-pipeline contacts) — filter/sort/group client-side.
+  const { data: rawData, isLoading } = useJobsContacts({ limit: 500 });
+  const allContacts: JobContactWithDeal[] = rawData?.data ?? [];
 
-  // Filter + sort account groups client-side. A group survives the search
-  // when its account name matches, OR any contact name/email within matches.
-  // The stage filter keeps only groups that still have a matching contact and
-  // narrows the visible nested contacts to those in that stage.
-  const visibleGroups = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    const groups = accountGroups ?? [];
+  const selectOptions: Partial<Record<ProspectField, { value: string; label: string }[]>> = useMemo(
+    () => ({ contact_stage: CONTACT_STAGE_SELECT, source: SOURCE_OPTIONS, has_deal: HAS_DEAL_OPTIONS }),
+    [],
+  );
 
-    const filtered: AccountGroup[] = [];
-    for (const g of groups) {
-      const accountMatch = (g.account ?? "").toLowerCase().includes(q);
-
-      let contacts = g.contacts;
-      if (stage) {
-        contacts = contacts.filter((c) => c.contact_stage === stage);
-      }
-      if (q && !accountMatch) {
-        contacts = contacts.filter((c) =>
+  const q = query.trim().toLowerCase();
+  const filtered = useMemo(() => {
+    const f = allContacts.filter((c) => {
+      if (
+        q &&
+        !(
           (c.full_name ?? "").toLowerCase().includes(q) ||
-          (c.email ?? "").toLowerCase().includes(q),
-        );
-      }
+          (c.email ?? "").toLowerCase().includes(q) ||
+          (c.current_company ?? "").toLowerCase().includes(q) ||
+          (c.current_title ?? "").toLowerCase().includes(q)
+        )
+      )
+        return false;
+      for (const r of rules) if (!ruleApplies(c, r, FILTERABLE)) return false;
+      return true;
+    });
+    return sort.key == null ? f : sortBy(f, sort, (c, key) => extractProspect(c, key));
+  }, [allContacts, q, rules, sort]);
 
-      if (stage && contacts.length === 0) continue;
-      if (q && !accountMatch && contacts.length === 0) continue;
+  const groupLabelFor = useCallback(
+    (k: string) => {
+      if (k === "") return "—";
+      if (groupBy === "contact_stage") return CONTACT_STAGE_STYLES[k]?.label ?? k;
+      if (groupBy === "source") return SOURCE_LABELS[k] ?? k;
+      if (groupBy === "has_deal") return k === "yes" ? "Has linked deal" : "No linked deal";
+      return k;
+    },
+    [groupBy],
+  );
 
-      filtered.push({ ...g, contacts, contact_count: contacts.length });
+  type DisplayRow =
+    | { kind: "row"; contact: JobContactWithDeal }
+    | { kind: "header"; key: string; label: string; count: number; collapsed: boolean };
+  const groupedRows: DisplayRow[] | null = useMemo(() => {
+    if (!groupBy) return null;
+    const field = FILTERABLE[groupBy as ProspectField];
+    if (!field) return null;
+    const buckets = new Map<string, JobContactWithDeal[]>();
+    for (const c of filtered) {
+      const raw = field.getValue(c);
+      const k = raw == null || raw === "" ? "" : String(raw);
+      const list = buckets.get(k);
+      if (list) list.push(c);
+      else buckets.set(k, [c]);
     }
+    const keys = [...buckets.keys()].sort((a, b) => groupLabelFor(a).localeCompare(groupLabelFor(b)));
+    const out: DisplayRow[] = [];
+    for (const k of keys) {
+      const list = buckets.get(k) ?? [];
+      const collapsed = collapsedSet.has(k);
+      out.push({ kind: "header", key: k, label: groupLabelFor(k), count: list.length, collapsed });
+      if (!collapsed) for (const c of list) out.push({ kind: "row", contact: c });
+    }
+    return out;
+  }, [filtered, groupBy, collapsedSet, groupLabelFor]);
 
-    if (sort.key == null) return filtered; // already ordered by count desc
-    return sortBy(filtered, sort, (g, key) =>
-      key === "account" ? g.account : g.contact_count,
-    );
-  }, [accountGroups, search, stage, sort]);
-
-  const total = visibleGroups.reduce((sum, g) => sum + g.contact_count, 0);
+  const tableMinWidth = totalWidth(widths);
+  const openDrawer = useCallback((c: JobContactWithDeal) => {
+    setSelectedContact(toSearchResult(c));
+    setBannerAddedToJobs(false);
+  }, []);
+  const renderRow = (c: JobContactWithDeal) => (
+    <ProspectRow key={c.contact_id} contact={c} visibleCols={visibleCols} onOpen={openDrawer} />
+  );
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex flex-col gap-4 px-5 py-4">
       {showNewContact && <NewContactModal onClose={() => setShowNewContact(false)} />}
 
-      {/* ── Global "Find any contact" search ─────────────────────────────── */}
+      {/* ── Find any contact (across SF / LinkedIn / Jobs) ─────────────────── */}
       <div className="relative">
         <div className="relative">
           <UserSearch size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-ink-3" />
           <input
             value={globalSearch}
-            onChange={(e) => {
-              setGlobalSearch(e.target.value);
-              setShowDropdown(true);
-            }}
+            onChange={(e) => { setGlobalSearch(e.target.value); setShowDropdown(true); }}
             onFocus={() => setShowDropdown(true)}
-            onBlur={() => {
-              blurTimerRef.current = setTimeout(() => setShowDropdown(false), 150);
-            }}
+            onBlur={() => { blurTimerRef.current = setTimeout(() => setShowDropdown(false), 150); }}
             placeholder="Find any contact across SF, LinkedIn, or Jobs pipeline…"
             className="w-full rounded-xl border-2 border-border-strong bg-surface py-2.5 pl-10 pr-4 text-[14px] transition-colors placeholder:text-ink-4 focus:border-accent focus:outline-none"
           />
           {globalSearch && (
-            <button
-              type="button"
-              onMouseDown={(e) => e.preventDefault()}
-              onClick={() => { setGlobalSearch(""); setShowDropdown(false); }}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-ink-4 transition-colors hover:text-ink"
-            >
-              <X size={14} />
-            </button>
+            <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => { setGlobalSearch(""); setShowDropdown(false); }} className="absolute right-3 top-1/2 -translate-y-1/2 text-ink-4 transition-colors hover:text-ink"><X size={14} /></button>
           )}
         </div>
 
@@ -396,40 +489,25 @@ export function JobsContacts({ initialQuery }: { initialQuery?: string } = {}) {
               const isSF = result.in_sf;
               const isLinkedIn = result.source === "linkedin_import";
               return (
-                <div
-                  key={result.contact_id}
-                  className="flex w-full items-center gap-3 border-b border-border-strong px-4 py-2.5 transition-colors last:border-0 hover:bg-surface-2"
-                >
+                <div key={result.contact_id} className="flex w-full items-center gap-3 border-b border-border-strong px-4 py-2.5 transition-colors last:border-0 hover:bg-surface-2">
                   <button
                     type="button"
                     onMouseDown={(e) => e.preventDefault()}
-                    onClick={() => {
-                      setSelectedContact(result);
-                      setBannerAddedToJobs(false);
-                      setGlobalSearch("");
-                      setShowDropdown(false);
-                    }}
+                    onClick={() => { setSelectedContact(result); setBannerAddedToJobs(false); setGlobalSearch(""); setShowDropdown(false); }}
                     className="flex min-w-0 flex-1 items-center gap-3 text-left"
                   >
-                    <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-accent-soft text-[11px] font-bold text-accent-ink">
-                      {initials(result.full_name)}
-                    </div>
+                    <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-accent-soft text-[11px] font-bold text-accent-ink">{initials(result.full_name)}</div>
                     <div className="min-w-0 flex-1">
                       <div className="truncate text-[13px] font-semibold text-ink">{result.full_name || "—"}</div>
                       {(result.current_title || result.current_company) && (
-                        <div className="truncate text-[11px] text-ink-3">
-                          {[result.current_title, result.current_company].filter(Boolean).join(" @ ")}
-                        </div>
+                        <div className="truncate text-[11px] text-ink-3">{[result.current_title, result.current_company].filter(Boolean).join(" @ ")}</div>
                       )}
                     </div>
                     <div className="flex-shrink-0">
-                      {isJobs ? (
-                        <span className="inline-flex items-center rounded-full bg-accent-soft px-1.5 py-0.5 font-medium leading-none text-accent-ink" style={{ fontSize: 10 }}>Jobs</span>
-                      ) : isSF ? (
-                        <span className="inline-flex items-center rounded-full bg-sky-50 px-1.5 py-0.5 font-medium leading-none text-sky-600" style={{ fontSize: 10 }}>SF</span>
-                      ) : isLinkedIn ? (
-                        <span className="inline-flex items-center rounded-full bg-indigo-50 px-1.5 py-0.5 font-medium leading-none text-indigo-600" style={{ fontSize: 10 }}>LinkedIn</span>
-                      ) : null}
+                      {isJobs ? <span className="inline-flex items-center rounded-full bg-accent-soft px-1.5 py-0.5 font-medium leading-none text-accent-ink" style={{ fontSize: 10 }}>Jobs</span>
+                        : isSF ? <span className="inline-flex items-center rounded-full bg-sky-50 px-1.5 py-0.5 font-medium leading-none text-sky-600" style={{ fontSize: 10 }}>SF</span>
+                        : isLinkedIn ? <span className="inline-flex items-center rounded-full bg-indigo-50 px-1.5 py-0.5 font-medium leading-none text-indigo-600" style={{ fontSize: 10 }}>LinkedIn</span>
+                        : null}
                     </div>
                   </button>
                   {!isJobs && (
@@ -437,23 +515,7 @@ export function JobsContacts({ initialQuery }: { initialQuery?: string } = {}) {
                       {addedToJobsIds.has(result.contact_id) ? (
                         <span className="text-[11px] font-medium text-accent">✓ Added</span>
                       ) : (
-                        <button
-                          type="button"
-                          onMouseDown={(e) => e.preventDefault()}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            addContactToJobs(
-                              { id: result.contact_id, add: true },
-                              {
-                                onSuccess: () =>
-                                  setAddedToJobsIds((prev) => new Set(prev).add(result.contact_id)),
-                              },
-                            );
-                          }}
-                          className="rounded border border-border-strong px-2 py-0.5 text-[11px] text-ink-3 transition-colors hover:border-accent hover:text-accent"
-                        >
-                          + Add to Jobs
-                        </button>
+                        <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={(e) => { e.stopPropagation(); addContactToJobs({ id: result.contact_id, add: true }, { onSuccess: () => setAddedToJobsIds((prev) => new Set(prev).add(result.contact_id)) }); }} className="rounded border border-border-strong px-2 py-0.5 text-[11px] text-ink-3 transition-colors hover:border-accent hover:text-accent">+ Add to Jobs</button>
                       )}
                     </div>
                   )}
@@ -464,179 +526,143 @@ export function JobsContacts({ initialQuery }: { initialQuery?: string } = {}) {
         )}
       </div>
 
-      {/* ── Selected contact panel ──────────────────────────────────────── */}
+      {/* ── Selected contact drawer ───────────────────────────────────────── */}
       {selectedContact && (
         <>
           <div className="flex items-center gap-3 rounded-xl border border-border-strong bg-surface-2 px-4 py-3">
-            <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-accent-soft text-[11px] font-bold text-accent-ink">
-              {initials(selectedContact.full_name)}
-            </div>
+            <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-accent-soft text-[11px] font-bold text-accent-ink">{initials(selectedContact.full_name)}</div>
             <div className="min-w-0 flex-1">
               <span className="mr-2 text-[14px] font-semibold text-ink">{selectedContact.full_name || "—"}</span>
               {(selectedContact.current_title || selectedContact.current_company) && (
-                <span className="mr-2 text-[12px] text-ink-3">
-                  {[selectedContact.current_title, selectedContact.current_company].filter(Boolean).join(" @ ")}
-                </span>
+                <span className="mr-2 text-[12px] text-ink-3">{[selectedContact.current_title, selectedContact.current_company].filter(Boolean).join(" @ ")}</span>
               )}
-              {selectedContact.airtable_id ? (
-                <span className="inline-flex items-center rounded-full bg-accent-soft px-1.5 py-0.5 font-medium leading-none text-accent-ink" style={{ fontSize: 10 }}>Jobs</span>
-              ) : selectedContact.in_sf ? (
-                <span className="inline-flex items-center rounded-full bg-sky-50 px-1.5 py-0.5 font-medium leading-none text-sky-600" style={{ fontSize: 10 }}>SF</span>
-              ) : selectedContact.source === "linkedin_import" ? (
-                <span className="inline-flex items-center rounded-full bg-indigo-50 px-1.5 py-0.5 font-medium leading-none text-indigo-600" style={{ fontSize: 10 }}>LinkedIn</span>
-              ) : null}
             </div>
             <div className="flex flex-shrink-0 items-center gap-2">
               {!selectedContact.airtable_id && !selectedContact.in_sf && (
                 bannerAddedToJobs ? (
                   <span className="text-[12px] font-medium text-accent">✓ In Jobs Pipeline</span>
                 ) : (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      addContactToJobs(
-                        { id: selectedContact.contact_id, add: true },
-                        { onSuccess: () => setBannerAddedToJobs(true) },
-                      );
-                    }}
-                    className="flex items-center gap-1 rounded-md border border-border-strong px-2.5 py-1 text-[12px] font-medium text-ink-3 transition-colors hover:border-accent hover:text-accent"
-                  >
-                    + Add to Jobs Pipeline
-                  </button>
+                  <button type="button" onClick={() => { addContactToJobs({ id: selectedContact.contact_id, add: true }, { onSuccess: () => setBannerAddedToJobs(true) }); }} className="flex items-center gap-1 rounded-md border border-border-strong px-2.5 py-1 text-[12px] font-medium text-ink-3 transition-colors hover:border-accent hover:text-accent">+ Add to Jobs Pipeline</button>
                 )
               )}
-              <button
-                type="button"
-                onClick={() => setSelectedContact(null)}
-                className="flex items-center gap-1 text-[12px] font-medium text-ink-3 transition-colors hover:text-ink"
-              >
-                <X size={13} />
-                Deselect
-              </button>
+              <button type="button" onClick={() => setSelectedContact(null)} className="flex items-center gap-1 text-[12px] font-medium text-ink-3 transition-colors hover:text-ink"><X size={13} /> Close</button>
             </div>
           </div>
-
           <div className="overflow-hidden rounded-xl border border-border-strong bg-surface">
             <ContactDetail contactId={selectedContact.contact_id} />
           </div>
-
           <hr className="my-0 border-border-strong" />
         </>
       )}
 
-      {/* Toolbar */}
-      <div className="flex flex-wrap items-center gap-3">
-        <div className="relative min-w-[200px] max-w-[360px] flex-1">
-          <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-4" />
+      {/* ── Toolbar ───────────────────────────────────────────────────────── */}
+      <Toolbar>
+        <div className="relative">
+          <Search size={12} aria-hidden className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-3" />
           <input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search account or contact name / email…"
-            className="w-full rounded-lg border border-border-strong bg-surface py-2 pl-8 pr-3 text-[13px] focus:outline-none focus:ring-1 focus:ring-accent"
+            placeholder="Search name, company, title, email…"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            className="h-7 w-60 rounded border border-border-strong bg-surface pl-7 pr-3 text-[12.5px] font-medium text-ink-2 outline-none placeholder:font-normal placeholder:text-ink-3 focus:border-accent focus:text-ink"
           />
         </div>
-
-        <button
-          type="button"
-          onClick={() => setShowNewContact(true)}
-          className="flex items-center gap-1.5 rounded-lg border border-border-strong bg-surface px-3 py-2 text-[12px] font-medium text-ink-2 transition-colors hover:border-accent hover:text-accent"
+        <AddFilterButton<ProspectField>
+          filterable={FILTERABLE as Record<ProspectField, FieldMeta<unknown>>}
+          selectOptions={selectOptions}
+          onAdd={(r) => setRules((prev) => [...prev, r])}
+          buttonLabel="Filter"
+        />
+        <select
+          value={groupBy}
+          onChange={(e) => { setGroupBy(e.target.value); setCollapsedGroups([]); }}
+          title="Group rows by a field"
+          className="h-7 rounded border border-border-strong bg-surface px-2 text-[12.5px] text-ink-2 outline-none focus:border-accent"
         >
-          <Plus size={12} />
-          New Contact
-        </button>
-
-        <div className="flex items-center gap-1 rounded-lg border border-border-strong bg-surface-2 p-1">
-          {CONTACT_STAGE_OPTIONS.map((opt) => (
-            <button
-              key={opt.value}
-              onClick={() => setStage(opt.value)}
-              className={cn(
-                "rounded-md px-3 py-1.5 text-[12px] font-medium transition-colors",
-                stage === opt.value ? "bg-surface text-ink shadow-sm" : "text-ink-3 hover:text-ink-2",
-              )}
-            >
-              {opt.label}
-            </button>
-          ))}
-        </div>
-
-        <span className="ml-auto text-[12px] text-ink-3">
-          {isLoading ? "Loading…" : `${visibleGroups.length} accounts · ${total} contacts`}
+          {GROUP_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+        </select>
+        <span className="font-mono text-[12px] text-ink-4">
+          {isLoading ? "…" : `${filtered.length} contact${filtered.length === 1 ? "" : "s"}`}
         </span>
-      </div>
-
-      {/* Deal-type lens — narrows to prospects at companies with a deal of that type */}
-      <div className="flex flex-wrap items-center gap-1.5">
-        <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-4">Deal type</span>
-        <div className="inline-flex flex-wrap rounded-full border border-border-strong bg-surface-2 p-0.5">
-          {([["all", "All"], ...(Object.entries(DEAL_TYPE_LABELS) as [DealType, string][])] as [string, string][]).map(
-            ([value, label]) => (
-              <button
-                key={value}
-                type="button"
-                onClick={() => setDealType(value)}
-                className={cn(
-                  "rounded-full px-2.5 py-1 text-[11px] font-semibold transition-colors",
-                  dealType === value ? "bg-[var(--accent)] text-white shadow-sm" : "text-ink-3 hover:text-ink-2",
-                )}
-              >
-                {label}
-              </button>
-            ),
-          )}
+        <div className="ml-auto flex items-center gap-2">
+          <ColumnChooser allColumns={COLUMN_ORDER} labels={COL_LABELS} visible={visibleCols} required={["name"]} onToggle={toggleCol} />
+          <SavedViewsPicker<JobsProspectView>
+            scopeKey="jobs-prospects"
+            currentFilters={{ query, rules, visibleCols, widths, groupBy, sort }}
+            onLoad={(v) => {
+              setQuery(v.query ?? "");
+              setRules(v.rules ?? []);
+              setGroupBy(v.groupBy ?? "");
+              setCollapsedGroups([]);
+              if (v.visibleCols && v.visibleCols.length > 0) replaceVisibleCols(v.visibleCols);
+              if (v.widths && Object.keys(v.widths).length > 0) replaceWidths(v.widths);
+              if (v.sort) setSort(v.sort);
+            }}
+          />
+          <button type="button" onClick={() => setShowNewContact(true)} className="inline-flex h-7 items-center gap-1.5 rounded border border-ink bg-ink px-3 text-[12.5px] font-medium text-surface hover:opacity-90"><Plus size={13} /> New Contact</button>
         </div>
-      </div>
+      </Toolbar>
 
-      {/* Results */}
-      {isLoading ? (
-        <div className="divide-y divide-border-strong rounded-lg border border-border-strong bg-surface">
-          {Array.from({ length: 8 }).map((_, i) => (
-            <div key={i} className="flex animate-pulse items-center gap-3 px-4 py-3">
-              <div className="h-4 w-4 rounded bg-surface-2" />
-              <div className="h-7 w-7 rounded-full bg-surface-2" />
-              <div className="flex-1 space-y-2">
-                <div className="h-3 w-40 rounded bg-surface-2" />
-                <div className="h-2.5 w-64 rounded bg-surface-2" />
-              </div>
-            </div>
+      {/* Active filter chips */}
+      {rules.length > 0 ? (
+        <div className="flex flex-wrap items-center gap-1.5 border-x border-t border-border-strong bg-surface px-3 py-2">
+          {rules.map((r) => (
+            <FilterChip
+              key={r.id}
+              label={describeRule(r, FILTERABLE, (field, v) => {
+                if (field === "contact_stage") return CONTACT_STAGE_STYLES[v]?.label ?? v;
+                if (field === "source") return SOURCE_LABELS[v] ?? v;
+                if (field === "has_deal") return v === "yes" ? "Has linked deal" : "No linked deal";
+                return v;
+              })}
+              onRemove={() => setRules((prev) => prev.filter((x) => x.id !== r.id))}
+            />
           ))}
+          <button type="button" onClick={() => setRules([])} className="ml-1 whitespace-nowrap text-[11.5px] font-medium text-ink-3 underline-offset-4 hover:text-ink-2 hover:underline">Clear all</button>
         </div>
-      ) : visibleGroups.length === 0 ? (
-        <div className="rounded-lg border border-border-strong bg-surface px-6 py-12 text-center text-[13px] text-ink-3">
-          No accounts match your filters.
-        </div>
-      ) : (
-        <div className="overflow-hidden rounded-lg border border-border-strong bg-surface">
-          <table className="w-full text-[12.5px]">
-            <thead className="bg-surface-2 text-[10.5px] uppercase tracking-wider text-ink-3">
-              <tr>
-                <th className="w-[28px] px-3 py-1.5"></th>
-                <th className="px-3 py-1.5 text-left font-semibold">
-                  <SortableHeader label="Account" sortKey="account" sort={sort} onToggle={toggleSort} />
-                </th>
-                <th className="w-[110px] px-3 py-1.5 text-right font-semibold">
-                  <SortableHeader label="Contacts" sortKey="count" sort={sort} onToggle={toggleSort} align="right" />
-                </th>
-                <th className="w-[110px] px-3 py-1.5 text-right font-semibold">
-                  With email
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {visibleGroups.map((g) => (
-                <AccountRow
-                  key={g.account}
-                  group={g}
-                  expanded={openAccount === g.account}
-                  onToggle={() =>
-                    setOpenAccount((prev) => (prev === g.account ? null : g.account))
-                  }
-                />
+      ) : null}
+
+      <div className="overflow-auto rounded-b-lg border border-border-strong bg-surface">
+        <table className="border-collapse" style={{ tableLayout: "fixed", width: "100%", minWidth: tableMinWidth }}>
+          <ColGroup order={visibleCols} widths={widths} />
+          <thead className="sticky top-0 z-10">
+            <tr>
+              {visibleCols.map((key, idx) => (
+                <ResizableTh key={key} width={widths[key]} onStartResize={(e) => startResize(key, e)} isLast={idx === visibleCols.length - 1}>
+                  <SortableHeader label={COL_LABELS[key]} sortKey={key} sort={sort} onToggle={toggle} />
+                </ResizableTh>
               ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+            </tr>
+          </thead>
+          <tbody>
+            {isLoading ? (
+              <tr><td colSpan={visibleCols.length} className="px-6 py-10 text-center text-[13px] text-ink-3">Loading prospects…</td></tr>
+            ) : filtered.length === 0 ? (
+              <tr>
+                <td colSpan={visibleCols.length} className="px-6 py-10 text-center text-[13px] text-ink-3">
+                  No prospects match your filters.{" "}
+                  <button type="button" className="text-accent underline underline-offset-2" onClick={() => { setQuery(""); setRules([]); }}>Clear filters</button>
+                </td>
+              </tr>
+            ) : groupedRows ? (
+              groupedRows.map((item) =>
+                item.kind === "header" ? (
+                  <tr key={`grp-${item.key}`} className="cursor-pointer border-y border-border-strong bg-surface-2/70 hover:bg-surface-2" onClick={() => toggleGroup(item.key)}>
+                    <td colSpan={visibleCols.length} className="px-3 py-1.5 text-[11.5px] font-semibold uppercase tracking-wider text-ink-2">
+                      <span className="inline-block w-3 text-ink-3">{item.collapsed ? "▸" : "▾"}</span>
+                      {item.label}
+                      <span className="ml-2 normal-case tracking-normal text-ink-3">{item.count}</span>
+                    </td>
+                  </tr>
+                ) : (
+                  renderRow(item.contact)
+                ),
+              )
+            ) : (
+              filtered.map((c) => renderRow(c))
+            )}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
