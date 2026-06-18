@@ -34,9 +34,25 @@ Each is `tsc`-clean + smoke-tested; no prod deploys (awaiting your review).
    (1–5) from signals (committed roles, multiple contacts, recent activity, builders
    applying); editor shows "suggest P# · use" when unset — one-click, overridable.
 
+7. **Funnel + inline priority/segment + segment filter** (`a0ed754`, `e81ed65`) —
+   opp funnel starts at In Discussions; Priority (P#) + Segment are inline columns
+   (priority sortable); toolbar segment filter.
+8. **Segment enrichment** (`984f639`) — all 50 active opps classified into a segment
+   from company/industry/domain (`scripts/enrich_opp_segments.py`, curated + heuristic,
+   fills nulls only so overrides stick). Edit inline to override.
+9. **Saved Views** (`cd2625d`) — personal + global views on the Opportunities tab
+   (owner/stage/deal-type/segment/search/sort), reusing the portfolio SavedViewsPicker.
+
 ## 📋 Specced next (not yet built — safe, no approval needed)
-- **Segment / priority filters** on the Opportunities toolbar (filter by VC/PE,
-  focus high-priority). Contained client-side filter in JobsTeam.
+- **Column chooser + per-column filter rules** ("select which fields show + how
+  they're filtered", matching Accounts). The portfolio Accounts page already has the
+  reusable pieces — `ColumnChooser` (visibility) + a `rules` filter engine, both
+  persisted into the SavedView payload (`visibleCols`/`rules`). Port = refactor the
+  JobsTeam table to a column-config model + adopt those components; the saved-views
+  payload (`JobsOppView`) extends to carry `visibleCols` + `rules`. Deferred because
+  it's a careful refactor of the (large) hand-written table — best done fresh, not
+  squeezed in.
+- **Interview tracking** — per-role funnel + time-in-stage (off public.job_applications).
 - **Interview tracking** — per-role interview funnel (applied→round1/2/3→offer) +
   time-in-stage, building on `public.job_applications` (+ its `stage_history` jsonb).
 - **Account→Opportunity conversion** + **surface builder activity on accounts**
