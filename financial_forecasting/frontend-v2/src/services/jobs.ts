@@ -41,6 +41,7 @@ export interface JobsOpportunity {
   closed_lost_note?: string | null;
   priority?: number | null;
   priority_auto?: number | null;
+  priority_suggested?: number | null;
   segment?: string | null;
   intro_by?: string | null;
   created_at: string;

@@ -1868,7 +1868,16 @@ async def list_opportunities(
             o.*,
             act.activity_count,
             act.last_activity_at,
-            act.recent_activity_count
+            act.recent_activity_count,
+            -- Suggested priority (1–5, 5 = highest) the team can override. Bumped by
+            -- signals: committed roles, multiple contacts, recent activity, and
+            -- builders already applying. AI-first scoring can replace this later.
+            LEAST(5, 1
+                + (COALESCE(o.num_roles, 0) > 0)::int
+                + (COALESCE(array_length(o.sf_contact_ids, 1), 0) > 1)::int
+                + (act.recent_activity_count > 0)::int
+                + (EXISTS (SELECT 1 FROM public.job_applications ja WHERE ja.jobs_opportunity_id = o.id))::int
+            ) AS priority_suggested
         FROM bedrock.jobs_opportunity o
         LEFT JOIN LATERAL (
             -- Same scope as the detail Activity tab: deal-tagged OR company-level

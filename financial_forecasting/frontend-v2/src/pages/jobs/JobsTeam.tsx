@@ -570,13 +570,25 @@ function DealContextStrip({ deal }: { deal: JobsOpportunity }) {
   return (
     <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5 border-b border-border-strong bg-surface-2/30 px-4 py-2">
       <Field label="Priority">
-        <InlineSelect<string>
-          value={deal.priority != null ? String(deal.priority) : null}
-          options={PRIORITY_OPTIONS}
-          emptyLabel="—"
-          renderValue={(v) => (v ? (PRIORITY_OPTIONS.find((o) => o.value === v)?.label ?? v) : <span className="text-ink-4">—</span>)}
-          onSave={(v) => patch({ priority: v ? Number(v) : null })}
-        />
+        <div className="flex items-center gap-2">
+          <InlineSelect<string>
+            value={deal.priority != null ? String(deal.priority) : null}
+            options={PRIORITY_OPTIONS}
+            emptyLabel="—"
+            renderValue={(v) => (v ? (PRIORITY_OPTIONS.find((o) => o.value === v)?.label ?? v) : <span className="text-ink-4">—</span>)}
+            onSave={(v) => patch({ priority: v ? Number(v) : null })}
+          />
+          {deal.priority == null && deal.priority_suggested != null ? (
+            <button
+              type="button"
+              onClick={() => void patch({ priority: deal.priority_suggested })}
+              className="text-[10.5px] text-accent hover:underline"
+              title="Apply the suggested priority (you can change it)"
+            >
+              suggest {PRIORITY_BADGE[deal.priority_suggested]?.label ?? deal.priority_suggested} · use
+            </button>
+          ) : null}
+        </div>
       </Field>
       <Field label="Segment">
         <InlineSelect<string>
