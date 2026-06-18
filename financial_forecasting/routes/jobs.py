@@ -1539,6 +1539,140 @@ async def contacts_by_account(
     return {"success": True, "data": out}
 
 
+# Account status vocabulary mirrors the portfolio Accounts tab so the two read
+# the same. Status is DERIVED from the account's jobs data (not stored):
+#   Stewarding   – a won deal (delivery / placed relationship)
+#   Pursuing     – an active open opportunity
+#   Re-activating– only stale opps (on-hold/lost) but touched in the last 90 days
+#   Dormant      – only stale opps, no recent touch
+#   Prospect     – prospects only, no opportunity yet
+_ACCOUNT_STATUS_RANK = {"Pursuing": 0, "Stewarding": 1, "Re-activating": 2, "Prospect": 3, "Dormant": 4}
+
+
+@router.get("/accounts")
+async def jobs_accounts(
+    deal_type: Optional[str] = Query(None),
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Account-level hub: every company with an opportunity OR a jobs prospect,
+    keyed by normalized company name, with its opportunities and prospects nested
+    and a derived account status (same vocabulary as the portfolio Accounts tab).
+
+    `account_name`/`current_company` is the canonical key — SF `account_id` is
+    carried through when it's a real Account Id but is too sparse to group on.
+    `deal_type` narrows to accounts that have an opportunity of that type.
+    """
+    opp_rows = await conn.fetch(
+        """
+        SELECT id, account_id, account_name, stage, deal_type, title,
+               owner_email, priority, num_roles, updated_at
+        FROM bedrock.jobs_opportunity
+        WHERE deleted_at IS NULL AND coalesce(trim(account_name), '') <> ''
+        ORDER BY updated_at DESC NULLS LAST
+        """,
+    )
+    prospect_rows = await conn.fetch(
+        """
+        SELECT contact_id, full_name, email, current_title, current_company,
+               contact_stage, linkedin_url, updated_at
+        FROM public.contacts
+        WHERE is_jobs_contact = true AND coalesce(trim(current_company), '') <> ''
+        ORDER BY full_name
+        """,
+    )
+
+    accounts: dict = {}
+
+    def bucket(key: str, display: str) -> dict:
+        return accounts.setdefault(
+            key,
+            {
+                "account": display,
+                "account_id": None,
+                "owner_email": None,
+                "opportunities": [],
+                "prospects": [],
+                "_last": None,
+            },
+        )
+
+    def touch(g: dict, ts) -> None:
+        # contacts.updated_at is tz-naive while jobs_opportunity.updated_at is
+        # tz-aware — normalize to UTC so they're comparable.
+        if ts is None:
+            return
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        if g["_last"] is None or ts > g["_last"]:
+            g["_last"] = ts
+
+    for r in opp_rows:
+        key = r["account_name"].strip().lower()
+        g = bucket(key, r["account_name"].strip())
+        if r["account_id"] and str(r["account_id"]).startswith("001"):
+            g["account_id"] = r["account_id"]
+        if not g["owner_email"] and r["owner_email"]:
+            g["owner_email"] = r["owner_email"]
+        touch(g, r["updated_at"])
+        g["opportunities"].append({
+            "id":         str(r["id"]),
+            "title":      r["title"],
+            "stage":      r["stage"],
+            "deal_type":  r["deal_type"],
+            "owner_email": r["owner_email"],
+            "priority":   r["priority"],
+            "num_roles":  r["num_roles"],
+            "updated_at": r["updated_at"].isoformat() if r["updated_at"] else None,
+        })
+
+    for r in prospect_rows:
+        key = r["current_company"].strip().lower()
+        g = bucket(key, r["current_company"].strip())
+        touch(g, r["updated_at"])
+        g["prospects"].append({
+            "contact_id":    r["contact_id"],
+            "full_name":     r["full_name"],
+            "email":         r["email"],
+            "current_title": r["current_title"],
+            "contact_stage": r["contact_stage"],
+            "linkedin_url":  r["linkedin_url"],
+        })
+
+    dt = deal_type if deal_type and deal_type != "all" else None
+    now = datetime.now(timezone.utc)
+    out = []
+    for g in accounts.values():
+        opps = g["opportunities"]
+        if dt and not any(o["deal_type"] == dt for o in opps):
+            continue
+        stages = {o["stage"] for o in opps}
+        has_active = any(s and s.startswith("active") for s in stages)
+        has_won = "closed_won" in stages
+        last = g.pop("_last")
+        recent = bool(last and (now - last).days <= 90)
+        if has_won:
+            status = "Stewarding"
+        elif has_active:
+            status = "Pursuing"
+        elif opps:
+            status = "Re-activating" if recent else "Dormant"
+        else:
+            status = "Prospect"
+        g["account_status"] = status
+        g["opp_count"] = len(opps)
+        g["prospect_count"] = len(g["prospects"])
+        g["last_activity"] = last.isoformat() if last else None
+        out.append(g)
+
+    out.sort(key=lambda a: (
+        _ACCOUNT_STATUS_RANK.get(a["account_status"], 9),
+        -(a["opp_count"] + a["prospect_count"]),
+        a["account"].lower(),
+    ))
+    return {"success": True, "data": out}
+
+
 @router.get("/contacts")
 async def list_contacts(
     stage: Optional[str] = Query(None),

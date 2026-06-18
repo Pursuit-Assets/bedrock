@@ -303,6 +303,56 @@ export function useContactsByAccount(dealType?: string) {
   });
 }
 
+// Account-level hub: every company (keyed by normalized name) with its
+// opportunities + prospects nested and a derived status (same vocabulary as the
+// portfolio Accounts tab). Backed by GET /api/jobs/accounts.
+export type JobsAccountStatus = "Prospect" | "Pursuing" | "Stewarding" | "Re-activating" | "Dormant";
+
+export interface JobsAccountOpp {
+  id: string;
+  title: string | null;
+  stage: JobStage;
+  deal_type: DealType | null;
+  owner_email: string | null;
+  priority: number | null;
+  num_roles: number | null;
+  updated_at: string | null;
+}
+
+export interface JobsAccountProspect {
+  contact_id: number;
+  full_name: string | null;
+  email: string | null;
+  current_title: string | null;
+  contact_stage: string | null;
+  linkedin_url: string | null;
+}
+
+export interface JobsAccount {
+  account: string;
+  account_id: string | null;
+  owner_email: string | null;
+  account_status: JobsAccountStatus;
+  opportunities: JobsAccountOpp[];
+  prospects: JobsAccountProspect[];
+  opp_count: number;
+  prospect_count: number;
+  last_activity: string | null;
+}
+
+export function useJobsAccounts(dealType?: string) {
+  const params = new URLSearchParams();
+  if (dealType && dealType !== "all") params.set("deal_type", dealType);
+  return useQuery<JobsAccount[]>({
+    queryKey: ["jobs", "accounts", dealType ?? "all"],
+    queryFn: async () => {
+      const { data } = await api.get<ApiResponse<JobsAccount[]>>(`/api/jobs/accounts?${params}`);
+      return data.data;
+    },
+    staleTime: 60_000,
+  });
+}
+
 export interface MetricDrill {
   title: string;
   columns: { key: string; label: string }[];
