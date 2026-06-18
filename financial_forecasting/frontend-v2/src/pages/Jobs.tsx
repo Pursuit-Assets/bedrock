@@ -28,7 +28,7 @@ export function JobsPage() {
   const [view, setView] = useState<View>(initialView);
 
   return (
-    <div className="flex flex-col gap-0 px-7 py-6 pb-12">
+    <div className="flex flex-col gap-0 px-7 py-4 pb-12">
       <PageHeader
         title="Jobs Pipeline"
         subtitle="Employer outreach, builder matching, and placement tracking."
@@ -56,7 +56,7 @@ export function JobsPage() {
         }
       />
 
-      <div className="mt-2">
+      <div className="mt-1">
         {view === "performance" && <JobsLeadership />}
         {view === "team"        && <JobsTeam />}
         {view === "contacts"    && <JobsContacts initialQuery={initialQuery} />}

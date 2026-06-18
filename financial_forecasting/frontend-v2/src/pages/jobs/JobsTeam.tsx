@@ -42,7 +42,7 @@ import { SortableHeader } from "@/components/ui/SortableHeader";
 import { SavedViewsPicker } from "@/components/ui/SavedViewsPicker";
 import { ColumnChooser } from "@/components/ui/ColumnChooser";
 import { ColGroup, ResizableTh } from "@/components/ui/ResizableTable";
-import { Toolbar, ButtonGroup } from "@/components/ui/Toolbar";
+import { Toolbar } from "@/components/ui/Toolbar";
 import { useColumnVisibility } from "@/lib/columnVisibility";
 import { totalWidth, useColumnWidths } from "@/lib/columnWidths";
 import { useSessionState } from "@/lib/useSessionState";
@@ -2106,17 +2106,13 @@ interface JobsOppView {
   sort?: SortState<OppColKey>;
 }
 
-const DEAL_TYPE_FILTERS: DealTypeFilter[] = ["all", "ft", "pt_contract", "capstone", "volunteer", "workshop", "pilot"];
-
-function dealTypeFilterLabel(f: DealTypeFilter): string {
-  return f === "all" ? "All" : DEAL_TYPE_LABELS[f];
-}
-
 // Stable empty array so useSessionState's setter identity stays stable.
 const EMPTY_COLLAPSED: string[] = [];
 
 export function JobsTeam() {
-  const [dealTypeFilter, setDealTypeFilter] = useState<DealTypeFilter>("ft");
+  // Deal-type pills were removed (filter via the Filter rules instead); default
+  // to all deals. The state stays for saved-view back-compat + the FT-via-rule path.
+  const [dealTypeFilter, setDealTypeFilter] = useState<DealTypeFilter>("all");
   const [query, setQuery] = useState("");
   const [rules, setRules] = useState<FilterRule<OppField>[]>([]);
   const [groupBy, setGroupBy] = useSessionState<string>("jobs-opps:groupBy", "");
@@ -2242,13 +2238,8 @@ export function JobsTeam() {
   );
 
   return (
-    <div className="flex flex-col px-5 py-4">
+    <div className="flex flex-col px-5 py-2">
       <Toolbar>
-        <ButtonGroup
-          value={dealTypeFilter}
-          onChange={(v) => setDealTypeFilter(v as DealTypeFilter)}
-          options={DEAL_TYPE_FILTERS.map((f) => ({ value: f, label: dealTypeFilterLabel(f) }))}
-        />
         <div className="relative">
           <Search size={12} aria-hidden className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-3" />
           <input
@@ -2292,7 +2283,7 @@ export function JobsTeam() {
             scopeKey="jobs-opportunities"
             currentFilters={{ dealTypeFilter, query, rules, visibleCols, widths, groupBy, sort }}
             onLoad={(v) => {
-              setDealTypeFilter(v.dealTypeFilter ?? "ft");
+              setDealTypeFilter(v.dealTypeFilter ?? "all");
               setQuery(v.query ?? "");
               setRules(v.rules ?? []);
               setGroupBy(v.groupBy ?? "");
