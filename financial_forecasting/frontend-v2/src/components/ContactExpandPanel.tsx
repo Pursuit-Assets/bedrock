@@ -3,6 +3,7 @@ import { useMemo } from "react";
 import { ActivityTab } from "@/components/expand/ActivityTab";
 import { TaskListTab } from "@/components/expand/TaskListTab";
 import { RowExpandPanel, ROW_EXPAND_HEIGHT } from "@/components/RowExpandPanel";
+import { EntityComments } from "@/components/EntityComments";
 import { useContactTasks, useCreateGenericTask } from "@/services/opportunities";
 import { useActiveUsers } from "@/services/users";
 import type { SfTask } from "@/types/salesforce";
@@ -27,6 +28,11 @@ export function ContactExpandPanel({ contactId }: { contactId: string }) {
               emptyMessage="No emails, meetings, or notes recorded for this contact yet."
             />
           ),
+        },
+        {
+          id: "comments",
+          label: "Comments",
+          render: () => <EntityComments entityType="contact" entityId={contactId} />,
         },
       ]}
     />
