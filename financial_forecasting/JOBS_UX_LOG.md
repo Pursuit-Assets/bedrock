@@ -7,8 +7,6 @@ prod deploy, NO destructive DB ops or privileged migrations.
 
 ## Iterations
 
-1. **Accounts hub status chips** — a status-distribution chip bar above the
-   table (Pursuing / Stewarding / Re-activating / Prospect / Dormant with live
-   counts). Click a chip to filter to that status (drives a `status` filter
-   rule), click again to clear. Gives an at-a-glance pipeline read + one-click
-   filtering. tsc + build clean.
+1. **Accounts hub status chips** — REVERTED per user feedback ("look really bad,
+   already have that in filtering"). Lesson: don't add net-new UI elements;
+   focus on polishing/fixing EXISTING UI, not inventing redundant controls.

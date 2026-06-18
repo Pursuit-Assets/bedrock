@@ -21,7 +21,6 @@ import { SortableHeader } from "@/components/ui/SortableHeader";
 import { Tag } from "@/components/ui/Tag";
 import { Toolbar } from "@/components/ui/Toolbar";
 import { accountStatusVariant } from "@/lib/accountStatus";
-import { cn } from "@/lib/utils";
 import { useColumnVisibility } from "@/lib/columnVisibility";
 import { useSessionState } from "@/lib/useSessionState";
 import { useSort, sortBy, type SortState } from "@/lib/sort";
@@ -220,12 +219,6 @@ export function JobsAccountHub({ initialQuery }: { initialQuery?: string } = {})
 
   const totals = useMemo(() => filtered.reduce((acc, a) => ({ opps: acc.opps + a.opp_count, contacts: acc.contacts + a.prospect_count }), { opps: 0, contacts: 0 }), [filtered]);
   const visibleWeight = visibleCols.reduce((s, k) => s + COL_WEIGHT[k], 0);
-  // Status distribution (across the deal-type-filtered set) for the quick-filter chips.
-  const statusCounts = useMemo(() => {
-    const m: Record<string, number> = {};
-    for (const a of accounts) m[a.account_status] = (m[a.account_status] ?? 0) + 1;
-    return m;
-  }, [accounts]);
 
   const renderRow = (a: JobsAccount) => (
     <AccountRow key={a.account} account={a} expanded={expanded.has(a.account)} onToggle={() => toggleRow(a.account)} visibleCols={visibleCols} staff={staff} onSaveOwner={saveOwner} />
@@ -259,34 +252,6 @@ export function JobsAccountHub({ initialQuery }: { initialQuery?: string } = {})
           />
         </div>
       </Toolbar>
-
-      {/* Status distribution — click to filter (drives a status rule), click active to clear */}
-      {!isLoading && accounts.length > 0 && (
-        <div className="flex flex-wrap items-center gap-1.5">
-          {STATUSES.map((st) => {
-            const n = statusCounts[st] ?? 0;
-            const active = rules.some((r) => r.field === "status" && r.op === "equals" && r.values.includes(st));
-            const setStatusOnly = () =>
-              setRules((prev) => {
-                const others = prev.filter((r) => r.field !== "status");
-                return active ? others : [...others, { id: `status-${st}`, field: "status" as Field, op: "equals" as const, values: [st] }];
-              });
-            return (
-              <button
-                key={st}
-                type="button"
-                onClick={setStatusOnly}
-                className={cn("inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11.5px] font-medium transition-colors",
-                  active ? "border-accent ring-1 ring-accent/40" : "border-border-strong hover:border-accent/50")}
-                title={`${n} ${st} account${n === 1 ? "" : "s"}`}
-              >
-                <Tag variant={accountStatusVariant(st)}>{st}</Tag>
-                <span className="font-mono text-ink-4">{n}</span>
-              </button>
-            );
-          })}
-        </div>
-      )}
 
       {rules.length > 0 && (
         <div className="flex flex-wrap items-center gap-1.5">
