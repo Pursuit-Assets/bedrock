@@ -11,6 +11,9 @@ import {
   useHireRole,
   type Role,
   type RoleStatus,
+  type Commitment,
+  type RatePeriod,
+  type RolePatchBody,
 } from "@/services/jobsOpps2";
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -48,6 +51,130 @@ function empTypeLabel(t: string | null): string | null {
 function fmtSalary(n: number | null): string {
   if (n == null) return "—";
   return `$${n.toLocaleString("en-US")}`;
+}
+
+const RATE_PERIOD_OPTIONS: { value: RatePeriod; label: string }[] = [
+  { value: "annual",  label: "/ yr" },
+  { value: "monthly", label: "/ mo" },
+  { value: "weekly",  label: "/ wk" },
+  { value: "daily",   label: "/ day" },
+  { value: "hourly",  label: "/ hr" },
+];
+
+const RATE_PERIOD_SHORT: Record<string, string> = Object.fromEntries(
+  RATE_PERIOD_OPTIONS.map((o) => [o.value, o.label]),
+);
+
+// ── Shared extra-field state (commitment, trial, compensation) ──────────────────
+
+interface RoleExtras {
+  commitment: Commitment;
+  isTrial: boolean;
+  payRate: string;
+  ratePeriod: string;
+  endDate: string;
+  payCadence: string;
+  benefits: string;
+  negotiation: string;
+  jdUrl: string;
+}
+
+const EMPTY_EXTRAS: RoleExtras = {
+  commitment: "committed", isTrial: false, payRate: "", ratePeriod: "",
+  endDate: "", payCadence: "", benefits: "", negotiation: "", jdUrl: "",
+};
+
+function extrasFromRole(r: Role): RoleExtras {
+  return {
+    commitment: r.commitment ?? "committed",
+    isTrial: Boolean(r.is_trial),
+    payRate: r.pay_rate != null ? String(r.pay_rate) : "",
+    ratePeriod: r.rate_period ?? "",
+    endDate: r.end_date ?? "",
+    payCadence: r.pay_cadence ?? "",
+    benefits: r.benefits ?? "",
+    negotiation: r.negotiation_notes ?? "",
+    jdUrl: r.jd_url ?? "",
+  };
+}
+
+/** Map the form's extras to the API patch/create body shape. */
+function extrasToBody(x: RoleExtras): Partial<RolePatchBody> {
+  const rate = x.payRate.trim() ? Number(x.payRate.replace(/[^0-9.]/g, "")) : null;
+  return {
+    commitment: x.commitment,
+    is_trial: x.isTrial,
+    pay_rate: rate != null && !isNaN(rate) ? rate : null,
+    rate_period: (x.ratePeriod || null) as RatePeriod | null,
+    end_date: x.endDate || null,
+    pay_cadence: x.payCadence.trim() || null,
+    benefits: x.benefits.trim() || null,
+    negotiation_notes: x.negotiation.trim() || null,
+    jd_url: x.jdUrl.trim() || null,
+  };
+}
+
+const INPUT_CLS =
+  "w-full rounded border border-border-strong bg-surface px-2 py-1 text-[11.5px] text-ink-2 placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40";
+
+/** Commitment + trial + compensation fields, shared by the add and edit forms. */
+function RoleExtraFields({ value, onChange }: { value: RoleExtras; onChange: (x: RoleExtras) => void }) {
+  const set = <K extends keyof RoleExtras>(k: K, v: RoleExtras[K]) => onChange({ ...value, [k]: v });
+  return (
+    <div className="flex flex-col gap-2 rounded border border-dashed border-border-strong p-2">
+      <div className="flex flex-wrap items-center gap-3">
+        <label className="flex items-center gap-1.5">
+          <span className="text-[10px] font-medium text-ink-4">Commitment</span>
+          <select
+            value={value.commitment}
+            onChange={(e) => set("commitment", e.target.value as Commitment)}
+            className="rounded border border-border-strong bg-surface px-2 py-1 text-[11.5px] text-ink-2 focus:outline-none focus:ring-1 focus:ring-accent/40"
+          >
+            <option value="committed">Committed</option>
+            <option value="open_market">Open-market</option>
+          </select>
+        </label>
+        <label className="flex items-center gap-1.5 text-[11.5px] text-ink-2">
+          <input type="checkbox" checked={value.isTrial} onChange={(e) => set("isTrial", e.target.checked)} />
+          Trial / work-trial
+        </label>
+      </div>
+      <div className="grid grid-cols-3 gap-2">
+        <label className="flex flex-col gap-0.5">
+          <span className="text-[10px] font-medium text-ink-4">Rate</span>
+          <div className="flex gap-1">
+            <input type="number" min={0} value={value.payRate} onChange={(e) => set("payRate", e.target.value)} placeholder="e.g. 60" className={INPUT_CLS} />
+            <select value={value.ratePeriod} onChange={(e) => set("ratePeriod", e.target.value)} className="rounded border border-border-strong bg-surface px-1 py-1 text-[11px] text-ink-2 focus:outline-none focus:ring-1 focus:ring-accent/40">
+              <option value="">—</option>
+              {RATE_PERIOD_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </select>
+          </div>
+        </label>
+        <label className="flex flex-col gap-0.5">
+          <span className="text-[10px] font-medium text-ink-4">End date</span>
+          <input type="date" value={value.endDate} onChange={(e) => set("endDate", e.target.value)} className={INPUT_CLS} />
+        </label>
+        <label className="flex flex-col gap-0.5">
+          <span className="text-[10px] font-medium text-ink-4">Pay cadence</span>
+          <input type="text" value={value.payCadence} onChange={(e) => set("payCadence", e.target.value)} placeholder="biweekly" className={INPUT_CLS} />
+        </label>
+      </div>
+      <div className="grid grid-cols-3 gap-2">
+        <label className="flex flex-col gap-0.5">
+          <span className="text-[10px] font-medium text-ink-4">Benefits</span>
+          <input type="text" value={value.benefits} onChange={(e) => set("benefits", e.target.value)} placeholder="e.g. after conversion" className={INPUT_CLS} />
+        </label>
+        <label className="flex flex-col gap-0.5">
+          <span className="text-[10px] font-medium text-ink-4">Negotiation</span>
+          <input type="text" value={value.negotiation} onChange={(e) => set("negotiation", e.target.value)} placeholder="notes" className={INPUT_CLS} />
+        </label>
+        <label className="flex flex-col gap-0.5">
+          <span className="text-[10px] font-medium text-ink-4">JD link</span>
+          <input type="text" value={value.jdUrl} onChange={(e) => set("jdUrl", e.target.value)} placeholder="https://…" className={INPUT_CLS} />
+        </label>
+      </div>
+    </div>
+  );
 }
 
 function fmtDate(iso: string | null): string {
@@ -210,6 +337,7 @@ function RoleRow({ role, oppId }: { role: Role; oppId: string }) {
   const [empType, setEmpType] = useState(role.employment_type ?? "");
   const [startDate, setStartDate] = useState(role.start_date ?? "");
   const [notes, setNotes] = useState(role.notes ?? "");
+  const [extras, setExtras] = useState<RoleExtras>(extrasFromRole(role));
 
   const updateRole = useUpdateRole();
   const deleteRole = useDeleteRole();
@@ -225,6 +353,7 @@ function RoleRow({ role, oppId }: { role: Role; oppId: string }) {
         employment_type: empType.trim() || null,
         start_date: startDate || null,
         notes: notes.trim() || null,
+        ...extrasToBody(extras),
       },
       { onSuccess: () => setEditing(false) },
     );
@@ -282,6 +411,7 @@ function RoleRow({ role, oppId }: { role: Role; oppId: string }) {
           placeholder="Role details / notes…"
           className="w-full resize-none rounded border border-border-strong bg-surface px-2 py-1 text-[11.5px] text-ink-2 placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40"
         />
+        <RoleExtraFields value={extras} onChange={setExtras} />
         <div className="flex items-center gap-3">
           <button
             type="button"
@@ -308,9 +438,23 @@ function RoleRow({ role, oppId }: { role: Role; oppId: string }) {
     <li className="flex flex-col px-3 py-2.5">
       <div className="flex items-start justify-between gap-2">
         <div className="flex min-w-0 flex-col gap-0.5">
-          <span className="truncate text-[13px] font-medium text-ink">{role.title}</span>
+          <div className="flex items-center gap-1.5">
+            <span className="truncate text-[13px] font-medium text-ink">{role.title}</span>
+            {role.commitment === "open_market" ? (
+              <span className="inline-flex items-center rounded-full bg-stone-100 px-1.5 py-0.5 text-[9.5px] font-semibold uppercase tracking-wide leading-none text-stone-500">Open-market</span>
+            ) : null}
+            {role.is_trial ? (
+              <span className="inline-flex items-center rounded-full bg-amber-50 px-1.5 py-0.5 text-[9.5px] font-semibold uppercase tracking-wide leading-none text-amber-700">Trial</span>
+            ) : null}
+          </div>
           <span className="truncate text-[11.5px] text-ink-3">
-            {[fmtSalary(role.approx_salary), empTypeLabel(role.employment_type), role.start_date ? fmtDate(role.start_date) : null]
+            {[
+              fmtSalary(role.approx_salary),
+              role.pay_rate != null ? `$${role.pay_rate.toLocaleString("en-US")} ${RATE_PERIOD_SHORT[role.rate_period ?? ""] ?? ""}`.trim() : null,
+              empTypeLabel(role.employment_type),
+              role.start_date ? fmtDate(role.start_date) : null,
+              role.end_date ? `→ ${fmtDate(role.end_date)}` : null,
+            ]
               .filter((x) => x && x !== "—")
               .join(" · ") || "—"}
           </span>
@@ -375,6 +519,7 @@ function AddRoleForm({ oppId }: { oppId: string }) {
   const [empType, setEmpType] = useState("");
   const [startDate, setStartDate] = useState("");
   const [notes, setNotes] = useState("");
+  const [extras, setExtras] = useState<RoleExtras>(EMPTY_EXTRAS);
   const createRole = useCreateRole();
 
   function reset() {
@@ -383,6 +528,7 @@ function AddRoleForm({ oppId }: { oppId: string }) {
     setEmpType("");
     setStartDate("");
     setNotes("");
+    setExtras(EMPTY_EXTRAS);
     setOpen(false);
   }
 
@@ -398,6 +544,7 @@ function AddRoleForm({ oppId }: { oppId: string }) {
         employment_type: empType.trim() || undefined,
         start_date: startDate || undefined,
         notes: notes.trim() || undefined,
+        ...extrasToBody(extras),
       },
       { onSuccess: () => reset() },
     );
@@ -467,6 +614,7 @@ function AddRoleForm({ oppId }: { oppId: string }) {
         placeholder="Role details / notes…"
         className="w-full resize-none rounded border border-border-strong bg-surface px-2 py-1 text-[11.5px] text-ink-2 placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40"
       />
+      <RoleExtraFields value={extras} onChange={setExtras} />
       <div className="flex items-center gap-3">
         <button
           type="submit"

@@ -8,6 +8,9 @@ interface ApiResponse<T> { success: boolean; data: T }
 
 export type RoleStatus = "open" | "filled" | "cancelled";
 
+export type Commitment = "committed" | "open_market";
+export type RatePeriod = "annual" | "monthly" | "weekly" | "daily" | "hourly";
+
 export interface Role {
   id: string;
   opportunity_id: string;
@@ -21,24 +24,41 @@ export interface Role {
   notes: string | null;
   created_at: string;
   updated_at: string;
+  // Phase 1 additions
+  commitment: Commitment;
+  is_trial: boolean;
+  converts_to_role_id: string | null;
+  pay_rate: number | null;
+  rate_period: RatePeriod | null;
+  end_date: string | null;
+  pay_cadence: string | null;
+  benefits: string | null;
+  payment_schedule: string | null;
+  negotiation_notes: string | null;
+  jd_url: string | null;
 }
 
-export interface RoleCreateBody {
-  title: string;
-  approx_salary?: number;
-  employment_type?: string;
-  start_date?: string;
-  notes?: string;
-}
-
-export type RolePatchBody = Partial<{
-  title: string;
+interface RoleFields {
   approx_salary: number | null;
   employment_type: string | null;
   start_date: string | null;
-  status: RoleStatus;
   notes: string | null;
-}>;
+  commitment: Commitment;
+  is_trial: boolean;
+  converts_to_role_id: string | null;
+  pay_rate: number | null;
+  rate_period: RatePeriod | null;
+  end_date: string | null;
+  pay_cadence: string | null;
+  benefits: string | null;
+  payment_schedule: string | null;
+  negotiation_notes: string | null;
+  jd_url: string | null;
+}
+
+export type RoleCreateBody = { title: string } & Partial<RoleFields>;
+
+export type RolePatchBody = Partial<{ title: string; status: RoleStatus } & RoleFields>;
 
 export interface RoleHireBody {
   user_id: number;
