@@ -5,7 +5,8 @@
  * changes are gated by the Opportunities-tab modals — closed-lost reason,
  * committed roles, placements); manage stage there.
  */
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
+import { Trash2 } from "lucide-react";
 
 import { AccountAvatar } from "@/components/AccountAvatar";
 import { BackLink, EditField, SectionCard, Stat } from "@/components/detail";
@@ -26,6 +27,7 @@ import { InlineSelect, InlineText } from "@/components/ui/InlineEdit";
 import {
   useJobsOpportunity,
   useUpdateOpportunity,
+  useDeleteOpportunity,
   useJobsStaff,
   type DealType,
 } from "@/services/jobs";
@@ -38,10 +40,17 @@ const LIKELIHOOD_OPTIONS = [
 
 export function JobsOpportunityDetailPage() {
   const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
   const { data: o, isLoading } = useJobsOpportunity(id ?? null);
   const updateOpp = useUpdateOpportunity();
+  const del = useDeleteOpportunity();
   const { data: staff = [] } = useJobsStaff();
   const patch = async (field: string, val: unknown) => { await updateOpp.mutateAsync({ id: id!, [field]: val }); };
+  const removeOpp = () => {
+    if (!o) return;
+    if (window.confirm(`Delete opportunity "${o.title || o.account_name}"? This removes it from the pipeline.`))
+      del.mutate(id!, { onSuccess: () => navigate(-1) });
+  };
 
   if (isLoading) return <div className="px-7 py-6 text-[13px] text-ink-3">Loading opportunity…</div>;
   if (!o) {
@@ -75,6 +84,9 @@ export function JobsOpportunityDetailPage() {
             )}
           </div>
         </div>
+        <button type="button" onClick={removeOpp} className="flex shrink-0 items-center gap-1 rounded-md border border-border-strong px-2.5 py-1 text-[12px] font-medium text-ink-3 transition-colors hover:border-red hover:text-red" title="Delete opportunity">
+          <Trash2 size={13} /> Delete
+        </button>
       </div>
 
       {/* Stats */}

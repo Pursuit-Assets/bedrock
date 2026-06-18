@@ -15,7 +15,7 @@
  */
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { Briefcase, CheckSquare, ExternalLink, MessageSquare, Plus, User, X } from "lucide-react";
+import { Briefcase, CheckSquare, ExternalLink, MessageSquare, Plus, Trash2, User, X } from "lucide-react";
 
 import { JobsActivityList } from "@/components/jobs/JobsActivityList";
 import { JobsComments } from "@/components/jobs/JobsComments";
@@ -35,6 +35,7 @@ import {
   useContactSearch,
   useCreateContact,
   useCreateOpportunity,
+  useDeleteOpportunity,
   useJobsStaff,
   useLogActivity,
   useUpdateOpportunity,
@@ -84,7 +85,9 @@ function AccountOppsTab({ account }: { account: JobsAccount }) {
   const { data: staff = [] } = useJobsStaff();
   const create = useCreateOpportunity();
   const update = useUpdateOpportunity();
+  const del = useDeleteOpportunity();
   const patch = (id: string, field: string, val: unknown) => update.mutateAsync({ id, [field]: val }).then(() => undefined);
+  const removeOpp = (id: string, label: string) => { if (window.confirm(`Delete opportunity "${label}"? This removes it from the pipeline.`)) del.mutate(id); };
 
   // create form (role/stage/owner/deal type/likelihood/# roles all required; role can be "TBD")
   const [role, setRole] = useState("");
@@ -107,7 +110,7 @@ function AccountOppsTab({ account }: { account: JobsAccount }) {
     <div className="p-3">
       <div className="overflow-hidden rounded border border-border-strong bg-surface">
         <table className="w-full table-fixed text-[12px]">
-          <colgroup><col /><col style={{ width: "17%" }} /><col style={{ width: "16%" }} /><col style={{ width: "13%" }} /><col style={{ width: "12%" }} /><col style={{ width: "8%" }} /><col style={{ width: 32 }} /></colgroup>
+          <colgroup><col /><col style={{ width: "17%" }} /><col style={{ width: "16%" }} /><col style={{ width: "13%" }} /><col style={{ width: "12%" }} /><col style={{ width: "8%" }} /><col style={{ width: 56 }} /></colgroup>
           <thead className="bg-surface-2 text-[10.5px] uppercase tracking-wider text-ink-3"><tr>
             <th className="px-2 py-1.5 text-left font-semibold">Role</th><th className="px-2 py-1.5 text-left font-semibold">Stage</th>
             <th className="px-2 py-1.5 text-left font-semibold">Owner</th><th className="px-2 py-1.5 text-left font-semibold">Deal type</th>
@@ -124,7 +127,12 @@ function AccountOppsTab({ account }: { account: JobsAccount }) {
                 <td className="overflow-hidden px-2 py-1.5"><InlineSelect<string> value={o.deal_type ?? null} options={DEAL_TYPE_OPTIONS} emptyLabel="—" onSave={(v) => patch(o.id, "deal_type", v || null)} /></td>
                 <td className="overflow-hidden px-2 py-1.5"><InlineSelect<string> value={o.likelihood ?? null} options={[{ value: "low", label: "Low" }, { value: "medium", label: "Medium" }, { value: "high", label: "High" }]} emptyLabel="—" onSave={(v) => patch(o.id, "likelihood", v || null)} /></td>
                 <td className="overflow-hidden px-2 py-1.5"><InlineText value={o.num_roles != null ? String(o.num_roles) : null} placeholder="—" onSave={(v) => patch(o.id, "num_roles", v ? Number(v) : null)} className="text-[12px] text-ink-2" /></td>
-                <td className="px-1 py-1.5 text-center"><Link to={jobsOpportunityPath(o.id)} state={jobsRef} className="text-ink-4 hover:text-accent" title="Open opportunity"><ExternalLink size={12} /></Link></td>
+                <td className="px-1 py-1.5">
+                  <div className="flex items-center justify-center gap-2">
+                    <Link to={jobsOpportunityPath(o.id)} state={jobsRef} className="text-ink-4 hover:text-accent" title="Open opportunity"><ExternalLink size={12} /></Link>
+                    <button type="button" onClick={() => removeOpp(o.id, oppRoleLabel(o))} title="Delete opportunity" className="text-ink-4 hover:text-red"><Trash2 size={12} /></button>
+                  </div>
+                </td>
               </tr>
             ))}
             {/* add row at the bottom — collapsed trigger until you click it (tasks-style) */}
