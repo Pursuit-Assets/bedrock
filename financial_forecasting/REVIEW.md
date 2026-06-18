@@ -51,6 +51,40 @@ Each is `tsc`-clean + smoke-tested; no prod deploys (awaiting your review).
   awaiting go. Script: would mirror `scripts/backfill_jobs_activity_links.py`.
 - **Prod deploy** of all the above (Opportunities tab + Phase 1 + this round).
 
+## ✅ Smoke-test checklist (localhost:4200 → Opportunities)
+
+**Opportunities list / row**
+- [ ] Search box filters by company / role / owner.
+- [ ] Filter pills work: Owner (Avni/Damon/Devika/All), Stage group (All/Active/On-hold/Closed), Deal Type (FT default).
+- [ ] Column sort works: Company, Stage, Deal Type, Likelihood, **Priority**, # Roles.
+- [ ] Inline-edit on the row saves + toasts: **Stage** (dropdown no longer offers Lead Submitted / Initial Outreach), **Deal Type**, **Likelihood**, **Priority** (P1–P5 colored badge), **Segment** (VC/PE…), **Role title**, **Expected salary**, **# Roles**, **Owner** (picker opens + stays open + saves).
+- [ ] Calculated **Status** chip (Active/On-hold/Closed) tracks the stage.
+- [ ] **Recent-activity** "N this wk" badge shows on accounts with activity ≤7 days.
+
+**Stage-change modals**
+- [ ] → **Closed-Lost** opens the reason modal (reason dropdown + note); saving shows the reason in the expanded context strip.
+- [ ] → **Opportunity Confirmed** (first time, no roles) opens the committed-roles modal.
+- [ ] → **Closed-Won** (FT/contract) opens the record-placements modal.
+
+**Expanded row — tabs**
+- [ ] Context strip: "Suggested priority P# · use" applies it to the row; **Warm intro by** edits; **Closed-lost reason** shows when closed-lost.
+- [ ] **Activity**: Gmail/Calendar/Salesforce brand icons; **search by participant** (from/to/subject/body); Jobs vs Email&Calendar sections; expand a row → full email body, From/To; HTML entities decoded (no `&#39;`); log a call/text/LinkedIn.
+- [ ] **Roles**: add a role with **Commitment** (Committed/Open-market), **Trial** checkbox → **Converts to** picker appears; comp fields (rate+period, end date, cadence, benefits, negotiation, JD link), notes; read view shows Open-market/Trial badges + "→ converts to <FT role>".
+- [ ] **Builders**: link a builder; log an application/interview; change a status inline.
+- [ ] **Contacts**: link a contact (search); edit a contact's stage inline; expand a contact → its activity.
+- [ ] **Tasks** / **Comments** render and accept input.
+
+**Performance tab**
+- [ ] Opportunities **funnel** starts at "In Discussions" (no Lead Submitted / Initial Outreach).
+
+**Global search (top bar)**
+- [ ] Searching a jobs contact's name/email surfaces them (bedrock contacts, not just SF) → clicking deep-links to the Prospects tab with the search pre-filled.
+
+**Backend / data (already verified by me, re-check if desired)**
+- [ ] Invalid priority (>5) → 400; valid → 200.
+- [ ] `committed_ft_roles` excludes open-market + trial roles.
+- [ ] Gmail sync: tonight's 04:00 UTC run logs once (no collision); watermarks advance (check `bedrock.sync_watermark`).
+
 ## How to test locally
 Backend `:8000` + frontend `:4200` running. Opportunities tab → expand a deal:
 context strip (priority/segment/intro_by), Roles tab (commitment/trial/conversion/comp),

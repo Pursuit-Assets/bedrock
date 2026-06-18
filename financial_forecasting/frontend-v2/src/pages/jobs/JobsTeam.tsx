@@ -2036,6 +2036,7 @@ export function JobsTeam() {
   const [ownerFilter, setOwnerFilter] = useState<string | null>(null);
   const [stageGroup, setStageGroup] = useState<StageGroup>("all");
   const [dealTypeFilter, setDealTypeFilter] = useState<DealTypeFilter>("ft");
+  const [segmentFilter, setSegmentFilter] = useState<string>("all");
   const [query, setQuery] = useState("");
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [showNewDeal, setShowNewDeal] = useState(false);
@@ -2055,6 +2056,7 @@ export function JobsTeam() {
   const filtered = allDeals.filter(
     (d) =>
       stageMatchesGroup(d.stage, stageGroup) &&
+      (segmentFilter === "all" || d.segment === segmentFilter) &&
       (q === "" ||
         d.account_name.toLowerCase().includes(q) ||
         (d.title ?? "").toLowerCase().includes(q) ||
@@ -2142,8 +2144,21 @@ export function JobsTeam() {
           ))}
         </div>
 
+        {/* Segment filter */}
+        <select
+          value={segmentFilter}
+          onChange={(e) => setSegmentFilter(e.target.value)}
+          className="ml-auto rounded-md border border-border-strong bg-surface px-2 py-1 text-[12px] text-ink-2 focus:outline-none focus:ring-1 focus:ring-accent/40"
+          title="Filter by segment"
+        >
+          <option value="all">All segments</option>
+          {SEGMENT_OPTIONS.map((s) => (
+            <option key={s.value} value={s.value}>{s.label}</option>
+          ))}
+        </select>
+
         {/* Search */}
-        <div className="relative ml-auto">
+        <div className="relative">
           <input
             type="text"
             value={query}
@@ -2238,7 +2253,7 @@ export function JobsTeam() {
           <button
             type="button"
             className="text-accent underline underline-offset-2"
-            onClick={() => { setOwnerFilter(null); setStageGroup("all"); setDealTypeFilter("all"); }}
+            onClick={() => { setOwnerFilter(null); setStageGroup("all"); setDealTypeFilter("all"); setSegmentFilter("all"); setQuery(""); }}
           >
             Clear filters
           </button>
