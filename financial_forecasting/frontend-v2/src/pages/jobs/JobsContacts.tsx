@@ -297,7 +297,7 @@ function AccountRow({
 
 type AccountSortKey = "account" | "count";
 
-export function JobsContacts() {
+export function JobsContacts({ initialQuery }: { initialQuery?: string } = {}) {
   const [search, setSearch] = useState("");
   const [stage, setStage] = useState("");
   const [dealType, setDealType] = useState("all");  // deal-type lens; "all" so unlinked prospects aren't hidden
@@ -305,10 +305,10 @@ export function JobsContacts() {
   const [showNewContact, setShowNewContact] = useState(false);
   const { sort, toggle: toggleSort } = useSort<AccountSortKey>();
 
-  // Global contact search state
-  const [globalSearch, setGlobalSearch] = useState("");
+  // Global contact search state — seedable via ?q= deep-link (e.g. from global search)
+  const [globalSearch, setGlobalSearch] = useState(initialQuery ?? "");
   const [selectedContact, setSelectedContact] = useState<ContactSearchResult | null>(null);
-  const [showDropdown, setShowDropdown] = useState(false);
+  const [showDropdown, setShowDropdown] = useState(Boolean(initialQuery));
   const blurTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [addedToJobsIds, setAddedToJobsIds] = useState<Set<number>>(new Set());
   const [bannerAddedToJobs, setBannerAddedToJobs] = useState(false);

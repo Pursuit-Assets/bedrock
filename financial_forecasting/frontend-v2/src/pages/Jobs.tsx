@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { BarChart3, Kanban, Users, GraduationCap } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { cn } from "@/lib/utils";
@@ -16,8 +17,15 @@ const VIEWS = [
   { id: "builders" as View,    label: "Builders",    icon: GraduationCap, desc: "Per-builder job search" },
 ];
 
+const VALID_VIEWS = new Set<View>(["performance", "team", "contacts", "builders"]);
+
 export function JobsPage() {
-  const [view, setView] = useState<View>("performance");
+  const [searchParams] = useSearchParams();
+  // Deep-link support (e.g. from global search): ?view=contacts&q=<name|email>
+  const paramView = searchParams.get("view") as View | null;
+  const initialView: View = paramView && VALID_VIEWS.has(paramView) ? paramView : "performance";
+  const initialQuery = searchParams.get("q") ?? undefined;
+  const [view, setView] = useState<View>(initialView);
 
   return (
     <div className="flex flex-col gap-0 px-7 py-6 pb-12">
@@ -51,7 +59,7 @@ export function JobsPage() {
       <div className="mt-2">
         {view === "performance" && <JobsLeadership />}
         {view === "team"        && <JobsTeam />}
-        {view === "contacts"    && <JobsContacts />}
+        {view === "contacts"    && <JobsContacts initialQuery={initialQuery} />}
         {view === "builders"    && <JobsBuilders />}
       </div>
     </div>
