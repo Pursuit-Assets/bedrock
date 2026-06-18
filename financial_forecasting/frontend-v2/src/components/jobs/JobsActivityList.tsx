@@ -5,8 +5,9 @@
  * separated from synced email/calendar.
  */
 import { useMemo, useState } from "react";
-import { Calendar, Mail, MessageSquare, Phone, Search, Linkedin } from "lucide-react";
+import { Search } from "lucide-react";
 
+import { ActivitySourceIcon } from "@/components/ActivitySourceIcon";
 import { cn } from "@/lib/utils";
 import type { ActivityEntry } from "@/services/jobs";
 
@@ -24,15 +25,6 @@ function fmtDate(iso: string | null): string {
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 }
 
-function TypeIcon({ type, source }: { type: string; source: string }) {
-  const t = (type || "").toLowerCase();
-  if (t.includes("meeting") || source === "google_calendar") return <Calendar size={13} className="text-violet-500" />;
-  if (t.includes("call")) return <Phone size={13} className="text-green-600" />;
-  if (t.includes("linkedin")) return <Linkedin size={13} className="text-indigo-600" />;
-  if (t.includes("text")) return <MessageSquare size={13} className="text-sky-600" />;
-  return <Mail size={13} className="text-ink-3" />;
-}
-
 function Row({ a }: { a: ActivityEntry }) {
   const [open, setOpen] = useState(false);
   const body = decode(a.email_body_text || a.description);
@@ -41,7 +33,7 @@ function Row({ a }: { a: ActivityEntry }) {
   return (
     <div className="border-b border-border-strong/60 px-3 py-2 last:border-0">
       <button type="button" onClick={() => hasBody && setOpen((v) => !v)} className={cn("flex w-full items-start gap-2 text-left", hasBody && "cursor-pointer")}>
-        <span className="mt-0.5 shrink-0"><TypeIcon type={a.type} source={a.source} /></span>
+        <span className="mt-0.5 shrink-0"><ActivitySourceIcon source={a.source} type={a.type} size={14} /></span>
         <span className="min-w-0 flex-1">
           <span className="flex items-center gap-2">
             <span className="truncate text-[12.5px] font-medium text-ink">{a.subject || a.type || "Activity"}</span>
