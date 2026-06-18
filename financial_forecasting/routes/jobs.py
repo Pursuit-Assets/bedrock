@@ -148,6 +148,12 @@ class OpportunityUpdate(BaseModel):
     touch_count: Optional[int] = None
     sf_opportunity_id: Optional[str] = None
     note: Optional[str] = None  # optional note when changing stage
+    # Call-feedback round
+    closed_lost_reason: Optional[str] = None
+    closed_lost_note: Optional[str] = None
+    priority: Optional[int] = None
+    segment: Optional[str] = None
+    intro_by: Optional[str] = None
 
 
 @router.get("/metrics/{key}")
@@ -2013,6 +2019,8 @@ async def update_opportunity(
         raise HTTPException(400, f"Invalid deal_type: {body.deal_type}")
     if body.likelihood and body.likelihood not in VALID_LIKELIHOODS:
         raise HTTPException(400, f"Invalid likelihood: {body.likelihood}")
+    if body.priority is not None and not (1 <= body.priority <= 5):
+        raise HTTPException(400, "priority must be between 1 and 5")
 
     user_email = user.get("email") if isinstance(user, dict) else getattr(user, "email", None)
     stage_changed = body.stage and body.stage != existing["stage"]
@@ -2024,7 +2032,8 @@ async def update_opportunity(
     for field in ("stage", "deal_type", "title", "description", "salary_expected",
                   "num_roles", "likelihood",
                   "source", "owner_email", "sf_contact_ids", "builder_ids",
-                  "follow_up_date", "touch_count", "sf_opportunity_id"):
+                  "follow_up_date", "touch_count", "sf_opportunity_id",
+                  "closed_lost_reason", "closed_lost_note", "priority", "segment", "intro_by"):
         val = getattr(body, field, None)
         if val is not None:
             sets.append(f"{field} = ${i}"); params.append(val); i += 1

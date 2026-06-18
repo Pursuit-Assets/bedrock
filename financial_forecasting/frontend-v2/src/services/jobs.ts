@@ -37,6 +37,12 @@ export interface JobsOpportunity {
   airtable_id: string | null;
   num_roles: number | null;
   likelihood: "low" | "medium" | "high" | null;
+  closed_lost_reason?: string | null;
+  closed_lost_note?: string | null;
+  priority?: number | null;
+  priority_auto?: number | null;
+  segment?: string | null;
+  intro_by?: string | null;
   created_at: string;
   updated_at: string;
   closed_at: string | null;

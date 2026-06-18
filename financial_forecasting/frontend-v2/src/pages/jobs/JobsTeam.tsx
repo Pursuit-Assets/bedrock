@@ -1119,6 +1119,28 @@ const STAGE_OPTIONS: { value: JobStage; label: string }[] = STAGES_ORDERED.map((
   label: STAGE_LABELS[s],
 }));
 
+// Lead Submitted + Initial Outreach happen at the prospect/contact level — a deal
+// becomes an Opportunity once it's active. So the opp stage picker drops them, but
+// still shows a legacy value if a deal somehow already sits there.
+const HIDDEN_OPP_STAGES = new Set<JobStage>(["lead_submitted", "initial_outreach"]);
+const OPP_STAGE_OPTIONS = STAGE_OPTIONS.filter((o) => !HIDDEN_OPP_STAGES.has(o.value));
+function stageOptionsFor(stage: JobStage): { value: JobStage; label: string }[] {
+  return HIDDEN_OPP_STAGES.has(stage)
+    ? [{ value: stage, label: STAGE_LABELS[stage] }, ...OPP_STAGE_OPTIONS]
+    : OPP_STAGE_OPTIONS;
+}
+
+// Structured closed-lost reasons (drives the "why deals die" analysis).
+const CLOSED_LOST_REASONS: { value: string; label: string }[] = [
+  { value: "budget",          label: "No budget" },
+  { value: "timing",          label: "Timing / not now" },
+  { value: "hired_elsewhere", label: "Hired elsewhere" },
+  { value: "not_a_fit",       label: "Not a fit" },
+  { value: "no_response",     label: "Went cold / no response" },
+  { value: "role_cancelled",  label: "Role cancelled" },
+  { value: "other",           label: "Other" },
+];
+
 const DEAL_TYPE_OPTIONS: { value: DealType; label: string }[] = (
   Object.entries(DEAL_TYPE_LABELS) as [DealType, string][]
 ).map(([value, label]) => ({ value, label }));
@@ -1131,12 +1153,14 @@ function DealRow({
   onToggle,
   onRecordPlacements,
   onCommittedRoles,
+  onClosedLost,
 }: {
   deal: JobsOpportunity;
   isExpanded: boolean;
   onToggle: () => void;
   onRecordPlacements: (deal: { id: string; account_name: string }) => void;
   onCommittedRoles: (deal: { id: string; account_name: string }) => void;
+  onClosedLost: (deal: { id: string; account_name: string }) => void;
 }) {
   const updateOpp = useUpdateOpportunity();
 
@@ -1160,6 +1184,9 @@ function DealRow({
           onSuccess: () => {
             if (stage === "closed_won" && isPlacementType) {
               onRecordPlacements({ id: deal.id, account_name: deal.account_name });
+            } else if (stage === "closed_lost") {
+              // Capture WHY the deal died (reason + note) right at the moment.
+              onClosedLost({ id: deal.id, account_name: deal.account_name });
             } else if (stage === "active_opportunity_confirmed" && (deal.num_roles ?? 0) === 0) {
               // Only prompt for committed roles the FIRST time a deal is
               // confirmed (no roles captured yet). Re-confirming a deal that
@@ -1231,7 +1258,7 @@ function DealRow({
         <td className="w-[170px] px-3 py-1.5 align-middle" onClick={(e) => e.stopPropagation()}>
           <InlineSelect<JobStage>
             value={deal.stage}
-            options={STAGE_OPTIONS}
+            options={stageOptionsFor(deal.stage)}
             onSave={saveStage}
             renderValue={(v) => (
               <span className="flex items-center gap-1 text-[12.5px] text-ink-2">
@@ -1801,6 +1828,82 @@ function PlacementsModal({
   );
 }
 
+// ── Closed-lost reason modal ──────────────────────────────────────────────────
+
+function ClosedLostModal({
+  deal,
+  onClose,
+}: {
+  deal: { id: string; account_name: string };
+  onClose: () => void;
+}) {
+  const [reason, setReason] = useState("");
+  const [note, setNote] = useState("");
+  const updateOpp = useUpdateOpportunity();
+
+  function save() {
+    updateOpp.mutate(
+      { id: deal.id, closed_lost_reason: reason || null, closed_lost_note: note.trim() || null },
+      { onSuccess: () => onClose() },
+    );
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/30"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div className="w-full max-w-sm rounded-xl border border-border-strong bg-surface shadow-xl">
+        <div className="flex items-center justify-between border-b border-border-strong px-5 py-4">
+          <h2 className="text-[15px] font-semibold text-ink">Why did {deal.account_name} fall through?</h2>
+          <button type="button" onClick={onClose} className="text-ink-3 hover:text-ink" aria-label="Close">
+            <X size={16} />
+          </button>
+        </div>
+        <div className="flex flex-col gap-3 px-5 py-4">
+          <div className="flex flex-col gap-1">
+            <label className="text-[11px] font-semibold uppercase tracking-wider text-ink-4">Reason</label>
+            <select
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              autoFocus
+              className="w-full rounded-md border border-border-strong bg-surface px-3 py-2 text-[13px] text-ink focus:outline-none focus:ring-1 focus:ring-accent/40"
+            >
+              <option value="">— select —</option>
+              {CLOSED_LOST_REASONS.map((r) => (
+                <option key={r.value} value={r.value}>{r.label}</option>
+              ))}
+            </select>
+          </div>
+          <div className="flex flex-col gap-1">
+            <label className="text-[11px] font-semibold uppercase tracking-wider text-ink-4">Note (optional)</label>
+            <textarea
+              rows={3}
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+              placeholder="Context — what happened, who said what…"
+              className="w-full resize-none rounded-md border border-border-strong bg-surface px-3 py-2 text-[13px] text-ink placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40"
+            />
+          </div>
+        </div>
+        <div className="flex items-center justify-end gap-3 border-t border-border-strong px-5 py-3">
+          <button type="button" onClick={onClose} className="text-[13px] font-medium text-ink-3 hover:text-ink">
+            Skip
+          </button>
+          <button
+            type="button"
+            onClick={save}
+            disabled={updateOpp.isPending}
+            className="rounded-lg bg-accent px-4 py-2 text-[13px] font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+          >
+            {updateOpp.isPending ? "Saving…" : "Save reason"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 
 type DealTypeFilter = "all" | DealType;
@@ -1823,6 +1926,7 @@ export function JobsTeam() {
   const [showNewDeal, setShowNewDeal] = useState(false);
   const [placementModalDeal, setPlacementModalDeal] = useState<{ id: string; account_name: string } | null>(null);
   const [committedRolesDeal, setCommittedRolesDeal] = useState<{ id: string; account_name: string } | null>(null);
+  const [closedLostDeal, setClosedLostDeal] = useState<{ id: string; account_name: string } | null>(null);
   const { sort, toggle } = useSort<SortKey>();
 
   const { data: rawData, isLoading } = useJobsOpportunities({
@@ -2002,6 +2106,13 @@ export function JobsTeam() {
         />
       )}
 
+      {closedLostDeal && (
+        <ClosedLostModal
+          deal={closedLostDeal}
+          onClose={() => setClosedLostDeal(null)}
+        />
+      )}
+
       {/* Table */}
       {isLoading ? (
         <EmptyState>Loading deals…</EmptyState>
@@ -2050,6 +2161,7 @@ export function JobsTeam() {
                 onToggle={() => setExpandedId(expandedId === deal.id ? null : deal.id)}
                 onRecordPlacements={setPlacementModalDeal}
                 onCommittedRoles={setCommittedRolesDeal}
+                onClosedLost={setClosedLostDeal}
               />
             ))}
           </tbody>
