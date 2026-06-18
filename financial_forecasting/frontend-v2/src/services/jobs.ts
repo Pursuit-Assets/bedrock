@@ -188,6 +188,7 @@ interface ListResponse<T> { success: boolean; data: T[]; total: number }
 export interface JobContactWithDeal extends JobContact {
   airtable_id: string | null;
   deal: { id: string; account_name: string; stage: JobStage; owner_email?: string | null } | null;
+  connected_staff_names?: string[];
 }
 
 export interface ContactFilters {

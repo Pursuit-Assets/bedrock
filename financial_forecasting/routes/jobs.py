@@ -2004,6 +2004,25 @@ async def list_contacts(
     total = await conn.fetchval(
         f"SELECT count(*) FROM public.contacts c WHERE {where}", *params
     )
+
+    # Batch-resolve LinkedIn-connected staff names for all returned contacts so
+    # the contacts list can show who on the team knows each person.
+    contact_ids = [r["contact_id"] for r in rows]
+    staff_by_contact: dict[int, list[str]] = {}
+    if contact_ids:
+        srows = await conn.fetch(
+            """
+            SELECT scr.contact_id, m.display_name
+            FROM public.staff_contact_relationships scr
+            JOIN bedrock.staff_user_id_map m ON m.staff_user_id = scr.staff_user_id
+            WHERE scr.contact_id = ANY($1::int[]) AND m.display_name IS NOT NULL
+            ORDER BY m.display_name
+            """,
+            contact_ids,
+        )
+        for s in srows:
+            staff_by_contact.setdefault(s["contact_id"], []).append(s["display_name"])
+
     return {
         "success": True,
         "total": total,
@@ -2016,6 +2035,7 @@ async def list_contacts(
                     {"id": str(r["deal_id_by_company"]), "account_name": r["deal_account_by_company"], "stage": r["deal_stage_by_company"]}
                     if r["deal_id_by_company"] else None
                 ),
+                "connected_staff_names": staff_by_contact.get(r["contact_id"], []),
             }
             for r in rows
         ],
