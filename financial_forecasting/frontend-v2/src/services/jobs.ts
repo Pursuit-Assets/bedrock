@@ -189,6 +189,7 @@ export interface JobContactWithDeal extends JobContact {
   airtable_id: string | null;
   deal: { id: string; account_name: string; stage: JobStage; owner_email?: string | null } | null;
   connected_staff_names?: string[];
+  recent_activity_count?: number;
 }
 
 export interface ContactFilters {

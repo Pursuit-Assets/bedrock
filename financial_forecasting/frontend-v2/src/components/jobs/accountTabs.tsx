@@ -15,14 +15,14 @@
  */
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { Briefcase, CheckSquare, MessageSquare, Plus, User, X } from "lucide-react";
+import { Briefcase, CheckSquare, ExternalLink, MessageSquare, Plus, User, X } from "lucide-react";
 
 import { JobsActivityList } from "@/components/jobs/JobsActivityList";
 import { JobsComments } from "@/components/jobs/JobsComments";
 import { JobsTasks } from "@/components/jobs/JobsTasks";
 import { RowExpandPanel } from "@/components/RowExpandPanel";
 import { withReferrer } from "@/components/detail";
-import { InlineSelect } from "@/components/ui/InlineEdit";
+import { InlineSelect, InlineText } from "@/components/ui/InlineEdit";
 import { cn } from "@/lib/utils";
 import {
   useAccountActivity,
@@ -35,12 +35,16 @@ import {
   useContactSearch,
   useCreateContact,
   useCreateOpportunity,
+  useJobsStaff,
   useLogActivity,
+  useUpdateOpportunity,
+  STAGE_LABELS,
   type AccountBuilderRow,
   type AccountComment,
   type AccountRole,
   type AccountTask,
   type DealType,
+  type JobStage,
   type JobsAccount,
 } from "@/services/jobs";
 import {
@@ -49,9 +53,14 @@ import {
 } from "@/services/jobsOpps2";
 
 import {
-  ContactsLinkTab, DEAL_TYPE_OPTIONS, OppsTab, initials,
-  jobsContactPath, jobsOpportunityPath, oppRoleLabel,
+  ContactsLinkTab, DealStagePill, DEAL_TYPE_OPTIONS, OwnerSelect,
+  initials, jobsContactPath, jobsOpportunityPath, oppRoleLabel,
 } from "./jobsEntity";
+
+const OPP_STAGE_OPTIONS: { value: JobStage; label: string }[] = ([
+  "active_in_discussions", "active_opportunity_confirmed", "active_builder_interview",
+  "closed_won", "closed_lost", "on_hold_not_selected", "on_hold_not_interested", "on_hold_not_responsive",
+] as JobStage[]).map((s) => ({ value: s, label: STAGE_LABELS[s] ?? s }));
 
 const jobsRef = withReferrer({ pathname: "/jobs", label: "Jobs" });
 const inputCls = "h-7 rounded border border-border-strong bg-surface px-2 text-[12.5px] text-ink-2 outline-none focus:border-accent";
@@ -70,41 +79,64 @@ function ScopeChip({ scope, label, parentId }: { scope: "opportunity" | "contact
   return to ? <Link to={to} state={jobsRef} className="hover:opacity-80">{inner}</Link> : inner;
 }
 
-// ── Opportunities ────────────────────────────────────────────────────────────────
+// ── Opportunities — table (Role / Stage / Owner / Deal type), create row on top ───────
 function AccountOppsTab({ account }: { account: JobsAccount }) {
-  const [adding, setAdding] = useState(false);
-  const [title, setTitle] = useState("");
-  const [dealType, setDealType] = useState<DealType | "">("ft");
+  const { data: staff = [] } = useJobsStaff();
   const create = useCreateOpportunity();
+  const update = useUpdateOpportunity();
+  const patch = (id: string, field: string, val: unknown) => update.mutateAsync({ id, [field]: val }).then(() => undefined);
 
+  // create form (all fields required; role can be "TBD")
+  const [role, setRole] = useState("");
+  const [stage, setStage] = useState<JobStage>("active_in_discussions");
+  const [owner, setOwner] = useState("");
+  const [dealType, setDealType] = useState<DealType | "">("");
+  const canCreate = role.trim() !== "" && owner !== "" && dealType !== "";
   const submit = () => {
+    if (!canCreate) return;
     create.mutate(
-      { account_id: account.account_id ?? "UNKNOWN", account_name: account.account, stage: "active_in_discussions", deal_type: (dealType || null) as DealType | null, title: title.trim() || null },
-      { onSuccess: () => { setTitle(""); setAdding(false); } },
+      { account_id: account.account_id ?? "UNKNOWN", account_name: account.account, title: role.trim(), stage, owner_email: owner, deal_type: dealType as DealType },
+      { onSuccess: () => { setRole(""); setOwner(""); setDealType(""); setStage("active_in_discussions"); } },
     );
   };
 
   return (
-    <div className="flex flex-col gap-2 p-4">
-      <OppsTab opps={account.opportunities} />
-      {adding ? (
-        <div className="flex flex-wrap items-center gap-2 rounded-md border border-dashed border-border-strong bg-surface-2/40 px-3 py-2">
-          <input autoFocus value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Role title (optional)" className={cn(inputCls, "w-52")} />
-          <select value={dealType} onChange={(e) => setDealType(e.target.value as DealType | "")} className={inputCls}>
-            <option value="">No type</option>
-            {DEAL_TYPE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-          </select>
-          <button type="button" disabled={create.isPending} onClick={submit} className="h-7 rounded bg-accent px-3 text-[12px] font-medium text-white hover:opacity-90 disabled:opacity-50">Create</button>
-          <button type="button" onClick={() => setAdding(false)} className="text-ink-3 hover:text-ink"><X size={14} /></button>
-        </div>
-      ) : (
-        <button type="button" onClick={() => setAdding(true)} className="flex w-fit items-center gap-1 rounded border border-border-strong px-2.5 py-1 text-[12px] text-ink-3 hover:border-accent hover:text-accent"><Plus size={12} /> New opportunity</button>
-      )}
+    <div className="p-3">
+      <div className="overflow-hidden rounded border border-border-strong bg-surface">
+        <table className="w-full table-fixed text-[12px]">
+          <colgroup><col /><col style={{ width: "20%" }} /><col style={{ width: "20%" }} /><col style={{ width: "16%" }} /><col style={{ width: 36 }} /></colgroup>
+          <thead className="bg-surface-2 text-[10.5px] uppercase tracking-wider text-ink-3"><tr>
+            <th className="px-2 py-1.5 text-left font-semibold">Role</th><th className="px-2 py-1.5 text-left font-semibold">Stage</th>
+            <th className="px-2 py-1.5 text-left font-semibold">Owner</th><th className="px-2 py-1.5 text-left font-semibold">Deal type</th><th className="px-2 py-1.5" />
+          </tr></thead>
+          <tbody>
+            {/* create row — action above the data */}
+            <tr className="border-b border-border-strong bg-surface-2/40">
+              <td className="px-2 py-1.5"><input value={role} onChange={(e) => setRole(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") submit(); }} placeholder="Role title (TBD ok) *" className="w-full border-0 bg-transparent text-[12.5px] text-ink outline-none placeholder:text-ink-4" /></td>
+              <td className="px-2 py-1.5"><select value={stage} onChange={(e) => setStage(e.target.value as JobStage)} className="h-6 w-full rounded border border-border-strong bg-surface px-1 text-[11.5px] outline-none focus:border-accent">{OPP_STAGE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}</select></td>
+              <td className="px-2 py-1.5"><select value={owner} onChange={(e) => setOwner(e.target.value)} className={cn("h-6 w-full rounded border bg-surface px-1 text-[11.5px] outline-none focus:border-accent", owner ? "border-border-strong" : "border-amber-300")}><option value="">Owner *</option>{staff.map((s) => <option key={s.email} value={s.email}>{s.name}</option>)}</select></td>
+              <td className="px-2 py-1.5"><select value={dealType} onChange={(e) => setDealType(e.target.value as DealType | "")} className={cn("h-6 w-full rounded border bg-surface px-1 text-[11.5px] outline-none focus:border-accent", dealType ? "border-border-strong" : "border-amber-300")}><option value="">Type *</option>{DEAL_TYPE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}</select></td>
+              <td className="px-1 py-1.5 text-center"><button type="button" disabled={!canCreate || create.isPending} onClick={submit} title="Create opportunity" className="text-ink-3 hover:text-accent disabled:opacity-30"><Plus size={15} /></button></td>
+            </tr>
+            {account.opportunities.length === 0 ? (
+              <tr><td colSpan={5} className="px-4 py-4 text-center text-[12px] italic text-ink-3">No opportunities yet — add one above.</td></tr>
+            ) : account.opportunities.map((o) => (
+              <tr key={o.id} className="border-t border-border-strong/60">
+                <td className="overflow-hidden px-2 py-1.5"><InlineText value={o.title ?? null} placeholder={oppRoleLabel(o)} onSave={(v) => patch(o.id, "title", v)} className="text-[12.5px] font-medium text-ink" /></td>
+                <td className="overflow-hidden px-2 py-1.5"><InlineSelect<JobStage> value={o.stage} options={OPP_STAGE_OPTIONS} renderValue={(v) => <DealStagePill stage={(v ?? o.stage) as JobStage} />} onSave={(v) => patch(o.id, "stage", v)} /></td>
+                <td className="overflow-hidden px-2 py-1.5"><OwnerSelect owner={o.owner_email} staff={staff} onSave={(email) => patch(o.id, "owner_email", email)} /></td>
+                <td className="overflow-hidden px-2 py-1.5"><InlineSelect<string> value={o.deal_type ?? null} options={DEAL_TYPE_OPTIONS} emptyLabel="—" onSave={(v) => patch(o.id, "deal_type", v || null)} /></td>
+                <td className="px-1 py-1.5 text-center"><Link to={jobsOpportunityPath(o.id)} state={jobsRef} className="text-ink-4 hover:text-accent" title="Open opportunity"><ExternalLink size={12} /></Link></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
 
-// ── Contacts ───────────────────────────────────────────────────────────────────────
+// ── Contacts — add/search ABOVE the list ─────────────────────────────────────────────
 function AccountContactsTab({ account }: { account: JobsAccount }) {
   const [mode, setMode] = useState<null | "existing" | "new">(null);
   const [search, setSearch] = useState("");
@@ -114,45 +146,49 @@ function AccountContactsTab({ account }: { account: JobsAccount }) {
   const [form, setForm] = useState({ full_name: "", email: "", title: "", linkedin: "" });
 
   return (
-    <div className="flex flex-col gap-2 p-4">
-      <ContactsLinkTab contacts={account.prospects} />
-      {mode === null && (
-        <div className="flex items-center gap-2">
-          <button type="button" onClick={() => setMode("existing")} className="flex w-fit items-center gap-1 rounded border border-border-strong px-2.5 py-1 text-[12px] text-ink-3 hover:border-accent hover:text-accent"><Plus size={12} /> Add existing</button>
-          <button type="button" onClick={() => setMode("new")} className="flex w-fit items-center gap-1 rounded border border-border-strong px-2.5 py-1 text-[12px] text-ink-3 hover:border-accent hover:text-accent"><Plus size={12} /> New contact</button>
-        </div>
-      )}
-      {mode === "existing" && (
-        <div className="rounded-md border border-dashed border-border-strong bg-surface-2/40 p-2">
+    <div className="flex flex-col gap-3 p-3">
+      {/* actions on top */}
+      <div className="rounded-md border border-border-strong bg-surface-2/40 px-3 py-2">
+        {mode === null && (
           <div className="flex items-center gap-2">
-            <input autoFocus value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search contacts…" className={cn(inputCls, "flex-1")} />
-            <button type="button" onClick={() => { setMode(null); setSearch(""); }} className="text-ink-3 hover:text-ink"><X size={14} /></button>
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-4">Add contact</span>
+            <button type="button" onClick={() => setMode("existing")} className="flex items-center gap-1 rounded border border-border-strong bg-surface px-2.5 py-1 text-[12px] text-ink-3 hover:border-accent hover:text-accent"><Plus size={12} /> Existing</button>
+            <button type="button" onClick={() => setMode("new")} className="flex items-center gap-1 rounded border border-border-strong bg-surface px-2.5 py-1 text-[12px] text-ink-3 hover:border-accent hover:text-accent"><Plus size={12} /> New</button>
           </div>
-          {search.trim().length >= 2 && (
-            <div className="mt-2 flex flex-col gap-1">
-              {results.slice(0, 8).map((r) => (
-                <div key={r.contact_id} className="flex items-center gap-2 rounded px-2 py-1 hover:bg-surface-2">
-                  <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-accent-soft text-[9px] font-bold text-accent-ink">{initials(r.full_name)}</span>
-                  <span className="min-w-0 flex-1 truncate text-[12px] text-ink">{r.full_name}</span>
-                  {r.airtable_id ? <span className="text-[10px] text-ink-4">already in jobs</span> : (
-                    <button type="button" onClick={() => addToJobs.mutate({ id: r.contact_id, add: true })} className="rounded border border-border-strong px-1.5 py-0.5 text-[10px] text-ink-3 hover:border-accent hover:text-accent">+ Add</button>
-                  )}
-                </div>
-              ))}
-              {results.length === 0 && <span className="px-2 text-[11px] text-ink-4">No matches.</span>}
+        )}
+        {mode === "existing" && (
+          <div>
+            <div className="flex items-center gap-2">
+              <input autoFocus value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search contacts to add…" className={cn(inputCls, "flex-1 bg-surface")} />
+              <button type="button" onClick={() => { setMode(null); setSearch(""); }} className="text-ink-3 hover:text-ink"><X size={14} /></button>
             </div>
-          )}
-        </div>
-      )}
-      {mode === "new" && (
-        <div className="flex flex-wrap items-center gap-2 rounded-md border border-dashed border-border-strong bg-surface-2/40 px-3 py-2">
-          <input autoFocus value={form.full_name} onChange={(e) => setForm({ ...form, full_name: e.target.value })} placeholder="Full name *" className={cn(inputCls, "w-40")} />
-          <input value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} placeholder="Email" className={cn(inputCls, "w-44")} />
-          <input value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} placeholder="Title" className={cn(inputCls, "w-36")} />
-          <button type="button" disabled={!form.full_name.trim() || createContact.isPending} onClick={() => createContact.mutate({ full_name: form.full_name.trim(), email: form.email.trim() || undefined, current_title: form.title.trim() || undefined, current_company: account.account, contact_stage: "lead" }, { onSuccess: () => { setForm({ full_name: "", email: "", title: "", linkedin: "" }); setMode(null); } })} className="h-7 rounded bg-accent px-3 text-[12px] font-medium text-white hover:opacity-90 disabled:opacity-50">Create</button>
-          <button type="button" onClick={() => setMode(null)} className="text-ink-3 hover:text-ink"><X size={14} /></button>
-        </div>
-      )}
+            {search.trim().length >= 2 && (
+              <div className="mt-2 flex flex-col gap-1">
+                {results.slice(0, 8).map((r) => (
+                  <div key={r.contact_id} className="flex items-center gap-2 rounded px-2 py-1 hover:bg-surface-2">
+                    <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-accent-soft text-[9px] font-bold text-accent-ink">{initials(r.full_name)}</span>
+                    <span className="min-w-0 flex-1 truncate text-[12px] text-ink">{r.full_name}</span>
+                    {r.airtable_id ? <span className="text-[10px] text-ink-4">already in jobs</span> : (
+                      <button type="button" onClick={() => addToJobs.mutate({ id: r.contact_id, add: true })} className="rounded border border-border-strong px-1.5 py-0.5 text-[10px] text-ink-3 hover:border-accent hover:text-accent">+ Add</button>
+                    )}
+                  </div>
+                ))}
+                {results.length === 0 && <span className="px-2 text-[11px] text-ink-4">No matches.</span>}
+              </div>
+            )}
+          </div>
+        )}
+        {mode === "new" && (
+          <div className="flex flex-wrap items-center gap-2">
+            <input autoFocus value={form.full_name} onChange={(e) => setForm({ ...form, full_name: e.target.value })} placeholder="Full name *" className={cn(inputCls, "w-40 bg-surface")} />
+            <input value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} placeholder="Email" className={cn(inputCls, "w-44 bg-surface")} />
+            <input value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} placeholder="Title" className={cn(inputCls, "w-36 bg-surface")} />
+            <button type="button" disabled={!form.full_name.trim() || createContact.isPending} onClick={() => createContact.mutate({ full_name: form.full_name.trim(), email: form.email.trim() || undefined, current_title: form.title.trim() || undefined, current_company: account.account, contact_stage: "lead" }, { onSuccess: () => { setForm({ full_name: "", email: "", title: "", linkedin: "" }); setMode(null); } })} className="h-7 rounded bg-accent px-3 text-[12px] font-medium text-white hover:opacity-90 disabled:opacity-50">Create</button>
+            <button type="button" onClick={() => setMode(null)} className="text-ink-3 hover:text-ink"><X size={14} /></button>
+          </div>
+        )}
+      </div>
+      <ContactsLinkTab contacts={account.prospects} />
     </div>
   );
 }
@@ -274,27 +310,39 @@ function AccountRolesTab({ account }: { account: JobsAccount }) {
   const { data: roles = [], isLoading } = useAccountRoles(key);
   const updateRole = useUpdateRole();
   const createRole = useCreateRole();
-  const [adding, setAdding] = useState(false);
   const [oppId, setOppId] = useState("");
   const [title, setTitle] = useState("");
-
-  const submit = () => {
-    if (!oppId || !title.trim()) return;
-    createRole.mutate({ oppId, title: title.trim() }, { onSuccess: () => { setTitle(""); setAdding(false); } });
-  };
+  const noOpps = account.opportunities.length === 0;
+  const canAdd = oppId !== "" && title.trim() !== "";
+  const submit = () => { if (!canAdd) return; createRole.mutate({ oppId, title: title.trim() }, { onSuccess: () => { setTitle(""); } }); };
 
   return (
-    <div className="flex flex-col gap-2 p-3">
-      {isLoading ? <Loading /> : roles.length === 0 ? <Empty>No roles across this account's opportunities yet.</Empty> : (
-        <table className="w-full table-fixed border-collapse">
-          <colgroup><col style={{ width: "34%" }} /><col style={{ width: "26%" }} /><col style={{ width: "16%" }} /><col style={{ width: "12%" }} /><col style={{ width: "12%" }} /></colgroup>
-          <thead className="text-[10px] uppercase tracking-wider text-ink-4"><tr>
-            <th className="px-2 py-1 text-left font-semibold">Role</th><th className="px-2 py-1 text-left font-semibold">Opportunity</th>
-            <th className="px-2 py-1 text-left font-semibold">Commitment</th><th className="px-2 py-1 text-left font-semibold">Status</th>
-            <th className="px-2 py-1 text-left font-semibold">Salary</th>
+    <div className="p-3">
+      <div className="overflow-hidden rounded border border-border-strong bg-surface">
+        <table className="w-full table-fixed text-[12px]">
+          <colgroup><col /><col style={{ width: "26%" }} /><col style={{ width: "16%" }} /><col style={{ width: "13%" }} /><col style={{ width: "12%" }} /></colgroup>
+          <thead className="bg-surface-2 text-[10px] uppercase tracking-wider text-ink-4"><tr>
+            <th className="px-2 py-1.5 text-left font-semibold">Role</th><th className="px-2 py-1.5 text-left font-semibold">Opportunity</th>
+            <th className="px-2 py-1.5 text-left font-semibold">Commitment</th><th className="px-2 py-1.5 text-left font-semibold">Status</th>
+            <th className="px-2 py-1.5 text-left font-semibold">Salary</th>
           </tr></thead>
           <tbody>
-            {roles.map((r: AccountRole) => (
+            {/* add row on top */}
+            {noOpps ? (
+              <tr className="border-b border-border-strong bg-surface-2/40"><td colSpan={5} className="px-3 py-2 text-[11.5px] text-ink-4">Add an opportunity first — roles link to one.</td></tr>
+            ) : (
+              <tr className="border-b border-border-strong bg-surface-2/40">
+                <td className="px-2 py-1.5"><input value={title} onChange={(e) => setTitle(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") submit(); }} placeholder="New role title *" className="w-full border-0 bg-transparent text-[12.5px] text-ink outline-none placeholder:text-ink-4" /></td>
+                <td className="px-2 py-1.5"><select value={oppId} onChange={(e) => setOppId(e.target.value)} className={cn("h-6 w-full rounded border bg-surface px-1 text-[11.5px] outline-none focus:border-accent", oppId ? "border-border-strong" : "border-amber-300")}><option value="">Opportunity *</option>{account.opportunities.map((o) => <option key={o.id} value={o.id}>{oppRoleLabel(o)}</option>)}</select></td>
+                <td className="px-2 py-1.5 text-[11px] text-ink-4" colSpan={2}>—</td>
+                <td className="px-1 py-1.5 text-center"><button type="button" disabled={!canAdd || createRole.isPending} onClick={submit} title="Add role" className="text-ink-3 hover:text-accent disabled:opacity-30"><Plus size={15} /></button></td>
+              </tr>
+            )}
+            {isLoading ? (
+              <tr><td colSpan={5} className="px-4 py-4 text-center text-[12px] text-ink-3">Loading…</td></tr>
+            ) : roles.length === 0 ? (
+              <tr><td colSpan={5} className="px-4 py-4 text-center text-[12px] italic text-ink-3">No roles yet.</td></tr>
+            ) : roles.map((r: AccountRole) => (
               <tr key={r.id} className="border-t border-border-strong/60">
                 <td className="overflow-hidden px-2 py-1.5"><span className="truncate text-[12.5px] font-medium text-ink">{r.title || "Untitled role"}{r.is_trial ? <span className="ml-1 rounded-full bg-amber-soft px-1.5 py-0.5 text-[9px] font-medium text-amber">Trial</span> : null}</span></td>
                 <td className="overflow-hidden px-2 py-1.5"><OppTag oppId={r.opportunity_id} title={r.opp_title} /></td>
@@ -309,22 +357,7 @@ function AccountRolesTab({ account }: { account: JobsAccount }) {
             ))}
           </tbody>
         </table>
-      )}
-      {adding ? (
-        <div className="flex flex-wrap items-center gap-2 rounded-md border border-dashed border-border-strong bg-surface-2/40 px-3 py-2">
-          <select value={oppId} onChange={(e) => setOppId(e.target.value)} className={cn(inputCls, "max-w-[220px]")}>
-            <option value="">Link to opportunity…</option>
-            {account.opportunities.map((o) => <option key={o.id} value={o.id}>{oppRoleLabel(o)}</option>)}
-          </select>
-          <input autoFocus value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Role title" className={cn(inputCls, "w-48")} />
-          <button type="button" disabled={!oppId || !title.trim() || createRole.isPending} onClick={submit} className="h-7 rounded bg-accent px-3 text-[12px] font-medium text-white hover:opacity-90 disabled:opacity-50">Add role</button>
-          <button type="button" onClick={() => setAdding(false)} className="text-ink-3 hover:text-ink"><X size={14} /></button>
-        </div>
-      ) : account.opportunities.length === 0 ? (
-        <span className="text-[11.5px] text-ink-4">Add an opportunity first — roles link to one.</span>
-      ) : (
-        <button type="button" onClick={() => setAdding(true)} className="flex w-fit items-center gap-1 rounded border border-border-strong px-2.5 py-1 text-[12px] text-ink-3 hover:border-accent hover:text-accent"><Plus size={12} /> Add role</button>
-      )}
+      </div>
     </div>
   );
 }
@@ -369,19 +402,38 @@ function AccountBuildersTab({ account }: { account: JobsAccount }) {
   const rows = data?.rows ?? [];
   const s = data?.summary ?? {};
   return (
-    <div className="flex flex-col gap-2 p-3">
+    <div className="flex flex-col gap-3 p-3">
+      {/* add on top */}
+      {account.opportunities.length === 0 ? (
+        <div className="rounded-md border border-border-strong bg-surface-2/40 px-3 py-2 text-[11.5px] text-ink-4">Add an opportunity first — builders apply to one.</div>
+      ) : (
+        <div className="flex flex-col gap-1 rounded-md border border-border-strong bg-surface-2/40 px-3 py-2">
+          <div className="flex items-center gap-2">
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-4">Add builder</span>
+            <select value={oppId} onChange={(e) => setOppId(e.target.value)} className={cn(inputCls, "max-w-[240px] bg-surface")}>
+              <option value="">Pick opportunity…</option>
+              {account.opportunities.map((o) => <option key={o.id} value={o.id}>{oppRoleLabel(o)}</option>)}
+            </select>
+          </div>
+          {oppId && <AddBuilderForm oppId={oppId} onDone={() => setOppId("")} />}
+        </div>
+      )}
       {!isLoading && rows.length > 0 && (
         <div className="flex items-center gap-2 text-[11px] text-ink-3"><span>{s.applied ?? 0} applied</span><span>·</span><span>{s.interview ?? 0} interviewing</span><span>·</span><span>{s.accepted ?? 0} hired</span></div>
       )}
-      {isLoading ? <Loading /> : rows.length === 0 ? <Empty>No builders have applied to this account's opportunities yet.</Empty> : (
-        <table className="w-full table-fixed border-collapse">
+      <div className="overflow-hidden rounded border border-border-strong bg-surface">
+        <table className="w-full table-fixed text-[12px]">
           <colgroup><col style={{ width: "30%" }} /><col style={{ width: "38%" }} /><col style={{ width: "16%" }} /><col style={{ width: "16%" }} /></colgroup>
-          <thead className="text-[10px] uppercase tracking-wider text-ink-4"><tr>
-            <th className="px-2 py-1 text-left font-semibold">Builder</th><th className="px-2 py-1 text-left font-semibold">Opportunity / Role</th>
-            <th className="px-2 py-1 text-left font-semibold">Stage</th><th className="px-2 py-1 text-left font-semibold">Applied</th>
+          <thead className="bg-surface-2 text-[10px] uppercase tracking-wider text-ink-4"><tr>
+            <th className="px-2 py-1.5 text-left font-semibold">Builder</th><th className="px-2 py-1.5 text-left font-semibold">Opportunity / Role</th>
+            <th className="px-2 py-1.5 text-left font-semibold">Stage</th><th className="px-2 py-1.5 text-left font-semibold">Applied</th>
           </tr></thead>
           <tbody>
-            {rows.map((b: AccountBuilderRow) => (
+            {isLoading ? (
+              <tr><td colSpan={4} className="px-4 py-4 text-center text-[12px] text-ink-3">Loading…</td></tr>
+            ) : rows.length === 0 ? (
+              <tr><td colSpan={4} className="px-4 py-4 text-center text-[12px] italic text-ink-3">No builders have applied to this account's opportunities yet.</td></tr>
+            ) : rows.map((b: AccountBuilderRow) => (
               <tr key={b.job_application_id} className="border-t border-border-strong/60">
                 <td className="overflow-hidden px-2 py-1.5"><span className="truncate text-[12.5px] font-medium text-ink">{b.builder || "—"}</span></td>
                 <td className="overflow-hidden px-2 py-1.5">
@@ -400,21 +452,7 @@ function AccountBuildersTab({ account }: { account: JobsAccount }) {
             ))}
           </tbody>
         </table>
-      )}
-      {account.opportunities.length === 0 ? (
-        <span className="text-[11.5px] text-ink-4">Add an opportunity first — builders apply to one.</span>
-      ) : (
-        <div className="flex flex-col gap-1 rounded-md border border-dashed border-border-strong bg-surface-2/40 px-3 py-2">
-          <div className="flex items-center gap-2">
-            <Plus size={12} className="text-ink-4" />
-            <select value={oppId} onChange={(e) => setOppId(e.target.value)} className={cn(inputCls, "max-w-[240px]")}>
-              <option value="">Add builder to opportunity…</option>
-              {account.opportunities.map((o) => <option key={o.id} value={o.id}>{oppRoleLabel(o)}</option>)}
-            </select>
-          </div>
-          {oppId && <AddBuilderForm oppId={oppId} onDone={() => setOppId("")} />}
-        </div>
-      )}
+      </div>
     </div>
   );
 }

@@ -43,21 +43,22 @@ function dayKey(iso: string | null): string {
   return iso.slice(0, 10);
 }
 
-/** One activity row — expands to full email (From / To / time / body). */
+/** One activity row — every row expands (uniform) to show From / To / When / body. */
 function Row({ a, depth = 0 }: { a: ActivityEntry; depth?: number }) {
   const [open, setOpen] = useState(false);
   const body = decode(a.email_body_text || a.description);
   const snippet = decode(a.email_snippet || a.description);
   const to = (a.email_to ?? []).map(decode);
-  const expandable = body.length > 0 || to.length > 0;
   return (
     <div className={cn("border-b border-border-strong/60 last:border-0", depth > 0 && "bg-surface-2/20")}>
       <button
         type="button"
-        onClick={() => expandable && setOpen((v) => !v)}
-        className={cn("flex w-full items-start gap-2 px-3 py-2 text-left", expandable && "cursor-pointer hover:bg-surface-2/40")}
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-start gap-2 px-3 py-2 text-left hover:bg-surface-2/40"
         style={depth > 0 ? { paddingLeft: 12 + depth * 16 } : undefined}
       >
+        {/* consistent caret on every row so the feed reads uniformly */}
+        <span className="mt-0.5 shrink-0 text-ink-3">{open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}</span>
         <span className="mt-0.5 shrink-0"><ActivitySourceIcon source={a.source} type={a.type} size={14} /></span>
         <span className="min-w-0 flex-1">
           <span className="flex items-baseline gap-2">
@@ -68,10 +69,10 @@ function Row({ a, depth = 0 }: { a: ActivityEntry; depth?: number }) {
           {!open && snippet && <span className="mt-0.5 block truncate text-[11.5px] text-ink-3">{snippet}</span>}
           {open && (
             <span className="mt-1.5 block rounded-md bg-surface-2/50 p-2 text-[11.5px] leading-relaxed text-ink-2">
-              <span className="block text-[11px] text-ink-4"><span className="font-medium text-ink-3">From:</span> {decode(a.email_from) || "—"}</span>
+              {a.email_from && <span className="block text-[11px] text-ink-4"><span className="font-medium text-ink-3">From:</span> {decode(a.email_from)}</span>}
               {to.length > 0 && <span className="block text-[11px] text-ink-4"><span className="font-medium text-ink-3">To:</span> {to.join(", ")}</span>}
               <span className="block text-[11px] text-ink-4"><span className="font-medium text-ink-3">When:</span> {fmtDateTime(a.activity_date)}</span>
-              {body && <span className="mt-1.5 block whitespace-pre-wrap border-t border-border-strong/60 pt-1.5">{body}</span>}
+              <span className="mt-1.5 block whitespace-pre-wrap border-t border-border-strong/60 pt-1.5">{body || <span className="italic text-ink-4">No further detail.</span>}</span>
             </span>
           )}
         </span>

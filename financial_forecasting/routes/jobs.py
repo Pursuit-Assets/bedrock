@@ -2022,6 +2022,23 @@ async def list_contacts(
         for s in srows:
             staff_by_contact.setdefault(s["contact_id"], []).append(s["display_name"])
 
+    # Recent engagement per contact (last 90d) → drives the "warmth" indicator
+    # alongside connection count.
+    activity_by_contact: dict[int, int] = {}
+    if contact_ids:
+        arows = await conn.fetch(
+            """
+            SELECT participant_public_contact_id AS cid, count(*) AS n
+            FROM bedrock.activity
+            WHERE deleted_at IS NULL
+              AND participant_public_contact_id = ANY($1::int[])
+              AND activity_date >= now() - interval '90 days'
+            GROUP BY participant_public_contact_id
+            """,
+            contact_ids,
+        )
+        activity_by_contact = {a["cid"]: a["n"] for a in arows}
+
     return {
         "success": True,
         "total": total,
@@ -2035,6 +2052,7 @@ async def list_contacts(
                     if r["deal_id_by_company"] else None
                 ),
                 "connected_staff_names": staff_by_contact.get(r["contact_id"], []),
+                "recent_activity_count": activity_by_contact.get(r["contact_id"], 0),
             }
             for r in rows
         ],

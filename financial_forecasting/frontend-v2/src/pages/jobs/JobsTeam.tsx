@@ -41,7 +41,7 @@ import { useSort, sortBy, type SortState } from "@/lib/sort";
 import { SortableHeader } from "@/components/ui/SortableHeader";
 import { SavedViewsPicker } from "@/components/ui/SavedViewsPicker";
 import { ColumnChooser } from "@/components/ui/ColumnChooser";
-import { ColGroup, ResizableTh } from "@/components/ui/ResizableTable";
+import { ResizableTh } from "@/components/ui/ResizableTable";
 import { Toolbar } from "@/components/ui/Toolbar";
 import { useColumnVisibility } from "@/lib/columnVisibility";
 import { totalWidth, useColumnWidths } from "@/lib/columnWidths";
@@ -2336,9 +2336,12 @@ export function JobsTeam() {
       {committedRolesDeal && <CommittedRolesModal deal={committedRolesDeal} onClose={() => setCommittedRolesDeal(null)} />}
       {closedLostDeal && <ClosedLostModal deal={closedLostDeal} onClose={() => setClosedLostDeal(null)} />}
 
-      <div className="overflow-auto rounded-b-lg border border-border-strong bg-surface">
-        <table className="border-collapse" style={{ tableLayout: "fixed", width: "100%", minWidth: tableMinWidth }}>
-          <ColGroup order={visibleCols} widths={widths} />
+      <div className="overflow-hidden rounded-b-lg border border-border-strong bg-surface">
+        <table className="w-full border-collapse" style={{ tableLayout: "fixed" }}>
+          {/* fluid widths: column px widths rendered as % of the total so the
+              table fills 100% and never scrolls horizontally; resizing still
+              works (it reproportions the columns). */}
+          <colgroup>{visibleCols.map((key) => <col key={key} style={{ width: `${(widths[key] / tableMinWidth) * 100}%` }} />)}</colgroup>
           <thead className="sticky top-0 z-10">
             <tr>
               {visibleCols.map((key, idx) => (

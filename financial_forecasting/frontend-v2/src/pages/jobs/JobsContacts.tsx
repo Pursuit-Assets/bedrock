@@ -51,25 +51,46 @@ function ContactStagePill({ stage }: { stage: string | null }) {
   return <span className={cn("inline-flex w-fit items-center rounded-full px-2 py-0.5 text-[10px] font-medium leading-none", s.className)}>{s.label}</span>;
 }
 
+// ── warmth: how engaged a contact is (recent activity + staff connections) ──────
+function warmthScore(c: JobContactWithDeal): number {
+  return (c.recent_activity_count ?? 0) + (c.connected_staff_names?.length ?? 0) * 2;
+}
+function Warmth({ c }: { c: JobContactWithDeal }) {
+  const score = warmthScore(c);
+  const acts = c.recent_activity_count ?? 0;
+  const conns = c.connected_staff_names?.length ?? 0;
+  const tier = score >= 6 ? { label: "Hot", dot: "bg-red", txt: "text-red" }
+    : score >= 3 ? { label: "Warm", dot: "bg-amber", txt: "text-amber" }
+    : score >= 1 ? { label: "Cool", dot: "bg-sky-400", txt: "text-sky-600" }
+    : { label: "Cold", dot: "bg-stone-300", txt: "text-ink-4" };
+  return (
+    <span className="flex items-center gap-1.5" title={`${acts} activities (90d) · ${conns} staff connection${conns === 1 ? "" : "s"}`}>
+      <span className={cn("inline-block h-2 w-2 shrink-0 rounded-full", tier.dot)} />
+      <span className={cn("text-[11.5px] font-medium", tier.txt)}>{tier.label}</span>
+    </span>
+  );
+}
+
 // ── columns ──────────────────────────────────────────────────────────────────
-type ColKey = "name" | "title" | "company" | "stage" | "connected" | "deal" | "email" | "linkedin";
-const COLUMN_ORDER: ColKey[] = ["name", "title", "company", "stage", "connected", "deal", "email", "linkedin"];
-const DEFAULT_VISIBLE: ColKey[] = ["name", "title", "company", "stage", "connected", "deal"];
+type ColKey = "name" | "title" | "company" | "stage" | "warmth" | "connected" | "deal" | "email" | "linkedin";
+const COLUMN_ORDER: ColKey[] = ["name", "title", "company", "stage", "warmth", "connected", "deal", "email", "linkedin"];
+const DEFAULT_VISIBLE: ColKey[] = ["name", "title", "company", "stage", "warmth", "connected", "deal"];
 const COL_LABELS: Record<ColKey, string> = {
-  name: "Name", title: "Title", company: "Company", stage: "Stage",
+  name: "Name", title: "Title", company: "Company", stage: "Stage", warmth: "Warmth",
   connected: "Connected staff", deal: "Linked deal", email: "Email", linkedin: "LinkedIn",
 };
 const COL_WEIGHT: Record<ColKey, number> = {
-  name: 20, title: 18, company: 16, stage: 11, connected: 16, deal: 15, email: 18, linkedin: 7,
+  name: 19, title: 16, company: 15, stage: 10, warmth: 10, connected: 15, deal: 14, email: 17, linkedin: 7,
 };
-const SORTABLE = new Set<ColKey>(["name", "title", "company", "stage"]);
+const SORTABLE = new Set<ColKey>(["name", "title", "company", "stage", "warmth"]);
 
-function extract(c: JobContactWithDeal, key: ColKey): string {
+function extract(c: JobContactWithDeal, key: ColKey): string | number {
   switch (key) {
     case "name": return (c.full_name ?? "").toLowerCase();
     case "title": return (c.current_title ?? "").toLowerCase();
     case "company": return (c.current_company ?? "").toLowerCase();
     case "stage": return c.contact_stage ?? "";
+    case "warmth": return warmthScore(c);
     default: return "";
   }
 }
@@ -166,6 +187,7 @@ function ContactRow({ contact, expanded, onOpen, visibleCols }: { contact: JobCo
         renderValue={(v) => <ContactStagePill stage={v ?? null} />}
         onSave={(v) => new Promise<void>((res, rej) => updateContact.mutate({ id: contact.contact_id, contact_stage: v || null }, { onSuccess: () => res(), onError: rej }))} />
     ),
+    warmth: <Warmth c={contact} />,
     connected: staff.length > 0
       ? <span className="flex min-w-0 flex-wrap items-center gap-1"><Linkedin size={11} className="shrink-0 text-indigo-500" />{staff.slice(0, 2).map((n) => <span key={n} className="truncate rounded-full bg-indigo-50 px-1.5 py-0.5 text-[10px] font-medium text-indigo-600">{n}</span>)}{staff.length > 2 && <span className="text-[10px] text-ink-4">+{staff.length - 2}</span>}</span>
       : <span className="text-ink-4">—</span>,
