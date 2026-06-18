@@ -38,8 +38,9 @@ import { JobsComments } from "@/components/jobs/JobsComments";
 import { CommittedRolesModal } from "@/components/jobs/CommittedRolesModal";
 import { RowExpandPanel, type ExpandTab } from "@/components/RowExpandPanel";
 import { InlineText, InlineSelect } from "@/components/ui/InlineEdit";
-import { useSort, sortBy } from "@/lib/sort";
+import { useSort, sortBy, type SortState } from "@/lib/sort";
 import { SortableHeader } from "@/components/ui/SortableHeader";
+import { SavedViewsPicker } from "@/components/ui/SavedViewsPicker";
 import { ChevronDown, ChevronRight, Mail, Linkedin, Trash2, X, Plus, Check, Search } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { format, formatDistanceToNow } from "date-fns";
@@ -2024,6 +2025,16 @@ function ClosedLostModal({
 type DealTypeFilter = "all" | DealType;
 type SortKey = "company" | "stage" | "type" | "likelihood" | "priority" | "num_roles" | "updated";
 
+// Persisted shape for Saved Views (personal + global) on the Opportunities tab.
+interface JobsOppView {
+  ownerFilter: string | null;
+  stageGroup: StageGroup;
+  dealTypeFilter: DealTypeFilter;
+  segmentFilter: string;
+  query: string;
+  sort: SortState<SortKey>;
+}
+
 const LIKELIHOOD_RANK: Record<Likelihood, number> = { low: 1, medium: 2, high: 3 };
 
 const DEAL_TYPE_FILTERS: DealTypeFilter[] = ["all", "ft", "pt_contract", "capstone", "volunteer", "workshop", "pilot"];
@@ -2043,7 +2054,7 @@ export function JobsTeam() {
   const [placementModalDeal, setPlacementModalDeal] = useState<{ id: string; account_name: string } | null>(null);
   const [committedRolesDeal, setCommittedRolesDeal] = useState<{ id: string; account_name: string } | null>(null);
   const [closedLostDeal, setClosedLostDeal] = useState<{ id: string; account_name: string } | null>(null);
-  const { sort, toggle } = useSort<SortKey>();
+  const { sort, toggle, setSort } = useSort<SortKey>();
 
   const { data: rawData, isLoading } = useJobsOpportunities({
     ...(ownerFilter ? { owner_email: ownerFilter } : {}),
@@ -2182,6 +2193,20 @@ export function JobsTeam() {
         <span className="font-mono text-[12px] text-ink-4">
           {isLoading ? "…" : `${visible.length} deal${visible.length === 1 ? "" : "s"}`}
         </span>
+
+        {/* Saved views — personal + global, reuses the portfolio system */}
+        <SavedViewsPicker<JobsOppView>
+          scopeKey="jobs-opportunities"
+          currentFilters={{ ownerFilter, stageGroup, dealTypeFilter, segmentFilter, query, sort }}
+          onLoad={(v) => {
+            setOwnerFilter(v.ownerFilter ?? null);
+            setStageGroup(v.stageGroup ?? "all");
+            setDealTypeFilter(v.dealTypeFilter ?? "ft");
+            setSegmentFilter(v.segmentFilter ?? "all");
+            setQuery(v.query ?? "");
+            if (v.sort) setSort(v.sort);
+          }}
+        />
 
         {/* New Deal button */}
         <button
