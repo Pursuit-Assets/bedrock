@@ -86,7 +86,16 @@ interface ResultItem {
   href: string;
 }
 
-function buildItems(results: SearchResults): ResultItem[] {
+/** A bedrock/jobs contact (public.contacts) — not necessarily in Salesforce. */
+interface BedrockContact {
+  contact_id: number;
+  full_name: string | null;
+  email: string | null;
+  current_title: string | null;
+  current_company: string | null;
+}
+
+function buildItems(results: SearchResults, bedrockContacts: BedrockContact[] = []): ResultItem[] {
   const out: ResultItem[] = [];
   for (const r of results.Account ?? []) {
     out.push({
@@ -95,12 +104,26 @@ function buildItems(results: SearchResults): ResultItem[] {
       href: `/accounts/${r.Id}`,
     });
   }
+  const sfEmails = new Set<string>();
   for (const r of results.Contact ?? []) {
+    if (r.Email) sfEmails.add(r.Email.toLowerCase());
     out.push({
       group: "Contacts",
       label: r.Name ?? r.Id,
       sub: r.Email ?? null,
       href: `/contacts/${r.Id}`,
+    });
+  }
+  // Bedrock/jobs contacts (32k+ in public.contacts, incl. people not in SF).
+  // Searches name + email + company, so e.g. "adonis" surfaces its contacts.
+  for (const c of bedrockContacts) {
+    if (c.email && sfEmails.has(c.email.toLowerCase())) continue;
+    const name = c.full_name ?? c.email ?? `#${c.contact_id}`;
+    out.push({
+      group: "Contacts",
+      label: name,
+      sub: [c.current_title, c.current_company].filter(Boolean).join(" · ") || c.email || null,
+      href: `/jobs?view=contacts&q=${encodeURIComponent(c.email || name)}`,
     });
   }
   for (const r of results.Opportunity ?? []) {
@@ -193,11 +216,19 @@ export function TopBarSearch() {
     }
     setLoading(true);
     debounceRef.current = setTimeout(async () => {
+      const qs = encodeURIComponent(query.trim());
       try {
-        const { data } = await api.get<SearchResults>(
-          `/api/salesforce/search?q=${encodeURIComponent(query.trim())}&limit=8`,
-        );
-        setItems(buildItems(data));
+        // SF + bedrock/jobs contacts in parallel; each fails independently so a
+        // Salesforce hiccup (e.g. not connected) still shows bedrock contacts.
+        const [sf, bedrock] = await Promise.all([
+          api.get<SearchResults>(`/api/salesforce/search?q=${qs}&limit=8`)
+            .then((r) => r.data)
+            .catch(() => ({ Account: [], Contact: [], Opportunity: [] } as SearchResults)),
+          api.get<{ success: boolean; data: BedrockContact[] }>(`/api/jobs/contacts/search?q=${qs}&limit=8`)
+            .then((r) => r.data.data)
+            .catch(() => [] as BedrockContact[]),
+        ]);
+        setItems(buildItems(sf, bedrock));
         setActiveIdx(0);
       } catch {
         setItems([]);
