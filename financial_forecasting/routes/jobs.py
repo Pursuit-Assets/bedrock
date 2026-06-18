@@ -1658,16 +1658,20 @@ async def jobs_accounts(
         if rec and rec["owner_email"]:
             g["owner_email"] = rec["owner_email"]
         stages = {o["stage"] for o in opps}
-        has_active = any(s and s.startswith("active") for s in stages)
+        # An opportunity is "open" while it's anywhere in the live funnel —
+        # initial_outreach through builder interview (NOT closed/on-hold). These
+        # accounts are being actively pursued. Re-activating/Dormant is only for
+        # accounts whose opps are ALL closed-lost or on-hold.
+        has_open = any(s and (s == "initial_outreach" or s.startswith("active")) for s in stages)
         has_won = "closed_won" in stages
         last = g.pop("_last")
         recent = bool(last and (now - last).days <= 90)
         if rec and rec["status_override"]:
             status = rec["status_override"]
+        elif has_open:
+            status = "Pursuing"
         elif has_won:
             status = "Stewarding"
-        elif has_active:
-            status = "Pursuing"
         elif opps:
             status = "Re-activating" if recent else "Dormant"
         else:

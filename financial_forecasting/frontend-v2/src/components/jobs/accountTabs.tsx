@@ -93,12 +93,13 @@ function AccountOppsTab({ account }: { account: JobsAccount }) {
   const [dealType, setDealType] = useState<DealType | "">("");
   const [likelihood, setLikelihood] = useState<"" | "low" | "medium" | "high">("");
   const [numRoles, setNumRoles] = useState("1");
+  const [adding, setAdding] = useState(false);
   const canCreate = role.trim() !== "" && owner !== "" && dealType !== "" && likelihood !== "" && numRoles.trim() !== "";
   const submit = () => {
     if (!canCreate) return;
     create.mutate(
       { account_id: account.account_id ?? "UNKNOWN", account_name: account.account, title: role.trim(), stage, owner_email: owner, deal_type: dealType as DealType, likelihood: likelihood as "low" | "medium" | "high", num_roles: Number(numRoles) || 1 },
-      { onSuccess: () => { setRole(""); setOwner(""); setDealType(""); setLikelihood(""); setNumRoles("1"); setStage("active_in_discussions"); } },
+      { onSuccess: () => { setRole(""); setOwner(""); setDealType(""); setLikelihood(""); setNumRoles("1"); setStage("active_in_discussions"); setAdding(false); } },
     );
   };
 
@@ -113,18 +114,8 @@ function AccountOppsTab({ account }: { account: JobsAccount }) {
             <th className="px-2 py-1.5 text-left font-semibold">Likelihood</th><th className="px-2 py-1.5 text-left font-semibold"># Roles</th><th className="px-2 py-1.5" />
           </tr></thead>
           <tbody>
-            {/* create row — action above the data */}
-            <tr className="border-b border-border-strong bg-surface-2/40">
-              <td className="px-2 py-1.5"><input value={role} onChange={(e) => setRole(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") submit(); }} placeholder="Role title (TBD ok) *" className="w-full border-0 bg-transparent text-[12.5px] text-ink outline-none placeholder:text-ink-4" /></td>
-              <td className="px-2 py-1.5"><select value={stage} onChange={(e) => setStage(e.target.value as JobStage)} className="h-6 w-full rounded border border-border-strong bg-surface px-1 text-[11.5px] outline-none focus:border-accent">{OPP_STAGE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}</select></td>
-              <td className="px-2 py-1.5"><select value={owner} onChange={(e) => setOwner(e.target.value)} className={cn("h-6 w-full rounded border bg-surface px-1 text-[11.5px] outline-none focus:border-accent", owner ? "border-border-strong" : "border-amber-300")}><option value="">Owner *</option>{staff.map((s) => <option key={s.email} value={s.email}>{s.name}</option>)}</select></td>
-              <td className="px-2 py-1.5"><select value={dealType} onChange={(e) => setDealType(e.target.value as DealType | "")} className={cn("h-6 w-full rounded border bg-surface px-1 text-[11.5px] outline-none focus:border-accent", dealType ? "border-border-strong" : "border-amber-300")}><option value="">Type *</option>{DEAL_TYPE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}</select></td>
-              <td className="px-2 py-1.5"><select value={likelihood} onChange={(e) => setLikelihood(e.target.value as "" | "low" | "medium" | "high")} className={cn("h-6 w-full rounded border bg-surface px-1 text-[11.5px] outline-none focus:border-accent", likelihood ? "border-border-strong" : "border-amber-300")}><option value="">— *</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select></td>
-              <td className="px-2 py-1.5"><input type="number" min="1" value={numRoles} onChange={(e) => setNumRoles(e.target.value)} className="h-6 w-full rounded border border-border-strong bg-surface px-1 text-[11.5px] outline-none focus:border-accent" /></td>
-              <td className="px-1 py-1.5 text-center"><button type="button" disabled={!canCreate || create.isPending} onClick={submit} title="Create opportunity" className="text-ink-3 hover:text-accent disabled:opacity-30"><Plus size={15} /></button></td>
-            </tr>
-            {account.opportunities.length === 0 ? (
-              <tr><td colSpan={7} className="px-4 py-4 text-center text-[12px] italic text-ink-3">No opportunities yet — add one above.</td></tr>
+            {account.opportunities.length === 0 && !adding ? (
+              <tr><td colSpan={7} className="px-4 py-4 text-center text-[12px] italic text-ink-3">No opportunities yet.</td></tr>
             ) : account.opportunities.map((o) => (
               <tr key={o.id} className="border-t border-border-strong/60">
                 <td className="overflow-hidden px-2 py-1.5"><InlineText value={o.title ?? null} placeholder={oppRoleLabel(o)} onSave={(v) => patch(o.id, "title", v)} className="text-[12.5px] font-medium text-ink" /></td>
@@ -136,6 +127,29 @@ function AccountOppsTab({ account }: { account: JobsAccount }) {
                 <td className="px-1 py-1.5 text-center"><Link to={jobsOpportunityPath(o.id)} state={jobsRef} className="text-ink-4 hover:text-accent" title="Open opportunity"><ExternalLink size={12} /></Link></td>
               </tr>
             ))}
+            {/* add row at the bottom — collapsed trigger until you click it (tasks-style) */}
+            {adding ? (
+              <tr className="border-t border-border-strong bg-surface-2/40">
+                <td className="px-2 py-1.5"><input autoFocus value={role} onChange={(e) => setRole(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") submit(); if (e.key === "Escape") setAdding(false); }} placeholder="Role title (TBD ok) *" className="w-full border-0 bg-transparent text-[12.5px] text-ink outline-none placeholder:text-ink-4" /></td>
+                <td className="px-2 py-1.5"><select value={stage} onChange={(e) => setStage(e.target.value as JobStage)} className="h-6 w-full rounded border border-border-strong bg-surface px-1 text-[11.5px] outline-none focus:border-accent">{OPP_STAGE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}</select></td>
+                <td className="px-2 py-1.5"><select value={owner} onChange={(e) => setOwner(e.target.value)} className={cn("h-6 w-full rounded border bg-surface px-1 text-[11.5px] outline-none focus:border-accent", owner ? "border-border-strong" : "border-amber-300")}><option value="">Owner *</option>{staff.map((s) => <option key={s.email} value={s.email}>{s.name}</option>)}</select></td>
+                <td className="px-2 py-1.5"><select value={dealType} onChange={(e) => setDealType(e.target.value as DealType | "")} className={cn("h-6 w-full rounded border bg-surface px-1 text-[11.5px] outline-none focus:border-accent", dealType ? "border-border-strong" : "border-amber-300")}><option value="">Type *</option>{DEAL_TYPE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}</select></td>
+                <td className="px-2 py-1.5"><select value={likelihood} onChange={(e) => setLikelihood(e.target.value as "" | "low" | "medium" | "high")} className={cn("h-6 w-full rounded border bg-surface px-1 text-[11.5px] outline-none focus:border-accent", likelihood ? "border-border-strong" : "border-amber-300")}><option value="">— *</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select></td>
+                <td className="px-2 py-1.5"><input type="number" min="1" value={numRoles} onChange={(e) => setNumRoles(e.target.value)} className="h-6 w-full rounded border border-border-strong bg-surface px-1 text-[11.5px] outline-none focus:border-accent" /></td>
+                <td className="px-1 py-1.5 text-center">
+                  <div className="flex items-center justify-center gap-1">
+                    <button type="button" disabled={!canCreate || create.isPending} onClick={submit} title="Create opportunity" className="text-ink-3 hover:text-accent disabled:opacity-30"><Plus size={15} /></button>
+                    <button type="button" onClick={() => setAdding(false)} title="Cancel" className="text-ink-4 hover:text-ink"><X size={13} /></button>
+                  </div>
+                </td>
+              </tr>
+            ) : (
+              <tr className="border-t border-border-strong">
+                <td colSpan={7} className="px-2 py-1.5">
+                  <button type="button" onClick={() => setAdding(true)} className="flex items-center gap-1.5 text-[12px] font-medium text-ink-3 hover:text-accent"><Plus size={13} /> New opportunity</button>
+                </td>
+              </tr>
+            )}
           </tbody>
         </table>
       </div>
