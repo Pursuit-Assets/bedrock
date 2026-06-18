@@ -1015,9 +1015,9 @@ async def get_funnel(
     movement_by_stage: dict = {}  # stage_key -> list of recent transitions touching it
 
     if ftype == "opportunities":
+        # Lead Submitted + Initial Outreach happen at the prospect level — the
+        # opportunities funnel starts once a deal is active (In Discussions).
         stage_order = [
-            ("lead_submitted", "Lead Submitted"),
-            ("initial_outreach", "Initial Outreach"),
             ("active_in_discussions", "In Discussions"),
             ("active_opportunity_confirmed", "Opportunity Confirmed"),
             ("active_builder_interview", "Builder Interview"),

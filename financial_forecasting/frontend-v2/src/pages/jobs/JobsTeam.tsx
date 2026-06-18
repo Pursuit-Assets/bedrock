@@ -567,38 +567,22 @@ function DealContextStrip({ deal }: { deal: JobsOpportunity }) {
       updateOpp.mutate({ id: deal.id, ...fields }, { onSuccess: () => resolve(), onError: reject }),
     );
   const isClosedLost = deal.stage === "closed_lost";
+  // Priority + Segment are edited inline in the row now; the strip keeps the
+  // overridable priority suggestion, warm-intro attribution, and closed-lost reason.
   return (
     <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5 border-b border-border-strong bg-surface-2/30 px-4 py-2">
-      <Field label="Priority">
-        <div className="flex items-center gap-2">
-          <InlineSelect<string>
-            value={deal.priority != null ? String(deal.priority) : null}
-            options={PRIORITY_OPTIONS}
-            emptyLabel="—"
-            renderValue={(v) => (v ? (PRIORITY_OPTIONS.find((o) => o.value === v)?.label ?? v) : <span className="text-ink-4">—</span>)}
-            onSave={(v) => patch({ priority: v ? Number(v) : null })}
-          />
-          {deal.priority == null && deal.priority_suggested != null ? (
-            <button
-              type="button"
-              onClick={() => void patch({ priority: deal.priority_suggested })}
-              className="text-[10.5px] text-accent hover:underline"
-              title="Apply the suggested priority (you can change it)"
-            >
-              suggest {PRIORITY_BADGE[deal.priority_suggested]?.label ?? deal.priority_suggested} · use
-            </button>
-          ) : null}
-        </div>
-      </Field>
-      <Field label="Segment">
-        <InlineSelect<string>
-          value={deal.segment ?? null}
-          options={SEGMENT_OPTIONS}
-          emptyLabel="—"
-          renderValue={(v) => (v ? (SEGMENT_LABELS[v] ?? v) : <span className="text-ink-4">—</span>)}
-          onSave={(v) => patch({ segment: v || null })}
-        />
-      </Field>
+      {deal.priority == null && deal.priority_suggested != null ? (
+        <Field label="Suggested priority">
+          <button
+            type="button"
+            onClick={() => void patch({ priority: deal.priority_suggested })}
+            className="text-[12px] text-accent hover:underline"
+            title="Apply the suggested priority to the row (you can change it)"
+          >
+            {PRIORITY_BADGE[deal.priority_suggested]?.label ?? deal.priority_suggested} · use
+          </button>
+        </Field>
+      ) : null}
       <Field label="Warm intro by">
         <InlineText value={deal.intro_by} placeholder="—" onSave={(v) => patch({ intro_by: v || null })} />
       </Field>
@@ -1250,7 +1234,7 @@ const DEAL_TYPE_OPTIONS: { value: DealType; label: string }[] = (
   Object.entries(DEAL_TYPE_LABELS) as [DealType, string][]
 ).map(([value, label]) => ({ value, label }));
 
-const TOTAL_COLS = 9;
+const TOTAL_COLS = 11;
 
 function DealRow({
   deal,
@@ -1331,7 +1315,6 @@ function DealRow({
             <span className="block truncate text-[13px] font-semibold text-ink">
               {deal.account_name}
             </span>
-            <PriorityBadge priority={deal.priority} />
             <RecentActivityDot recent={deal.recent_activity_count} last={deal.last_activity_at} />
           </div>
         </td>
@@ -1397,6 +1380,32 @@ function DealRow({
             options={LIKELIHOOD_OPTIONS}
             emptyLabel="—"
             onSave={(v) => patch({ likelihood: v })}
+          />
+        </td>
+
+        {/* Priority — inline select, shows the colored P# badge */}
+        <td className="w-[90px] px-3 py-1.5 align-middle" onClick={(e) => e.stopPropagation()}>
+          <InlineSelect<string>
+            value={deal.priority != null ? String(deal.priority) : null}
+            options={PRIORITY_OPTIONS}
+            emptyLabel="—"
+            renderValue={(v) =>
+              v ? <PriorityBadge priority={Number(v)} /> : <span className="text-ink-4">—</span>
+            }
+            onSave={(v) => patch({ priority: v ? Number(v) : null })}
+          />
+        </td>
+
+        {/* Segment — inline select */}
+        <td className="w-[120px] px-3 py-1.5 align-middle" onClick={(e) => e.stopPropagation()}>
+          <InlineSelect<string>
+            value={deal.segment ?? null}
+            options={SEGMENT_OPTIONS}
+            emptyLabel="—"
+            renderValue={(v) =>
+              v ? <span className="text-[12px] text-ink-2">{SEGMENT_LABELS[v] ?? v}</span> : <span className="text-ink-4">—</span>
+            }
+            onSave={(v) => patch({ segment: v || null })}
           />
         </td>
 
@@ -2013,7 +2022,7 @@ function ClosedLostModal({
 // ── Main component ────────────────────────────────────────────────────────────
 
 type DealTypeFilter = "all" | DealType;
-type SortKey = "company" | "stage" | "type" | "likelihood" | "num_roles" | "updated";
+type SortKey = "company" | "stage" | "type" | "likelihood" | "priority" | "num_roles" | "updated";
 
 const LIKELIHOOD_RANK: Record<Likelihood, number> = { low: 1, medium: 2, high: 3 };
 
@@ -2061,6 +2070,7 @@ export function JobsTeam() {
             case "stage":      return STAGE_LABELS[d.stage] ?? "";
             case "type":       return d.deal_type ? DEAL_TYPE_LABELS[d.deal_type] : "";
             case "likelihood": return d.likelihood ? LIKELIHOOD_RANK[d.likelihood] : 0;
+            case "priority":   return d.priority ?? 0;
             case "num_roles":  return d.num_roles ?? 0;
             case "updated":    return d.updated_at ?? "";
           }
@@ -2252,6 +2262,10 @@ export function JobsTeam() {
               <th className="w-[100px] px-3 py-2 text-left font-semibold">
                 <SortableHeader label="Likelihood" sortKey="likelihood" sort={sort} onToggle={toggle} />
               </th>
+              <th className="w-[90px] px-3 py-2 text-left font-semibold">
+                <SortableHeader label="Priority" sortKey="priority" sort={sort} onToggle={toggle} />
+              </th>
+              <th className="w-[120px] px-3 py-2 text-left font-semibold">Segment</th>
               <th className="w-[80px] px-3 py-2 text-right font-semibold">
                 <SortableHeader label="# Roles" sortKey="num_roles" sort={sort} onToggle={toggle} align="right" />
               </th>
