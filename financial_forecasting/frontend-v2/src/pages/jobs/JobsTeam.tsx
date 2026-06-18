@@ -1266,8 +1266,8 @@ const OPP_COL_LABELS: Record<OppColKey, string> = {
 };
 
 const OPP_DEFAULT_WIDTHS: Record<OppColKey, number> = {
-  company: 240, role: 170, salary: 110, stage: 180, status: 95, deal_type: 130,
-  priority: 95, segment: 130, likelihood: 110, num_roles: 80, owner: 160, recent: 110, updated: 120,
+  company: 280, role: 210, salary: 120, stage: 210, status: 104, deal_type: 140,
+  priority: 96, segment: 150, likelihood: 116, num_roles: 84, owner: 190, recent: 120, updated: 120,
 };
 
 const LIKELIHOOD_RANK: Record<Likelihood, number> = { low: 1, medium: 2, high: 3 };
@@ -2131,7 +2131,7 @@ export function JobsTeam() {
   const { visible: visibleCols, toggle: toggleCol, replaceAll: replaceVisibleCols } =
     useColumnVisibility<OppColKey>("bedrock-v2:vis:jobs-opportunities", OPP_COLUMN_ORDER, OPP_DEFAULT_VISIBLE);
   const { widths, startResize, replaceAll: replaceWidths } =
-    useColumnWidths<OppColKey>("bedrock-v2:cols:jobs-opportunities", OPP_DEFAULT_WIDTHS);
+    useColumnWidths<OppColKey>("bedrock-v2:cols:jobs-opportunities:v2", OPP_DEFAULT_WIDTHS);
 
   const collapsedSet = useMemo(() => new Set(collapsedGroups), [collapsedGroups]);
   const toggleGroup = useCallback(
