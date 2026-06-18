@@ -407,11 +407,14 @@ async def get_placements(user=Depends(require_auth), conn=Depends(get_db)):
     infl_any      = len(any_uids & infl_uids)
 
     # Committed FT roles still OPEN (unfilled reqs) on full-time opportunities —
-    # demand the team has locked in but not yet placed a builder into.
+    # demand the team has locked in but not yet placed a builder into. Excludes
+    # open-market roles (CVs welcome but no hiring commitment) and trials (those
+    # convert into a separate FT role; the FT role is what counts as committed).
     committed_ft_roles = await conn.fetchval("""
         SELECT count(*) FROM bedrock.jobs_role r
         JOIN bedrock.jobs_opportunity o ON o.id = r.opportunity_id
         WHERE r.status = 'open' AND o.deleted_at IS NULL
+          AND r.commitment = 'committed' AND r.is_trial = false
           AND (r.employment_type = 'full_time' OR (r.employment_type IS NULL AND o.deal_type = 'ft'))
     """) or 0
 
@@ -634,13 +637,21 @@ async def update_placement(
 VALID_ROLE_STATUSES = {"open", "filled", "cancelled"}
 
 
+VALID_COMMITMENTS = {"committed", "open_market"}
+VALID_RATE_PERIODS = {"annual", "monthly", "weekly", "daily", "hourly"}
+
+
 def _role_dict(r) -> dict:
     """Serialize a bedrock.jobs_role row for the API."""
     d = dict(r)
     d["id"] = str(d["id"])
     if d.get("opportunity_id") is not None:
         d["opportunity_id"] = str(d["opportunity_id"])
-    for k in ("start_date", "created_at", "updated_at"):
+    if d.get("converts_to_role_id") is not None:
+        d["converts_to_role_id"] = str(d["converts_to_role_id"])
+    if d.get("pay_rate") is not None:
+        d["pay_rate"] = float(d["pay_rate"])
+    for k in ("start_date", "end_date", "created_at", "updated_at"):
         v = d.get(k)
         if v is not None and hasattr(v, "isoformat"):
             d[k] = v.isoformat()
@@ -648,20 +659,42 @@ def _role_dict(r) -> dict:
 
 
 class RoleCreate(BaseModel):
-    title:           str
-    approx_salary:   Optional[int] = None
-    employment_type: Optional[str] = None
-    start_date:      Optional[date] = None
-    notes:           Optional[str] = None
+    title:               str
+    approx_salary:       Optional[int] = None
+    employment_type:     Optional[str] = None
+    start_date:          Optional[date] = None
+    notes:               Optional[str] = None
+    commitment:          Optional[str] = None          # committed | open_market (default committed)
+    is_trial:            Optional[bool] = None
+    converts_to_role_id: Optional[str] = None
+    pay_rate:            Optional[float] = None
+    rate_period:         Optional[str] = None           # annual | monthly | weekly | daily | hourly
+    end_date:            Optional[date] = None
+    pay_cadence:         Optional[str] = None
+    benefits:            Optional[str] = None
+    payment_schedule:    Optional[str] = None
+    negotiation_notes:   Optional[str] = None
+    jd_url:              Optional[str] = None
 
 
 class RoleUpdate(BaseModel):
-    title:           Optional[str] = None
-    approx_salary:   Optional[int] = None
-    employment_type: Optional[str] = None
-    start_date:      Optional[date] = None
-    status:          Optional[str] = None
-    notes:           Optional[str] = None
+    title:               Optional[str] = None
+    approx_salary:       Optional[int] = None
+    employment_type:     Optional[str] = None
+    start_date:          Optional[date] = None
+    status:              Optional[str] = None
+    notes:               Optional[str] = None
+    commitment:          Optional[str] = None
+    is_trial:            Optional[bool] = None
+    converts_to_role_id: Optional[str] = None
+    pay_rate:            Optional[float] = None
+    rate_period:         Optional[str] = None
+    end_date:            Optional[date] = None
+    pay_cadence:         Optional[str] = None
+    benefits:            Optional[str] = None
+    payment_schedule:    Optional[str] = None
+    negotiation_notes:   Optional[str] = None
+    jd_url:              Optional[str] = None
 
 
 @router.get("/opportunities/{opp_id}/roles")
@@ -686,6 +719,10 @@ async def create_opp_role(
     conn=Depends(get_db),
 ):
     """Create an open role on an opportunity."""
+    if body.commitment is not None and body.commitment not in VALID_COMMITMENTS:
+        raise HTTPException(400, f"Invalid commitment: {body.commitment}")
+    if body.rate_period is not None and body.rate_period not in VALID_RATE_PERIODS:
+        raise HTTPException(400, f"Invalid rate_period: {body.rate_period}")
     opp = await conn.fetchrow(
         "SELECT id FROM bedrock.jobs_opportunity WHERE id=$1 AND deleted_at IS NULL",
         opp_id,
@@ -693,15 +730,22 @@ async def create_opp_role(
     if not opp:
         raise HTTPException(404, "Opportunity not found")
 
+    converts_to = UUID(body.converts_to_role_id) if body.converts_to_role_id else None
     row = await conn.fetchrow(
         """
         INSERT INTO bedrock.jobs_role
-            (opportunity_id, title, approx_salary, employment_type, start_date, status, notes)
-        VALUES ($1,$2,$3,$4,$5,'open',$6)
+            (opportunity_id, title, approx_salary, employment_type, start_date, status, notes,
+             commitment, is_trial, converts_to_role_id, pay_rate, rate_period, end_date,
+             pay_cadence, benefits, payment_schedule, negotiation_notes, jd_url)
+        VALUES ($1,$2,$3,$4,$5,'open',$6,
+                COALESCE($7,'committed'), COALESCE($8,false), $9,$10,$11,$12,
+                $13,$14,$15,$16,$17)
         RETURNING *
         """,
         opp_id, body.title, body.approx_salary, body.employment_type,
         body.start_date, body.notes,
+        body.commitment, body.is_trial, converts_to, body.pay_rate, body.rate_period, body.end_date,
+        body.pay_cadence, body.benefits, body.payment_schedule, body.negotiation_notes, body.jd_url,
     )
     return {"success": True, "data": _role_dict(row)}
 
@@ -713,9 +757,13 @@ async def update_role(
     user=Depends(require_auth),
     conn=Depends(get_db),
 ):
-    """Update any of title/approx_salary/employment_type/start_date/status/notes."""
+    """Update role core fields, commitment/trial/conversion, and compensation."""
     if body.status is not None and body.status not in VALID_ROLE_STATUSES:
         raise HTTPException(400, f"Invalid status: {body.status}")
+    if body.commitment is not None and body.commitment not in VALID_COMMITMENTS:
+        raise HTTPException(400, f"Invalid commitment: {body.commitment}")
+    if body.rate_period is not None and body.rate_period not in VALID_RATE_PERIODS:
+        raise HTTPException(400, f"Invalid rate_period: {body.rate_period}")
 
     existing = await conn.fetchrow("SELECT * FROM bedrock.jobs_role WHERE id=$1", role_id)
     if not existing:
@@ -723,10 +771,18 @@ async def update_role(
 
     sets, params = [], []
     i = 1
-    for field in ("title", "approx_salary", "employment_type", "start_date", "status", "notes"):
+    for field in (
+        "title", "approx_salary", "employment_type", "start_date", "status", "notes",
+        "commitment", "is_trial", "pay_rate", "rate_period", "end_date",
+        "pay_cadence", "benefits", "payment_schedule", "negotiation_notes", "jd_url",
+    ):
         val = getattr(body, field, None)
         if val is not None:
             sets.append(f"{field} = ${i}"); params.append(val); i += 1
+    # converts_to_role_id is a uuid column — cast the incoming string.
+    if body.converts_to_role_id is not None:
+        sets.append(f"converts_to_role_id = ${i}")
+        params.append(UUID(body.converts_to_role_id)); i += 1
 
     if not sets:
         return {"success": True, "data": _role_dict(existing)}
