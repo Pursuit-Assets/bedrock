@@ -288,50 +288,60 @@ async def metric_drilldown(
         )
         return company_cols, [dict(r) for r in rows], "company"
 
-    def _type_label(t):
-        if t == "full_time":
-            return "Full-Time"
-        if t in ("contract", "freelance"):
-            return "PT / Contract"
-        return (t or "—").replace("_", " ").title()
-
     async def placements(where: str):
-        # Grouped by BUILDER → expandable to all their paid placements.
+        # Drill for the "FT Roles Secured" headline = the exact two things it
+        # counts: (1) FT-PLACED builders (full_time employment_records) and
+        # (2) COMMITTED FT roles still open. Deliberately excludes PT/contract
+        # placements and open-market roles so the drill totals match the card.
         rows = await conn.fetch(
-            f"SELECT * FROM bedrock.secured_jobs() WHERE payment_amount > 0 AND {where} ORDER BY builder"
+            "SELECT * FROM bedrock.secured_jobs() "
+            f"WHERE payment_amount > 0 AND employment_type = 'full_time' AND {where} ORDER BY builder"
         )
         groups: dict = {}
         for r in rows:
             uid = r["user_id"]
-            g = groups.setdefault(uid, {"builder": r["builder"], "ft": False, "children": []})
-            if r["employment_type"] == "full_time":
-                g["ft"] = True
+            g = groups.setdefault(uid, {"builder": r["builder"], "children": []})
             g["children"].append({
                 "role_title": r["role_title"] or "—",
                 "company_name": r["company_name"] or "—",
-                "employment_type": _type_label(r["employment_type"]),
                 "salary": f"${int(r['payment_amount']):,}" if r["payment_amount"] else "—",
                 "influence": ("Influenced" if r["influenced"] is True
                               else "Self-sourced" if r["influenced"] is False else "Unclassified"),
                 "source": r["source"],
             })
         out = []
-        for g in sorted(groups.values(), key=lambda x: (not x["ft"], x["builder"] or "")):
+        for g in sorted(groups.values(), key=lambda x: (x["builder"] or "")):
             out.append({
-                "builder": g["builder"],
-                "placements": str(len(g["children"])),
-                "status": "Full-Time" if g["ft"] else "PT / Contract",
+                "name": g["builder"],
+                "status": "FT placed",
+                "detail": f"{len(g['children'])} FT placement" + ("s" if len(g["children"]) != 1 else ""),
                 "_children": g["children"],
             })
+        # (2) committed FT roles still open — same filter as the headline count.
+        committed = await conn.fetch("""
+            SELECT o.account_name, r.title
+            FROM bedrock.jobs_role r
+            JOIN bedrock.jobs_opportunity o ON o.id = r.opportunity_id
+            WHERE r.status = 'open' AND o.deleted_at IS NULL
+              AND r.commitment = 'committed' AND r.is_trial = false
+              AND (r.employment_type = 'full_time' OR (r.employment_type IS NULL AND o.deal_type = 'ft'))
+            ORDER BY o.account_name
+        """)
+        for cr in committed:
+            out.append({
+                "name": cr["account_name"] or "—",
+                "status": "Committed (open req)",
+                "detail": cr["title"] or "FT role",
+                "_children": [],
+            })
         cols = [
-            {"key": "builder", "label": "Builder"},
+            {"key": "name", "label": "Builder / Company"},
             {"key": "status", "label": "Status"},
-            {"key": "placements", "label": "# Placements"},
+            {"key": "detail", "label": "Detail"},
         ]
         child_cols = [
             {"key": "company_name", "label": "Company"},
             {"key": "role_title", "label": "Role"},
-            {"key": "employment_type", "label": "Type"},
             {"key": "salary", "label": "Pay"},
             {"key": "influence", "label": "Influence"},
             {"key": "source", "label": "Source"},
@@ -349,7 +359,7 @@ async def metric_drilldown(
         "active_companies":     ("Active Companies",         lambda: deals("stage LIKE 'active_%'")),
         "in_discussion":        ("In Discussion",            lambda: deals("stage='active_in_discussions'")),
         "builder_interviews":   ("Builder Interview",        lambda: deals("stage='active_builder_interview'")),
-        "placements":           ("Secured Jobs (Placements)", lambda: placements("true")),
+        "placements":           ("FT Roles Secured", lambda: placements("true")),
         "candidates_submitted": ("Companies w/ Candidates Submitted", lambda: companies("stage IN ('applied','interview','accepted')")),
         "interviewing":         ("Companies Interviewing Builders",   lambda: companies("stage='interview'")),
     }
