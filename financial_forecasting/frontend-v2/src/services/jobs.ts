@@ -83,7 +83,6 @@ export interface JobContact {
   current_company: string | null;
   contact_stage: string | null;
   linkedin_url: string | null;
-  notes: string | null;
 }
 
 export interface ContactsSummary {
@@ -818,7 +817,6 @@ export interface ContactCreateBody {
   current_company?: string;
   contact_stage?: string;
   linkedin_url?: string;
-  notes?: string;
 }
 
 export function useCreateContact() {

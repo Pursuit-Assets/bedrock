@@ -320,10 +320,6 @@ export function ContactDetail({ contactId }: { contactId: number }) {
               <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-wide text-ink-4">LinkedIn</div>
               <InlineText value={data.linkedin_url} onSave={save("linkedin_url")} placeholder="LinkedIn URL" />
             </div>
-            <div>
-              <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-wide text-ink-4">Notes</div>
-              <InlineText value={data.notes} onSave={save("notes")} placeholder="Add notes…" multiline />
-            </div>
           </div>
 
           {data.deal && (

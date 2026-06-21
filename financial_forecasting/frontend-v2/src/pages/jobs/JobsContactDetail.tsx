@@ -119,12 +119,6 @@ export function JobsContactDetailPage() {
       <SectionCard title="Activity" storageScope="jobs-contact"><ContactActivityTab contactId={contactId} /></SectionCard>
       <SectionCard title="Tasks" storageScope="jobs-contact"><div className="px-3 py-2"><JobsTasks parentType="prospect" parentId={String(contactId)} /></div></SectionCard>
       <SectionCard title="Comments" storageScope="jobs-contact"><div className="px-3 py-2"><JobsComments parentType="prospect" parentId={String(contactId)} /></div></SectionCard>
-
-      {c.notes ? (
-        <SectionCard title="Notes" storageScope="jobs-contact">
-          <div className="px-5 py-3"><InlineText value={c.notes} onSave={(v) => patch("notes", v)} placeholder="—" className="text-[13px] text-ink-2" /></div>
-        </SectionCard>
-      ) : null}
     </div>
   );
 }

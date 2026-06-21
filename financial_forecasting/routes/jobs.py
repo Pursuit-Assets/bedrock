@@ -1393,7 +1393,6 @@ class ContactCreate(BaseModel):
     current_company: Optional[str] = None
     contact_stage:   str = "lead"
     linkedin_url:    Optional[str] = None
-    notes:           Optional[str] = None
 
 
 @router.post("/contacts")
@@ -1410,11 +1409,11 @@ async def create_contact(
     cid = await conn.fetchval("""
         INSERT INTO public.contacts
             (first_name, last_name, full_name, email, current_title,
-             current_company, linkedin_url, notes, source, airtable_id, contact_stage)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'manual',$9,$10)
+             current_company, linkedin_url, source, airtable_id, contact_stage)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,'manual',$8,$9)
         RETURNING contact_id
     """, first, last, body.full_name, body.email, body.current_title,
-        body.current_company, body.linkedin_url, body.notes, at_id, body.contact_stage)
+        body.current_company, body.linkedin_url, at_id, body.contact_stage)
     row = await conn.fetchrow("SELECT * FROM public.contacts WHERE contact_id=$1", cid)
     return {"success": True, "data": dict(row)}
 
@@ -1979,7 +1978,6 @@ async def list_contacts(
             c.current_company,
             c.contact_stage,
             c.linkedin_url,
-            c.notes,
             c.airtable_id,
             -- linked deal via sf_contact_ids
             jo.id           AS deal_id,
@@ -2243,7 +2241,6 @@ async def get_contact(
             "current_company": row["current_company"],
             "contact_stage":   row["contact_stage"],
             "linkedin_url":    row["linkedin_url"],
-            "notes":           row["notes"],
             "airtable_id":     row["airtable_id"],
             "deal":            deal,
             "activity":        [dict(a) for a in activity],
@@ -2254,7 +2251,7 @@ async def get_contact(
 
 CONTACT_SELECT = """
     SELECT contact_id, first_name, last_name, full_name, email,
-           current_title, current_company, contact_stage, linkedin_url, notes, source, airtable_id
+           current_title, current_company, contact_stage, linkedin_url, source, airtable_id
 """
 
 async def _resolve_contacts(conn, sf_contact_ids: list[str]) -> list[dict]:
@@ -2714,7 +2711,6 @@ class ContactUpdate(BaseModel):
     current_company: Optional[str] = None
     contact_stage:   Optional[str] = None
     linkedin_url:    Optional[str] = None
-    notes:           Optional[str] = None
 
 
 @router.patch("/contacts/{contact_id}")
@@ -2734,7 +2730,7 @@ async def update_contact(
     sets, params = [], []
     i = 1
     for field in ("full_name", "email", "current_title", "current_company",
-                  "contact_stage", "linkedin_url", "notes"):
+                  "contact_stage", "linkedin_url"):
         val = getattr(body, field, None)
         if val is not None:
             sets.append(f"{field} = ${i}"); params.append(val); i += 1

@@ -126,8 +126,8 @@ const NEW_CONTACT_STAGE_OPTIONS: { value: ContactStageValue; label: string }[] =
   { value: "lead", label: "Lead" }, { value: "initial_outreach", label: "Initial Outreach" },
   { value: "active", label: "Active" }, { value: "on_hold", label: "On Hold" },
 ];
-interface NewContactForm { fullName: string; email: string; title: string; company: string; linkedIn: string; stage: ContactStageValue; notes: string; }
-const DEFAULT_NEW_CONTACT_FORM: NewContactForm = { fullName: "", email: "", title: "", company: "", linkedIn: "", stage: "lead", notes: "" };
+interface NewContactForm { fullName: string; email: string; title: string; company: string; linkedIn: string; stage: ContactStageValue; }
+const DEFAULT_NEW_CONTACT_FORM: NewContactForm = { fullName: "", email: "", title: "", company: "", linkedIn: "", stage: "lead" };
 function Spinner() {
   return <svg className="h-3 w-3 animate-spin" viewBox="0 0 24 24" fill="none"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" /></svg>;
 }
@@ -141,7 +141,7 @@ function NewContactModal({ onClose }: { onClose: () => void }) {
     const body: ContactCreateBody = {
       full_name: form.fullName.trim(), email: form.email.trim() || undefined, current_title: form.title.trim() || undefined,
       current_company: form.company.trim() || undefined, linkedin_url: form.linkedIn.trim() || undefined,
-      contact_stage: form.stage, notes: form.notes.trim() || undefined,
+      contact_stage: form.stage,
     };
     await createContact.mutateAsync(body);
     onClose();
@@ -161,7 +161,6 @@ function NewContactModal({ onClose }: { onClose: () => void }) {
             <div className="flex flex-col gap-1"><label className="text-[11px] font-semibold uppercase tracking-wider text-ink-4">Company</label><input value={form.company} onChange={(e) => set("company", e.target.value)} className="w-full rounded-md border border-border-strong bg-surface px-3 py-2 text-[13px] text-ink focus:outline-none focus:ring-1 focus:ring-accent/40" /></div>
           </div>
           <div className="flex flex-col gap-1"><label className="text-[11px] font-semibold uppercase tracking-wider text-ink-4">LinkedIn URL</label><input type="url" value={form.linkedIn} onChange={(e) => set("linkedIn", e.target.value)} className="w-full rounded-md border border-border-strong bg-surface px-3 py-2 text-[13px] text-ink focus:outline-none focus:ring-1 focus:ring-accent/40" /></div>
-          <div className="flex flex-col gap-1"><label className="text-[11px] font-semibold uppercase tracking-wider text-ink-4">Notes</label><textarea rows={3} value={form.notes} onChange={(e) => set("notes", e.target.value)} className="w-full resize-none rounded-md border border-border-strong bg-surface px-3 py-2 text-[13px] text-ink focus:outline-none focus:ring-1 focus:ring-accent/40" /></div>
           <div className="flex items-center justify-end gap-3 pt-1"><button type="button" onClick={onClose} className="px-4 py-2 text-[13px] font-medium text-ink-3 hover:text-ink">Cancel</button><button type="submit" disabled={createContact.isPending || !form.fullName.trim()} className="flex items-center gap-1.5 rounded-lg bg-accent px-4 py-2 text-[13px] font-medium text-white hover:opacity-90 disabled:opacity-50">{createContact.isPending ? <Spinner /> : <Plus size={13} />}{createContact.isPending ? "Creating…" : "Create Contact"}</button></div>
         </form>
       </div>
