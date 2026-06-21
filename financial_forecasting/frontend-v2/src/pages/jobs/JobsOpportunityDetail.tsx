@@ -41,7 +41,7 @@ const LIKELIHOOD_OPTIONS = [
 export function JobsOpportunityDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { data: o, isLoading } = useJobsOpportunity(id ?? null);
+  const { data: o, isLoading, isError, refetch } = useJobsOpportunity(id ?? null);
   const updateOpp = useUpdateOpportunity();
   const del = useDeleteOpportunity();
   const { data: staff = [] } = useJobsStaff();
@@ -53,6 +53,15 @@ export function JobsOpportunityDetailPage() {
   };
 
   if (isLoading) return <div className="px-7 py-6 text-[13px] text-ink-3">Loading opportunity…</div>;
+  if (isError) {
+    return (
+      <div className="flex flex-col gap-3 px-7 py-6">
+        <BackLink defaultTo="/jobs" defaultLabel="Jobs" />
+        <p className="text-[13px] text-red">Couldn't load this opportunity.</p>
+        <button type="button" onClick={() => refetch()} className="self-start rounded border border-border-strong px-3 py-1 text-[12px] text-ink-2 hover:bg-surface-2">Retry</button>
+      </div>
+    );
+  }
   if (!o) {
     return (
       <div className="flex flex-col gap-3 px-7 py-6">

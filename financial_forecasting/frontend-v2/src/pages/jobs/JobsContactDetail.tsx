@@ -39,11 +39,20 @@ function relativeDays(iso: string | null | undefined): string {
 export function JobsContactDetailPage() {
   const { id } = useParams<{ id: string }>();
   const contactId = Number(id);
-  const { data: c, isLoading } = useContactDetail(Number.isNaN(contactId) ? null : contactId);
+  const { data: c, isLoading, isError, refetch } = useContactDetail(Number.isNaN(contactId) ? null : contactId);
   const updateContact = useUpdateContact();
   const patch = async (field: string, val: string | null) => { await updateContact.mutateAsync({ id: contactId, [field]: val }); };
 
   if (isLoading) return <div className="px-7 py-6 text-[13px] text-ink-3">Loading contact…</div>;
+  if (isError) {
+    return (
+      <div className="flex flex-col gap-3 px-7 py-6">
+        <BackLink defaultTo="/jobs" defaultLabel="Jobs" />
+        <p className="text-[13px] text-red">Couldn't load this contact.</p>
+        <button type="button" onClick={() => refetch()} className="self-start rounded border border-border-strong px-3 py-1 text-[12px] text-ink-2 hover:bg-surface-2">Retry</button>
+      </div>
+    );
+  }
   if (!c) {
     return (
       <div className="flex flex-col gap-3 px-7 py-6">

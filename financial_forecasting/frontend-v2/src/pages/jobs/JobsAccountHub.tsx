@@ -161,7 +161,7 @@ export function JobsAccountHub({ initialQuery }: { initialQuery?: string } = {})
   const { visible: visibleCols, toggle: toggleCol, replaceAll: replaceVisibleCols } =
     useColumnVisibility<ColKey>("bedrock-v2:vis:jobs-accounts", COLUMN_ORDER, DEFAULT_VISIBLE);
 
-  const { data: accounts = [], isLoading } = useJobsAccounts(dealType);
+  const { data: accounts = [], isLoading, isError, refetch } = useJobsAccounts(dealType);
   const { data: staff = [] } = useJobsStaff();
   const updateAccount = useUpdateJobsAccount();
   const saveOwner = useCallback(
@@ -275,6 +275,9 @@ export function JobsAccountHub({ initialQuery }: { initialQuery?: string } = {})
           <tbody>
             {isLoading ? (
               <tr><td colSpan={visibleCols.length} className="px-6 py-10 text-center text-[13px] text-ink-3">Loading accounts…</td></tr>
+            ) : isError ? (
+              <tr><td colSpan={visibleCols.length} className="px-6 py-10 text-center text-[13px] text-red">Couldn't load accounts.{" "}
+                <button type="button" className="text-accent underline underline-offset-2" onClick={() => refetch()}>Retry</button></td></tr>
             ) : filtered.length === 0 ? (
               <tr><td colSpan={visibleCols.length} className="px-6 py-10 text-center text-[13px] text-ink-3">No accounts match.{" "}
                 <button type="button" className="text-accent underline underline-offset-2" onClick={() => { setQuery(""); setRules([]); setDealType("all"); }}>Clear filters</button></td></tr>

@@ -42,7 +42,7 @@ export function JobsAccountDetailPage() {
   const { accountKey } = useParams<{ accountKey: string }>();
   const key = decodeURIComponent(accountKey ?? "");
 
-  const { data: accounts = [], isLoading } = useJobsAccounts();
+  const { data: accounts = [], isLoading, isError, refetch } = useJobsAccounts();
   const account = useMemo(() => accounts.find((a) => a.account_key === key), [accounts, key]);
 
   const { data: staff = [] } = useJobsStaff();
@@ -50,6 +50,15 @@ export function JobsAccountDetailPage() {
 
   if (isLoading) {
     return <div className="px-7 py-6 text-[13px] text-ink-3">Loading account…</div>;
+  }
+  if (isError) {
+    return (
+      <div className="flex flex-col gap-3 px-7 py-6">
+        <BackLink defaultTo="/jobs" defaultLabel="Jobs" />
+        <p className="text-[13px] text-red">Couldn't load accounts.</p>
+        <button type="button" onClick={() => refetch()} className="self-start rounded border border-border-strong px-3 py-1 text-[12px] text-ink-2 hover:bg-surface-2">Retry</button>
+      </div>
+    );
   }
   if (!account) {
     return (

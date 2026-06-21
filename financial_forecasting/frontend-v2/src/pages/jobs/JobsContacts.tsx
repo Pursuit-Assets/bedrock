@@ -236,7 +236,7 @@ export function JobsContacts({ initialQuery, initialContactId }: { initialQuery?
   const searchResults = globalSearchResults ?? [];
   const { mutate: addContactToJobs } = useAddContactToJobs();
 
-  const { data: rawData, isLoading } = useJobsContacts({ limit: 500 });
+  const { data: rawData, isLoading, isError, refetch } = useJobsContacts({ limit: 500 });
   const allContacts: JobContactWithDeal[] = useMemo(() => rawData?.data ?? [], [rawData]);
 
   const openContact = useCallback((result: ContactSearchResult) => {
@@ -375,6 +375,8 @@ export function JobsContacts({ initialQuery, initialContactId }: { initialQuery?
           <tbody>
             {isLoading ? (
               <tr><td colSpan={visibleCols.length} className="px-6 py-10 text-center text-[13px] text-ink-3">Loading contacts…</td></tr>
+            ) : isError ? (
+              <tr><td colSpan={visibleCols.length} className="px-6 py-10 text-center text-[13px] text-red">Couldn't load contacts.{" "}<button type="button" className="text-accent underline underline-offset-2" onClick={() => refetch()}>Retry</button></td></tr>
             ) : filtered.length === 0 ? (
               <tr><td colSpan={visibleCols.length} className="px-6 py-10 text-center text-[13px] text-ink-3">No contacts match.{" "}<button type="button" className="text-accent underline underline-offset-2" onClick={() => { setQuery(""); setRules([]); }}>Clear filters</button></td></tr>
             ) : grouped ? (
