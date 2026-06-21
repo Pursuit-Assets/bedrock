@@ -126,6 +126,7 @@ class OpportunityCreate(BaseModel):
     likelihood: Optional[str] = None
     source: Optional[str] = None
     owner_email: Optional[str] = None
+    relationship_owner: Optional[str] = None
     sf_contact_ids: list[str] = []
     builder_ids: list[str] = []
     follow_up_date: Optional[datetime] = None
@@ -142,6 +143,7 @@ class OpportunityUpdate(BaseModel):
     likelihood: Optional[str] = None
     source: Optional[str] = None
     owner_email: Optional[str] = None
+    relationship_owner: Optional[str] = None
     sf_contact_ids: Optional[list[str]] = None
     builder_ids: Optional[list[str]] = None
     follow_up_date: Optional[datetime] = None
@@ -2457,13 +2459,13 @@ async def create_opportunity(
             INSERT INTO bedrock.jobs_opportunity (
                 account_id, account_name, stage, deal_type,
                 title, description, salary_expected, num_roles, likelihood,
-                source, owner_email, sf_contact_ids, builder_ids, follow_up_date
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+                source, owner_email, relationship_owner, sf_contact_ids, builder_ids, follow_up_date
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
             RETURNING id
             """,
             body.account_id, body.account_name, body.stage, body.deal_type,
             body.title, body.description, body.salary_expected, body.num_roles, body.likelihood,
-            body.source, body.owner_email,
+            body.source, body.owner_email, body.relationship_owner,
             body.sf_contact_ids, body.builder_ids, body.follow_up_date,
         )
         await conn.execute(
@@ -2569,7 +2571,7 @@ async def update_opportunity(
 
     for field in ("stage", "deal_type", "title", "description", "salary_expected",
                   "num_roles", "likelihood",
-                  "source", "owner_email", "sf_contact_ids", "builder_ids",
+                  "source", "owner_email", "relationship_owner", "sf_contact_ids", "builder_ids",
                   "follow_up_date", "touch_count", "sf_opportunity_id",
                   "closed_lost_reason", "closed_lost_note", "priority", "segment", "intro_by"):
         val = getattr(body, field, None)

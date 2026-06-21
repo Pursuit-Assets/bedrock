@@ -112,6 +112,9 @@ export function JobsOpportunityDetailPage() {
           <EditField label="Owner">
             <OwnerSelect owner={o.owner_email} staff={staff} onSave={(email) => patch("owner_email", email)} />
           </EditField>
+          <EditField label="Relationship owner">
+            <OwnerSelect owner={o.relationship_owner} staff={staff} onSave={(email) => patch("relationship_owner", email)} />
+          </EditField>
           <EditField label="Deal type">
             <InlineSelect<string> value={o.deal_type} options={DEAL_TYPE_OPTIONS} emptyLabel="—" onSave={(v) => patch("deal_type", v || null)} />
           </EditField>

@@ -49,6 +49,7 @@ export interface JobsOpportunity {
   salary_expected: number | null;
   source: string | null;
   owner_email: string | null;
+  relationship_owner: string | null;
   sf_contact_ids: string[];
   builder_ids: string[];
   sf_opportunity_id: string | null;
