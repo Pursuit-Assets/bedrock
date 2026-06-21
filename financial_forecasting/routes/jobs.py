@@ -97,6 +97,22 @@ def _first_touch_meeting_cte() -> str:
     )
     """
 
+def _jobs_activity_flag(alias: str = "a") -> str:
+    """SQL boolean: is this activity row 'jobs activity'? True when it's tied to
+    a jobs opportunity, is a manual jobs channel (call/text/linkedin), OR is an
+    email/meeting in a jobs-team mailbox (Avni/Damon) — so their synced email
+    lands in the Jobs section, not the generic comms bucket."""
+    team = " OR ".join(
+        f"{alias}.email_from ILIKE '%{e}%' OR {alias}.logged_by ILIKE '%{e}%'"
+        for e in JOBS_TEAM_EMAILS
+    )
+    return (
+        f"({alias}.jobs_opportunity_id IS NOT NULL "
+        f"OR {alias}.type IN ('call','text','linkedin') "
+        f"OR {team})"
+    )
+
+
 STAGE_LABELS = {
     "lead_submitted":               "Lead Submitted",
     "initial_outreach":             "Initial Outreach",
@@ -1785,7 +1801,7 @@ async def account_activity(
                a.synced_at, a.email_from, a.email_to, a.email_snippet,
                left(a.email_body_text, 2000) AS email_body_text,  -- cap body: the rollup of 250 rows was ~1.9MB
                a.meeting_duration_minutes,
-               (a.jobs_opportunity_id IS NOT NULL OR a.type IN ('call','text','linkedin')) AS is_jobs,
+               """ + _jobs_activity_flag("a") + """ AS is_jobs,
                a.deleted_at
         FROM bedrock.activity a
         WHERE a.deleted_at IS NULL AND (
@@ -2173,7 +2189,7 @@ async def get_contact(
         SELECT a.id, a.type, a.subject, a.description, a.activity_date,
                a.logged_by, a.source, a.email_from, a.email_snippet,
                a.meeting_duration_minutes, a.deleted_at,
-               (a.jobs_opportunity_id IS NOT NULL) AS is_jobs
+               """ + _jobs_activity_flag("a") + """ AS is_jobs
         FROM bedrock.activity a
         WHERE a.deleted_at IS NULL
           AND (
@@ -2520,7 +2536,7 @@ async def get_opportunity(
             a.source, a.logged_by, a.synced_at, a.email_from, a.email_to,
             a.email_snippet, a.email_body_text,
             a.meeting_duration_minutes, a.meeting_attendees, a.deleted_at,
-            (a.jobs_opportunity_id = $1) AS is_jobs
+            """ + _jobs_activity_flag("a") + """ AS is_jobs
         FROM bedrock.activity a
         WHERE a.deleted_at IS NULL
           AND (
