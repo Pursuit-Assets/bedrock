@@ -321,6 +321,90 @@ async def promote_contact(
     }}
 
 
+class HandoffOpportunity(BaseModel):
+    opp_id: str
+    name: str
+    stage: str = "New Lead"
+    amount: Optional[float] = None
+    close_date: str                          # YYYY-MM-DD (SF requires CloseDate)
+    primary_contact_sf_id: Optional[str] = None
+    # account resolution (the SF opp needs an AccountId)
+    account_sf_id: Optional[str] = None       # link an existing SF account
+    account_create_name: Optional[str] = None # or create one with this name
+
+
+@router.post("/handoff-opportunity")
+async def handoff_opportunity(
+    body: HandoffOpportunity,
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
+):
+    """Hand a jobs opportunity off to PBC: create a SEPARATE revenue
+    Opportunity in Salesforce (RecordType = PBC) and link it back to the jobs
+    opp via sf_opportunity_id. This is a handoff, not a same-record merge — the
+    jobs opp keeps its own hiring pipeline."""
+    opp = await conn.fetchrow(
+        "SELECT id, account_name, sf_opportunity_id FROM bedrock.jobs_opportunity "
+        "WHERE id = $1 AND deleted_at IS NULL",
+        body.opp_id,
+    )
+    if not opp:
+        raise HTTPException(404, "Opportunity not found")
+    if opp["sf_opportunity_id"]:
+        raise HTTPException(409, "Opportunity has already been handed off to Salesforce")
+    if not body.name.strip():
+        raise HTTPException(400, "name is required")
+
+    sf = client.salesforce
+
+    # resolve account
+    account_id = body.account_sf_id
+    if not account_id and body.account_create_name:
+        res = await sf.create_record("Account", {"Name": body.account_create_name.strip()})
+        account_id = _result_id(res)
+        if not account_id:
+            raise HTTPException(502, f"Failed to create Salesforce account: {res}")
+    if not account_id:
+        raise HTTPException(400, "An account (link or create) is required for a Salesforce opportunity")
+
+    # look up the PBC record type at runtime (no hardcoded id)
+    record_type_id: Optional[str] = None
+    try:
+        recs = _records(await sf.query(
+            "SELECT Id FROM RecordType WHERE SobjectType = 'Opportunity' "
+            "AND Name = 'PBC' AND IsActive = true LIMIT 1"))
+        if recs:
+            record_type_id = recs[0].get("Id")
+    except Exception as e:
+        logger.warning(f"PBC record type lookup failed: {e}")
+    if not record_type_id:
+        raise HTTPException(502, "Couldn't find an active 'PBC' Opportunity record type in Salesforce")
+
+    data: dict = {
+        "Name": body.name.strip(),
+        "AccountId": account_id,
+        "StageName": body.stage,
+        "CloseDate": body.close_date,
+        "RecordTypeId": record_type_id,
+    }
+    if body.amount is not None:
+        data["Amount"] = body.amount
+    if body.primary_contact_sf_id:
+        data["npsp__Primary_Contact__c"] = body.primary_contact_sf_id
+
+    res = await sf.create_record("Opportunity", data)
+    sf_opp_id = _result_id(res)
+    if not sf_opp_id:
+        raise HTTPException(502, f"Failed to create Salesforce opportunity: {res}")
+
+    await conn.execute(
+        "UPDATE bedrock.jobs_opportunity SET sf_opportunity_id = $1 WHERE id = $2",
+        sf_opp_id, body.opp_id,
+    )
+    return {"success": True, "data": {"sf_opportunity_id": sf_opp_id, "account_id": account_id}}
+
+
 class PromoteAccount(BaseModel):
     account_key: str
     display_name: str

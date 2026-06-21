@@ -115,6 +115,39 @@ export function usePromoteAccount() {
   });
 }
 
+export interface HandoffOpportunityBody {
+  opp_id: string;
+  name: string;
+  stage: string;
+  amount?: number | null;
+  close_date: string;
+  primary_contact_sf_id?: string;
+  account_sf_id?: string;
+  account_create_name?: string;
+}
+
+export function useHandoffOpportunity() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (body: HandoffOpportunityBody) => {
+      const { data } = await api.post<ApiResponse<{ sf_opportunity_id: string; account_id: string }>>(
+        "/api/jobs/sf/handoff-opportunity",
+        body,
+      );
+      return data.data;
+    },
+    onSuccess: (_d, vars) => {
+      qc.invalidateQueries({ queryKey: ["jobs", "opportunity", vars.opp_id] });
+      qc.invalidateQueries({ queryKey: ["jobs", "opportunities"] });
+      toast.success("Handed off to PBC");
+    },
+    onError: (e: unknown) => {
+      const msg = (e as { response?: { data?: { detail?: { message?: string } | string } } })?.response?.data?.detail;
+      toast.error(typeof msg === "string" ? msg : (msg?.message ?? "Handoff failed"));
+    },
+  });
+}
+
 export interface PromoteContactBody {
   contact_id: number;
   mode: "link" | "create";

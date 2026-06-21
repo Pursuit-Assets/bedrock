@@ -5,14 +5,16 @@
  * changes are gated by the Opportunities-tab modals — closed-lost reason,
  * committed roles, placements); manage stage there.
  */
+import { useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { Trash2 } from "lucide-react";
+import { Briefcase, Cloud, Trash2 } from "lucide-react";
 
 import { AccountAvatar } from "@/components/AccountAvatar";
 import { BackLink, EditField, SectionCard, Stat } from "@/components/detail";
 import { JobsActivityList } from "@/components/jobs/JobsActivityList";
 import { JobsComments } from "@/components/jobs/JobsComments";
 import { JobsTasks } from "@/components/jobs/JobsTasks";
+import { HandoffToPbcDialog } from "@/components/jobs/HandoffToPbcDialog";
 import { OppBuilderActivity } from "@/components/jobs/OppBuilderActivity";
 import { OppRolesSection } from "@/components/jobs/OppRolesSection";
 import {
@@ -45,6 +47,7 @@ export function JobsOpportunityDetailPage() {
   const updateOpp = useUpdateOpportunity();
   const del = useDeleteOpportunity();
   const { data: staff = [] } = useJobsStaff();
+  const [handoffOpen, setHandoffOpen] = useState(false);
   const patch = async (field: string, val: unknown) => { await updateOpp.mutateAsync({ id: id!, [field]: val }); };
   const removeOpp = () => {
     if (!o) return;
@@ -93,10 +96,31 @@ export function JobsOpportunityDetailPage() {
             )}
           </div>
         </div>
-        <button type="button" onClick={removeOpp} className="flex shrink-0 items-center gap-1 rounded-md border border-border-strong px-2.5 py-1 text-[12px] font-medium text-ink-3 transition-colors hover:border-red hover:text-red" title="Delete opportunity">
-          <Trash2 size={13} /> Delete
-        </button>
+        <div className="flex shrink-0 items-center gap-2">
+          {o.sf_opportunity_id ? (
+            <span className="inline-flex items-center gap-1 rounded-md border border-green/40 bg-green/10 px-2.5 py-1 text-[12px] font-medium text-green" title={`Linked SF opportunity ${o.sf_opportunity_id}`}>
+              <Cloud size={13} /> Handed off to PBC
+            </span>
+          ) : (
+            <button type="button" onClick={() => setHandoffOpen(true)} className="inline-flex items-center gap-1 rounded-md border border-accent px-2.5 py-1 text-[12px] font-medium text-accent transition-colors hover:bg-accent-soft" title="Create a linked PBC opportunity in Salesforce">
+              <Briefcase size={13} /> Hand off to PBC
+            </button>
+          )}
+          <button type="button" onClick={removeOpp} className="flex items-center gap-1 rounded-md border border-border-strong px-2.5 py-1 text-[12px] font-medium text-ink-3 transition-colors hover:border-red hover:text-red" title="Delete opportunity">
+            <Trash2 size={13} /> Delete
+          </button>
+        </div>
       </div>
+
+      {handoffOpen && (
+        <HandoffToPbcDialog
+          oppId={o.id}
+          accountId={o.account_id}
+          accountName={o.account_name ?? ""}
+          defaultName={`${o.account_name ?? "Untitled"}${o.title ? ` — ${o.title}` : ""}`}
+          onClose={() => setHandoffOpen(false)}
+        />
+      )}
 
       {/* Stats */}
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
