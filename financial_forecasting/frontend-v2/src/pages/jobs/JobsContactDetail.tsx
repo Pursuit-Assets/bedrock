@@ -3,13 +3,15 @@
  * ContactDetail (header + inline-editable details + sections). Reuses the jobs
  * Tasks/Comments + the shared Activity/Opportunities tab blocks.
  */
+import { useState } from "react";
 import { useParams } from "react-router-dom";
-import { Linkedin, Mail } from "lucide-react";
+import { Cloud, CloudOff, ExternalLink, Linkedin, Mail } from "lucide-react";
 
 import { AccountAvatar } from "@/components/AccountAvatar";
 import { BackLink, EditField, SectionCard, Stat } from "@/components/detail";
 import { JobsComments } from "@/components/jobs/JobsComments";
 import { JobsTasks } from "@/components/jobs/JobsTasks";
+import { PromoteContactDialog } from "@/components/jobs/PromoteContactDialog";
 import {
   ContactActivityTab,
   ContactOppsTab,
@@ -17,6 +19,7 @@ import {
 } from "@/components/jobs/jobsEntity";
 import { InlineSelect, InlineText } from "@/components/ui/InlineEdit";
 import { useContactDetail, useUpdateContact } from "@/services/jobs";
+import { useContactSfStatus } from "@/services/jobsSf";
 
 const STAGE_OPTIONS = [
   { value: "active",           label: "Active" },
@@ -41,6 +44,8 @@ export function JobsContactDetailPage() {
   const contactId = Number(id);
   const { data: c, isLoading, isError, refetch } = useContactDetail(Number.isNaN(contactId) ? null : contactId);
   const updateContact = useUpdateContact();
+  const sfStatus = useContactSfStatus(Number.isNaN(contactId) ? null : contactId);
+  const [promoteOpen, setPromoteOpen] = useState(false);
   const patch = async (field: string, val: string | null) => { await updateContact.mutateAsync({ id: contactId, [field]: val }); };
 
   if (isLoading) return <div className="px-7 py-6 text-[13px] text-ink-3">Loading contact…</div>;
@@ -84,6 +89,7 @@ export function JobsContactDetailPage() {
             {c.linkedin_url && <a href={c.linkedin_url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-ink-2 hover:text-accent"><Linkedin size={13} /> LinkedIn</a>}
           </div>
         </div>
+        <SfBadge linked={sfStatus.data?.linked} onPromote={() => setPromoteOpen(true)} />
       </div>
 
       {/* Stats */}
@@ -119,6 +125,32 @@ export function JobsContactDetailPage() {
       <SectionCard title="Activity" storageScope="jobs-contact"><ContactActivityTab contactId={contactId} /></SectionCard>
       <SectionCard title="Tasks" storageScope="jobs-contact"><div className="px-3 py-2"><JobsTasks parentType="prospect" parentId={String(contactId)} /></div></SectionCard>
       <SectionCard title="Comments" storageScope="jobs-contact"><div className="px-3 py-2"><JobsComments parentType="prospect" parentId={String(contactId)} /></div></SectionCard>
+
+      {promoteOpen && (
+        <PromoteContactDialog contactId={contactId} contactName={c.full_name ?? "this contact"} onClose={() => setPromoteOpen(false)} />
+      )}
+    </div>
+  );
+}
+
+/** "In Salesforce ✓" when linked, else a "Local only" chip + Add to Salesforce. */
+function SfBadge({ linked, onPromote }: { linked: boolean | undefined; onPromote: () => void }) {
+  if (linked === undefined) return null;
+  if (linked) {
+    return (
+      <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-green/40 bg-green/10 px-2.5 py-1 text-[11.5px] font-medium text-green">
+        <Cloud size={12} /> In Salesforce
+      </span>
+    );
+  }
+  return (
+    <div className="flex shrink-0 flex-col items-end gap-1.5">
+      <span className="inline-flex items-center gap-1 rounded-full border border-border-strong bg-surface-2 px-2.5 py-1 text-[11.5px] font-medium text-ink-3">
+        <CloudOff size={12} /> Local only
+      </span>
+      <button type="button" onClick={onPromote} className="inline-flex items-center gap-1 rounded-lg border border-accent px-2.5 py-1 text-[11.5px] font-medium text-accent hover:bg-accent-soft">
+        <ExternalLink size={12} /> Add to Salesforce
+      </button>
     </div>
   );
 }
