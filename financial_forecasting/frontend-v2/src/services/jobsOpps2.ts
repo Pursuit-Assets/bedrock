@@ -1,6 +1,27 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
+
+/**
+ * Invalidate every query family whose data depends on an opportunity's
+ * roles/builders/stage — opp list + detail, account rollups, and the pipeline
+ * metrics. Replaces a blunt invalidate of the whole ["jobs"] tree (which also
+ * refetched contacts, staff, and metric drawers that a role/builder change
+ * can't affect). `extra` adds hire-only families (placements, builders).
+ */
+function invalidateOppDependents(qc: QueryClient, extra: string[][] = []) {
+  const families = [
+    ["jobs", "opportunities"],
+    ["jobs", "opportunity"],
+    ["jobs", "accounts"],
+    ["jobs", "account-rollup"],
+    ["jobs", "pipeline"],
+    ["jobs", "funnel"],
+    ["jobs", "this-week-summary"],
+    ...extra,
+  ];
+  for (const queryKey of families) qc.invalidateQueries({ queryKey });
+}
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -108,7 +129,7 @@ export function useCreateRole() {
     },
     onSuccess: (_d, vars) => {
       qc.invalidateQueries({ queryKey: ["jobs", "opp-roles", vars.oppId] });
-      qc.invalidateQueries({ queryKey: ["jobs"] });
+      invalidateOppDependents(qc);
       toast.success("Role added");
     },
     onError: () => toast.error("Failed to add role"),
@@ -124,7 +145,7 @@ export function useUpdateRole() {
     },
     onSuccess: (updated, vars) => {
       qc.invalidateQueries({ queryKey: ["jobs", "opp-roles", vars.oppId ?? updated.opportunity_id] });
-      qc.invalidateQueries({ queryKey: ["jobs"] });
+      invalidateOppDependents(qc);
       toast.success("Role updated");
     },
     onError: () => toast.error("Update failed"),
@@ -140,7 +161,7 @@ export function useDeleteRole() {
     },
     onSuccess: (_d, vars) => {
       if (vars.oppId) qc.invalidateQueries({ queryKey: ["jobs", "opp-roles", vars.oppId] });
-      qc.invalidateQueries({ queryKey: ["jobs"] });
+      invalidateOppDependents(qc);
       toast.success("Role removed");
     },
     onError: () => toast.error("Delete failed"),
@@ -159,7 +180,8 @@ export function useHireRole() {
     },
     onSuccess: (result, vars) => {
       qc.invalidateQueries({ queryKey: ["jobs", "opp-roles", vars.oppId ?? result.role.opportunity_id] });
-      qc.invalidateQueries({ queryKey: ["jobs"] });
+      // hire also creates an employment_record → refresh placements + builders
+      invalidateOppDependents(qc, [["jobs", "placements"], ["jobs", "builders"]]);
       toast.success("Builder hired");
     },
     onError: () => toast.error("Hire failed"),
@@ -211,7 +233,7 @@ export function useCreateBuilderActivity(oppId: string) {
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["jobs", "opp-builder-activity", oppId] });
-      qc.invalidateQueries({ queryKey: ["jobs"] });
+      invalidateOppDependents(qc);
       toast.success("Builder logged");
     },
     onError: () => toast.error("Failed to log builder"),
@@ -226,7 +248,7 @@ export function useUpdateBuilderActivity(oppId: string) {
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["jobs", "opp-builder-activity", oppId] });
-      qc.invalidateQueries({ queryKey: ["jobs"] });
+      invalidateOppDependents(qc, [["jobs", "placements"], ["jobs", "builders"]]);
       toast.success("Status updated");
     },
     onError: () => toast.error("Update failed"),

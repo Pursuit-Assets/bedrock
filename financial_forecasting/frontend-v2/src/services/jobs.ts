@@ -1,6 +1,26 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
+
+/**
+ * Invalidate the query families that depend on opportunities/activity — opp
+ * list + detail, account rollups, and pipeline metrics. Replaces blanket
+ * invalidation of the whole ["jobs"] tree (which also refetched staff and
+ * unrelated metric drawers). `extra` adds caller-specific families.
+ */
+function invalidateOppDependents(qc: QueryClient, extra: string[][] = []) {
+  const families = [
+    ["jobs", "opportunities"],
+    ["jobs", "opportunity"],
+    ["jobs", "accounts"],
+    ["jobs", "account-rollup"],
+    ["jobs", "pipeline"],
+    ["jobs", "funnel"],
+    ["jobs", "this-week-summary"],
+    ...extra,
+  ];
+  for (const queryKey of families) qc.invalidateQueries({ queryKey });
+}
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -595,8 +615,8 @@ export function useCreatePlacement() {
       return data.data;
     },
     onSuccess: (_d, vars) => {
-      qc.invalidateQueries({ queryKey: ["jobs"] });
       qc.invalidateQueries({ queryKey: ["jobs", "opp-placements", vars.oppId] });
+      invalidateOppDependents(qc, [["jobs", "placements"], ["jobs", "builders"]]);
       toast.success("Placement recorded");
     },
     onError: () => toast.error("Failed to record placement"),
@@ -610,8 +630,8 @@ export function useLinkPlacement() {
       await api.post(`/api/jobs/opportunities/${oppId}/placements/${placementId}/link`);
     },
     onSuccess: (_d, vars) => {
-      qc.invalidateQueries({ queryKey: ["jobs"] });
       qc.invalidateQueries({ queryKey: ["jobs", "opp-placements", vars.oppId] });
+      invalidateOppDependents(qc, [["jobs", "placements"], ["jobs", "builders"], ["jobs", "unlinked-placements"]]);
       toast.success("Placement linked");
     },
     onError: () => toast.error("Failed to link placement"),
@@ -758,7 +778,11 @@ export function useUpdateOpportunity() {
       return { updated: data.data, changedStage: "stage" in body };
     },
     onSuccess: ({ updated, changedStage }) => {
-      qc.invalidateQueries({ queryKey: ["jobs"] });
+      // a stage/contact change ripples into placements + contacts too
+      invalidateOppDependents(qc, [
+        ["jobs", "placements"], ["jobs", "contacts"],
+        ["jobs", "contacts-by-account"], ["jobs", "contacts-summary"],
+      ]);
       // Only announce the stage when the stage was the field that changed —
       // otherwise (owner, salary, # roles, …) a plain "Updated" is honest.
       toast.success(
@@ -777,7 +801,10 @@ export function useCreateOpportunity() {
       return data.data;
     },
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["jobs"] });
+      // new opp can flip linked contacts to is_jobs_contact → refresh contacts
+      invalidateOppDependents(qc, [
+        ["jobs", "contacts"], ["jobs", "contacts-by-account"], ["jobs", "contacts-summary"],
+      ]);
       toast.success("Deal created");
     },
     onError: () => toast.error("Failed to create deal"),
@@ -816,7 +843,7 @@ export function useDeleteActivity() {
       await api.delete(`/api/jobs/activity/${activityId}`);
     },
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["jobs"] });
+      invalidateOppDependents(qc, [["jobs", "contact"], ["jobs", "metric"]]);
       toast.success("Activity deleted");
     },
     onError: () => toast.error("Delete failed"),
@@ -901,7 +928,7 @@ export function useLogActivity() {
       return data.data;
     },
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["jobs"] });
+      invalidateOppDependents(qc, [["jobs", "contact"], ["jobs", "metric"]]);
       toast.success("Activity logged");
     },
     onError: () => toast.error("Failed to log activity"),
@@ -915,7 +942,7 @@ export function useDeleteOpportunity() {
       await api.delete(`/api/jobs/opportunities/${id}`);
     },
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["jobs"] });
+      invalidateOppDependents(qc, [["jobs", "placements"]]);
       toast.success("Deal removed");
     },
   });
