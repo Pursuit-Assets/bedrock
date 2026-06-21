@@ -16,6 +16,7 @@ def test_jobs_activity_flag_tags_team_mailboxes():
     flag = _jobs_activity_flag("a")
     # tied-to-opp + manual channels + each team mailbox (both from + logged_by)
     assert "a.jobs_opportunity_id IS NOT NULL" in flag
+    assert "a.source = 'manual'" in flag
     assert "a.type IN ('call','text','linkedin')" in flag
     for e in JOBS_TEAM_EMAILS:
         assert f"a.email_from ILIKE '%{e}%'" in flag

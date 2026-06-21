@@ -31,22 +31,6 @@ VALID_STAGES = {
 
 VALID_DEAL_TYPES = {"ft", "pt_contract", "capstone", "volunteer", "workshop", "pilot"}
 
-# SQL predicate (alias `a`) selecting activity relevant to the jobs pipeline:
-# manual logs + synced (gmail/calendar) touches tied to a jobs opportunity
-# (its SF account or the deal itself) or to a jobs prospect. This is what makes
-# the Performance dashboard's Outreach / Calls reflect the nightly sync.
-JOBS_ACTIVITY_SCOPE = """
-    a.source = 'manual'
-    OR a.jobs_opportunity_id IS NOT NULL
-    OR a.account_id IN (
-        SELECT account_id FROM bedrock.jobs_opportunity
-        WHERE deleted_at IS NULL AND account_id IS NOT NULL AND account_id <> ''
-    )
-    OR a.participant_public_contact_id IN (
-        SELECT contact_id FROM public.contacts WHERE is_jobs_contact = true
-    )
-"""
-
 # The jobs team's mailboxes. The Outreach and Calls/Mtgs dashboard metrics count
 # FIRST TOUCHES by these senders only: each external contact counts once, ever,
 # across the whole team (3 emails to the same person in a week = 1; emailing
@@ -101,13 +85,21 @@ def _jobs_activity_flag(alias: str = "a") -> str:
     """SQL boolean: is this activity row 'jobs activity'? True when it's tied to
     a jobs opportunity, is a manual jobs channel (call/text/linkedin), OR is an
     email/meeting in a jobs-team mailbox (Avni/Damon) — so their synced email
-    lands in the Jobs section, not the generic comms bucket."""
+    lands in the Jobs section, not the generic comms bucket.
+
+    The single source of truth for the per-row is_jobs split in the
+    account/contact/opp activity rollups. It is INTENTIONALLY narrower than a
+    full "in the jobs pipeline" check: those rollups already filter to the
+    account/contact/opp, so matching on account_id/participant here would mark
+    *every* row jobs and collapse the Jobs-vs-Comms distinction. This flag means
+    "a structured or team-driven touch" within that already-scoped feed."""
     team = " OR ".join(
         f"{alias}.email_from ILIKE '%{e}%' OR {alias}.logged_by ILIKE '%{e}%'"
         for e in JOBS_TEAM_EMAILS
     )
     return (
         f"({alias}.jobs_opportunity_id IS NOT NULL "
+        f"OR {alias}.source = 'manual' "        # a hand-logged touch is always a jobs touch
         f"OR {alias}.type IN ('call','text','linkedin') "
         f"OR {team})"
     )
@@ -203,13 +195,6 @@ async def metric_drilldown(
         {"key": "owner_email", "label": "Owner"},
         {"key": "title", "label": "Role"},
     ]
-    # ---- activity-based metrics ----
-    activity_cols = [
-        {"key": "type", "label": "Type"},
-        {"key": "subject", "label": "Subject"},
-        {"key": "activity_date", "label": "Date"},
-        {"key": "logged_by", "label": "Logged By"},
-    ]
     # ---- application-based metrics ----
     app_cols = [
         {"key": "company_name", "label": "Company"},
@@ -233,17 +218,6 @@ async def metric_drilldown(
             f"ORDER BY account_name"
         )
         return deal_cols, [dict(r) for r in rows], "deal"
-
-    async def activity(where: str):
-        # Jobs-scoped activity = manual logs + synced (gmail/calendar) touches tied
-        # to a jobs opportunity (account or deal) or a jobs prospect. Keeps the
-        # Outreach/Calls metrics reflecting the nightly Gmail/Calendar sync.
-        rows = await conn.fetch(
-            f"SELECT id, type, subject, activity_date, logged_by, description "
-            f"FROM bedrock.activity a WHERE a.deleted_at IS NULL AND ({JOBS_ACTIVITY_SCOPE}) AND {where} "
-            f"ORDER BY activity_date DESC NULLS LAST LIMIT 500"
-        )
-        return activity_cols, [dict(r) for r in rows], "activity"
 
     async def engaged_prospects(_where: str):
         # Distinct jobs prospects we've actually had activity with (linked via
