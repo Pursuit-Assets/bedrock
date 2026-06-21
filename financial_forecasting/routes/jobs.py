@@ -1767,7 +1767,8 @@ async def account_activity(
     rows = await conn.fetch(
         """
         SELECT a.id, a.type, a.subject, a.description, a.activity_date, a.source, a.logged_by,
-               a.synced_at, a.email_from, a.email_to, a.email_snippet, a.email_body_text,
+               a.synced_at, a.email_from, a.email_to, a.email_snippet,
+               left(a.email_body_text, 2000) AS email_body_text,  -- cap body: the rollup of 250 rows was ~1.9MB
                a.meeting_duration_minutes,
                (a.jobs_opportunity_id IS NOT NULL OR a.type IN ('call','text','linkedin')) AS is_jobs,
                a.deleted_at
@@ -1935,18 +1936,14 @@ async def list_contacts(
     user=Depends(require_auth),
     conn=Depends(get_db),
 ):
-    """All contacts in the jobs pipeline (is_jobs_contact=true or linked to a deal)."""
-    filters = ["""(
-        c.is_jobs_contact = true
-        OR EXISTS (
-            SELECT 1 FROM bedrock.jobs_opportunity jo
-            WHERE jo.deleted_at IS NULL
-              AND (
-                (c.airtable_id IS NOT NULL AND ('airtable:' || c.airtable_id) = ANY(jo.sf_contact_ids))
-                OR ('pub:' || c.contact_id::text) = ANY(jo.sf_contact_ids)
-              )
-        )
-    )"""]
+    """All contacts in the jobs pipeline (is_jobs_contact=true).
+
+    Opp-linked contacts are kept in sync by setting is_jobs_contact=true at
+    create/link time (and a one-time backfill), so we filter on the flag alone
+    instead of an `OR EXISTS(... sf_contact_ids ...)` that defeated the index and
+    scanned all ~33k contacts (~1.7s).
+    """
+    filters = ["c.is_jobs_contact = true"]
     params: list = []
     i = 1
 
@@ -2262,7 +2259,8 @@ async def _resolve_contacts(conn, sf_contact_ids: list[str]) -> list[dict]:
         return []
 
     airtable_ids = [r.replace("airtable:", "") for r in sf_contact_ids if r.startswith("airtable:")]
-    pub_ids      = [int(r.replace("pub:", "")) for r in sf_contact_ids if r.startswith("pub:")]
+    # skip malformed pub refs (e.g. 'pub:abc') so one bad ref can't 500 the whole load
+    pub_ids      = [int(r[4:]) for r in sf_contact_ids if r.startswith("pub:") and r[4:].isdigit()]
     sf_ids       = [r for r in sf_contact_ids if not r.startswith("airtable:") and not r.startswith("pub:")]
 
     contacts = []
@@ -2287,6 +2285,27 @@ async def _resolve_contacts(conn, sf_contact_ids: list[str]) -> list[dict]:
         )
         contacts.extend([dict(r) for r in rows])
     return contacts
+
+
+async def _flag_jobs_contacts(conn, sf_contact_ids: list[str]) -> None:
+    """Mark contacts linked to an opp as is_jobs_contact=true so they keep
+    showing up in GET /contacts (which now filters on the flag alone)."""
+    if not sf_contact_ids:
+        return
+    airtable_ids = [r[len("airtable:"):] for r in sf_contact_ids if r.startswith("airtable:")]
+    pub_ids      = [int(r[4:]) for r in sf_contact_ids if r.startswith("pub:") and r[4:].isdigit()]
+    if airtable_ids:
+        await conn.execute(
+            "UPDATE public.contacts SET is_jobs_contact=true, updated_at=now() "
+            "WHERE airtable_id = ANY($1::text[]) AND NOT is_jobs_contact",
+            airtable_ids,
+        )
+    if pub_ids:
+        await conn.execute(
+            "UPDATE public.contacts SET is_jobs_contact=true, updated_at=now() "
+            "WHERE contact_id = ANY($1::int[]) AND NOT is_jobs_contact",
+            pub_ids,
+        )
 
 
 @router.get("/opportunities/pipeline")
@@ -2448,6 +2467,7 @@ async def create_opportunity(
             """,
             row_id, body.stage, user_email, body.note,
         )
+        await _flag_jobs_contacts(conn, list(body.sf_contact_ids or []))
 
     row = await conn.fetchrow(
         "SELECT * FROM bedrock.jobs_opportunity WHERE id=$1", row_id
@@ -2573,6 +2593,8 @@ async def update_opportunity(
                 """,
                 opp_id, existing["stage"], body.stage, user_email, body.note,
             )
+        if body.sf_contact_ids is not None:
+            await _flag_jobs_contacts(conn, list(body.sf_contact_ids or []))
 
     row = await conn.fetchrow("SELECT * FROM bedrock.jobs_opportunity WHERE id=$1", opp_id)
     return {"success": True, "data": dict(row)}
