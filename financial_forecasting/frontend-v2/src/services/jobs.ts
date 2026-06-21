@@ -728,6 +728,35 @@ export function useContactsSummary() {
   });
 }
 
+export interface ActivityTrendBucket {
+  period: string;
+  new_contacts: number;
+  new_accounts: number;
+  email: number;
+  meeting: number;
+  call: number;
+  other: number;
+}
+export interface ActivityTrends {
+  granularity: "week" | "month";
+  buckets: ActivityTrendBucket[];
+  totals: { new_contacts: number; new_accounts: number; touchpoints: number };
+  coverage_note: string | null;
+}
+
+export function useActivityTrends(granularity: "week" | "month") {
+  return useQuery<ActivityTrends>({
+    queryKey: ["jobs", "activity-trends", granularity],
+    queryFn: async () => {
+      const { data } = await api.get<ApiResponse<ActivityTrends>>(
+        `/api/jobs/activity-trends?granularity=${granularity}`,
+      );
+      return data.data;
+    },
+    staleTime: 60_000,
+  });
+}
+
 export function useJobsPipeline() {
   return useQuery<PipelineStageSummary[]>({
     queryKey: ["jobs", "pipeline"],

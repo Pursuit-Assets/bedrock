@@ -56,3 +56,59 @@ def test_funnel_unknown_type_404():
     c = make_jobs_client(FakeConn())
     r = c.get("/api/jobs/funnel/widgets")
     assert r.status_code == 404
+
+
+# ── activity-trends ─────────────────────────────────────────────────────────────
+
+from datetime import datetime, timezone  # noqa: E402
+
+BASE = datetime(2026, 6, 15, tzinfo=timezone.utc)
+
+
+def test_activity_trends_buckets_volume_and_activation():
+    conn = FakeConn(
+        lists={
+            "GROUP BY 1, 2": [{"bucket": BASE, "channel": "email", "n": 10},
+                              {"bucket": BASE, "channel": "meeting", "n": 4}],
+            "first_account AS": [{"kind": "contact", "bucket": BASE, "n": 5},
+                                 {"kind": "account", "bucket": BASE, "n": 3}],
+        },
+        vals={"date_trunc": BASE, "damon.kornhauser": 50},
+    )
+    c = make_jobs_client(conn)
+    r = c.get("/api/jobs/activity-trends?granularity=week")
+    assert r.status_code == 200, r.text
+    d = r.json()["data"]
+    assert len(d["buckets"]) == 12                     # trailing 12, zero-filled
+    last = d["buckets"][-1]
+    assert last["period"] == "2026-06-15"
+    assert last["email"] == 10 and last["meeting"] == 4
+    assert last["new_contacts"] == 5 and last["new_accounts"] == 3
+    # earlier buckets zero-filled
+    assert d["buckets"][0]["email"] == 0 and d["buckets"][0]["new_contacts"] == 0
+    assert d["totals"]["touchpoints"] == 14
+    assert d["coverage_note"] is not None              # damon=50 < 200 → flagged
+
+
+def test_activity_trends_no_coverage_note_when_damon_synced():
+    conn = FakeConn(lists={"GROUP BY 1, 2": [], "first_account AS": []},
+                    vals={"date_trunc": BASE, "damon.kornhauser": 500})
+    c = make_jobs_client(conn)
+    r = c.get("/api/jobs/activity-trends?granularity=week")
+    assert r.status_code == 200, r.text
+    assert r.json()["data"]["coverage_note"] is None   # damon=500 ≥ 200
+
+
+def test_activity_trends_monthly_has_12_buckets():
+    conn = FakeConn(lists={"GROUP BY 1, 2": [], "first_account AS": []},
+                    vals={"date_trunc": BASE, "damon.kornhauser": 50})
+    c = make_jobs_client(conn)
+    r = c.get("/api/jobs/activity-trends?granularity=month")
+    assert r.status_code == 200, r.text
+    assert len(r.json()["data"]["buckets"]) == 12
+
+
+def test_activity_trends_bad_granularity_422():
+    c = make_jobs_client(FakeConn())
+    r = c.get("/api/jobs/activity-trends?granularity=daily")
+    assert r.status_code == 422
