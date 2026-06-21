@@ -9,7 +9,7 @@
 """
 
 import logging
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 from uuid import UUID
 
@@ -1321,6 +1321,151 @@ async def get_contacts_summary(user=Depends(require_auth), conn=Depends(get_db))
             },
             "activity": dict(activity),
             "active_companies": active_companies,
+        },
+    }
+
+
+def _team_actor(alias: str = "a") -> str:
+    """SQL: this activity row was authored BY the jobs team (Avni/Damon) — they
+    sent the email, or it's on their synced calendar / a manual log they made."""
+    conds = []
+    for e in JOBS_TEAM_EMAILS:
+        conds.append(f"{alias}.email_from ILIKE '%{e}%'")
+        conds.append(f"{alias}.logged_by ILIKE '%{e}%'")
+    return "(" + " OR ".join(conds) + ")"
+
+
+@router.get("/activity-trends")
+async def activity_trends(
+    granularity: str = Query("week", pattern="^(week|month)$"),
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Outreach over time for the leadership dashboard — two stories:
+
+      • Activation (outcome): NEW contacts & NEW accounts first-touched by the
+        jobs team in each period (a contact/account is "activated" the period it
+        first hears from us).
+      • Volume (effort): ALL team touchpoints in each period, split by channel
+        (email / meeting / call / other) — not just first contact.
+
+    A "team touch" = an email sent by Avni/Damon (gmail-sync), a meeting on their
+    calendars (calendar-sync), or a manual log they made. `granularity` =
+    week | month; returns the trailing 12 buckets, zero-filled.
+    """
+    periods = 12
+    actor = _team_actor("a")
+
+    channel = (
+        "CASE WHEN a.type='call' THEN 'call' "
+        "WHEN a.type IN ('text','linkedin') THEN 'other' "
+        "WHEN a.source='calendar-sync' OR a.type='meeting' THEN 'meeting' "
+        "ELSE 'email' END"
+    )
+
+    # Volume — every team touch, bucketed + channelized.
+    vol_rows = await conn.fetch(f"""
+        WITH team_act AS (
+          SELECT a.activity_date, {channel} AS channel
+          FROM bedrock.activity a
+          WHERE a.deleted_at IS NULL AND {actor}
+            AND a.activity_date >= date_trunc('{granularity}', now()) - interval '{periods - 1} {granularity}'
+        )
+        SELECT date_trunc('{granularity}', activity_date) AS bucket, channel, count(*) AS n
+        FROM team_act GROUP BY 1, 2
+    """)
+
+    # Activation — first team touch per contact (and per account = company),
+    # matching meeting attendees / email recipients to known jobs contacts, plus
+    # the email participant link the nightly relink already set.
+    act_rows = await conn.fetch(f"""
+        WITH team_act AS (
+          SELECT a.id, a.activity_date, a.participant_public_contact_id AS cid,
+                 a.email_to, a.email_cc, a.meeting_attendees, {channel} AS channel
+          FROM bedrock.activity a
+          WHERE a.deleted_at IS NULL AND {actor}
+        ),
+        touch AS (
+          SELECT cid AS contact_id, activity_date FROM team_act WHERE cid IS NOT NULL
+          UNION ALL
+          SELECT c.contact_id, t.activity_date
+          FROM team_act t, unnest(coalesce(t.email_to,'{{}}') || coalesce(t.email_cc,'{{}}')) e
+          JOIN public.contacts c ON lower(c.email) = lower(e)
+          WHERE t.cid IS NULL AND t.channel = 'email'
+          UNION ALL
+          SELECT c.contact_id, t.activity_date
+          FROM team_act t, jsonb_array_elements(coalesce(t.meeting_attendees, '[]'::jsonb)) att
+          JOIN public.contacts c ON lower(c.email) = lower(att->>'email')
+          WHERE t.channel = 'meeting'
+        ),
+        first_contact AS (
+          SELECT contact_id, min(activity_date) AS first_touch
+          FROM touch GROUP BY contact_id
+        ),
+        first_account AS (
+          SELECT lower(trim(ct.current_company)) AS company, min(fc.first_touch) AS first_touch
+          FROM first_contact fc
+          JOIN public.contacts ct ON ct.contact_id = fc.contact_id
+          WHERE coalesce(trim(ct.current_company), '') <> ''
+          GROUP BY 1
+        )
+        SELECT 'contact' AS kind, date_trunc('{granularity}', first_touch) AS bucket, count(*) AS n
+        FROM first_contact GROUP BY 2
+        UNION ALL
+        SELECT 'account' AS kind, date_trunc('{granularity}', first_touch) AS bucket, count(*) AS n
+        FROM first_account GROUP BY 2
+    """)
+
+    # Assemble trailing `periods` buckets (zero-filled), newest last.
+    base = await conn.fetchval(f"SELECT date_trunc('{granularity}', now())")
+    buckets = []
+    for i in range(periods - 1, -1, -1):
+        if granularity == "week":
+            start = base - timedelta(weeks=i)
+        else:
+            # step back i months
+            y, m = base.year, base.month - i
+            while m <= 0:
+                m += 12; y -= 1
+            start = base.replace(year=y, month=m, day=1)
+        buckets.append({
+            "period": start.date().isoformat(),
+            "new_contacts": 0, "new_accounts": 0,
+            "email": 0, "meeting": 0, "call": 0, "other": 0,
+        })
+    idx = {b["period"]: b for b in buckets}
+
+    def _key(ts):
+        return ts.date().isoformat() if ts else None
+
+    for r in vol_rows:
+        b = idx.get(_key(r["bucket"]))
+        if b:
+            b[r["channel"]] = r["n"]
+    for r in act_rows:
+        b = idx.get(_key(r["bucket"]))
+        if b:
+            b["new_contacts" if r["kind"] == "contact" else "new_accounts"] = r["n"]
+
+    # Coverage note — Damon's mailbox is only partially synced, so flag low coverage.
+    damon = await conn.fetchval(
+        "SELECT count(*) FROM bedrock.activity a WHERE a.deleted_at IS NULL "
+        "AND (a.email_from ILIKE '%damon.kornhauser@pursuit.org%' OR a.logged_by ILIKE '%damon.kornhauser@pursuit.org%')"
+    )
+    return {
+        "success": True,
+        "data": {
+            "granularity": granularity,
+            "buckets": buckets,
+            "totals": {
+                "new_contacts": sum(b["new_contacts"] for b in buckets),
+                "new_accounts": sum(b["new_accounts"] for b in buckets),
+                "touchpoints": sum(b["email"] + b["meeting"] + b["call"] + b["other"] for b in buckets),
+            },
+            "coverage_note": (
+                "Damon's mailbox sync is sparse (and he also sends from non-Pursuit addresses), "
+                "so his outreach is undercounted." if damon < 200 else None
+            ),
         },
     }
 
