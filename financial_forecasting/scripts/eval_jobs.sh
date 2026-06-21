@@ -19,6 +19,7 @@ TESTS=(
   tests/test_jobs_accounts.py
   tests/test_jobs_opps.py
   tests/test_jobs_contacts.py
+  tests/test_jobs_activity.py
 )
 
 echo "▶ jobs evals: ${TESTS[*]}"
