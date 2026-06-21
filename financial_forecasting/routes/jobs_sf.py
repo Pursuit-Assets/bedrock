@@ -319,3 +319,45 @@ async def promote_contact(
         "sf_account_id": sf_account_id,
         "linked": True,
     }}
+
+
+class PromoteAccount(BaseModel):
+    account_key: str
+    display_name: str
+    mode: str                     # "link" | "create"
+    sf_account_id: Optional[str] = None
+
+
+@router.post("/promote-account")
+async def promote_account(
+    body: PromoteAccount,
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+    client: UnifiedMCPClient = Depends(require_sf_mcp_client),
+):
+    """Link an existing SF account, or create a new one, then persist the link
+    on bedrock.jobs_account so the account reads as 'In Salesforce'."""
+    if body.mode == "link":
+        if not body.sf_account_id:
+            raise HTTPException(400, "sf_account_id required to link")
+        sf_account_id = body.sf_account_id
+    elif body.mode == "create":
+        name = (body.display_name or "").strip()
+        if not name:
+            raise HTTPException(400, "Account needs a name to create in Salesforce")
+        res = await client.salesforce.create_record("Account", {"Name": name})
+        sf_account_id = _result_id(res)
+        if not sf_account_id:
+            raise HTTPException(502, f"Failed to create Salesforce account: {res}")
+    else:
+        raise HTTPException(400, f"Invalid mode: {body.mode}")
+
+    # Persist the link on the override row (upsert by account_key).
+    await conn.execute(
+        """INSERT INTO bedrock.jobs_account (account_key, display_name, sf_account_id)
+           VALUES ($1, $2, $3)
+           ON CONFLICT (account_key) DO UPDATE
+             SET sf_account_id = EXCLUDED.sf_account_id, updated_at = now()""",
+        body.account_key, body.display_name, sf_account_id,
+    )
+    return {"success": True, "data": {"sf_account_id": sf_account_id, "linked": True}}

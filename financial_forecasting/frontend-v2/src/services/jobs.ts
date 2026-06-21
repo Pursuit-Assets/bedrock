@@ -355,6 +355,7 @@ export interface JobsAccount {
   account: string;
   account_key: string;
   account_id: string | null;
+  sf_account_id?: string | null;
   owner_email: string | null;
   account_status: JobsAccountStatus;
   opportunities: JobsAccountOpp[];

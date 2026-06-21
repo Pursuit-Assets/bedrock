@@ -80,6 +80,41 @@ export function useSearchSfAccounts() {
   });
 }
 
+/** A jobs account is "in Salesforce" when it carries a real SF account id
+ *  (15/18-char, starts with 001) — either derived from its opps or pinned by
+ *  an explicit promote. */
+export function isSfAccountId(id: string | null | undefined): boolean {
+  return !!id && (id.length === 15 || id.length === 18) && id.startsWith("001");
+}
+
+export interface PromoteAccountBody {
+  account_key: string;
+  display_name: string;
+  mode: "link" | "create";
+  sf_account_id?: string;
+}
+
+export function usePromoteAccount() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (body: PromoteAccountBody) => {
+      const { data } = await api.post<ApiResponse<{ sf_account_id: string; linked: boolean }>>(
+        "/api/jobs/sf/promote-account",
+        body,
+      );
+      return data.data;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["jobs", "accounts"] });
+      toast.success("Account linked to Salesforce");
+    },
+    onError: (e: unknown) => {
+      const msg = (e as { response?: { data?: { detail?: { message?: string } | string } } })?.response?.data?.detail;
+      toast.error(typeof msg === "string" ? msg : (msg?.message ?? "Promote failed"));
+    },
+  });
+}
+
 export interface PromoteContactBody {
   contact_id: number;
   mode: "link" | "create";

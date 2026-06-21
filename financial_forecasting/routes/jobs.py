@@ -1651,9 +1651,10 @@ async def jobs_accounts(
             "linkedin_url":  r["linkedin_url"],
         })
 
-    # Persistent account record (owner, optional manual status override).
+    # Persistent account record (owner, optional manual status override,
+    # explicit Salesforce link).
     ja_rows = await conn.fetch(
-        "SELECT account_key, owner_email, status_override FROM bedrock.jobs_account",
+        "SELECT account_key, owner_email, status_override, sf_account_id FROM bedrock.jobs_account",
     )
     ja = {r["account_key"]: r for r in ja_rows}
 
@@ -1668,6 +1669,9 @@ async def jobs_accounts(
         # A stored owner wins over the one derived from the opportunities.
         if rec and rec["owner_email"]:
             g["owner_email"] = rec["owner_email"]
+        # An explicit SF link wins over the account_id derived from opps.
+        if rec and rec["sf_account_id"]:
+            g["account_id"] = rec["sf_account_id"]
         stages = {o["stage"] for o in opps}
         # An opportunity is "open" while it's anywhere in the live funnel —
         # initial_outreach through builder interview (NOT closed/on-hold). These
