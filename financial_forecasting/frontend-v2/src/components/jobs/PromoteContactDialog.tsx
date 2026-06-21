@@ -247,9 +247,11 @@ function AccountStep({ company, acct, setAcct, query, setQuery, results, searchi
         )}
       </label>
 
-      <label className={`flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 ${acct.mode === "none" ? "border-accent bg-accent-soft" : "border-border-strong"}`}>
-        <input type="radio" checked={acct.mode === "none"} onChange={() => setAcct({ mode: "none" })} />
-        <span className="text-[12.5px] text-ink">No account for now</span>
+      <label className={`flex cursor-pointer items-start gap-2 rounded-lg border px-3 py-2 ${acct.mode === "none" ? "border-accent bg-accent-soft" : "border-border-strong"}`}>
+        <input type="radio" className="mt-0.5" checked={acct.mode === "none"} onChange={() => setAcct({ mode: "none" })} />
+        <span className="text-[12.5px] text-ink">No account for now
+          <span className="block text-[11px] text-ink-4">Salesforce will file the contact under an auto-created Household account.</span>
+        </span>
       </label>
 
       <div className="flex items-center justify-between pt-1">

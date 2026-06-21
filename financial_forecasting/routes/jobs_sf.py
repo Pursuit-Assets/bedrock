@@ -51,6 +51,22 @@ def _records(result: Any) -> list[dict]:
     return result or []
 
 
+def _split_name(c: dict) -> tuple[Optional[str], Optional[str]]:
+    """First/last for SF, falling back to splitting full_name when the
+    structured columns are blank (many imported contacts only have full_name)."""
+    first = (c.get("first_name") or "").strip()
+    last = (c.get("last_name") or "").strip()
+    if first and last:
+        return first, last
+    full = (c.get("full_name") or "").strip()
+    if full:
+        parts = full.split()
+        if len(parts) == 1:
+            return first or None, last or parts[0]
+        return first or " ".join(parts[:-1]), last or parts[-1]
+    return first or None, last or None
+
+
 async def _contact_row(conn, contact_id: int) -> dict:
     row = await conn.fetchrow(
         """SELECT contact_id, first_name, last_name, full_name, email,
@@ -119,8 +135,8 @@ async def contact_sf_status(
             "sf_contact": sf_contact,
             # what a create would send (preview)
             "proposed": {
-                "FirstName": c["first_name"],
-                "LastName": c["last_name"] or (c["full_name"] or "").split(" ")[-1] or c["full_name"],
+                "FirstName": _split_name(c)[0],
+                "LastName": _split_name(c)[1],
                 "Email": c["email"],
                 "Title": c["current_title"],
                 "LinkedIn_URL__c": c["linkedin_url"],
@@ -264,11 +280,11 @@ async def promote_contact(
             except Exception:
                 pass
     elif body.mode == "create":
-        last = c["last_name"] or (c["full_name"] or "").split(" ")[-1] or c["full_name"]
+        first, last = _split_name(c)
         if not last:
             raise HTTPException(400, "Contact needs a last name to create in Salesforce")
         data: dict = {
-            "FirstName": c["first_name"],
+            "FirstName": first,
             "LastName": last,
             "Email": c["email"],
             "Title": c["current_title"],
