@@ -49,7 +49,7 @@ import {
   type JobsAccount,
 } from "@/services/jobs";
 import {
-  useCreateBuilderActivity, useCreateRole, useUpdateBuilderActivity, useUpdateRole,
+  useCreateBuilderActivity, useCreateRole, useOppRoles, useUpdateBuilderActivity, useUpdateRole,
   type AppStage, type RoleStatus,
 } from "@/services/jobsOpps2";
 
@@ -401,21 +401,41 @@ const APP_STAGE_BADGE: Record<string, string> = {
   accepted: "bg-green-soft text-green", rejected: "bg-red-soft text-red", withdrawn: "bg-stone-100 text-stone-500",
 };
 
-/** Add-builder form, mounted with a chosen opp so the per-opp create hook is valid. */
+/** Add-builder form, mounted with a chosen opp so the per-opp create hook is
+ *  valid. Lets you optionally pin the builder to a specific committed role and
+ *  pick the starting stage before searching/selecting the builder. */
 function AddBuilderForm({ oppId, onDone }: { oppId: string; onDone: () => void }) {
   const [search, setSearch] = useState("");
+  const [roleId, setRoleId] = useState("");
+  const [stage, setStage] = useState<AppStage>("applied");
   const { data: builders = [] } = useBuilders(search || undefined);
+  const { data: roles = [] } = useOppRoles(oppId);
   const create = useCreateBuilderActivity(oppId);
+  const openRoles = roles.filter((r) => r.status !== "cancelled");
   return (
-    <div className="mt-1 flex flex-col gap-1">
+    <div className="mt-1 flex flex-col gap-1.5">
+      <div className="flex flex-wrap items-center gap-2">
+        {openRoles.length > 0 && (
+          <select value={roleId} onChange={(e) => setRoleId(e.target.value)} className={cn(inputCls, "max-w-[220px] bg-surface")}>
+            <option value="">No specific role</option>
+            {openRoles.map((r) => <option key={r.id} value={r.id}>{r.title}{r.status === "filled" ? " (filled)" : ""}</option>)}
+          </select>
+        )}
+        <select value={stage} onChange={(e) => setStage(e.target.value as AppStage)} className={cn(inputCls, "max-w-[150px] bg-surface")}>
+          {APP_STAGE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+        </select>
+      </div>
       <input autoFocus value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search builders…" className={cn(inputCls, "w-full")} />
       {search.trim().length >= 2 && (
         <div className="flex flex-col gap-0.5">
-          {builders.slice(0, 6).map((b) => (
-            <button key={b.user_id} type="button" onClick={() => create.mutate({ user_id: b.user_id, builder_name: b.name, stage: "applied" }, { onSuccess: onDone })} className="flex items-center justify-between rounded px-2 py-1 text-left text-[12px] hover:bg-surface-2">
-              <span className="truncate text-ink">{b.name}</span><span className="text-[10px] text-ink-4">{b.cohort}</span>
-            </button>
-          ))}
+          {builders.slice(0, 6).map((b) => {
+            const role = openRoles.find((r) => r.id === roleId);
+            return (
+              <button key={b.user_id} type="button" onClick={() => create.mutate({ user_id: b.user_id, builder_name: b.name, stage, jobs_role_id: roleId || undefined, role_title: role?.title }, { onSuccess: onDone })} className="flex items-center justify-between rounded px-2 py-1 text-left text-[12px] hover:bg-surface-2">
+                <span className="truncate text-ink">{b.name}</span><span className="text-[10px] text-ink-4">{b.cohort}</span>
+              </button>
+            );
+          })}
           {builders.length === 0 && <span className="px-2 text-[11px] text-ink-4">No matches.</span>}
         </div>
       )}
@@ -489,11 +509,11 @@ function AccountBuildersTab({ account }: { account: JobsAccount }) {
 export function AccountExpandTabs({ account }: { account: JobsAccount }) {
   const key = account.account_key;
   const tabs = useMemo(() => [
+    { id: "comments", label: "Comments", render: () => <AccountCommentsTab accountKey={key} /> },
+    { id: "tasks", label: "Tasks", render: () => <AccountTasksTab accountKey={key} /> },
     { id: "opps", label: "Opportunities", count: account.opp_count, render: () => <AccountOppsTab account={account} /> },
     { id: "contacts", label: "Contacts", count: account.prospect_count, render: () => <AccountContactsTab account={account} /> },
     { id: "activity", label: "Activity", render: () => <AccountActivityTab account={account} /> },
-    { id: "tasks", label: "Tasks", render: () => <AccountTasksTab accountKey={key} /> },
-    { id: "comments", label: "Comments", render: () => <AccountCommentsTab accountKey={key} /> },
     { id: "builders", label: "Builders", render: () => <AccountBuildersTab account={account} /> },
     { id: "roles", label: "Roles", render: () => <AccountRolesTab account={account} /> },
   ], [account, key]);
