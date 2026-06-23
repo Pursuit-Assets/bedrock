@@ -139,6 +139,7 @@ export function JobsStatBubble({
   progressLabel,
   celebrate = false,
   isLoading = false,
+  big = false,
   onClick,
 }: {
   label: string;
@@ -158,6 +159,8 @@ export function JobsStatBubble({
   /** soft glow + sparkle when a win is present */
   celebrate?: boolean;
   isLoading?: boolean;
+  /** larger hero variant — bigger number, label, padding */
+  big?: boolean;
   onClick?: () => void;
 }) {
   const spec = BUBBLE_TONES[tone];
@@ -180,7 +183,8 @@ export function JobsStatBubble({
           : undefined
       }
       className={cn(
-        "group relative flex flex-col gap-2.5 rounded-2xl border border-white/60 p-4",
+        "group relative flex flex-col rounded-2xl border border-white/60",
+        big ? "gap-3 p-6" : "gap-2.5 p-4",
         "transition-[transform,box-shadow] duration-200",
         onClick && "cursor-pointer hover:-translate-y-0.5",
       )}
@@ -202,13 +206,13 @@ export function JobsStatBubble({
 
       <div className="flex items-center gap-2">
         <span
-          className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-lg"
+          className={cn("flex flex-shrink-0 items-center justify-center rounded-lg", big ? "h-8 w-8" : "h-6 w-6")}
           style={{ color: spec.ink, background: spec.track }}
         >
           {icon}
         </span>
         <span
-          className="text-[10.5px] font-semibold uppercase tracking-wider"
+          className={cn("font-semibold uppercase tracking-wider", big ? "text-[12.5px]" : "text-[10.5px]")}
           style={{ color: spec.ink }}
         >
           {label}
@@ -217,13 +221,13 @@ export function JobsStatBubble({
 
       <div className="flex items-end justify-between gap-2">
         <span
-          className="font-mono text-[30px] font-bold leading-none tabular-nums"
+          className={cn("font-mono font-bold leading-none tabular-nums", big ? "text-[46px]" : "text-[30px]")}
           style={{ color: isLoading ? "var(--ink-4)" : spec.ink }}
         >
           {display}
         </span>
         {progressPct != null ? (
-          <ProgressRing pct={isLoading ? 0 : progressPct} tone={spec}>
+          <ProgressRing pct={isLoading ? 0 : progressPct} tone={spec} size={big ? 62 : 46}>
             {progressLabel ? (
               <span
                 className="font-mono text-[10px] font-bold tabular-nums"
@@ -237,9 +241,9 @@ export function JobsStatBubble({
       </div>
 
       {subLead ? (
-        <span className="text-[11px] font-medium text-ink-2">{subLead}</span>
+        <span className={cn("font-medium text-ink-2", big ? "text-[13px]" : "text-[11px]")}>{subLead}</span>
       ) : null}
-      {sub ? <span className="text-[10.5px] text-ink-3">{sub}</span> : null}
+      {sub ? <span className={cn("text-ink-3", big ? "text-[12px]" : "text-[10.5px]")}>{sub}</span> : null}
     </div>
   );
 }
