@@ -13,7 +13,7 @@ from tests.jobs_fakes import FakeConn, make_jobs_client
 
 OPP_SQL = "FROM bedrock.jobs_opportunity"
 PROSPECT_SQL = "coalesce(trim(current_company)"
-JA_SQL = "FROM bedrock.jobs_account"
+JA_SQL = "account_key, owner_email, status_override, sf_account_id"  # the override-record SELECT (not jobs_account_task)
 
 RECENT = datetime(2026, 6, 1, tzinfo=timezone.utc)   # within 90d of 2026-06-21
 OLD = datetime(2025, 1, 1, tzinfo=timezone.utc)      # > 90d

@@ -9,12 +9,12 @@
  */
 import { Fragment, useCallback, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { Briefcase, ChevronDown, ChevronRight, ExternalLink, Users } from "lucide-react";
+import { Briefcase, CheckSquare, ChevronDown, ChevronRight, ExternalLink, Users } from "lucide-react";
 
 import { AccountAvatar } from "@/components/AccountAvatar";
 import { withReferrer } from "@/components/detail";
 import { AccountExpandTabs } from "@/components/jobs/accountTabs";
-import { DEAL_TYPE_LABELS, OwnerSelect, jobsAccountPath } from "@/components/jobs/jobsEntity";
+import { AccountWarmth, DEAL_TYPE_LABELS, OwnerSelect, jobsAccountPath, warmthRank } from "@/components/jobs/jobsEntity";
 import { ColumnChooser } from "@/components/ui/ColumnChooser";
 import { SavedViewsPicker } from "@/components/ui/SavedViewsPicker";
 import { SortableHeader } from "@/components/ui/SortableHeader";
@@ -48,26 +48,28 @@ const dealTypesOf = (a: JobsAccount) =>
   [...new Set(a.opportunities.map((o) => o.deal_type).filter(Boolean))] as string[];
 
 // ── columns ──────────────────────────────────────────────────────────────────
-type ColKey = "account" | "status" | "owner" | "opps" | "contacts" | "deal_types" | "last_activity";
-const COLUMN_ORDER: ColKey[] = ["account", "status", "owner", "opps", "contacts", "deal_types", "last_activity"];
-const DEFAULT_VISIBLE: ColKey[] = ["account", "status", "owner", "opps", "contacts", "last_activity"];
+type ColKey = "account" | "status" | "warmth" | "owner" | "opps" | "contacts" | "tasks" | "deal_types" | "last_activity";
+const COLUMN_ORDER: ColKey[] = ["account", "status", "warmth", "owner", "opps", "contacts", "tasks", "deal_types", "last_activity"];
+const DEFAULT_VISIBLE: ColKey[] = ["account", "status", "warmth", "owner", "opps", "contacts", "tasks", "last_activity"];
 const COL_LABELS: Record<ColKey, string> = {
-  account: "Account", status: "Status", owner: "Owner", opps: "Opps",
-  contacts: "Contacts", deal_types: "Deal types", last_activity: "Last activity",
+  account: "Account", status: "Status", warmth: "Warmth", owner: "Owner", opps: "Opps",
+  contacts: "Contacts", tasks: "Open tasks", deal_types: "Deal types", last_activity: "Last activity",
 };
 // Relative weights → percentage widths (table-fixed, fluid, never overflows).
 const COL_WEIGHT: Record<ColKey, number> = {
-  account: 34, status: 14, owner: 16, opps: 8, contacts: 9, deal_types: 14, last_activity: 12,
+  account: 28, status: 12, warmth: 9, owner: 14, opps: 7, contacts: 8, tasks: 8, deal_types: 12, last_activity: 10,
 };
-const SORTABLE = new Set<ColKey>(["account", "status", "owner", "opps", "contacts", "last_activity"]);
+const SORTABLE = new Set<ColKey>(["account", "status", "warmth", "owner", "opps", "contacts", "tasks", "last_activity"]);
 
 function extract(a: JobsAccount, key: ColKey): string | number {
   switch (key) {
     case "account":       return a.account.toLowerCase();
     case "status":        return a.account_status;
+    case "warmth":        return warmthRank({ recent: a.recent_activity_count, last_activity_at: a.last_activity_at, responded: a.responded });
     case "owner":         return a.owner_email ?? "";
     case "opps":          return a.opp_count;
     case "contacts":      return a.prospect_count;
+    case "tasks":         return a.open_tasks ?? 0;
     case "deal_types":    return dealTypesOf(a).join(",");
     case "last_activity": return a.last_activity ?? "";
   }
@@ -120,6 +122,10 @@ function AccountRow({
       </span>
     ),
     status: <Tag variant={accountStatusVariant(account.account_status)}>{account.account_status}</Tag>,
+    warmth: <AccountWarmth recent={account.recent_activity_count} last_activity_at={account.last_activity_at} responded={account.responded} />,
+    tasks: (account.open_tasks ?? 0) > 0
+      ? <span className="inline-flex items-center gap-1 text-[12px] text-ink-2"><CheckSquare size={11} className="text-ink-4" />{account.open_tasks}</span>
+      : <span className="text-ink-4">—</span>,
     owner: <OwnerSelect owner={account.owner_email} staff={staff} onSave={(email) => onSaveOwner(account.account, email)} />,
     opps: account.opp_count > 0 ? <span className="inline-flex items-center gap-1 text-[12px] text-ink-2"><Briefcase size={11} className="text-ink-4" />{account.opp_count}</span> : <span className="text-ink-4">—</span>,
     contacts: account.prospect_count > 0 ? <span className="inline-flex items-center gap-1 text-[12px] text-ink-2"><Users size={11} className="text-ink-4" />{account.prospect_count}</span> : <span className="text-ink-4">—</span>,

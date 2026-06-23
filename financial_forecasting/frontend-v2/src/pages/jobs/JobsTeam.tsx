@@ -54,7 +54,7 @@ import {
   type FieldMeta,
   type FilterRule,
 } from "@/pages/cleanup/Filters";
-import { ChevronDown, ChevronRight, Mail, Linkedin, Trash2, X, Plus, Check, Search } from "lucide-react";
+import { ChevronDown, ChevronRight, Mail, Linkedin, Trash2, X, Plus, Check, CheckSquare, Search } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { format, formatDistanceToNow } from "date-fns";
 
@@ -1248,26 +1248,26 @@ const DEAL_TYPE_OPTIONS: { value: DealType; label: string }[] = (
 
 type OppColKey =
   | "company" | "role" | "salary" | "stage" | "status" | "deal_type"
-  | "priority" | "segment" | "likelihood" | "num_roles" | "owner" | "recent" | "updated";
+  | "priority" | "segment" | "likelihood" | "num_roles" | "owner" | "tasks" | "recent" | "updated";
 
 const OPP_COLUMN_ORDER: OppColKey[] = [
   "company", "role", "salary", "stage", "status", "deal_type",
-  "priority", "segment", "likelihood", "num_roles", "owner", "recent", "updated",
+  "priority", "segment", "likelihood", "num_roles", "owner", "tasks", "recent", "updated",
 ];
 
 const OPP_DEFAULT_VISIBLE: OppColKey[] = [
-  "company", "role", "salary", "stage", "status", "deal_type", "priority", "segment", "owner",
+  "company", "role", "salary", "stage", "status", "deal_type", "priority", "segment", "owner", "tasks",
 ];
 
 const OPP_COL_LABELS: Record<OppColKey, string> = {
   company: "Company", role: "Role", salary: "Salary", stage: "Stage", status: "Status",
   deal_type: "Deal Type", priority: "Priority", segment: "Segment", likelihood: "Likelihood",
-  num_roles: "# Roles", owner: "Owner", recent: "Recent activity", updated: "Updated",
+  num_roles: "# Roles", owner: "Owner", tasks: "Open tasks", recent: "Recent activity", updated: "Updated",
 };
 
 const OPP_DEFAULT_WIDTHS: Record<OppColKey, number> = {
   company: 280, role: 210, salary: 120, stage: 210, status: 104, deal_type: 140,
-  priority: 96, segment: 150, likelihood: 116, num_roles: 84, owner: 190, recent: 120, updated: 120,
+  priority: 96, segment: 150, likelihood: 116, num_roles: 84, owner: 190, tasks: 96, recent: 120, updated: 120,
 };
 
 const LIKELIHOOD_RANK: Record<Likelihood, number> = { low: 1, medium: 2, high: 3 };
@@ -1286,6 +1286,7 @@ function extractOpp(d: JobsOpportunity, key: OppColKey): string | number {
     case "likelihood": return d.likelihood ? LIKELIHOOD_RANK[d.likelihood] : 0;
     case "num_roles":  return d.num_roles ?? 0;
     case "owner":      return d.owner_email ?? "";
+    case "tasks":      return d.open_tasks ?? 0;
     case "recent":     return d.recent_activity_count ?? 0;
     case "updated":    return d.updated_at ?? "";
   }
@@ -1472,6 +1473,9 @@ function DealRow({
       />
     ),
     owner: <StaffPicker value={deal.owner_email} onChange={(email) => patch({ owner_email: email })} />,
+    tasks: (deal.open_tasks ?? 0) > 0
+      ? <span className="inline-flex items-center gap-1 text-[12px] text-ink-2"><CheckSquare size={11} className="text-ink-4" />{deal.open_tasks}</span>
+      : <span className="text-ink-4">—</span>,
     recent: deal.recent_activity_count
       ? <RecentActivityDot recent={deal.recent_activity_count} last={deal.last_activity_at} />
       : <span className="text-ink-4">—</span>,

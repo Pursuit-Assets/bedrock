@@ -20,6 +20,8 @@ import { isSfAccountId } from "@/services/jobsSf";
 import { PromoteAccountDialog } from "@/components/jobs/PromoteAccountDialog";
 
 import { ContactsLinkTab, OppsTab, OwnerSelect } from "@/components/jobs/jobsEntity";
+import { JobsComments } from "@/components/jobs/JobsComments";
+import { JobsTasks } from "@/components/jobs/JobsTasks";
 
 function relativeDays(iso: string | null): string {
   if (!iso) return "—";
@@ -115,6 +117,14 @@ export function JobsAccountDetailPage() {
 
       <SectionCard title={`Contacts (${account.prospect_count})`} storageScope="jobs-account" defaultOpen>
         <ContactsLinkTab contacts={account.prospects} />
+      </SectionCard>
+
+      <SectionCard title="Tasks" storageScope="jobs-account">
+        <div className="px-3 py-2"><JobsTasks parentType="account" parentId={account.account_key} /></div>
+      </SectionCard>
+
+      <SectionCard title="Comments" storageScope="jobs-account">
+        <div className="px-3 py-2"><JobsComments parentType="account" parentId={account.account_key} /></div>
       </SectionCard>
 
       {promoteOpen && (
