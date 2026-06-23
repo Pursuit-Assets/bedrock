@@ -9,7 +9,7 @@
  */
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { ExternalLink, Linkedin, Plus, Search, UserSearch, X } from "lucide-react";
+import { CheckSquare, ExternalLink, Linkedin, Plus, Search, UserSearch, X } from "lucide-react";
 
 import { ContactDetail, initials } from "@/components/jobs/ProspectAccountExpandPanel";
 import { ContactExpandTabs, jobsContactPath } from "@/components/jobs/jobsEntity";
@@ -72,17 +72,17 @@ function Warmth({ c }: { c: JobContactWithDeal }) {
 }
 
 // ── columns ──────────────────────────────────────────────────────────────────
-type ColKey = "name" | "title" | "company" | "stage" | "warmth" | "connected" | "deal" | "email" | "linkedin";
-const COLUMN_ORDER: ColKey[] = ["name", "title", "company", "stage", "warmth", "connected", "deal", "email", "linkedin"];
-const DEFAULT_VISIBLE: ColKey[] = ["name", "title", "company", "stage", "warmth", "connected", "deal"];
+type ColKey = "name" | "title" | "company" | "stage" | "warmth" | "tasks" | "connected" | "deal" | "email" | "linkedin";
+const COLUMN_ORDER: ColKey[] = ["name", "title", "company", "stage", "warmth", "tasks", "connected", "deal", "email", "linkedin"];
+const DEFAULT_VISIBLE: ColKey[] = ["name", "title", "company", "stage", "warmth", "tasks", "connected", "deal"];
 const COL_LABELS: Record<ColKey, string> = {
-  name: "Name", title: "Title", company: "Company", stage: "Stage", warmth: "Warmth",
+  name: "Name", title: "Title", company: "Company", stage: "Stage", warmth: "Warmth", tasks: "Open tasks",
   connected: "Connected staff", deal: "Linked deal", email: "Email", linkedin: "LinkedIn",
 };
 const COL_WEIGHT: Record<ColKey, number> = {
-  name: 19, title: 16, company: 15, stage: 10, warmth: 10, connected: 15, deal: 14, email: 17, linkedin: 7,
+  name: 18, title: 14, company: 14, stage: 9, warmth: 9, tasks: 8, connected: 14, deal: 13, email: 16, linkedin: 6,
 };
-const SORTABLE = new Set<ColKey>(["name", "title", "company", "stage", "warmth"]);
+const SORTABLE = new Set<ColKey>(["name", "title", "company", "stage", "warmth", "tasks"]);
 
 function extract(c: JobContactWithDeal, key: ColKey): string | number {
   switch (key) {
@@ -91,6 +91,7 @@ function extract(c: JobContactWithDeal, key: ColKey): string | number {
     case "company": return (c.current_company ?? "").toLowerCase();
     case "stage": return c.contact_stage ?? "";
     case "warmth": return warmthScore(c);
+    case "tasks": return c.open_tasks ?? 0;
     default: return "";
   }
 }
@@ -188,6 +189,9 @@ function ContactRow({ contact, expanded, onOpen, visibleCols }: { contact: JobCo
         onSave={(v) => new Promise<void>((res, rej) => updateContact.mutate({ id: contact.contact_id, contact_stage: v || null }, { onSuccess: () => res(), onError: rej }))} />
     ),
     warmth: <Warmth c={contact} />,
+    tasks: (contact.open_tasks ?? 0) > 0
+      ? <span className="inline-flex items-center gap-1 text-[12px] text-ink-2"><CheckSquare size={11} className="text-ink-4" />{contact.open_tasks}</span>
+      : <span className="text-ink-4">—</span>,
     connected: staff.length > 0
       ? <span className="flex min-w-0 flex-wrap items-center gap-1"><Linkedin size={11} className="shrink-0 text-indigo-500" />{staff.slice(0, 2).map((n) => <span key={n} className="truncate rounded-full bg-indigo-50 px-1.5 py-0.5 text-[10px] font-medium text-indigo-600">{n}</span>)}{staff.length > 2 && <span className="text-[10px] text-ink-4">+{staff.length - 2}</span>}</span>
       : <span className="text-ink-4">—</span>,

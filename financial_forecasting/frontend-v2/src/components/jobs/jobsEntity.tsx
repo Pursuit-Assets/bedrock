@@ -239,3 +239,21 @@ export function ContactExpandTabs({ contactId }: { contactId: number }) {
 
 // re-export so callers can grab initials from one place
 export { initials };
+
+// ── Account warmth — how hot an account is by recent (90d) activity within it.
+//    Mirrors the contact-level Warmth, account-scaled (accounts see more touches).
+export function accountWarmthTier(recent: number): { label: string; dot: string; txt: string } {
+  if (recent >= 10) return { label: "Hot", dot: "bg-red", txt: "text-red" };
+  if (recent >= 4) return { label: "Warm", dot: "bg-amber", txt: "text-amber" };
+  if (recent >= 1) return { label: "Cool", dot: "bg-sky-400", txt: "text-sky-600" };
+  return { label: "Cold", dot: "bg-stone-300", txt: "text-ink-4" };
+}
+
+export function AccountWarmth({ recent }: { recent: number | undefined }) {
+  const t = accountWarmthTier(recent ?? 0);
+  return (
+    <span className={cn("inline-flex items-center gap-1 text-[11.5px] font-medium", t.txt)} title={`${recent ?? 0} activities in last 90 days`}>
+      <span className={cn("inline-block h-1.5 w-1.5 rounded-full", t.dot)} />{t.label}
+    </span>
+  );
+}
