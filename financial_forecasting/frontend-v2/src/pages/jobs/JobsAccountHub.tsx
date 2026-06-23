@@ -14,7 +14,7 @@ import { Briefcase, CheckSquare, ChevronDown, ChevronRight, ExternalLink, Users 
 import { AccountAvatar } from "@/components/AccountAvatar";
 import { withReferrer } from "@/components/detail";
 import { AccountExpandTabs } from "@/components/jobs/accountTabs";
-import { AccountWarmth, DEAL_TYPE_LABELS, OwnerSelect, jobsAccountPath } from "@/components/jobs/jobsEntity";
+import { AccountWarmth, DEAL_TYPE_LABELS, OwnerSelect, jobsAccountPath, warmthRank } from "@/components/jobs/jobsEntity";
 import { ColumnChooser } from "@/components/ui/ColumnChooser";
 import { SavedViewsPicker } from "@/components/ui/SavedViewsPicker";
 import { SortableHeader } from "@/components/ui/SortableHeader";
@@ -65,7 +65,7 @@ function extract(a: JobsAccount, key: ColKey): string | number {
   switch (key) {
     case "account":       return a.account.toLowerCase();
     case "status":        return a.account_status;
-    case "warmth":        return a.recent_activity_count ?? 0;
+    case "warmth":        return warmthRank({ recent: a.recent_activity_count, last_activity_at: a.last_activity_at, responded: a.responded });
     case "owner":         return a.owner_email ?? "";
     case "opps":          return a.opp_count;
     case "contacts":      return a.prospect_count;
@@ -122,7 +122,7 @@ function AccountRow({
       </span>
     ),
     status: <Tag variant={accountStatusVariant(account.account_status)}>{account.account_status}</Tag>,
-    warmth: <AccountWarmth recent={account.recent_activity_count} />,
+    warmth: <AccountWarmth recent={account.recent_activity_count} last_activity_at={account.last_activity_at} responded={account.responded} />,
     tasks: (account.open_tasks ?? 0) > 0
       ? <span className="inline-flex items-center gap-1 text-[12px] text-ink-2"><CheckSquare size={11} className="text-ink-4" />{account.open_tasks}</span>
       : <span className="text-ink-4">—</span>,

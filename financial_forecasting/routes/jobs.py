@@ -1939,13 +1939,42 @@ async def jobs_accounts(
         "WHERE parent_type='account' AND deleted_at IS NULL AND status <> 'Completed' "
         "GROUP BY parent_id")}
 
-    # Recent activity (90d) per account = touches to any contact at the company —
-    # drives account warmth, same idea as contact warmth.
-    acct_activity = {r["company"]: r["n"] for r in await conn.fetch(
-        "SELECT lower(trim(c.current_company)) AS company, count(*) AS n "
-        "FROM bedrock.activity a JOIN public.contacts c ON c.contact_id = a.participant_public_contact_id "
-        "WHERE a.deleted_at IS NULL AND a.activity_date >= now() - interval '90 days' "
-        "  AND coalesce(trim(c.current_company),'') <> '' GROUP BY 1")}
+    # Per-account activity for warmth: recent volume (90d), recency (last touch),
+    # and whether the account has RESPONDED (two-way: a meeting, a call, or an
+    # inbound email from them — not just our outbound). Two passes merged:
+    # participant-linked (emails/calls) + meeting attendees (calendar, which has
+    # no participant link), so meetings/manual aren't undercounted.
+    team_sender = " OR ".join(f"a.email_from ILIKE '%{e}%'" for e in JOBS_TEAM_EMAILS)
+    acct_act: dict = {}
+
+    def _merge(company, last_act, recent, responded):
+        cur = acct_act.setdefault(company, {"recent": 0, "last": None, "responded": False})
+        cur["recent"] += recent or 0
+        if last_act and (cur["last"] is None or last_act > cur["last"]):
+            cur["last"] = last_act
+        cur["responded"] = cur["responded"] or bool(responded)
+
+    for r in await conn.fetch(f"""
+        SELECT lower(trim(c.current_company)) AS company,
+               max(a.activity_date) AS last_act,
+               count(*) FILTER (WHERE a.activity_date >= now() - interval '90 days') AS recent,
+               bool_or(a.type IN ('call','meeting')
+                       OR (a.type = 'email' AND NOT ({team_sender}))) AS responded
+        FROM bedrock.activity a JOIN public.contacts c ON c.contact_id = a.participant_public_contact_id
+        WHERE a.deleted_at IS NULL AND coalesce(trim(c.current_company),'') <> ''
+        GROUP BY 1"""):
+        _merge(r["company"], r["last_act"], r["recent"], r["responded"])
+    for r in await conn.fetch("""
+        SELECT lower(trim(c.current_company)) AS company,
+               max(a.activity_date) AS last_act,
+               count(*) FILTER (WHERE a.activity_date >= now() - interval '90 days') AS recent,
+               true AS responded
+        FROM bedrock.activity a, jsonb_array_elements(coalesce(a.meeting_attendees, '[]'::jsonb)) att
+        JOIN public.contacts c ON lower(c.email) = lower(att->>'email')
+        WHERE a.deleted_at IS NULL AND a.source = 'calendar-sync'
+          AND coalesce(trim(c.current_company),'') <> ''
+        GROUP BY 1"""):
+        _merge(r["company"], r["last_act"], r["recent"], r["responded"])
 
     dt = deal_type if deal_type and deal_type != "all" else None
     now = datetime.now(timezone.utc)
@@ -1986,7 +2015,10 @@ async def jobs_accounts(
         g["prospect_count"] = len(g["prospects"])
         g["last_activity"] = last.isoformat() if last else None
         g["open_tasks"] = open_tasks.get(key, 0)
-        g["recent_activity_count"] = acct_activity.get(key, 0)
+        a = acct_act.get(key)
+        g["recent_activity_count"] = a["recent"] if a else 0
+        g["last_activity_at"] = a["last"].isoformat() if (a and a["last"]) else None
+        g["responded"] = bool(a and a["responded"])
         out.append(g)
 
     out.sort(key=lambda a: (
@@ -2329,22 +2361,26 @@ async def list_contacts(
         for s in srows:
             staff_by_contact.setdefault(s["contact_id"], []).append(s["display_name"])
 
-    # Recent engagement per contact (last 90d) → drives the "warmth" indicator
-    # alongside connection count.
-    activity_by_contact: dict[int, int] = {}
+    # Per-contact activity for warmth: recent volume (90d), recency (last touch),
+    # and whether they've RESPONDED (a meeting/call, or an inbound email — not
+    # just our outbound).
+    team_sender = " OR ".join(f"a.email_from ILIKE '%{e}%'" for e in JOBS_TEAM_EMAILS)
+    activity_by_contact: dict[int, dict] = {}
     if contact_ids:
         arows = await conn.fetch(
-            """
-            SELECT participant_public_contact_id AS cid, count(*) AS n
-            FROM bedrock.activity
-            WHERE deleted_at IS NULL
-              AND participant_public_contact_id = ANY($1::int[])
-              AND activity_date >= now() - interval '90 days'
-            GROUP BY participant_public_contact_id
+            f"""
+            SELECT a.participant_public_contact_id AS cid,
+                   count(*) FILTER (WHERE a.activity_date >= now() - interval '90 days') AS recent,
+                   max(a.activity_date) AS last_act,
+                   bool_or(a.type IN ('call','meeting')
+                           OR (a.type = 'email' AND NOT ({team_sender}))) AS responded
+            FROM bedrock.activity a
+            WHERE a.deleted_at IS NULL AND a.participant_public_contact_id = ANY($1::int[])
+            GROUP BY a.participant_public_contact_id
             """,
             contact_ids,
         )
-        activity_by_contact = {a["cid"]: a["n"] for a in arows}
+        activity_by_contact = {a["cid"]: {"recent": a["recent"], "last": a["last_act"], "responded": a["responded"]} for a in arows}
 
     # Open tasks per contact (parent_type='prospect').
     tasks_by_contact: dict[int, int] = {}
@@ -2370,7 +2406,9 @@ async def list_contacts(
                     if r["deal_id_by_company"] else None
                 ),
                 "connected_staff_names": staff_by_contact.get(r["contact_id"], []),
-                "recent_activity_count": activity_by_contact.get(r["contact_id"], 0),
+                "recent_activity_count": (activity_by_contact.get(r["contact_id"]) or {}).get("recent", 0),
+                "last_activity_at": (lambda v: v.isoformat() if v else None)((activity_by_contact.get(r["contact_id"]) or {}).get("last")),
+                "responded": bool((activity_by_contact.get(r["contact_id"]) or {}).get("responded")),
                 "open_tasks": tasks_by_contact.get(r["contact_id"], 0),
             }
             for r in rows

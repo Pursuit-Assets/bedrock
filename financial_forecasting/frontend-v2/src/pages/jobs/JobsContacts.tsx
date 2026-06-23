@@ -12,7 +12,7 @@ import { Link } from "react-router-dom";
 import { CheckSquare, ExternalLink, Linkedin, Plus, Search, UserSearch, X } from "lucide-react";
 
 import { ContactDetail, initials } from "@/components/jobs/ProspectAccountExpandPanel";
-import { ContactExpandTabs, jobsContactPath } from "@/components/jobs/jobsEntity";
+import { ContactExpandTabs, jobsContactPath, warmthTier, warmthRank } from "@/components/jobs/jobsEntity";
 import { withReferrer } from "@/components/detail";
 import { ColumnChooser } from "@/components/ui/ColumnChooser";
 import { InlineSelect } from "@/components/ui/InlineEdit";
@@ -51,22 +51,16 @@ function ContactStagePill({ stage }: { stage: string | null }) {
   return <span className={cn("inline-flex w-fit items-center rounded-full px-2 py-0.5 text-[10px] font-medium leading-none", s.className)}>{s.label}</span>;
 }
 
-// ── warmth: how engaged a contact is (recent activity + staff connections) ──────
-function warmthScore(c: JobContactWithDeal): number {
-  return (c.recent_activity_count ?? 0) + (c.connected_staff_names?.length ?? 0) * 2;
+// ── warmth: recency + responsiveness (shared model with accounts) ──────────────
+function warmthInput(c: JobContactWithDeal) {
+  return { recent: c.recent_activity_count, last_activity_at: c.last_activity_at, responded: c.responded };
 }
 function Warmth({ c }: { c: JobContactWithDeal }) {
-  const score = warmthScore(c);
-  const acts = c.recent_activity_count ?? 0;
-  const conns = c.connected_staff_names?.length ?? 0;
-  const tier = score >= 6 ? { label: "Hot", dot: "bg-red", txt: "text-red" }
-    : score >= 3 ? { label: "Warm", dot: "bg-amber", txt: "text-amber" }
-    : score >= 1 ? { label: "Cool", dot: "bg-sky-400", txt: "text-sky-600" }
-    : { label: "Cold", dot: "bg-stone-300", txt: "text-ink-4" };
+  const t = warmthTier(warmthInput(c));
   return (
-    <span className="flex items-center gap-1.5" title={`${acts} activities (90d) · ${conns} staff connection${conns === 1 ? "" : "s"}`}>
-      <span className={cn("inline-block h-2 w-2 shrink-0 rounded-full", tier.dot)} />
-      <span className={cn("text-[11.5px] font-medium", tier.txt)}>{tier.label}</span>
+    <span className="flex items-center gap-1.5" title={t.hint}>
+      <span className={cn("inline-block h-2 w-2 shrink-0 rounded-full", t.dot)} />
+      <span className={cn("text-[11.5px] font-medium", t.txt)}>{t.label}</span>
     </span>
   );
 }
@@ -90,7 +84,7 @@ function extract(c: JobContactWithDeal, key: ColKey): string | number {
     case "title": return (c.current_title ?? "").toLowerCase();
     case "company": return (c.current_company ?? "").toLowerCase();
     case "stage": return c.contact_stage ?? "";
-    case "warmth": return warmthScore(c);
+    case "warmth": return warmthRank(warmthInput(c));
     case "tasks": return c.open_tasks ?? 0;
     default: return "";
   }

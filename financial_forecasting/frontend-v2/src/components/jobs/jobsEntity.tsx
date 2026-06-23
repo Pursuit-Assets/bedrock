@@ -240,19 +240,42 @@ export function ContactExpandTabs({ contactId }: { contactId: number }) {
 // re-export so callers can grab initials from one place
 export { initials };
 
-// ── Account warmth — how hot an account is by recent (90d) activity within it.
-//    Mirrors the contact-level Warmth, account-scaled (accounts see more touches).
-export function accountWarmthTier(recent: number): { label: string; dot: string; txt: string } {
-  if (recent >= 10) return { label: "Hot", dot: "bg-red", txt: "text-red" };
-  if (recent >= 4) return { label: "Warm", dot: "bg-amber", txt: "text-amber" };
-  if (recent >= 1) return { label: "Cool", dot: "bg-sky-400", txt: "text-sky-600" };
-  return { label: "Cold", dot: "bg-stone-300", txt: "text-ink-4" };
+// ── Warmth — recency + responsiveness (not just our outbound volume).
+//   Hot  = they RESPONDED recently (two-way ≤14d, or ≤30d with real volume)
+//   Warm = responded within 90d (cooling)
+//   Cool = activity within 90d but NO response yet (outbound-only / awaiting)
+//   Cold = nothing in 90 days (dormant) — or never touched
+// "responded" = a meeting, a call, or an inbound email (computed server-side).
+export interface WarmthInput { recent?: number; last_activity_at?: string | null; responded?: boolean }
+
+function daysSince(iso: string | null | undefined): number {
+  if (!iso) return Infinity;
+  const t = new Date(iso).getTime();
+  if (Number.isNaN(t)) return Infinity;
+  return Math.floor((Date.now() - t) / 86_400_000);
 }
 
-export function AccountWarmth({ recent }: { recent: number | undefined }) {
-  const t = accountWarmthTier(recent ?? 0);
+// Numeric rank for sorting: Hot 3 → Cold 0.
+export function warmthRank(w: WarmthInput): number {
+  const l = warmthTier(w).label;
+  return l === "Hot" ? 3 : l === "Warm" ? 2 : l === "Cool" ? 1 : 0;
+}
+
+export function warmthTier(w: WarmthInput): { label: string; dot: string; txt: string; hint: string } {
+  const d = daysSince(w.last_activity_at);
+  const recent = w.recent ?? 0;
+  const responded = !!w.responded;
+  if (d > 90 || recent === 0) return { label: "Cold", dot: "bg-stone-300", txt: "text-ink-4", hint: "no activity in 90+ days" };
+  if (responded && (d <= 14 || (d <= 30 && recent >= 8)))
+    return { label: "Hot", dot: "bg-red", txt: "text-red", hint: `responded · last activity ${d}d ago` };
+  if (responded) return { label: "Warm", dot: "bg-amber", txt: "text-amber", hint: `responded · last activity ${d}d ago` };
+  return { label: "Cool", dot: "bg-sky-400", txt: "text-sky-600", hint: `${recent} touch${recent === 1 ? "" : "es"}, no response yet` };
+}
+
+export function AccountWarmth(w: WarmthInput) {
+  const t = warmthTier(w);
   return (
-    <span className={cn("inline-flex items-center gap-1 text-[11.5px] font-medium", t.txt)} title={`${recent ?? 0} activities in last 90 days`}>
+    <span className={cn("inline-flex items-center gap-1 text-[11.5px] font-medium", t.txt)} title={t.hint}>
       <span className={cn("inline-block h-1.5 w-1.5 rounded-full", t.dot)} />{t.label}
     </span>
   );

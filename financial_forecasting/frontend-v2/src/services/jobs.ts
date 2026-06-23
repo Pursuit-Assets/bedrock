@@ -212,6 +212,8 @@ export interface JobContactWithDeal extends JobContact {
   deal: { id: string; account_name: string; stage: JobStage; owner_email?: string | null } | null;
   connected_staff_names?: string[];
   recent_activity_count?: number;
+  last_activity_at?: string | null;
+  responded?: boolean;
   open_tasks?: number;
 }
 
@@ -368,6 +370,8 @@ export interface JobsAccount {
   last_activity: string | null;
   open_tasks?: number;
   recent_activity_count?: number;
+  last_activity_at?: string | null;
+  responded?: boolean;
 }
 
 export function useJobsAccounts(dealType?: string) {
