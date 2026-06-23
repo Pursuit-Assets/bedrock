@@ -489,7 +489,7 @@ export interface MetricDrill {
   columns: { key: string; label: string }[];
   rows: (Record<string, string | null> & { _children?: Record<string, string | null>[] })[];
   count: number;
-  entity: "deal" | "contact" | "activity" | "company" | "placement";
+  entity: "deal" | "contact" | "activity" | "company" | "placement" | "salary";
   child_columns: { key: string; label: string }[] | null;
 }
 
@@ -674,6 +674,21 @@ export function useUpdatePlacement() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["jobs", "placements"] });
       toast.success("Attribution updated");
+    },
+    onError: () => toast.error("Update failed"),
+  });
+}
+
+export function useUpdatePlacementSalary() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, salary }: { id: string; salary: number }) => {
+      await api.patch(`/api/jobs/placements/${id}`, { salary });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["jobs", "placements"] });
+      qc.invalidateQueries({ queryKey: ["jobs", "metric"] });
+      toast.success("Salary updated");
     },
     onError: () => toast.error("Update failed"),
   });

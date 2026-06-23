@@ -128,6 +128,17 @@ def test_create_role_opp_not_found_404():
     assert r.status_code == 404
 
 
+def test_update_placement_salary_syncs_role():
+    conn = FakeConn()  # execute default "OK" (not "UPDATE 0")
+    c = make_jobs_client(conn)
+    r = c.patch("/api/jobs/placements/75", json={"salary": 87500})
+    assert r.status_code == 200, r.text
+    erc = conn.executed("UPDATE public.employment_records SET")
+    assert erc and 87500 in erc[0][2]
+    role = conn.executed("UPDATE bedrock.jobs_role SET approx_salary")
+    assert role and role[0][2] == (87500, 75)   # sync linked role
+
+
 def test_update_role_salary_syncs_filled_placement():
     # editing a FILLED role's salary writes through to its employment_record
     conn = FakeConn(rows={

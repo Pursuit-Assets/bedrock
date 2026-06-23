@@ -58,6 +58,22 @@ def test_placements_drill_query_filters_full_time_only():
     assert "employment_type = 'full_time'" in secured_q   # never PT/contract
 
 
+def test_ft_salaries_drill_flat_editable():
+    conn = FakeConn(lists={
+        SECURED: [_placement(1, "Ana", role_title="Eng", company_name="Acme", payment_amount=90000)],
+        "FROM bedrock.jobs_role r": [{"id": "r1", "account_name": "Beta", "title": "FT role", "approx_salary": 85000}],
+    })
+    c = make_jobs_client(conn)
+    r = c.get("/api/jobs/metrics/ft_salaries")
+    assert r.status_code == 200, r.text
+    d = r.json()["data"]
+    assert d["entity"] == "salary"
+    kinds = {row["kind"] for row in d["rows"]}
+    assert kinds == {"placed", "committed"}
+    placed = next(row for row in d["rows"] if row["kind"] == "placed")
+    assert placed["salary"] == "90000" and placed["id"]  # raw number + id for editing
+
+
 def test_unknown_metric_key_404():
     c = make_jobs_client(FakeConn())
     r = c.get("/api/jobs/metrics/not_a_metric")
