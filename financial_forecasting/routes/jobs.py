@@ -1975,6 +1975,20 @@ async def jobs_accounts(
           AND coalesce(trim(c.current_company),'') <> ''
         GROUP BY 1"""):
         _merge(r["company"], r["last_act"], r["recent"], r["responded"])
+    # A role created or a hire tagged is real momentum — count it as responded,
+    # by account (keyed on normalized account_name = account_key).
+    for sql in (
+        """SELECT lower(trim(o.account_name)) AS company, max(r.created_at) AS last_act,
+                  count(*) FILTER (WHERE r.created_at >= now() - interval '90 days') AS recent, true AS responded
+           FROM bedrock.jobs_role r JOIN bedrock.jobs_opportunity o ON o.id = r.opportunity_id
+           WHERE o.deleted_at IS NULL AND coalesce(trim(o.account_name),'') <> '' GROUP BY 1""",
+        """SELECT lower(trim(o.account_name)) AS company, max(er.created_at) AS last_act,
+                  count(*) FILTER (WHERE er.created_at >= now() - interval '90 days') AS recent, true AS responded
+           FROM public.employment_records er JOIN bedrock.jobs_opportunity o ON o.id = er.opportunity_id
+           WHERE o.deleted_at IS NULL AND coalesce(trim(o.account_name),'') <> '' GROUP BY 1""",
+    ):
+        for r in await conn.fetch(sql):
+            _merge(r["company"], r["last_act"], r["recent"], r["responded"])
 
     dt = deal_type if deal_type and deal_type != "all" else None
     now = datetime.now(timezone.utc)
