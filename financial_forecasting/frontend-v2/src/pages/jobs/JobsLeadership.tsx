@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Users, Trophy, DollarSign, Building2, UserCheck } from "lucide-react";
+import { Users, Trophy, DollarSign, UserCheck } from "lucide-react";
 
 import {
   useContactsSummary,
@@ -94,15 +94,6 @@ export function JobsLeadership() {
             onClick={() => setOpenMetric("placements")}
           />
           <JobsStatBubble
-            label="FT Builders Placed"
-            value={p?.ft_builders ?? 0}
-            tone="emerald"
-            icon={<Trophy size={14} />}
-            isLoading={pLoading}
-            sub="builders in full-time roles"
-            onClick={() => setOpenMetric("placements")}
-          />
-          <JobsStatBubble
             label="Builders w/ Paid Work"
             value={p?.any_builders ?? 0}
             tone="sky"
@@ -121,31 +112,14 @@ export function JobsLeadership() {
             onClick={() => setOpenMetric("interviewing_builders")}
           />
           <JobsStatBubble
-            label="Avg FT Salary · Placed"
-            value={p?.avg_salary_ft_placed ?? 0}
+            label="Avg FT Salary"
+            value={p?.avg_salary_ft_secured ?? 0}
             tone="emerald"
             icon={<DollarSign size={14} />}
             format="salary"
             isLoading={pLoading}
-            sub="actual pay of FT placements"
-          />
-          <JobsStatBubble
-            label="Avg FT Salary · Secured"
-            value={p?.avg_salary_ft_secured ?? 0}
-            tone="violet"
-            icon={<DollarSign size={14} />}
-            format="salary"
-            isLoading={pLoading}
-            sub="placed + committed FT roles"
-          />
-          <JobsStatBubble
-            label="Committed Roles · Unfilled"
-            value={p?.committed_ft_roles ?? 0}
-            tone="sky"
-            icon={<Building2 size={14} />}
-            isLoading={pLoading}
-            sub="locked-in FT reqs awaiting a builder"
-            onClick={() => setOpenMetric("committed_roles")}
+            subLead="secured (placed + committed)"
+            sub={p?.avg_salary_ft_placed != null ? `Placed: $${p.avg_salary_ft_placed.toLocaleString()}` : undefined}
           />
         </div>
       </SectionWrap>
