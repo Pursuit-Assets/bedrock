@@ -52,12 +52,18 @@ const DEAL_TYPE_FILTERS: { value: string; label: string }[] = [
   ),
 ];
 
-export function JobsFunnels() {
+export function JobsFunnels({ builderSegment }: { builderSegment?: string } = {}) {
   const [funnel, setFunnel] = useState<FunnelType>("opportunities");
   // Deal-type lens, defaults to Full-Time. Scopes the funnel (and its recent
   // movement) to that deal type across opportunities/prospects/builders.
   const [dealType, setDealType] = useState<string>("ft");
-  const { data, isLoading } = useJobsFunnel(funnel, dealType);
+  // The builders funnel is the L3+ job-ready pool — scope it by the dashboard's
+  // L3-cohort segment instead of deal type.
+  const { data, isLoading } = useJobsFunnel(
+    funnel,
+    funnel === "builders" ? undefined : dealType,
+    funnel === "builders" ? builderSegment : undefined,
+  );
 
   return (
     <div className="flex flex-col gap-4">
