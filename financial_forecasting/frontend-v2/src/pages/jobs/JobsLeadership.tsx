@@ -77,8 +77,9 @@ export function JobsLeadership() {
 
       {/* ── ZONE 1 · North Star (outcomes) ────────────────────────────── */}
       <SectionWrap title="North Star · Outcomes">
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
           <JobsStatBubble
+            big
             label="FT Roles Secured"
             value={p?.ft_roles_secured ?? 0}
             tone="violet"
@@ -92,6 +93,7 @@ export function JobsLeadership() {
             onClick={() => setOpenMetric("placements")}
           />
           <JobsStatBubble
+            big
             label="Builders w/ Paid Work"
             value={p?.any_builders ?? 0}
             tone="sky"
@@ -103,15 +105,7 @@ export function JobsLeadership() {
             onClick={() => setOpenMetric("any_paid")}
           />
           <JobsStatBubble
-            label="Interviewing"
-            value={p?.interviewing ?? 0}
-            tone="amber"
-            icon={<Users size={14} />}
-            isLoading={pLoading}
-            sub="builders in active interviews"
-            onClick={() => setOpenMetric("interviewing_builders")}
-          />
-          <JobsStatBubble
+            big
             label="Avg FT Salary"
             value={p?.avg_salary_ft_secured ?? 0}
             tone="emerald"
