@@ -63,6 +63,7 @@ export interface JobsOpportunity {
   priority?: number | null;
   priority_auto?: number | null;
   priority_suggested?: number | null;
+  open_tasks?: number;
   segment?: string | null;
   intro_by?: string | null;
   created_at: string;
@@ -92,6 +93,7 @@ export interface ContactsSummary {
     engaged: number;
     by_stage: { stage: string; count: number }[];
   };
+  accounts: { total: number; engaged: number };
   activity: {
     outreach_total: number;
     outreach_this_week: number;
@@ -210,6 +212,9 @@ export interface JobContactWithDeal extends JobContact {
   deal: { id: string; account_name: string; stage: JobStage; owner_email?: string | null } | null;
   connected_staff_names?: string[];
   recent_activity_count?: number;
+  last_activity_at?: string | null;
+  responded?: boolean;
+  open_tasks?: number;
 }
 
 export interface ContactFilters {
@@ -363,6 +368,10 @@ export interface JobsAccount {
   opp_count: number;
   prospect_count: number;
   last_activity: string | null;
+  open_tasks?: number;
+  recent_activity_count?: number;
+  last_activity_at?: string | null;
+  responded?: boolean;
 }
 
 export function useJobsAccounts(dealType?: string) {

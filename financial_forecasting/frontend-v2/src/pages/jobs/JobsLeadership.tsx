@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Users, Trophy, DollarSign, UserCheck } from "lucide-react";
+import { Users, Trophy, DollarSign, UserCheck, Building2 } from "lucide-react";
 
 import {
   useContactsSummary,
@@ -11,16 +11,6 @@ import { ActivityTrends } from "@/components/jobs/ActivityTrends";
 import { MetricDrawer } from "@/components/jobs/MetricDrawer";
 import { JobsStatBubble } from "@/components/jobs/JobsStatBubble";
 
-// ── SOP targets ───────────────────────────────────────────────────────────
-
-const TARGET_PLACEMENTS = 20;
-
-// ── Helpers ───────────────────────────────────────────────────────────────
-
-function pct(value: number, max: number): number {
-  if (!max) return 0;
-  return Math.max(0, Math.min(100, Math.round((value / max) * 100)));
-}
 
 // ── Section wrapper ───────────────────────────────────────────────────────
 
@@ -54,10 +44,18 @@ export function JobsLeadership() {
   const p = placementsQ.data;
   const pLoading = placementsQ.isLoading;
 
-  // ── Contacts & Outreach derived values ─────────────────────────────────
+  // Denominator for the "% of total" cards = the job-ready pool size for the
+  // selected segment (or all L3+).
+  const poolTotal =
+    segment === "all"
+      ? segmentsQ.data?.total ?? 0
+      : segmentsQ.data?.segments.find((s) => s.value === segment)?.count ?? 0;
+  const pctOfPool = (n: number) => (poolTotal ? Math.round((100 * n) / poolTotal) : 0);
+
+  // ── Account activity derived values ────────────────────────────────────
   const contactsLoading = contactsQ.isLoading;
-  const totalLeads = contactsQ.data?.contacts.total ?? null;
-  const engagedLeads = contactsQ.data?.contacts.engaged ?? null;
+  const totalAccounts = contactsQ.data?.accounts?.total ?? null;
+  const engagedAccounts = contactsQ.data?.accounts?.engaged ?? null;
 
   return (
     <div className="flex flex-col gap-7">
@@ -88,9 +86,9 @@ export function JobsLeadership() {
             isLoading={pLoading}
             celebrate={!pLoading && (p?.ft_roles_secured ?? 0) > 0}
             subLead={pLoading ? undefined : `${p?.ft_builders ?? 0} placed · ${p?.committed_ft_roles ?? 0} committed`}
-            sub={`of ${TARGET_PLACEMENTS} by end of July`}
-            progressPct={pct(p?.ft_roles_secured ?? 0, TARGET_PLACEMENTS)}
-            progressLabel={`${pct(p?.ft_roles_secured ?? 0, TARGET_PLACEMENTS)}%`}
+            sub={pLoading ? undefined : `${pctOfPool(p?.ft_roles_secured ?? 0)}% of ${poolTotal} job-ready`}
+            progressPct={pctOfPool(p?.ft_roles_secured ?? 0)}
+            progressLabel={`${pctOfPool(p?.ft_roles_secured ?? 0)}%`}
             onClick={() => setOpenMetric("placements")}
           />
           <JobsStatBubble
@@ -99,7 +97,9 @@ export function JobsLeadership() {
             tone="sky"
             icon={<Users size={14} />}
             isLoading={pLoading}
-            sub="any paid placement (FT, PT, contract)"
+            sub={pLoading ? undefined : `${pctOfPool(p?.any_builders ?? 0)}% of ${poolTotal} job-ready`}
+            progressPct={pctOfPool(p?.any_builders ?? 0)}
+            progressLabel={`${pctOfPool(p?.any_builders ?? 0)}%`}
             onClick={() => setOpenMetric("any_paid")}
           />
           <JobsStatBubble
@@ -127,36 +127,34 @@ export function JobsLeadership() {
       {/* ── ZONE 2 · The Funnel (the engine) ──────────────────────────── */}
       <JobsFunnels builderSegment={segment} />
 
-      {/* ── ZONE 3 · Prospect Activity (leading indicators) ───────────── */}
+      {/* ── ZONE 3 · Account Activity (leading indicators) ────────────── */}
       <div className="flex flex-col gap-1.5">
         <div className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">
-          Prospect Activity
+          Account Activity
         </div>
         <div className="text-[11px] text-ink-4">
-          Top-of-funnel engagement feeding the pipeline.
+          Top-of-funnel engagement feeding the pipeline, at the account level.
         </div>
         <div className="mt-1 grid grid-cols-1 gap-3 sm:grid-cols-2">
           <JobsStatBubble
-            label="Total Leads"
-            value={totalLeads ?? 0}
+            label="Total Accounts"
+            value={totalAccounts ?? 0}
             tone="violet"
-            icon={<Users size={14} />}
+            icon={<Building2 size={14} />}
             isLoading={contactsLoading}
             sub={
-              totalLeads != null && engagedLeads != null && totalLeads > 0
-                ? `${Math.round((engagedLeads / totalLeads) * 100)}% engaged`
+              totalAccounts != null && engagedAccounts != null && totalAccounts > 0
+                ? `${Math.round((engagedAccounts / totalAccounts) * 100)}% engaged`
                 : undefined
             }
-            onClick={() => setOpenMetric("total_leads")}
           />
           <JobsStatBubble
-            label="Engaged"
-            value={engagedLeads ?? 0}
+            label="Engaged Accounts"
+            value={engagedAccounts ?? 0}
             tone="sky"
             icon={<UserCheck size={14} />}
             isLoading={contactsLoading}
-            sub="prospects we've contacted"
-            onClick={() => setOpenMetric("engaged_leads")}
+            sub="accounts with any activity"
           />
         </div>
       </div>
