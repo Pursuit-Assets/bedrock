@@ -58,6 +58,26 @@ def test_funnel_unknown_type_404():
     assert r.status_code == 404
 
 
+def test_funnel_builders_job_ready_paid_ft():
+    # bedrock.l3plus_funnel returns the L3+ pool with placement flags
+    conn = FakeConn(lists={"l3plus_funnel": [
+        {"name": "Ana", "is_paid": True,  "is_ft": True,  "company": "Acme", "role": "Eng"},
+        {"name": "Ben", "is_paid": True,  "is_ft": False, "company": "Beta", "role": "PT"},
+        {"name": "Cy",  "is_paid": False, "is_ft": False, "company": None,   "role": None},
+    ]})
+    c = make_jobs_client(conn)
+    r = c.get("/api/jobs/funnel/builders")
+    assert r.status_code == 200, r.text
+    stages = {s["key"]: s["count"] for s in r.json()["data"]["stages"]}
+    assert stages == {"job_ready": 3, "paid": 2, "ft": 1}   # nested funnel
+    # segment param is bound to the function call
+    seg_conn = FakeConn(lists={"l3plus_funnel": []})
+    sc = make_jobs_client(seg_conn)
+    sc.get("/api/jobs/funnel/builders?segment=March%202025%20L3")
+    call = next(x for x in seg_conn.calls if "l3plus_funnel" in x[1])
+    assert call[2][0] == "March 2025 L3"
+
+
 # ── activity-trends ─────────────────────────────────────────────────────────────
 
 from datetime import datetime, timezone  # noqa: E402
@@ -65,34 +85,39 @@ from datetime import datetime, timezone  # noqa: E402
 BASE = datetime(2026, 6, 15, tzinfo=timezone.utc)
 
 
-def test_activity_trends_buckets_volume_and_activation():
+def test_activity_trends_new_vs_existing_accounts():
     conn = FakeConn(
-        lists={
-            "GROUP BY 1, 2": [{"bucket": BASE, "channel": "email", "n": 10},
-                              {"bucket": BASE, "channel": "meeting", "n": 4}],
-            "first_account AS": [{"kind": "contact", "bucket": BASE, "n": 5},
-                                 {"kind": "account", "bucket": BASE, "n": 3}],
-        },
+        lists={"GROUP BY 1, 2": [{"bucket": BASE, "kind": "new", "n": 7},
+                                 {"bucket": BASE, "kind": "existing", "n": 4}]},
         vals={"date_trunc": BASE, "damon.kornhauser": 50},
     )
     c = make_jobs_client(conn)
-    r = c.get("/api/jobs/activity-trends?granularity=week")
+    r = c.get("/api/jobs/activity-trends?granularity=week&channel=all")
     assert r.status_code == 200, r.text
     d = r.json()["data"]
+    assert d["channel"] == "all"
     assert len(d["buckets"]) == 12                     # trailing 12, zero-filled
     last = d["buckets"][-1]
     assert last["period"] == "2026-06-15"
-    assert last["email"] == 10 and last["meeting"] == 4
-    assert last["new_contacts"] == 5 and last["new_accounts"] == 3
-    # earlier buckets zero-filled
-    assert d["buckets"][0]["email"] == 0 and d["buckets"][0]["new_contacts"] == 0
-    assert d["totals"]["touchpoints"] == 14
+    assert last["new"] == 7 and last["existing"] == 4
+    assert d["buckets"][0]["new"] == 0 and d["buckets"][0]["existing"] == 0   # zero-filled
+    assert d["totals"] == {"new": 7, "existing": 4, "touches": 11}
     assert d["coverage_note"] is not None              # damon=50 < 200 → flagged
 
 
+def test_activity_trends_channel_passed_through():
+    conn = FakeConn(lists={"GROUP BY 1, 2": []}, vals={"date_trunc": BASE, "damon.kornhauser": 50})
+    c = make_jobs_client(conn)
+    r = c.get("/api/jobs/activity-trends?granularity=month&channel=email")
+    assert r.status_code == 200, r.text
+    assert r.json()["data"]["channel"] == "email"
+    # the channel param is bound to the query
+    main = next(call for call in conn.calls if call[0] == "fetch" and "GROUP BY 1, 2" in call[1])
+    assert main[2][0] == "email"
+
+
 def test_activity_trends_no_coverage_note_when_damon_synced():
-    conn = FakeConn(lists={"GROUP BY 1, 2": [], "first_account AS": []},
-                    vals={"date_trunc": BASE, "damon.kornhauser": 500})
+    conn = FakeConn(lists={"GROUP BY 1, 2": []}, vals={"date_trunc": BASE, "damon.kornhauser": 500})
     c = make_jobs_client(conn)
     r = c.get("/api/jobs/activity-trends?granularity=week")
     assert r.status_code == 200, r.text
@@ -100,15 +125,24 @@ def test_activity_trends_no_coverage_note_when_damon_synced():
 
 
 def test_activity_trends_monthly_has_12_buckets():
-    conn = FakeConn(lists={"GROUP BY 1, 2": [], "first_account AS": []},
-                    vals={"date_trunc": BASE, "damon.kornhauser": 50})
+    conn = FakeConn(lists={"GROUP BY 1, 2": []}, vals={"date_trunc": BASE, "damon.kornhauser": 50})
     c = make_jobs_client(conn)
     r = c.get("/api/jobs/activity-trends?granularity=month")
     assert r.status_code == 200, r.text
     assert len(r.json()["data"]["buckets"]) == 12
 
 
-def test_activity_trends_bad_granularity_422():
+def test_activity_trends_bad_params_422():
     c = make_jobs_client(FakeConn())
-    r = c.get("/api/jobs/activity-trends?granularity=daily")
-    assert r.status_code == 422
+    assert c.get("/api/jobs/activity-trends?granularity=daily").status_code == 422
+    assert c.get("/api/jobs/activity-trends?channel=carrier-pigeon").status_code == 422
+
+
+def test_builder_segments():
+    conn = FakeConn(lists={"GROUP BY segment": [{"segment": "March 2025 L3", "n": 34}]})
+    c = make_jobs_client(conn)
+    r = c.get("/api/jobs/builder-segments")
+    assert r.status_code == 200, r.text
+    d = r.json()["data"]
+    assert d["total"] == 34
+    assert d["segments"][0]["value"] == "March 2025 L3" and d["segments"][0]["count"] == 34

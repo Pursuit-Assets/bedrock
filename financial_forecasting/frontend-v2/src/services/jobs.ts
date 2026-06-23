@@ -525,7 +525,22 @@ export interface PlacementsSummary {
   influenced_any: number;
   committed_ft_roles: number;
   ft_roles_secured: number;
+  avg_salary_ft_placed: number | null;
+  avg_salary_ft_secured: number | null;
+  interviewing: number;
   rows: Placement[];
+}
+
+export interface BuilderSegment { value: string; label: string; count: number }
+export function useBuilderSegments() {
+  return useQuery<{ segments: BuilderSegment[]; total: number }>({
+    queryKey: ["jobs", "builder-segments"],
+    queryFn: async () => {
+      const { data } = await api.get<ApiResponse<{ segments: BuilderSegment[]; total: number }>>("/api/jobs/builder-segments");
+      return data.data;
+    },
+    staleTime: 5 * 60_000,
+  });
 }
 
 export interface WeekSummaryPerson {
@@ -558,11 +573,13 @@ export function useThisWeekSummary() {
   });
 }
 
-export function usePlacements() {
+export function usePlacements(segment?: string) {
+  const seg = segment && segment !== "all" ? segment : undefined;
   return useQuery<PlacementsSummary>({
-    queryKey: ["jobs", "placements"],
+    queryKey: ["jobs", "placements", seg ?? "all"],
     queryFn: async () => {
-      const { data } = await api.get<ApiResponse<PlacementsSummary>>("/api/jobs/placements");
+      const qs = seg ? `?segment=${encodeURIComponent(seg)}` : "";
+      const { data } = await api.get<ApiResponse<PlacementsSummary>>(`/api/jobs/placements${qs}`);
       return data.data;
     },
     staleTime: 30_000,
@@ -682,11 +699,16 @@ export interface FunnelData {
   record_columns: { key: string; label: string }[];
 }
 
-export function useJobsFunnel(ftype: FunnelType, dealType?: string) {
+export function useJobsFunnel(ftype: FunnelType, dealType?: string, segment?: string) {
+  const dt = dealType && dealType !== "all" ? dealType : undefined;
+  const seg = segment && segment !== "all" ? segment : undefined;
   return useQuery<FunnelData>({
-    queryKey: ["jobs", "funnel", ftype, dealType ?? "all"],
+    queryKey: ["jobs", "funnel", ftype, dt ?? "all", seg ?? "all"],
     queryFn: async () => {
-      const qs = dealType && dealType !== "all" ? `?deal_type=${dealType}` : "";
+      const p = new URLSearchParams();
+      if (dt) p.set("deal_type", dt);
+      if (seg) p.set("segment", seg);
+      const qs = p.toString() ? `?${p}` : "";
       const { data } = await api.get<ApiResponse<FunnelData>>(`/api/jobs/funnel/${ftype}${qs}`);
       return data.data;
     },
@@ -730,26 +752,24 @@ export function useContactsSummary() {
 
 export interface ActivityTrendBucket {
   period: string;
-  new_contacts: number;
-  new_accounts: number;
-  email: number;
-  meeting: number;
-  call: number;
-  other: number;
+  new: number;
+  existing: number;
 }
+export type OutreachChannel = "all" | "email" | "meeting";
 export interface ActivityTrends {
   granularity: "week" | "month";
+  channel: OutreachChannel;
   buckets: ActivityTrendBucket[];
-  totals: { new_contacts: number; new_accounts: number; touchpoints: number };
+  totals: { new: number; existing: number; touches: number };
   coverage_note: string | null;
 }
 
-export function useActivityTrends(granularity: "week" | "month") {
+export function useActivityTrends(granularity: "week" | "month", channel: OutreachChannel) {
   return useQuery<ActivityTrends>({
-    queryKey: ["jobs", "activity-trends", granularity],
+    queryKey: ["jobs", "activity-trends", granularity, channel],
     queryFn: async () => {
       const { data } = await api.get<ApiResponse<ActivityTrends>>(
-        `/api/jobs/activity-trends?granularity=${granularity}`,
+        `/api/jobs/activity-trends?granularity=${granularity}&channel=${channel}`,
       );
       return data.data;
     },

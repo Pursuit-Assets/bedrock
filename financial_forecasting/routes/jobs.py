@@ -340,7 +340,53 @@ async def metric_drilldown(
         ]
         return {"columns": cols, "child_columns": child_cols}, out, "placement"
 
+    async def any_paid(_where: str):
+        rows = await conn.fetch("SELECT * FROM bedrock.secured_jobs() WHERE payment_amount > 0 ORDER BY builder")
+        seen: dict = {}
+        for r in rows:
+            seen.setdefault(r["user_id"], r)
+        out = [{
+            "builder": r["builder"],
+            "company": r["company_name"] or "—",
+            "role": r["role_title"] or "—",
+            "type": ("Full-Time" if r["employment_type"] == "full_time"
+                     else (r["employment_type"] or "—").replace("_", " ").title()),
+            "salary": f"${int(r['payment_amount']):,}" if r["payment_amount"] else "—",
+        } for r in seen.values()]
+        cols = [{"key": "builder", "label": "Builder"}, {"key": "company", "label": "Company"},
+                {"key": "role", "label": "Role"}, {"key": "type", "label": "Type"}, {"key": "salary", "label": "Pay"}]
+        return cols, out, "builder"
+
+    async def committed_roles(_where: str):
+        rows = await conn.fetch("""
+            SELECT o.account_name, r.title, r.approx_salary
+            FROM bedrock.jobs_role r JOIN bedrock.jobs_opportunity o ON o.id = r.opportunity_id
+            WHERE r.status='open' AND o.deleted_at IS NULL AND r.commitment='committed' AND r.is_trial=false
+              AND (r.employment_type='full_time' OR (r.employment_type IS NULL AND o.deal_type='ft'))
+            ORDER BY o.account_name
+        """)
+        out = [{"company": r["account_name"] or "—", "role": r["title"] or "FT role",
+                "salary": f"${int(r['approx_salary']):,}" if r["approx_salary"] else "—"} for r in rows]
+        cols = [{"key": "company", "label": "Company"}, {"key": "role", "label": "Role"}, {"key": "salary", "label": "Expected Pay"}]
+        return cols, out, "role"
+
+    async def builders_interviewing(_where: str):
+        rows = await conn.fetch("""
+            SELECT trim(split_part(notes, ':', 1)) AS builder, company_name, role_title
+            FROM public.job_applications
+            WHERE stage='interview' AND source_type='Pursuit_referred'
+            ORDER BY company_name
+        """)
+        out = [{"builder": r["builder"] or "—", "company": r["company_name"] or "—",
+                "role": r["role_title"] or "—", "stage": "Interviewing"} for r in rows]
+        cols = [{"key": "builder", "label": "Builder"}, {"key": "company", "label": "Company"},
+                {"key": "role", "label": "Role"}, {"key": "stage", "label": "Stage"}]
+        return cols, out, "builder"
+
     DISPATCH = {
+        "any_paid":             ("Builders With Paid Work",   lambda: any_paid("true")),
+        "committed_roles":      ("Committed FT Roles (unfilled)", lambda: committed_roles("true")),
+        "interviewing_builders": ("Builders Interviewing",    lambda: builders_interviewing("true")),
         "total_leads":          ("Total Leads",              lambda: contacts("true")),
         "engaged_leads":        ("Engaged Prospects",        lambda: engaged_prospects("true")),
         "outreach_week":        ("New Contacts Emailed — Last 7 Days", lambda: first_touch("email", "ext.first_touch >= now() - interval '7 days'")),
@@ -383,13 +429,26 @@ async def metric_drilldown(
 
 
 @router.get("/placements")
-async def get_placements(user=Depends(require_auth), conn=Depends(get_db)):
+async def get_placements(
+    segment: Optional[str] = Query(None),
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
     """Secured jobs — single source of truth = public.employment_records.
 
     Counts ALL placements (incl. builder self-sourced, no deal link) and
-    separates by `influenced` (jobs-team influenced / self-sourced / unclassified).
+    separates by `influenced`. `segment` (an L3 cohort) scopes the builder-side
+    numbers to that segment of the L3+ pool; committed roles stay global (demand).
     """
+    seg = segment if segment and segment != "all" else None
+    seg_uids: Optional[set] = None
+    if seg:
+        prows = await conn.fetch(f"WITH {_L3PLUS_POOL} SELECT user_id, segment FROM pool")
+        seg_uids = {r["user_id"] for r in prows if r["segment"] == seg}
+
     rows = await conn.fetch("SELECT * FROM bedrock.secured_jobs() WHERE payment_amount > 0")
+    if seg_uids is not None:
+        rows = [r for r in rows if r["user_id"] in seg_uids]
 
     # Metric is DISTINCT BUILDERS placed (a builder with 2 PT jobs counts once).
     # Two tracked numbers: any paid work, and full-time.
@@ -426,6 +485,36 @@ async def get_placements(user=Depends(require_auth), conn=Depends(get_db)):
           AND (r.employment_type = 'full_time' OR (r.employment_type IS NULL AND o.deal_type = 'ft'))
     """) or 0
 
+    # Avg salaries: per FT-placed builder's representative FT pay (placed), and
+    # that pool blended with committed FT roles' expected salary (secured).
+    ft_pay = {}
+    for r in rows:
+        if r["employment_type"] == "full_time" and r["payment_amount"]:
+            uid = r["user_id"]
+            ft_pay[uid] = max(ft_pay.get(uid, 0), float(r["payment_amount"]))
+    placed_salaries = list(ft_pay.values())
+    avg_salary_ft_placed = round(sum(placed_salaries) / len(placed_salaries)) if placed_salaries else None
+    crows = await conn.fetch("""
+        SELECT r.approx_salary FROM bedrock.jobs_role r
+        JOIN bedrock.jobs_opportunity o ON o.id = r.opportunity_id
+        WHERE r.status='open' AND o.deleted_at IS NULL AND r.commitment='committed' AND r.is_trial=false
+          AND (r.employment_type='full_time' OR (r.employment_type IS NULL AND o.deal_type='ft'))
+          AND r.approx_salary IS NOT NULL
+    """)
+    committed_salaries = [float(r["approx_salary"]) for r in crows if r["approx_salary"]]
+    secured_salaries = placed_salaries + committed_salaries
+    avg_salary_ft_secured = round(sum(secured_salaries) / len(secured_salaries)) if secured_salaries else None
+
+    # Builders currently interviewing (job_applications), optionally segment-scoped.
+    iv_rows = await conn.fetch("""
+        SELECT DISTINCT ja.builder_id FROM public.job_applications ja
+        WHERE ja.stage = 'interview' AND ja.source_type = 'Pursuit_referred' AND ja.builder_id IS NOT NULL
+    """)
+    iv_uids = {r["builder_id"] for r in iv_rows}
+    if seg_uids is not None:
+        iv_uids &= seg_uids
+    interviewing = len(iv_uids)
+
     # One row per builder for the drill list (their representative placement)
     out = []
     for uid, r in sorted(by_builder.items(),
@@ -455,6 +544,9 @@ async def get_placements(user=Depends(require_auth), conn=Depends(get_db)):
             "influenced_any": infl_any,
             "committed_ft_roles": committed_ft_roles,
             "ft_roles_secured": ft_builders + committed_ft_roles,
+            "avg_salary_ft_placed": avg_salary_ft_placed,
+            "avg_salary_ft_secured": avg_salary_ft_secured,
+            "interviewing": interviewing,
             "rows": out,
         },
     }
@@ -996,10 +1088,51 @@ async def update_builder_activity(
     return {"success": True, "data": {"job_application_id": app_id, "stage": body.stage}}
 
 
+# ── Job-ready (L3+) pool ───────────────────────────────────────────────────────
+# Builders who EVER reached L3+ (have an L3+ course enrollment), each tagged with
+# the L3 cohort (class) they completed — the dashboard's segment dimension. L3+ is
+# one shared pool, so we look back at each builder's L3 enrollment for the segment.
+_L3PLUS_POOL = """
+  l3plus AS (
+    SELECT DISTINCT ue.user_id
+    FROM public.user_enrollment ue
+    JOIN public.cohort ch ON ch.cohort_id = ue.cohort_id
+    JOIN public.course co ON co.course_id = ch.course_id
+    WHERE co.level = 'L3+'
+  ),
+  l3cohort AS (
+    SELECT DISTINCT ON (ue.user_id) ue.user_id, ch.name AS segment
+    FROM public.user_enrollment ue
+    JOIN public.cohort ch ON ch.cohort_id = ue.cohort_id
+    JOIN public.course co ON co.course_id = ch.course_id
+    WHERE co.level = 'L3' AND ue.user_id IN (SELECT user_id FROM l3plus)
+    ORDER BY ue.user_id, ue.enrolled_date DESC
+  ),
+  pool AS (
+    SELECT lp.user_id, COALESCE(lc.segment, 'Other L3+') AS segment
+    FROM l3plus lp LEFT JOIN l3cohort lc ON lc.user_id = lp.user_id
+  )
+"""
+
+
+@router.get("/builder-segments")
+async def builder_segments(user=Depends(require_auth), conn=Depends(get_db)):
+    """L3-cohort segments present in the L3+ pool — drives the dashboard filter."""
+    rows = await conn.fetch(f"""
+        WITH {_L3PLUS_POOL}
+        SELECT segment, count(*) AS n FROM pool GROUP BY segment ORDER BY n DESC
+    """)
+    return {"success": True, "data": {
+        "segments": [{"value": r["segment"], "label": r["segment"], "count": r["n"]} for r in rows],
+        "total": sum(r["n"] for r in rows),
+    }}
+
+
 @router.get("/funnel/{ftype}")
 async def get_funnel(
     ftype: str,
     deal_type: Optional[str] = Query(None),
+    segment: Optional[str] = Query(None),
     user=Depends(require_auth),
     conn=Depends(get_db),
 ):
@@ -1093,31 +1226,34 @@ async def get_funnel(
             by_stage.setdefault(r["stage"], []).append({"name": r["name"], "company": r["company"]})
 
     elif ftype == "builders":
+        # Job-ready pipeline keyed off the L3+ pool + actual paid placements
+        # (employment_records) — so hiring a builder into a role shows them as
+        # hired here (the old job_applications-based funnel never updated on hire).
+        seg = segment if segment and segment != "all" else None
         stage_order = [
-            ("applied", "Applied"),
-            ("interview", "Interviewing"),
-            ("accepted", "Hired"),
+            ("job_ready", "Job Ready (L3+)"),
+            ("paid",      "Hired — Any Paid Work"),
+            ("ft",        "Hired — Full-Time"),
         ]
         record_columns = [
             {"key": "name", "label": "Builder"},
             {"key": "company", "label": "Company"},
             {"key": "role", "label": "Role"},
         ]
-        rows = await conn.fetch("""
-            SELECT ja.stage, trim(split_part(ja.notes,':',1)) AS name,
-                   ja.company_name AS company, ja.role_title AS role
-            FROM public.job_applications ja
-            WHERE ja.source_type='Pursuit_referred'
-              AND ($1::text IS NULL OR EXISTS (
-                    SELECT 1 FROM bedrock.jobs_opportunity o
-                    WHERE o.id = ja.jobs_opportunity_id AND o.deal_type = $1))
-            ORDER BY ja.company_name
-        """, dt)
-        by_stage = {}
-        for r in rows:
-            by_stage.setdefault(r["stage"], []).append(
-                {"name": r["name"], "company": r["company"], "role": r["role"]}
-            )
+        # bedrock.l3plus_funnel() is SECURITY DEFINER so it can read names from
+        # the RLS-protected public.users (the app role can't). Returns the L3+
+        # pool with placement flags + the builder's L3-cohort segment.
+        prows = await conn.fetch(
+            "SELECT name, is_paid, is_ft, company, role FROM bedrock.l3plus_funnel($1)", seg
+        )
+        by_stage = {"job_ready": [], "paid": [], "ft": []}
+        for r in prows:
+            rec = {"name": r["name"], "company": r["company"] or "—", "role": r["role"] or "—"}
+            by_stage["job_ready"].append(rec)
+            if r["is_paid"]:
+                by_stage["paid"].append(rec)
+            if r["is_ft"]:
+                by_stage["ft"].append(rec)
     else:
         raise HTTPException(404, f"Unknown funnel: {ftype}")
 
@@ -1338,83 +1474,69 @@ def _team_actor(alias: str = "a") -> str:
 @router.get("/activity-trends")
 async def activity_trends(
     granularity: str = Query("week", pattern="^(week|month)$"),
+    channel: str = Query("all", pattern="^(all|email|meeting)$"),
     user=Depends(require_auth),
     conn=Depends(get_db),
 ):
-    """Outreach over time for the leadership dashboard — two stories:
+    """Account-level outreach over time — one stacked bar per period split into
+    touches to NEW accounts (first activated this period) vs EXISTING accounts.
 
-      • Activation (outcome): NEW contacts & NEW accounts first-touched by the
-        jobs team in each period (a contact/account is "activated" the period it
-        first hears from us).
-      • Volume (effort): ALL team touchpoints in each period, split by channel
-        (email / meeting / call / other) — not just first contact.
-
-    A "team touch" = an email sent by Avni/Damon (gmail-sync), a meeting on their
-    calendars (calendar-sync), or a manual log they made. `granularity` =
-    week | month; returns the trailing 12 buckets, zero-filled.
+    A "team touch" = an email sent by Avni/Damon, a meeting on their calendars,
+    or a manual log, mapped to an account (the counterpart's company) and counted
+    once per (activity, account). `channel` = all | email | meeting toggles which
+    touches count; new-vs-existing is by the account's first-ever team touch.
+    `granularity` = week | month; trailing 12 buckets, zero-filled.
     """
     periods = 12
     actor = _team_actor("a")
-
-    channel = (
-        "CASE WHEN a.type='call' THEN 'call' "
-        "WHEN a.type IN ('text','linkedin') THEN 'other' "
-        "WHEN a.source='calendar-sync' OR a.type='meeting' THEN 'meeting' "
-        "ELSE 'email' END"
+    chan_sql = (
+        "CASE WHEN a.source='calendar-sync' OR a.type='meeting' THEN 'meeting' "
+        "WHEN a.type IN ('email') OR a.source='gmail-sync' THEN 'email' ELSE 'other' END"
     )
 
-    # Volume — every team touch, bucketed + channelized.
-    vol_rows = await conn.fetch(f"""
-        WITH team_act AS (
-          SELECT a.activity_date, {channel} AS channel
-          FROM bedrock.activity a
-          WHERE a.deleted_at IS NULL AND {actor}
-            AND a.activity_date >= date_trunc('{granularity}', now()) - interval '{periods - 1} {granularity}'
-        )
-        SELECT date_trunc('{granularity}', activity_date) AS bucket, channel, count(*) AS n
-        FROM team_act GROUP BY 1, 2
-    """)
-
-    # Activation — first team touch per contact (and per account = company),
-    # matching meeting attendees / email recipients to known jobs contacts, plus
-    # the email participant link the nightly relink already set.
-    act_rows = await conn.fetch(f"""
+    # Each team activity mapped to an account (company), via the counterpart
+    # contact (participant link, email recipient, or meeting attendee), counted
+    # once per (activity, account). Then classify each account-touch as NEW (the
+    # period the account was first touched) vs EXISTING.
+    rows = await conn.fetch(f"""
         WITH team_act AS (
           SELECT a.id, a.activity_date, a.participant_public_contact_id AS cid,
-                 a.email_to, a.email_cc, a.meeting_attendees, {channel} AS channel
+                 a.email_to, a.email_cc, a.meeting_attendees, {chan_sql} AS channel
           FROM bedrock.activity a
           WHERE a.deleted_at IS NULL AND {actor}
         ),
-        touch AS (
-          SELECT cid AS contact_id, activity_date FROM team_act WHERE cid IS NOT NULL
-          UNION ALL
-          SELECT c.contact_id, t.activity_date
+        touch_contact AS (
+          SELECT id, activity_date, channel, cid AS contact_id FROM team_act WHERE cid IS NOT NULL
+          UNION
+          SELECT t.id, t.activity_date, t.channel, c.contact_id
           FROM team_act t, unnest(coalesce(t.email_to,'{{}}') || coalesce(t.email_cc,'{{}}')) e
           JOIN public.contacts c ON lower(c.email) = lower(e)
-          WHERE t.cid IS NULL AND t.channel = 'email'
-          UNION ALL
-          SELECT c.contact_id, t.activity_date
+          WHERE t.channel = 'email'
+          UNION
+          SELECT t.id, t.activity_date, t.channel, c.contact_id
           FROM team_act t, jsonb_array_elements(coalesce(t.meeting_attendees, '[]'::jsonb)) att
           JOIN public.contacts c ON lower(c.email) = lower(att->>'email')
           WHERE t.channel = 'meeting'
         ),
-        first_contact AS (
-          SELECT contact_id, min(activity_date) AS first_touch
-          FROM touch GROUP BY contact_id
+        acct_touch AS (   -- one row per (activity, account, channel)
+          SELECT DISTINCT tc.id, tc.activity_date, tc.channel,
+                 lower(trim(c.current_company)) AS company
+          FROM touch_contact tc
+          JOIN public.contacts c ON c.contact_id = tc.contact_id
+          WHERE coalesce(trim(c.current_company), '') <> ''
         ),
-        first_account AS (
-          SELECT lower(trim(ct.current_company)) AS company, min(fc.first_touch) AS first_touch
-          FROM first_contact fc
-          JOIN public.contacts ct ON ct.contact_id = fc.contact_id
-          WHERE coalesce(trim(ct.current_company), '') <> ''
-          GROUP BY 1
+        acct_first AS (   -- the period each account was first touched (any channel)
+          SELECT company, date_trunc('{granularity}', min(activity_date)) AS first_period
+          FROM acct_touch GROUP BY company
         )
-        SELECT 'contact' AS kind, date_trunc('{granularity}', first_touch) AS bucket, count(*) AS n
-        FROM first_contact GROUP BY 2
-        UNION ALL
-        SELECT 'account' AS kind, date_trunc('{granularity}', first_touch) AS bucket, count(*) AS n
-        FROM first_account GROUP BY 2
-    """)
+        SELECT date_trunc('{granularity}', t.activity_date) AS bucket,
+               CASE WHEN date_trunc('{granularity}', t.activity_date) = af.first_period
+                    THEN 'new' ELSE 'existing' END AS kind,
+               count(*) AS n
+        FROM acct_touch t JOIN acct_first af USING (company)
+        WHERE ($1 = 'all' OR t.channel = $1)
+        GROUP BY 1, 2
+    """, channel)
 
     # Assemble trailing `periods` buckets (zero-filled), newest last.
     base = await conn.fetchval(f"SELECT date_trunc('{granularity}', now())")
@@ -1423,29 +1545,20 @@ async def activity_trends(
         if granularity == "week":
             start = base - timedelta(weeks=i)
         else:
-            # step back i months
             y, m = base.year, base.month - i
             while m <= 0:
                 m += 12; y -= 1
             start = base.replace(year=y, month=m, day=1)
-        buckets.append({
-            "period": start.date().isoformat(),
-            "new_contacts": 0, "new_accounts": 0,
-            "email": 0, "meeting": 0, "call": 0, "other": 0,
-        })
+        buckets.append({"period": start.date().isoformat(), "new": 0, "existing": 0})
     idx = {b["period"]: b for b in buckets}
 
     def _key(ts):
         return ts.date().isoformat() if ts else None
 
-    for r in vol_rows:
+    for r in rows:
         b = idx.get(_key(r["bucket"]))
         if b:
-            b[r["channel"]] = r["n"]
-    for r in act_rows:
-        b = idx.get(_key(r["bucket"]))
-        if b:
-            b["new_contacts" if r["kind"] == "contact" else "new_accounts"] = r["n"]
+            b[r["kind"]] = r["n"]
 
     # Coverage note — Damon's mailbox is only partially synced, so flag low coverage.
     damon = await conn.fetchval(
@@ -1456,11 +1569,12 @@ async def activity_trends(
         "success": True,
         "data": {
             "granularity": granularity,
+            "channel": channel,
             "buckets": buckets,
             "totals": {
-                "new_contacts": sum(b["new_contacts"] for b in buckets),
-                "new_accounts": sum(b["new_accounts"] for b in buckets),
-                "touchpoints": sum(b["email"] + b["meeting"] + b["call"] + b["other"] for b in buckets),
+                "new": sum(b["new"] for b in buckets),
+                "existing": sum(b["existing"] for b in buckets),
+                "touches": sum(b["new"] + b["existing"] for b in buckets),
             },
             "coverage_note": (
                 "Damon's mailbox sync is sparse (and he also sends from non-Pursuit addresses), "
