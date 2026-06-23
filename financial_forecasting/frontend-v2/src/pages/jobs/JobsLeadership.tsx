@@ -103,15 +103,6 @@ export function JobsLeadership() {
             onClick={() => setOpenMetric("any_paid")}
           />
           <JobsStatBubble
-            label="Interviewing"
-            value={p?.interviewing ?? 0}
-            tone="amber"
-            icon={<Users size={14} />}
-            isLoading={pLoading}
-            sub="builders in active interviews"
-            onClick={() => setOpenMetric("interviewing_builders")}
-          />
-          <JobsStatBubble
             label="Avg FT Salary"
             value={p?.avg_salary_ft_secured ?? 0}
             tone="emerald"
