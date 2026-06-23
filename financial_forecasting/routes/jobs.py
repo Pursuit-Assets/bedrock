@@ -892,6 +892,13 @@ async def update_role(
         f"UPDATE bedrock.jobs_role SET {', '.join(sets)}, updated_at=now() WHERE id=${i} RETURNING *",
         *params,
     )
+    # Keep a FILLED role's salary in sync with its placement (the org-wide source
+    # of truth that the Avg-Salary metric reads), so the two never diverge.
+    if body.approx_salary is not None and row["employment_record_id"]:
+        await conn.execute(
+            "UPDATE public.employment_records SET payment_amount=$1, updated_at=now() WHERE id=$2",
+            body.approx_salary, row["employment_record_id"],
+        )
     return {"success": True, "data": _role_dict(row)}
 
 

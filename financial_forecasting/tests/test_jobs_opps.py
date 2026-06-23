@@ -128,6 +128,30 @@ def test_create_role_opp_not_found_404():
     assert r.status_code == 404
 
 
+def test_update_role_salary_syncs_filled_placement():
+    # editing a FILLED role's salary writes through to its employment_record
+    conn = FakeConn(rows={
+        "SELECT * FROM bedrock.jobs_role WHERE id": {"id": UUID1, "employment_record_id": 75, "status": "filled"},
+        "UPDATE bedrock.jobs_role SET": {"id": UUID1, "employment_record_id": 75, "approx_salary": 87500},
+    })
+    c = make_jobs_client(conn)
+    r = c.patch(f"/api/jobs/roles/{UUID1}", json={"approx_salary": 87500})
+    assert r.status_code == 200, r.text
+    sync = conn.executed("UPDATE public.employment_records SET payment_amount")
+    assert sync and sync[0][2] == (87500, 75)
+
+
+def test_update_role_salary_no_sync_when_unfilled():
+    conn = FakeConn(rows={
+        "SELECT * FROM bedrock.jobs_role WHERE id": {"id": UUID1, "employment_record_id": None, "status": "open"},
+        "UPDATE bedrock.jobs_role SET": {"id": UUID1, "employment_record_id": None, "approx_salary": 90000},
+    })
+    c = make_jobs_client(conn)
+    r = c.patch(f"/api/jobs/roles/{UUID1}", json={"approx_salary": 90000})
+    assert r.status_code == 200, r.text
+    assert not conn.executed("UPDATE public.employment_records SET payment_amount")  # no placement to sync
+
+
 def test_create_role_happy():
     conn = FakeConn(rows={
         "SELECT id FROM bedrock.jobs_opportunity WHERE id=$1 AND deleted_at IS NULL": {"id": UUID1},
