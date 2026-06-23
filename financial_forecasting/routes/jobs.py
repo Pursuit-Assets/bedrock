@@ -1883,8 +1883,12 @@ async def contacts_by_account(
 #   Pursuing     – an active open opportunity
 #   Re-activating– only stale opps (on-hold/lost) but touched in the last 90 days
 #   Dormant      – only stale opps, no recent touch
-#   Prospect     – prospects only, no opportunity yet
-_ACCOUNT_STATUS_RANK = {"Pursuing": 0, "Stewarding": 1, "Re-activating": 2, "Prospect": 3, "Dormant": 4}
+#   Activated    – no opportunity yet, but we've made contact / done outreach
+#   Prospect     – no opportunity AND no activity (untouched)
+_ACCOUNT_STATUS_RANK = {
+    "Pursuing": 0, "Stewarding": 1, "Re-activating": 2,
+    "Activated": 3, "Prospect": 4, "Dormant": 5,
+}
 
 
 @router.get("/accounts")
@@ -1997,36 +2001,47 @@ async def jobs_accounts(
     # participant-linked (emails/calls) + meeting attendees (calendar, which has
     # no participant link), so meetings/manual aren't undercounted.
     team_sender = " OR ".join(f"a.email_from ILIKE '%{e}%'" for e in JOBS_TEAM_EMAILS)
+    # SQL expr → the jobs-team member who authored a row (NULL if none), so we can
+    # aggregate the distinct set of team members who've touched each account.
+    actor_case = "CASE " + " ".join(
+        f"WHEN a.email_from ILIKE '%{e}%' OR a.logged_by ILIKE '%{e}%' THEN '{e}'"
+        for e in JOBS_TEAM_EMAILS
+    ) + " END"
     acct_act: dict = {}
 
-    def _merge(company, last_act, recent, responded):
-        cur = acct_act.setdefault(company, {"recent": 0, "last": None, "responded": False})
+    def _merge(company, last_act, recent, responded, actors=None):
+        cur = acct_act.setdefault(
+            company, {"recent": 0, "last": None, "responded": False, "actors": set()})
         cur["recent"] += recent or 0
         if last_act and (cur["last"] is None or last_act > cur["last"]):
             cur["last"] = last_act
         cur["responded"] = cur["responded"] or bool(responded)
+        if actors:
+            cur["actors"].update(a for a in actors if a)
 
     for r in await conn.fetch(f"""
         SELECT lower(trim(c.current_company)) AS company,
                max(a.activity_date) AS last_act,
                count(*) FILTER (WHERE a.activity_date >= now() - interval '90 days') AS recent,
                bool_or(a.type IN ('call','meeting')
-                       OR (a.type = 'email' AND NOT ({team_sender}))) AS responded
+                       OR (a.type = 'email' AND NOT ({team_sender}))) AS responded,
+               array_agg(DISTINCT {actor_case}) AS actors
         FROM bedrock.activity a JOIN public.contacts c ON c.contact_id = a.participant_public_contact_id
         WHERE a.deleted_at IS NULL AND coalesce(trim(c.current_company),'') <> ''
         GROUP BY 1"""):
-        _merge(r["company"], r["last_act"], r["recent"], r["responded"])
-    for r in await conn.fetch("""
+        _merge(r["company"], r["last_act"], r["recent"], r["responded"], r["actors"])
+    for r in await conn.fetch(f"""
         SELECT lower(trim(c.current_company)) AS company,
                max(a.activity_date) AS last_act,
                count(*) FILTER (WHERE a.activity_date >= now() - interval '90 days') AS recent,
-               true AS responded
+               true AS responded,
+               array_agg(DISTINCT {actor_case}) AS actors
         FROM bedrock.activity a, jsonb_array_elements(coalesce(a.meeting_attendees, '[]'::jsonb)) att
         JOIN public.contacts c ON lower(c.email) = lower(att->>'email')
         WHERE a.deleted_at IS NULL AND a.source = 'calendar-sync'
           AND coalesce(trim(c.current_company),'') <> ''
         GROUP BY 1"""):
-        _merge(r["company"], r["last_act"], r["recent"], r["responded"])
+        _merge(r["company"], r["last_act"], r["recent"], r["responded"], r["actors"])
     # A role created or a hire tagged is real momentum — count it as responded,
     # by account (keyed on normalized account_name = account_key).
     for sql in (
@@ -2065,6 +2080,8 @@ async def jobs_accounts(
         has_won = "closed_won" in stages
         last = g.pop("_last")
         recent = bool(last and (now - last).days <= 90)
+        a = acct_act.get(key)
+        has_activity = bool(a and (a["last"] or a["recent"]))
         if rec and rec["status_override"]:
             status = rec["status_override"]
         elif has_open:
@@ -2073,6 +2090,9 @@ async def jobs_accounts(
             status = "Stewarding"
         elif opps:
             status = "Re-activating" if recent else "Dormant"
+        elif has_activity:
+            # No opportunity yet, but we've reached out / made contact.
+            status = "Activated"
         else:
             status = "Prospect"
         g["account_key"] = key
@@ -2081,10 +2101,11 @@ async def jobs_accounts(
         g["prospect_count"] = len(g["prospects"])
         g["last_activity"] = last.isoformat() if last else None
         g["open_tasks"] = open_tasks.get(key, 0)
-        a = acct_act.get(key)
         g["recent_activity_count"] = a["recent"] if a else 0
         g["last_activity_at"] = a["last"].isoformat() if (a and a["last"]) else None
         g["responded"] = bool(a and a["responded"])
+        # Which jobs-team members have touched this account (for the team filter).
+        g["activity_actors"] = sorted(a["actors"]) if a else []
         out.append(g)
 
     out.sort(key=lambda a: (
@@ -2431,6 +2452,10 @@ async def list_contacts(
     # and whether they've RESPONDED (a meeting/call, or an inbound email — not
     # just our outbound).
     team_sender = " OR ".join(f"a.email_from ILIKE '%{e}%'" for e in JOBS_TEAM_EMAILS)
+    actor_case = "CASE " + " ".join(
+        f"WHEN a.email_from ILIKE '%{e}%' OR a.logged_by ILIKE '%{e}%' THEN '{e}'"
+        for e in JOBS_TEAM_EMAILS
+    ) + " END"
     activity_by_contact: dict[int, dict] = {}
     if contact_ids:
         arows = await conn.fetch(
@@ -2439,14 +2464,17 @@ async def list_contacts(
                    count(*) FILTER (WHERE a.activity_date >= now() - interval '90 days') AS recent,
                    max(a.activity_date) AS last_act,
                    bool_or(a.type IN ('call','meeting')
-                           OR (a.type = 'email' AND NOT ({team_sender}))) AS responded
+                           OR (a.type = 'email' AND NOT ({team_sender}))) AS responded,
+                   array_agg(DISTINCT {actor_case}) AS actors
             FROM bedrock.activity a
             WHERE a.deleted_at IS NULL AND a.participant_public_contact_id = ANY($1::int[])
             GROUP BY a.participant_public_contact_id
             """,
             contact_ids,
         )
-        activity_by_contact = {a["cid"]: {"recent": a["recent"], "last": a["last_act"], "responded": a["responded"]} for a in arows}
+        activity_by_contact = {a["cid"]: {"recent": a["recent"], "last": a["last_act"],
+                                          "responded": a["responded"],
+                                          "actors": sorted(x for x in (a["actors"] or []) if x)} for a in arows}
 
     # Open tasks per contact (parent_type='prospect').
     tasks_by_contact: dict[int, int] = {}
@@ -2475,6 +2503,7 @@ async def list_contacts(
                 "recent_activity_count": (activity_by_contact.get(r["contact_id"]) or {}).get("recent", 0),
                 "last_activity_at": (lambda v: v.isoformat() if v else None)((activity_by_contact.get(r["contact_id"]) or {}).get("last")),
                 "responded": bool((activity_by_contact.get(r["contact_id"]) or {}).get("responded")),
+                "activity_actors": (activity_by_contact.get(r["contact_id"]) or {}).get("actors", []),
                 "open_tasks": tasks_by_contact.get(r["contact_id"], 0),
             }
             for r in rows
