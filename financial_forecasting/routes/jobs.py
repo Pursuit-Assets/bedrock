@@ -1178,14 +1178,19 @@ async def get_funnel(
 
         idx = {k: i for i, (k, _) in enumerate(stage_order)}
         label_of = dict(stage_order)
+        # DISTINCT ON keeps only each opp's MOST RECENT transition in the window —
+        # so an opp that moved twice shows once (its current stage + where it came
+        # from on the latest hop), not a duplicate per hop.
         hist = await conn.fetch("""
-            SELECT h.from_stage, h.to_stage, h.changed_at, o.account_name
+            SELECT DISTINCT ON (h.opportunity_id)
+                   h.from_stage, h.to_stage, h.changed_at, o.account_name
             FROM bedrock.jobs_stage_history h
             JOIN bedrock.jobs_opportunity o ON o.id = h.opportunity_id
             WHERE h.from_stage IS NOT NULL
               AND h.changed_at >= now() - interval '30 days'
               AND ($1::text IS NULL OR o.deal_type = $1)
-            ORDER BY h.changed_at DESC LIMIT 100
+            ORDER BY h.opportunity_id, h.changed_at DESC
+            LIMIT 100
         """, dt)
         for h in hist:
             fi, ti = idx.get(h["from_stage"]), idx.get(h["to_stage"])
@@ -1447,6 +1452,25 @@ async def get_contacts_summary(user=Depends(require_auth), conn=Depends(get_db))
         WHERE deleted_at IS NULL AND stage LIKE 'active_%'
     """)
 
+    # Account-level leads: distinct companies in the jobs pipeline (jobs contacts'
+    # company ∪ opportunity accounts), and how many have ANY activity (engaged).
+    acct = await conn.fetchrow("""
+        WITH companies AS (
+            SELECT DISTINCT lower(trim(current_company)) AS company
+            FROM public.contacts WHERE is_jobs_contact=true AND coalesce(trim(current_company),'')<>''
+            UNION
+            SELECT DISTINCT lower(trim(account_name)) FROM bedrock.jobs_opportunity
+            WHERE deleted_at IS NULL AND coalesce(trim(account_name),'')<>''
+        ),
+        engaged AS (
+            SELECT DISTINCT lower(trim(c.current_company)) AS company
+            FROM bedrock.activity a JOIN public.contacts c ON c.contact_id = a.participant_public_contact_id
+            WHERE a.deleted_at IS NULL AND coalesce(trim(c.current_company),'')<>''
+        )
+        SELECT (SELECT count(*) FROM companies) AS total,
+               (SELECT count(*) FROM companies WHERE company IN (SELECT company FROM engaged)) AS engaged
+    """)
+
     return {
         "success": True,
         "data": {
@@ -1455,6 +1479,7 @@ async def get_contacts_summary(user=Depends(require_auth), conn=Depends(get_db))
                 "engaged":  engaged,
                 "by_stage": [{"stage": r["contact_stage"] or "none", "count": r["count"]} for r in stages],
             },
+            "accounts": {"total": acct["total"], "engaged": acct["engaged"]},
             "activity": dict(activity),
             "active_companies": active_companies,
         },
@@ -1908,6 +1933,20 @@ async def jobs_accounts(
     )
     ja = {r["account_key"]: r for r in ja_rows}
 
+    # Open account-level tasks per account_key.
+    open_tasks = {r["parent_id"]: r["n"] for r in await conn.fetch(
+        "SELECT parent_id, count(*) AS n FROM bedrock.jobs_account_task "
+        "WHERE parent_type='account' AND deleted_at IS NULL AND status <> 'Completed' "
+        "GROUP BY parent_id")}
+
+    # Recent activity (90d) per account = touches to any contact at the company —
+    # drives account warmth, same idea as contact warmth.
+    acct_activity = {r["company"]: r["n"] for r in await conn.fetch(
+        "SELECT lower(trim(c.current_company)) AS company, count(*) AS n "
+        "FROM bedrock.activity a JOIN public.contacts c ON c.contact_id = a.participant_public_contact_id "
+        "WHERE a.deleted_at IS NULL AND a.activity_date >= now() - interval '90 days' "
+        "  AND coalesce(trim(c.current_company),'') <> '' GROUP BY 1")}
+
     dt = deal_type if deal_type and deal_type != "all" else None
     now = datetime.now(timezone.utc)
     out = []
@@ -1946,6 +1985,8 @@ async def jobs_accounts(
         g["opp_count"] = len(opps)
         g["prospect_count"] = len(g["prospects"])
         g["last_activity"] = last.isoformat() if last else None
+        g["open_tasks"] = open_tasks.get(key, 0)
+        g["recent_activity_count"] = acct_activity.get(key, 0)
         out.append(g)
 
     out.sort(key=lambda a: (
@@ -2305,6 +2346,17 @@ async def list_contacts(
         )
         activity_by_contact = {a["cid"]: a["n"] for a in arows}
 
+    # Open tasks per contact (parent_type='prospect').
+    tasks_by_contact: dict[int, int] = {}
+    if contact_ids:
+        trows = await conn.fetch(
+            "SELECT parent_id, count(*) AS n FROM bedrock.jobs_task "
+            "WHERE parent_type='prospect' AND deleted_at IS NULL AND status <> 'Completed' "
+            "AND parent_id = ANY($1::text[]) GROUP BY parent_id",
+            [str(cid) for cid in contact_ids],
+        )
+        tasks_by_contact = {int(t["parent_id"]): t["n"] for t in trows}
+
     return {
         "success": True,
         "total": total,
@@ -2319,6 +2371,7 @@ async def list_contacts(
                 ),
                 "connected_staff_names": staff_by_contact.get(r["contact_id"], []),
                 "recent_activity_count": activity_by_contact.get(r["contact_id"], 0),
+                "open_tasks": tasks_by_contact.get(r["contact_id"], 0),
             }
             for r in rows
         ],
@@ -2653,6 +2706,9 @@ async def list_opportunities(
             act.activity_count,
             act.last_activity_at,
             act.recent_activity_count,
+            (SELECT count(*) FROM bedrock.jobs_task t
+               WHERE t.parent_type='opportunity' AND t.parent_id = o.id::text
+                 AND t.deleted_at IS NULL AND t.status <> 'Completed') AS open_tasks,
             -- Suggested priority (1–5, 5 = highest) the team can override. Bumped by
             -- signals: committed roles, multiple contacts, recent activity, and
             -- builders already applying. AI-first scoring can replace this later.
