@@ -263,6 +263,10 @@ export function ContactDetail({ contactId }: { contactId: number }) {
     await updateContact({ id: contactId, [field]: value });
   };
 
+  // Who on staff is connected to this contact — from LinkedIn connections
+  // (staff_contact_relationships), resolved to names. Only show resolved names.
+  const staffConnections = (data.connected_staff ?? []).filter((s) => s.name);
+
   return (
     <div className="border-t border-border-strong bg-surface-2">
       <div className="flex gap-6 p-5">
@@ -316,10 +320,6 @@ export function ContactDetail({ contactId }: { contactId: number }) {
               <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-wide text-ink-4">LinkedIn</div>
               <InlineText value={data.linkedin_url} onSave={save("linkedin_url")} placeholder="LinkedIn URL" />
             </div>
-            <div>
-              <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-wide text-ink-4">Notes</div>
-              <InlineText value={data.notes} onSave={save("notes")} placeholder="Add notes…" multiline />
-            </div>
           </div>
 
           {data.deal && (
@@ -339,6 +339,25 @@ export function ContactDetail({ contactId }: { contactId: number }) {
                   Owner: {ownerName(data.deal.owner_email)}
                 </div>
               )}
+            </div>
+          )}
+
+          {staffConnections.length > 0 && (
+            <div className="rounded-lg border border-border-strong bg-surface p-3">
+              <div className="mb-2 flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-ink-4">
+                <Linkedin size={11} className="text-[#0a66c2]" /> Connected on LinkedIn ({staffConnections.length})
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {staffConnections.map((s) => (
+                  <span
+                    key={s.staff_user_id}
+                    title={s.email ?? undefined}
+                    className="inline-flex items-center rounded-full border border-border-strong bg-surface-2 px-2 py-0.5 text-[11px] text-ink-2"
+                  >
+                    {s.name}
+                  </span>
+                ))}
+              </div>
             </div>
           )}
         </div>

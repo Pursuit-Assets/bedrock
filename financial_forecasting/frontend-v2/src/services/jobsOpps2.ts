@@ -1,12 +1,36 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
+
+/**
+ * Invalidate every query family whose data depends on an opportunity's
+ * roles/builders/stage — opp list + detail, account rollups, and the pipeline
+ * metrics. Replaces a blunt invalidate of the whole ["jobs"] tree (which also
+ * refetched contacts, staff, and metric drawers that a role/builder change
+ * can't affect). `extra` adds hire-only families (placements, builders).
+ */
+function invalidateOppDependents(qc: QueryClient, extra: string[][] = []) {
+  const families = [
+    ["jobs", "opportunities"],
+    ["jobs", "opportunity"],
+    ["jobs", "accounts"],
+    ["jobs", "account-rollup"],
+    ["jobs", "pipeline"],
+    ["jobs", "funnel"],
+    ["jobs", "this-week-summary"],
+    ...extra,
+  ];
+  for (const queryKey of families) qc.invalidateQueries({ queryKey });
+}
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
 interface ApiResponse<T> { success: boolean; data: T }
 
 export type RoleStatus = "open" | "filled" | "cancelled";
+
+export type Commitment = "committed" | "open_market";
+export type RatePeriod = "annual" | "monthly" | "weekly" | "daily" | "hourly";
 
 export interface Role {
   id: string;
@@ -21,24 +45,41 @@ export interface Role {
   notes: string | null;
   created_at: string;
   updated_at: string;
+  // Phase 1 additions
+  commitment: Commitment;
+  is_trial: boolean;
+  converts_to_role_id: string | null;
+  pay_rate: number | null;
+  rate_period: RatePeriod | null;
+  end_date: string | null;
+  pay_cadence: string | null;
+  benefits: string | null;
+  payment_schedule: string | null;
+  negotiation_notes: string | null;
+  jd_url: string | null;
 }
 
-export interface RoleCreateBody {
-  title: string;
-  approx_salary?: number;
-  employment_type?: string;
-  start_date?: string;
-  notes?: string;
-}
-
-export type RolePatchBody = Partial<{
-  title: string;
+interface RoleFields {
   approx_salary: number | null;
   employment_type: string | null;
   start_date: string | null;
-  status: RoleStatus;
   notes: string | null;
-}>;
+  commitment: Commitment;
+  is_trial: boolean;
+  converts_to_role_id: string | null;
+  pay_rate: number | null;
+  rate_period: RatePeriod | null;
+  end_date: string | null;
+  pay_cadence: string | null;
+  benefits: string | null;
+  payment_schedule: string | null;
+  negotiation_notes: string | null;
+  jd_url: string | null;
+}
+
+export type RoleCreateBody = { title: string } & Partial<RoleFields>;
+
+export type RolePatchBody = Partial<{ title: string; status: RoleStatus } & RoleFields>;
 
 export interface RoleHireBody {
   user_id: number;
@@ -88,7 +129,7 @@ export function useCreateRole() {
     },
     onSuccess: (_d, vars) => {
       qc.invalidateQueries({ queryKey: ["jobs", "opp-roles", vars.oppId] });
-      qc.invalidateQueries({ queryKey: ["jobs"] });
+      invalidateOppDependents(qc);
       toast.success("Role added");
     },
     onError: () => toast.error("Failed to add role"),
@@ -104,7 +145,7 @@ export function useUpdateRole() {
     },
     onSuccess: (updated, vars) => {
       qc.invalidateQueries({ queryKey: ["jobs", "opp-roles", vars.oppId ?? updated.opportunity_id] });
-      qc.invalidateQueries({ queryKey: ["jobs"] });
+      invalidateOppDependents(qc);
       toast.success("Role updated");
     },
     onError: () => toast.error("Update failed"),
@@ -120,7 +161,7 @@ export function useDeleteRole() {
     },
     onSuccess: (_d, vars) => {
       if (vars.oppId) qc.invalidateQueries({ queryKey: ["jobs", "opp-roles", vars.oppId] });
-      qc.invalidateQueries({ queryKey: ["jobs"] });
+      invalidateOppDependents(qc);
       toast.success("Role removed");
     },
     onError: () => toast.error("Delete failed"),
@@ -139,7 +180,8 @@ export function useHireRole() {
     },
     onSuccess: (result, vars) => {
       qc.invalidateQueries({ queryKey: ["jobs", "opp-roles", vars.oppId ?? result.role.opportunity_id] });
-      qc.invalidateQueries({ queryKey: ["jobs"] });
+      // hire also creates an employment_record → refresh placements + builders
+      invalidateOppDependents(qc, [["jobs", "placements"], ["jobs", "builders"]]);
       toast.success("Builder hired");
     },
     onError: () => toast.error("Hire failed"),
@@ -157,5 +199,58 @@ export function useOppBuilderActivity(oppId: string | null) {
     },
     enabled: Boolean(oppId),
     staleTime: 15_000,
+  });
+}
+
+export type AppStage = "applied" | "interview" | "accepted" | "rejected" | "withdrawn";
+
+export const APP_STAGE_OPTIONS: { value: AppStage; label: string }[] = [
+  { value: "applied",   label: "Applied" },
+  { value: "interview", label: "Interviewing" },
+  { value: "accepted",  label: "Hired" },
+  { value: "rejected",  label: "Rejected" },
+  { value: "withdrawn", label: "Withdrawn" },
+];
+
+export interface BuilderActivityCreateBody {
+  user_id: number;
+  builder_name?: string;
+  role_title?: string;
+  stage?: AppStage;
+  jobs_role_id?: string;
+  date_applied?: string;
+}
+
+export function useCreateBuilderActivity(oppId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (body: BuilderActivityCreateBody) => {
+      const { data } = await api.post<ApiResponse<{ job_application_id: number }>>(
+        `/api/jobs/opportunities/${oppId}/builder-activity`,
+        body,
+      );
+      return data.data;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["jobs", "opp-builder-activity", oppId] });
+      invalidateOppDependents(qc);
+      toast.success("Builder logged");
+    },
+    onError: () => toast.error("Failed to log builder"),
+  });
+}
+
+export function useUpdateBuilderActivity(oppId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ appId, stage }: { appId: number; stage: AppStage }) => {
+      await api.patch(`/api/jobs/builder-activity/${appId}`, { stage });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["jobs", "opp-builder-activity", oppId] });
+      invalidateOppDependents(qc, [["jobs", "placements"], ["jobs", "builders"]]);
+      toast.success("Status updated");
+    },
+    onError: () => toast.error("Update failed"),
   });
 }

@@ -11,6 +11,9 @@ import {
   useHireRole,
   type Role,
   type RoleStatus,
+  type Commitment,
+  type RatePeriod,
+  type RolePatchBody,
 } from "@/services/jobsOpps2";
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -27,9 +30,181 @@ const ROLE_STATUS_LABELS: Record<RoleStatus, string> = {
   cancelled: "Cancelled",
 };
 
+// Employment-type options for the role dropdown (mirrors the placements modal).
+const EMPLOYMENT_TYPE_OPTIONS: { value: string; label: string }[] = [
+  { value: "full_time",  label: "Full-Time" },
+  { value: "contract",   label: "Contract" },
+  { value: "freelance",  label: "Freelance" },
+  { value: "internship", label: "Internship" },
+  { value: "pro_bono",   label: "Pro Bono" },
+];
+
+const EMPLOYMENT_TYPE_LABELS: Record<string, string> = Object.fromEntries(
+  EMPLOYMENT_TYPE_OPTIONS.map((t) => [t.value, t.label]),
+);
+
+function empTypeLabel(t: string | null): string | null {
+  if (!t) return null;
+  return EMPLOYMENT_TYPE_LABELS[t] ?? t;
+}
+
 function fmtSalary(n: number | null): string {
   if (n == null) return "—";
   return `$${n.toLocaleString("en-US")}`;
+}
+
+const RATE_PERIOD_OPTIONS: { value: RatePeriod; label: string }[] = [
+  { value: "annual",  label: "/ yr" },
+  { value: "monthly", label: "/ mo" },
+  { value: "weekly",  label: "/ wk" },
+  { value: "daily",   label: "/ day" },
+  { value: "hourly",  label: "/ hr" },
+];
+
+const RATE_PERIOD_SHORT: Record<string, string> = Object.fromEntries(
+  RATE_PERIOD_OPTIONS.map((o) => [o.value, o.label]),
+);
+
+// ── Shared extra-field state (commitment, trial, compensation) ──────────────────
+
+interface RoleExtras {
+  commitment: Commitment;
+  isTrial: boolean;
+  convertsTo: string;        // role id this trial converts into, or ""
+  payRate: string;
+  ratePeriod: string;
+  endDate: string;
+  payCadence: string;
+  benefits: string;
+  negotiation: string;
+  jdUrl: string;
+}
+
+const EMPTY_EXTRAS: RoleExtras = {
+  commitment: "committed", isTrial: false, convertsTo: "", payRate: "", ratePeriod: "",
+  endDate: "", payCadence: "", benefits: "", negotiation: "", jdUrl: "",
+};
+
+function extrasFromRole(r: Role): RoleExtras {
+  return {
+    commitment: r.commitment ?? "committed",
+    isTrial: Boolean(r.is_trial),
+    convertsTo: r.converts_to_role_id ?? "",
+    payRate: r.pay_rate != null ? String(r.pay_rate) : "",
+    ratePeriod: r.rate_period ?? "",
+    endDate: r.end_date ?? "",
+    payCadence: r.pay_cadence ?? "",
+    benefits: r.benefits ?? "",
+    negotiation: r.negotiation_notes ?? "",
+    jdUrl: r.jd_url ?? "",
+  };
+}
+
+/** Map the form's extras to the API patch/create body shape. */
+function extrasToBody(x: RoleExtras): Partial<RolePatchBody> {
+  const rate = x.payRate.trim() ? Number(x.payRate.replace(/[^0-9.]/g, "")) : null;
+  return {
+    commitment: x.commitment,
+    is_trial: x.isTrial,
+    // Only a trial role carries a conversion link; clearing the trial drops it.
+    converts_to_role_id: x.isTrial && x.convertsTo ? x.convertsTo : null,
+    pay_rate: rate != null && !isNaN(rate) ? rate : null,
+    rate_period: (x.ratePeriod || null) as RatePeriod | null,
+    end_date: x.endDate || null,
+    pay_cadence: x.payCadence.trim() || null,
+    benefits: x.benefits.trim() || null,
+    negotiation_notes: x.negotiation.trim() || null,
+    jd_url: x.jdUrl.trim() || null,
+  };
+}
+
+const INPUT_CLS =
+  "w-full rounded border border-border-strong bg-surface px-2 py-1 text-[11.5px] text-ink-2 placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40";
+
+/** Commitment + trial + compensation fields, shared by the add and edit forms.
+ *  `candidates` are sibling roles a trial can convert into (self excluded). */
+function RoleExtraFields({
+  value,
+  onChange,
+  candidates = [],
+}: {
+  value: RoleExtras;
+  onChange: (x: RoleExtras) => void;
+  candidates?: Role[];
+}) {
+  const set = <K extends keyof RoleExtras>(k: K, v: RoleExtras[K]) => onChange({ ...value, [k]: v });
+  return (
+    <div className="flex flex-col gap-2 rounded border border-dashed border-border-strong p-2">
+      <div className="flex flex-wrap items-center gap-3">
+        <label className="flex items-center gap-1.5">
+          <span className="text-[10px] font-medium text-ink-4">Commitment</span>
+          <select
+            value={value.commitment}
+            onChange={(e) => set("commitment", e.target.value as Commitment)}
+            className="rounded border border-border-strong bg-surface px-2 py-1 text-[11.5px] text-ink-2 focus:outline-none focus:ring-1 focus:ring-accent/40"
+          >
+            <option value="committed">Committed</option>
+            <option value="open_market">Open-market</option>
+          </select>
+        </label>
+        <label className="flex items-center gap-1.5 text-[11.5px] text-ink-2">
+          <input type="checkbox" checked={value.isTrial} onChange={(e) => set("isTrial", e.target.checked)} />
+          Trial / work-trial
+        </label>
+        {value.isTrial ? (
+          <label className="flex items-center gap-1.5">
+            <span className="text-[10px] font-medium text-ink-4">Converts to</span>
+            <select
+              value={value.convertsTo}
+              onChange={(e) => set("convertsTo", e.target.value)}
+              className="rounded border border-border-strong bg-surface px-2 py-1 text-[11.5px] text-ink-2 focus:outline-none focus:ring-1 focus:ring-accent/40"
+            >
+              <option value="">— full-time role —</option>
+              {candidates.map((r) => (
+                <option key={r.id} value={r.id}>
+                  {r.title}{r.employment_type ? ` (${empTypeLabel(r.employment_type)})` : ""}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : null}
+      </div>
+      <div className="grid grid-cols-3 gap-2">
+        <label className="flex flex-col gap-0.5">
+          <span className="text-[10px] font-medium text-ink-4">Rate</span>
+          <div className="flex gap-1">
+            <input type="number" min={0} value={value.payRate} onChange={(e) => set("payRate", e.target.value)} placeholder="e.g. 60" className={INPUT_CLS} />
+            <select value={value.ratePeriod} onChange={(e) => set("ratePeriod", e.target.value)} className="rounded border border-border-strong bg-surface px-1 py-1 text-[11px] text-ink-2 focus:outline-none focus:ring-1 focus:ring-accent/40">
+              <option value="">—</option>
+              {RATE_PERIOD_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </select>
+          </div>
+        </label>
+        <label className="flex flex-col gap-0.5">
+          <span className="text-[10px] font-medium text-ink-4">End date</span>
+          <input type="date" value={value.endDate} onChange={(e) => set("endDate", e.target.value)} className={INPUT_CLS} />
+        </label>
+        <label className="flex flex-col gap-0.5">
+          <span className="text-[10px] font-medium text-ink-4">Pay cadence</span>
+          <input type="text" value={value.payCadence} onChange={(e) => set("payCadence", e.target.value)} placeholder="biweekly" className={INPUT_CLS} />
+        </label>
+      </div>
+      <div className="grid grid-cols-3 gap-2">
+        <label className="flex flex-col gap-0.5">
+          <span className="text-[10px] font-medium text-ink-4">Benefits</span>
+          <input type="text" value={value.benefits} onChange={(e) => set("benefits", e.target.value)} placeholder="e.g. after conversion" className={INPUT_CLS} />
+        </label>
+        <label className="flex flex-col gap-0.5">
+          <span className="text-[10px] font-medium text-ink-4">Negotiation</span>
+          <input type="text" value={value.negotiation} onChange={(e) => set("negotiation", e.target.value)} placeholder="notes" className={INPUT_CLS} />
+        </label>
+        <label className="flex flex-col gap-0.5">
+          <span className="text-[10px] font-medium text-ink-4">JD link</span>
+          <input type="text" value={value.jdUrl} onChange={(e) => set("jdUrl", e.target.value)} placeholder="https://…" className={INPUT_CLS} />
+        </label>
+      </div>
+    </div>
+  );
 }
 
 function fmtDate(iso: string | null): string {
@@ -184,13 +359,18 @@ function HireForm({ role, oppId, onClose }: { role: Role; oppId: string; onClose
 
 // ── Single role row ───────────────────────────────────────────────────────────
 
-function RoleRow({ role, oppId }: { role: Role; oppId: string }) {
+function RoleRow({ role, oppId, roles }: { role: Role; oppId: string; roles: Role[] }) {
+  const convertsToRole = role.converts_to_role_id
+    ? roles.find((r) => r.id === role.converts_to_role_id)
+    : undefined;
   const [editing, setEditing] = useState(false);
   const [hiring, setHiring] = useState(false);
   const [title, setTitle] = useState(role.title);
   const [salary, setSalary] = useState(role.approx_salary != null ? String(role.approx_salary) : "");
   const [empType, setEmpType] = useState(role.employment_type ?? "");
   const [startDate, setStartDate] = useState(role.start_date ?? "");
+  const [notes, setNotes] = useState(role.notes ?? "");
+  const [extras, setExtras] = useState<RoleExtras>(extrasFromRole(role));
 
   const updateRole = useUpdateRole();
   const deleteRole = useDeleteRole();
@@ -205,6 +385,8 @@ function RoleRow({ role, oppId }: { role: Role; oppId: string }) {
         approx_salary: salaryNum != null && !isNaN(salaryNum) ? salaryNum : null,
         employment_type: empType.trim() || null,
         start_date: startDate || null,
+        notes: notes.trim() || null,
+        ...extrasToBody(extras),
       },
       { onSuccess: () => setEditing(false) },
     );
@@ -221,28 +403,48 @@ function RoleRow({ role, oppId }: { role: Role; oppId: string }) {
           className="w-full rounded border border-border-strong bg-surface px-2 py-1 text-[12px] text-ink-2 placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40"
         />
         <div className="grid grid-cols-3 gap-2">
-          <input
-            type="number"
-            value={salary}
-            onChange={(e) => setSalary(e.target.value)}
-            placeholder="Salary"
-            min={0}
-            className="w-full rounded border border-border-strong bg-surface px-2 py-1 text-[11.5px] text-ink-2 placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40"
-          />
-          <input
-            type="text"
-            value={empType}
-            onChange={(e) => setEmpType(e.target.value)}
-            placeholder="Type"
-            className="w-full rounded border border-border-strong bg-surface px-2 py-1 text-[11.5px] text-ink-2 placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40"
-          />
-          <input
-            type="date"
-            value={startDate}
-            onChange={(e) => setStartDate(e.target.value)}
-            className="w-full rounded border border-border-strong bg-surface px-2 py-1 text-[11.5px] text-ink-2 focus:outline-none focus:ring-1 focus:ring-accent/40"
-          />
+          <label className="flex flex-col gap-0.5">
+            <span className="text-[10px] font-medium text-ink-4">Salary</span>
+            <input
+              type="number"
+              value={salary}
+              onChange={(e) => setSalary(e.target.value)}
+              placeholder="85000"
+              min={0}
+              className="w-full rounded border border-border-strong bg-surface px-2 py-1 text-[11.5px] text-ink-2 placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40"
+            />
+          </label>
+          <label className="flex flex-col gap-0.5">
+            <span className="text-[10px] font-medium text-ink-4">Type</span>
+            <select
+              value={empType}
+              onChange={(e) => setEmpType(e.target.value)}
+              className="w-full rounded border border-border-strong bg-surface px-2 py-1 text-[11.5px] text-ink-2 focus:outline-none focus:ring-1 focus:ring-accent/40"
+            >
+              <option value="">—</option>
+              {EMPLOYMENT_TYPE_OPTIONS.map((t) => (
+                <option key={t.value} value={t.value}>{t.label}</option>
+              ))}
+            </select>
+          </label>
+          <label className="flex flex-col gap-0.5">
+            <span className="text-[10px] font-medium text-ink-4">Expected start</span>
+            <input
+              type="date"
+              value={startDate}
+              onChange={(e) => setStartDate(e.target.value)}
+              className="w-full rounded border border-border-strong bg-surface px-2 py-1 text-[11.5px] text-ink-2 focus:outline-none focus:ring-1 focus:ring-accent/40"
+            />
+          </label>
         </div>
+        <textarea
+          rows={2}
+          value={notes}
+          onChange={(e) => setNotes(e.target.value)}
+          placeholder="Role details / notes…"
+          className="w-full resize-none rounded border border-border-strong bg-surface px-2 py-1 text-[11.5px] text-ink-2 placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40"
+        />
+        <RoleExtraFields value={extras} onChange={setExtras} candidates={roles.filter((r) => r.id !== role.id)} />
         <div className="flex items-center gap-3">
           <button
             type="button"
@@ -269,12 +471,32 @@ function RoleRow({ role, oppId }: { role: Role; oppId: string }) {
     <li className="flex flex-col px-3 py-2.5">
       <div className="flex items-start justify-between gap-2">
         <div className="flex min-w-0 flex-col gap-0.5">
-          <span className="truncate text-[13px] font-medium text-ink">{role.title}</span>
+          <div className="flex items-center gap-1.5">
+            <span className="truncate text-[13px] font-medium text-ink">{role.title}</span>
+            {role.commitment === "open_market" ? (
+              <span className="inline-flex items-center rounded-full bg-stone-100 px-1.5 py-0.5 text-[9.5px] font-semibold uppercase tracking-wide leading-none text-stone-500">Open-market</span>
+            ) : null}
+            {role.is_trial ? (
+              <span className="inline-flex items-center rounded-full bg-amber-50 px-1.5 py-0.5 text-[9.5px] font-semibold uppercase tracking-wide leading-none text-amber-700">Trial</span>
+            ) : null}
+          </div>
           <span className="truncate text-[11.5px] text-ink-3">
-            {[fmtSalary(role.approx_salary), role.employment_type, role.start_date ? fmtDate(role.start_date) : null]
+            {[
+              fmtSalary(role.approx_salary),
+              role.pay_rate != null ? `$${role.pay_rate.toLocaleString("en-US")} ${RATE_PERIOD_SHORT[role.rate_period ?? ""] ?? ""}`.trim() : null,
+              empTypeLabel(role.employment_type),
+              role.start_date ? fmtDate(role.start_date) : null,
+              role.end_date ? `→ ${fmtDate(role.end_date)}` : null,
+            ]
               .filter((x) => x && x !== "—")
               .join(" · ") || "—"}
           </span>
+          {role.is_trial && convertsToRole ? (
+            <span className="mt-0.5 text-[10.5px] text-ink-4">→ converts to <span className="text-ink-3">{convertsToRole.title}</span></span>
+          ) : null}
+          {role.notes ? (
+            <span className="mt-0.5 whitespace-pre-wrap text-[11px] text-ink-3">{role.notes}</span>
+          ) : null}
         </div>
         <div className="flex shrink-0 items-center gap-2">
           <span
@@ -326,12 +548,14 @@ function RoleRow({ role, oppId }: { role: Role; oppId: string }) {
 
 // ── Add-role inline form ───────────────────────────────────────────────────────
 
-function AddRoleForm({ oppId }: { oppId: string }) {
+function AddRoleForm({ oppId, roles }: { oppId: string; roles: Role[] }) {
   const [open, setOpen] = useState(false);
   const [title, setTitle] = useState("");
   const [salary, setSalary] = useState("");
   const [empType, setEmpType] = useState("");
   const [startDate, setStartDate] = useState("");
+  const [notes, setNotes] = useState("");
+  const [extras, setExtras] = useState<RoleExtras>(EMPTY_EXTRAS);
   const createRole = useCreateRole();
 
   function reset() {
@@ -339,6 +563,8 @@ function AddRoleForm({ oppId }: { oppId: string }) {
     setSalary("");
     setEmpType("");
     setStartDate("");
+    setNotes("");
+    setExtras(EMPTY_EXTRAS);
     setOpen(false);
   }
 
@@ -353,6 +579,8 @@ function AddRoleForm({ oppId }: { oppId: string }) {
         approx_salary: salaryNum != null && !isNaN(salaryNum) ? salaryNum : undefined,
         employment_type: empType.trim() || undefined,
         start_date: startDate || undefined,
+        notes: notes.trim() || undefined,
+        ...extrasToBody(extras),
       },
       { onSuccess: () => reset() },
     );
@@ -381,28 +609,48 @@ function AddRoleForm({ oppId }: { oppId: string }) {
         className="w-full rounded border border-border-strong bg-surface px-2 py-1 text-[12px] text-ink-2 placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40"
       />
       <div className="grid grid-cols-3 gap-2">
-        <input
-          type="number"
-          value={salary}
-          onChange={(e) => setSalary(e.target.value)}
-          placeholder="Salary"
-          min={0}
-          className="w-full rounded border border-border-strong bg-surface px-2 py-1 text-[11.5px] text-ink-2 placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40"
-        />
-        <input
-          type="text"
-          value={empType}
-          onChange={(e) => setEmpType(e.target.value)}
-          placeholder="Type"
-          className="w-full rounded border border-border-strong bg-surface px-2 py-1 text-[11.5px] text-ink-2 placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40"
-        />
-        <input
-          type="date"
-          value={startDate}
-          onChange={(e) => setStartDate(e.target.value)}
-          className="w-full rounded border border-border-strong bg-surface px-2 py-1 text-[11.5px] text-ink-2 focus:outline-none focus:ring-1 focus:ring-accent/40"
-        />
+        <label className="flex flex-col gap-0.5">
+          <span className="text-[10px] font-medium text-ink-4">Salary</span>
+          <input
+            type="number"
+            value={salary}
+            onChange={(e) => setSalary(e.target.value)}
+            placeholder="85000"
+            min={0}
+            className="w-full rounded border border-border-strong bg-surface px-2 py-1 text-[11.5px] text-ink-2 placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40"
+          />
+        </label>
+        <label className="flex flex-col gap-0.5">
+          <span className="text-[10px] font-medium text-ink-4">Type</span>
+          <select
+            value={empType}
+            onChange={(e) => setEmpType(e.target.value)}
+            className="w-full rounded border border-border-strong bg-surface px-2 py-1 text-[11.5px] text-ink-2 focus:outline-none focus:ring-1 focus:ring-accent/40"
+          >
+            <option value="">—</option>
+            {EMPLOYMENT_TYPE_OPTIONS.map((t) => (
+              <option key={t.value} value={t.value}>{t.label}</option>
+            ))}
+          </select>
+        </label>
+        <label className="flex flex-col gap-0.5">
+          <span className="text-[10px] font-medium text-ink-4">Expected start</span>
+          <input
+            type="date"
+            value={startDate}
+            onChange={(e) => setStartDate(e.target.value)}
+            className="w-full rounded border border-border-strong bg-surface px-2 py-1 text-[11.5px] text-ink-2 focus:outline-none focus:ring-1 focus:ring-accent/40"
+          />
+        </label>
       </div>
+      <textarea
+        rows={2}
+        value={notes}
+        onChange={(e) => setNotes(e.target.value)}
+        placeholder="Role details / notes…"
+        className="w-full resize-none rounded border border-border-strong bg-surface px-2 py-1 text-[11.5px] text-ink-2 placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40"
+      />
+      <RoleExtraFields value={extras} onChange={setExtras} candidates={roles} />
       <div className="flex items-center gap-3">
         <button
           type="submit"
@@ -436,11 +684,11 @@ export function OppRolesSection({ oppId }: { oppId: string }) {
       ) : (
         <ul className="flex flex-col divide-y divide-border-strong rounded-md border border-border-strong">
           {roles.map((r) => (
-            <RoleRow key={r.id} role={r} oppId={oppId} />
+            <RoleRow key={r.id} role={r} oppId={oppId} roles={roles} />
           ))}
         </ul>
       )}
-      <AddRoleForm oppId={oppId} />
+      <AddRoleForm oppId={oppId} roles={roles} />
     </div>
   );
 }

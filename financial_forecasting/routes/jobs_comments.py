@@ -24,7 +24,7 @@ from db import get_db
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 
-VALID_PARENT_TYPES = {"opportunity", "prospect"}
+VALID_PARENT_TYPES = {"opportunity", "prospect", "account"}
 
 
 class JobsCommentCreate(BaseModel):
@@ -50,11 +50,22 @@ def _serialize(r) -> dict:
     }
 
 
-_SELECT_SQL = """
-    SELECT id, parent_type, parent_id, author_id, author_email, content,
-           created_at, updated_at
-    FROM bedrock.jobs_comment
-"""
+_COLS = """id, parent_type, parent_id, author_id, author_email, content,
+           created_at, updated_at"""
+
+# Account-level comments live in a bedrock_user-owned mirror table (the original
+# jobs_comment is postgres-owned and locked to opportunity|prospect).
+def _table(parent_type: str) -> str:
+    return "bedrock.jobs_account_comment" if parent_type == "account" else "bedrock.jobs_comment"
+
+
+async def _locate_comment(conn, cid):
+    """Return (table, author_email) for a comment id, across both tables."""
+    for tbl in ("bedrock.jobs_comment", "bedrock.jobs_account_comment"):
+        row = await conn.fetchrow(f"SELECT author_email FROM {tbl} WHERE id = $1", cid)
+        if row is not None:
+            return tbl, row["author_email"]
+    return None, None
 
 
 def _check_parent_type(parent_type: str) -> None:
@@ -77,9 +88,8 @@ async def list_jobs_comments(
 ):
     _check_parent_type(parent_type)
     rows = await conn.fetch(
-        _SELECT_SQL
-        + " WHERE parent_type = $1 AND parent_id = $2 "
-        "ORDER BY created_at ASC",
+        f"SELECT {_COLS} FROM {_table(parent_type)}"
+        " WHERE parent_type = $1 AND parent_id = $2 ORDER BY created_at ASC",
         parent_type, parent_id,
     )
     return {"success": True, "data": [_serialize(r) for r in rows]}
@@ -103,11 +113,10 @@ async def create_jobs_comment(
     ) if author_email else None
 
     row = await conn.fetchrow(
-        """INSERT INTO bedrock.jobs_comment
+        f"""INSERT INTO {_table(body.parent_type)}
                (parent_type, parent_id, author_id, author_email, content)
            VALUES ($1, $2, $3, $4, $5)
-           RETURNING id, parent_type, parent_id, author_id, author_email,
-                     content, created_at, updated_at""",
+           RETURNING {_COLS}""",
         body.parent_type, body.parent_id, author_id, author_email, content,
     )
     return {"success": True, "data": _serialize(row)}
@@ -121,13 +130,11 @@ async def update_jobs_comment(
     conn=Depends(get_db),
 ):
     cid = uuid.UUID(comment_id)
-    existing = await conn.fetchrow(
-        "SELECT author_email FROM bedrock.jobs_comment WHERE id = $1", cid,
-    )
-    if not existing:
+    tbl, author_email = await _locate_comment(conn, cid)
+    if not tbl:
         raise HTTPException(status_code=404, detail="Comment not found")
 
-    if (existing["author_email"] or "").strip().lower() != _user_email(user).lower():
+    if (author_email or "").strip().lower() != _user_email(user).lower():
         raise HTTPException(status_code=403, detail="Only the author can edit this comment")
 
     content = (body.content or "").strip()
@@ -135,10 +142,7 @@ async def update_jobs_comment(
         raise HTTPException(status_code=400, detail="content is required")
 
     row = await conn.fetchrow(
-        "UPDATE bedrock.jobs_comment SET content = $1, updated_at = now() "
-        "WHERE id = $2 "
-        "RETURNING id, parent_type, parent_id, author_id, author_email, "
-        "content, created_at, updated_at",
+        f"UPDATE {tbl} SET content = $1, updated_at = now() WHERE id = $2 RETURNING {_COLS}",
         content, cid,
     )
     return {"success": True, "data": _serialize(row)}
@@ -151,14 +155,12 @@ async def delete_jobs_comment(
     conn=Depends(get_db),
 ):
     cid = uuid.UUID(comment_id)
-    existing = await conn.fetchrow(
-        "SELECT author_email FROM bedrock.jobs_comment WHERE id = $1", cid,
-    )
-    if not existing:
+    tbl, author_email = await _locate_comment(conn, cid)
+    if not tbl:
         raise HTTPException(status_code=404, detail="Comment not found")
 
-    if (existing["author_email"] or "").strip().lower() != _user_email(user).lower():
+    if (author_email or "").strip().lower() != _user_email(user).lower():
         raise HTTPException(status_code=403, detail="Only the author can delete this comment")
 
-    await conn.execute("DELETE FROM bedrock.jobs_comment WHERE id = $1", cid)
+    await conn.execute(f"DELETE FROM {tbl} WHERE id = $1", cid)
     return {"success": True}

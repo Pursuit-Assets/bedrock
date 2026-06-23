@@ -1,6 +1,26 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
+
+/**
+ * Invalidate the query families that depend on opportunities/activity — opp
+ * list + detail, account rollups, and pipeline metrics. Replaces blanket
+ * invalidation of the whole ["jobs"] tree (which also refetched staff and
+ * unrelated metric drawers). `extra` adds caller-specific families.
+ */
+function invalidateOppDependents(qc: QueryClient, extra: string[][] = []) {
+  const families = [
+    ["jobs", "opportunities"],
+    ["jobs", "opportunity"],
+    ["jobs", "accounts"],
+    ["jobs", "account-rollup"],
+    ["jobs", "pipeline"],
+    ["jobs", "funnel"],
+    ["jobs", "this-week-summary"],
+    ...extra,
+  ];
+  for (const queryKey of families) qc.invalidateQueries({ queryKey });
+}
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -29,6 +49,7 @@ export interface JobsOpportunity {
   salary_expected: number | null;
   source: string | null;
   owner_email: string | null;
+  relationship_owner: string | null;
   sf_contact_ids: string[];
   builder_ids: string[];
   sf_opportunity_id: string | null;
@@ -37,11 +58,20 @@ export interface JobsOpportunity {
   airtable_id: string | null;
   num_roles: number | null;
   likelihood: "low" | "medium" | "high" | null;
+  closed_lost_reason?: string | null;
+  closed_lost_note?: string | null;
+  priority?: number | null;
+  priority_auto?: number | null;
+  priority_suggested?: number | null;
+  segment?: string | null;
+  intro_by?: string | null;
   created_at: string;
   updated_at: string;
   closed_at: string | null;
   deleted_at: string | null;
   activity_count?: number;
+  last_activity_at?: string | null;
+  recent_activity_count?: number;
 }
 
 export interface JobContact {
@@ -54,7 +84,6 @@ export interface JobContact {
   current_company: string | null;
   contact_stage: string | null;
   linkedin_url: string | null;
-  notes: string | null;
 }
 
 export interface ContactsSummary {
@@ -101,7 +130,9 @@ export interface ActivityEntry {
   logged_by: string | null;
   synced_at: string | null;
   email_from: string | null;
+  email_to: string[] | null;
   email_snippet: string | null;
+  email_body_text: string | null;
   meeting_duration_minutes: number | null;
   is_jobs: boolean;
   deleted_at: string | null;
@@ -177,6 +208,8 @@ interface ListResponse<T> { success: boolean; data: T[]; total: number }
 export interface JobContactWithDeal extends JobContact {
   airtable_id: string | null;
   deal: { id: string; account_name: string; stage: JobStage; owner_email?: string | null } | null;
+  connected_staff_names?: string[];
+  recent_activity_count?: number;
 }
 
 export interface ContactFilters {
@@ -186,8 +219,18 @@ export interface ContactFilters {
   limit?: number;
 }
 
+export interface ConnectedStaff {
+  staff_user_id: number;
+  name: string | null;
+  email: string | null;
+  source: string | null;
+  strength: string | null;
+  connected_date: string | null;
+}
+
 export interface ContactDetail extends JobContactWithDeal {
   activity: ActivityEntry[];
+  connected_staff?: ConnectedStaff[];
 }
 
 export function useContactDetail(id: number | null) {
@@ -246,6 +289,189 @@ export function useJobsContacts(filters: ContactFilters = {}) {
       return { data: data.data, total: data.total };
     },
     staleTime: 60_000,
+  });
+}
+
+// Prospects grouped into account rows (by company name) for the account-level
+// Prospects view. Each account carries its current opportunity, if any.
+export interface ProspectAccountContact {
+  contact_id: number;
+  full_name: string | null;
+  email: string | null;
+  current_title: string | null;
+  contact_stage: string | null;
+  linkedin_url: string | null;
+}
+
+export interface ProspectAccount {
+  account: string;
+  contact_count: number;
+  contacts: ProspectAccountContact[];
+  deal: { id: string; stage: JobStage; deal_type: DealType | null; owner_email: string | null } | null;
+}
+
+export function useContactsByAccount(dealType?: string) {
+  const params = new URLSearchParams();
+  if (dealType && dealType !== "all") params.set("deal_type", dealType);
+  return useQuery<ProspectAccount[]>({
+    queryKey: ["jobs", "contacts-by-account", dealType ?? "all"],
+    queryFn: async () => {
+      const { data } = await api.get<ApiResponse<ProspectAccount[]>>(
+        `/api/jobs/contacts/by-account?${params}`,
+      );
+      return data.data;
+    },
+    staleTime: 60_000,
+  });
+}
+
+// Account-level hub: every company (keyed by normalized name) with its
+// opportunities + prospects nested and a derived status (same vocabulary as the
+// portfolio Accounts tab). Backed by GET /api/jobs/accounts.
+export type JobsAccountStatus = "Prospect" | "Pursuing" | "Stewarding" | "Re-activating" | "Dormant";
+
+export interface JobsAccountOpp {
+  id: string;
+  title: string | null;
+  stage: JobStage;
+  deal_type: DealType | null;
+  owner_email: string | null;
+  priority: number | null;
+  num_roles: number | null;
+  likelihood: "low" | "medium" | "high" | null;
+  updated_at: string | null;
+}
+
+export interface JobsAccountProspect {
+  contact_id: number;
+  full_name: string | null;
+  email: string | null;
+  current_title: string | null;
+  contact_stage: string | null;
+  linkedin_url: string | null;
+}
+
+export interface JobsAccount {
+  account: string;
+  account_key: string;
+  account_id: string | null;
+  sf_account_id?: string | null;
+  owner_email: string | null;
+  account_status: JobsAccountStatus;
+  opportunities: JobsAccountOpp[];
+  prospects: JobsAccountProspect[];
+  opp_count: number;
+  prospect_count: number;
+  last_activity: string | null;
+}
+
+export function useJobsAccounts(dealType?: string) {
+  const params = new URLSearchParams();
+  if (dealType && dealType !== "all") params.set("deal_type", dealType);
+  return useQuery<JobsAccount[]>({
+    queryKey: ["jobs", "accounts", dealType ?? "all"],
+    queryFn: async () => {
+      const { data } = await api.get<ApiResponse<JobsAccount[]>>(`/api/jobs/accounts?${params}`);
+      return data.data;
+    },
+    staleTime: 60_000,
+  });
+}
+
+export interface ContactOpportunity {
+  id: string;
+  account_name: string;
+  title: string | null;
+  stage: JobStage;
+  deal_type: DealType | null;
+  owner_email: string | null;
+  num_roles: number | null;
+  priority: number | null;
+  updated_at: string | null;
+}
+
+export function useContactOpportunities(id: number | null) {
+  return useQuery<ContactOpportunity[]>({
+    queryKey: ["jobs", "contact-opps", id],
+    queryFn: async () => {
+      const { data } = await api.get<ApiResponse<ContactOpportunity[]>>(`/api/jobs/contacts/${id}/opportunities`);
+      return data.data;
+    },
+    enabled: id !== null,
+    staleTime: 60_000,
+  });
+}
+
+// ── Account roll-ups (read aggregations across an account's opps + contacts) ──
+type AccountScope = "opportunity" | "contact";
+
+export interface AccountTask {
+  id: string; title: string | null; status: string | null; deadline: string | null;
+  scope: AccountScope; parent_id: string; scope_label: string;
+}
+export interface AccountComment {
+  id: string; author_email: string | null; content: string; created_at: string | null;
+  scope: AccountScope; scope_label: string;
+}
+export interface AccountBuilderRow {
+  job_application_id: number; builder: string | null; company_name: string | null;
+  role_title: string | null; stage: string | null; jobs_role_id: string | null; date_applied: string | null;
+  opportunity_id: string | null; opp_title: string | null;
+}
+export interface AccountRole {
+  id: string; opportunity_id: string; opp_title: string | null; title: string | null;
+  status: string | null; employment_type: string | null; approx_salary: number | null;
+  commitment: string | null; is_trial: boolean | null; filled_by_user_id: number | null;
+}
+
+function accountRollup<T>(kind: string, key: string | null) {
+  return useQuery<T>({
+    queryKey: ["jobs", "account-rollup", kind, key],
+    queryFn: async () => {
+      const { data } = await api.get<ApiResponse<T>>(`/api/jobs/account-${kind}?key=${encodeURIComponent(key ?? "")}`);
+      return data.data;
+    },
+    enabled: Boolean(key),
+    staleTime: 30_000,
+  });
+}
+
+export const useAccountActivity = (key: string | null) => accountRollup<ActivityEntry[]>("activity", key);
+export const useAccountTasks    = (key: string | null) => accountRollup<AccountTask[]>("tasks", key);
+export const useAccountComments = (key: string | null) => accountRollup<AccountComment[]>("comments", key);
+export const useAccountBuilders = (key: string | null) => accountRollup<{ rows: AccountBuilderRow[]; summary: Record<string, number> }>("builders", key);
+export const useAccountRoles    = (key: string | null) => accountRollup<AccountRole[]>("roles", key);
+
+export interface JobsStaff { email: string; name: string }
+
+export function useJobsStaff() {
+  return useQuery<JobsStaff[]>({
+    queryKey: ["jobs", "staff"],
+    queryFn: async () => {
+      const { data } = await api.get<ApiResponse<JobsStaff[]>>("/api/jobs/staff");
+      return data.data;
+    },
+    staleTime: 300_000,
+  });
+}
+
+export interface JobsAccountUpdate {
+  account: string;
+  owner_email?: string;
+  status_override?: string;
+  notes?: string;
+}
+
+export function useUpdateJobsAccount() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (body: JobsAccountUpdate) => {
+      await api.patch("/api/jobs/accounts", body);
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["jobs", "accounts"] });
+    },
+    onError: () => toast.error("Couldn't save account change"),
   });
 }
 
@@ -390,8 +616,8 @@ export function useCreatePlacement() {
       return data.data;
     },
     onSuccess: (_d, vars) => {
-      qc.invalidateQueries({ queryKey: ["jobs"] });
       qc.invalidateQueries({ queryKey: ["jobs", "opp-placements", vars.oppId] });
+      invalidateOppDependents(qc, [["jobs", "placements"], ["jobs", "builders"]]);
       toast.success("Placement recorded");
     },
     onError: () => toast.error("Failed to record placement"),
@@ -405,8 +631,8 @@ export function useLinkPlacement() {
       await api.post(`/api/jobs/opportunities/${oppId}/placements/${placementId}/link`);
     },
     onSuccess: (_d, vars) => {
-      qc.invalidateQueries({ queryKey: ["jobs"] });
       qc.invalidateQueries({ queryKey: ["jobs", "opp-placements", vars.oppId] });
+      invalidateOppDependents(qc, [["jobs", "placements"], ["jobs", "builders"], ["jobs", "unlinked-placements"]]);
       toast.success("Placement linked");
     },
     onError: () => toast.error("Failed to link placement"),
@@ -502,6 +728,35 @@ export function useContactsSummary() {
   });
 }
 
+export interface ActivityTrendBucket {
+  period: string;
+  new_contacts: number;
+  new_accounts: number;
+  email: number;
+  meeting: number;
+  call: number;
+  other: number;
+}
+export interface ActivityTrends {
+  granularity: "week" | "month";
+  buckets: ActivityTrendBucket[];
+  totals: { new_contacts: number; new_accounts: number; touchpoints: number };
+  coverage_note: string | null;
+}
+
+export function useActivityTrends(granularity: "week" | "month") {
+  return useQuery<ActivityTrends>({
+    queryKey: ["jobs", "activity-trends", granularity],
+    queryFn: async () => {
+      const { data } = await api.get<ApiResponse<ActivityTrends>>(
+        `/api/jobs/activity-trends?granularity=${granularity}`,
+      );
+      return data.data;
+    },
+    staleTime: 60_000,
+  });
+}
+
 export function useJobsPipeline() {
   return useQuery<PipelineStageSummary[]>({
     queryKey: ["jobs", "pipeline"],
@@ -553,7 +808,11 @@ export function useUpdateOpportunity() {
       return { updated: data.data, changedStage: "stage" in body };
     },
     onSuccess: ({ updated, changedStage }) => {
-      qc.invalidateQueries({ queryKey: ["jobs"] });
+      // a stage/contact change ripples into placements + contacts too
+      invalidateOppDependents(qc, [
+        ["jobs", "placements"], ["jobs", "contacts"],
+        ["jobs", "contacts-by-account"], ["jobs", "contacts-summary"],
+      ]);
       // Only announce the stage when the stage was the field that changed —
       // otherwise (owner, salary, # roles, …) a plain "Updated" is honest.
       toast.success(
@@ -572,7 +831,10 @@ export function useCreateOpportunity() {
       return data.data;
     },
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["jobs"] });
+      // new opp can flip linked contacts to is_jobs_contact → refresh contacts
+      invalidateOppDependents(qc, [
+        ["jobs", "contacts"], ["jobs", "contacts-by-account"], ["jobs", "contacts-summary"],
+      ]);
       toast.success("Deal created");
     },
     onError: () => toast.error("Failed to create deal"),
@@ -586,7 +848,6 @@ export interface ContactCreateBody {
   current_company?: string;
   contact_stage?: string;
   linkedin_url?: string;
-  notes?: string;
 }
 
 export function useCreateContact() {
@@ -611,7 +872,7 @@ export function useDeleteActivity() {
       await api.delete(`/api/jobs/activity/${activityId}`);
     },
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["jobs"] });
+      invalidateOppDependents(qc, [["jobs", "contact"], ["jobs", "metric"]]);
       toast.success("Activity deleted");
     },
     onError: () => toast.error("Delete failed"),
@@ -696,7 +957,7 @@ export function useLogActivity() {
       return data.data;
     },
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["jobs"] });
+      invalidateOppDependents(qc, [["jobs", "contact"], ["jobs", "metric"]]);
       toast.success("Activity logged");
     },
     onError: () => toast.error("Failed to log activity"),
@@ -710,7 +971,7 @@ export function useDeleteOpportunity() {
       await api.delete(`/api/jobs/opportunities/${id}`);
     },
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["jobs"] });
+      invalidateOppDependents(qc, [["jobs", "placements"]]);
       toast.success("Deal removed");
     },
   });

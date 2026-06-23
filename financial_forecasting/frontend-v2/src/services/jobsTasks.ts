@@ -10,7 +10,7 @@ interface ApiResponse<T> {
   data: T;
 }
 
-export type JobsTaskParentType = "opportunity" | "prospect";
+export type JobsTaskParentType = "opportunity" | "prospect" | "account";
 
 export type JobsTaskStatus =
   | "Not Started"
