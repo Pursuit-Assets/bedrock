@@ -28,7 +28,7 @@ export function JobsPage() {
   //   ?view=contacts&q=<text>           — seed the find-any search
   //   ?view=contacts&contact=<id>       — open that contact's detail drawer
   const paramView = searchParams.get("view") as View | null;
-  const initialView: View = paramView && VALID_VIEWS.has(paramView) ? paramView : "accounts";
+  const initialView: View = paramView && VALID_VIEWS.has(paramView) ? paramView : "performance";
   const initialQuery = searchParams.get("q") ?? undefined;
   const contactParam = searchParams.get("contact");
   const initialContactId = contactParam && /^\d+$/.test(contactParam) ? Number(contactParam) : undefined;

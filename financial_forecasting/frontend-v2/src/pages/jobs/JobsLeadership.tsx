@@ -54,8 +54,8 @@ export function JobsLeadership() {
 
   // ── Account activity derived values ────────────────────────────────────
   const contactsLoading = contactsQ.isLoading;
-  const totalAccounts = contactsQ.data?.accounts.total ?? null;
-  const engagedAccounts = contactsQ.data?.accounts.engaged ?? null;
+  const totalAccounts = contactsQ.data?.accounts?.total ?? null;
+  const engagedAccounts = contactsQ.data?.accounts?.engaged ?? null;
 
   return (
     <div className="flex flex-col gap-7">
