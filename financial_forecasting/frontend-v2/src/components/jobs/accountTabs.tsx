@@ -20,6 +20,7 @@ import { Briefcase, CheckSquare, ExternalLink, MessageSquare, Plus, Trash2, User
 import { JobsActivityList } from "@/components/jobs/JobsActivityList";
 import { JobsComments } from "@/components/jobs/JobsComments";
 import { JobsTasks } from "@/components/jobs/JobsTasks";
+import { OppRolesSection } from "@/components/jobs/OppRolesSection";
 import { RowExpandPanel } from "@/components/RowExpandPanel";
 import { withReferrer } from "@/components/detail";
 import { InlineSelect, InlineText } from "@/components/ui/InlineEdit";
@@ -28,7 +29,6 @@ import {
   useAccountActivity,
   useAccountBuilders,
   useAccountComments,
-  useAccountRoles,
   useAccountTasks,
   useAddContactToJobs,
   useBuilders,
@@ -42,15 +42,14 @@ import {
   STAGE_LABELS,
   type AccountBuilderRow,
   type AccountComment,
-  type AccountRole,
   type AccountTask,
   type DealType,
   type JobStage,
   type JobsAccount,
 } from "@/services/jobs";
 import {
-  useCreateBuilderActivity, useCreateRole, useOppRoles, useUpdateBuilderActivity, useUpdateRole,
-  type AppStage, type RoleStatus,
+  useCreateBuilderActivity, useOppRoles, useUpdateBuilderActivity,
+  type AppStage,
 } from "@/services/jobsOpps2";
 
 import {
@@ -319,13 +318,6 @@ function AccountCommentsTab({ accountKey }: { accountKey: string }) {
 }
 
 // ── Roles — ONE table across the account's opps, each tagged to its opportunity ───────
-const ROLE_STATUS_OPTIONS: { value: RoleStatus; label: string }[] = [
-  { value: "open", label: "Open" }, { value: "filled", label: "Filled" }, { value: "cancelled", label: "Cancelled" },
-];
-const ROLE_STATUS_BADGE: Record<string, string> = {
-  open: "bg-accent-soft text-accent-ink", filled: "bg-green-soft text-green", cancelled: "bg-stone-100 text-stone-500",
-};
-
 function OppTag({ oppId, title }: { oppId: string; title: string | null }) {
   return (
     <Link to={jobsOpportunityPath(oppId)} state={jobsRef} className="inline-flex w-fit items-center gap-1 rounded-full bg-accent-soft px-2 py-0.5 text-[10px] font-medium leading-none text-accent-ink hover:opacity-80">
@@ -334,59 +326,25 @@ function OppTag({ oppId, title }: { oppId: string; title: string | null }) {
   );
 }
 
+/** Roles for the account — the SAME full editor as the opportunity detail
+ *  (OppRolesSection: add/edit title, salary, commitment, trial, hire, delete),
+ *  grouped per opportunity so each role stays linked to its deal. */
 function AccountRolesTab({ account }: { account: JobsAccount }) {
-  const key = account.account_key;
-  const { data: roles = [], isLoading } = useAccountRoles(key);
-  const updateRole = useUpdateRole();
-  const createRole = useCreateRole();
-  const [oppId, setOppId] = useState("");
-  const [title, setTitle] = useState("");
-  const noOpps = account.opportunities.length === 0;
-  const canAdd = oppId !== "" && title.trim() !== "";
-  const submit = () => { if (!canAdd) return; createRole.mutate({ oppId, title: title.trim() }, { onSuccess: () => { setTitle(""); } }); };
-
+  const opps = account.opportunities;
+  if (opps.length === 0) {
+    return <div className="p-3 text-[11.5px] text-ink-4">Add an opportunity first — roles link to one.</div>;
+  }
   return (
-    <div className="p-3">
-      <div className="overflow-hidden rounded border border-border-strong bg-surface">
-        <table className="w-full table-fixed text-[12px]">
-          <colgroup><col /><col style={{ width: "26%" }} /><col style={{ width: "16%" }} /><col style={{ width: "13%" }} /><col style={{ width: "12%" }} /></colgroup>
-          <thead className="bg-surface-2 text-[10px] uppercase tracking-wider text-ink-4"><tr>
-            <th className="px-2 py-1.5 text-left font-semibold">Role</th><th className="px-2 py-1.5 text-left font-semibold">Opportunity</th>
-            <th className="px-2 py-1.5 text-left font-semibold">Commitment</th><th className="px-2 py-1.5 text-left font-semibold">Status</th>
-            <th className="px-2 py-1.5 text-left font-semibold">Salary</th>
-          </tr></thead>
-          <tbody>
-            {/* add row on top */}
-            {noOpps ? (
-              <tr className="border-b border-border-strong bg-surface-2/40"><td colSpan={5} className="px-3 py-2 text-[11.5px] text-ink-4">Add an opportunity first — roles link to one.</td></tr>
-            ) : (
-              <tr className="border-b border-border-strong bg-surface-2/40">
-                <td className="px-2 py-1.5"><input value={title} onChange={(e) => setTitle(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") submit(); }} placeholder="New role title *" className="w-full border-0 bg-transparent text-[12.5px] text-ink outline-none placeholder:text-ink-4" /></td>
-                <td className="px-2 py-1.5"><select value={oppId} onChange={(e) => setOppId(e.target.value)} className={cn("h-6 w-full rounded border bg-surface px-1 text-[11.5px] outline-none focus:border-accent", oppId ? "border-border-strong" : "border-amber-300")}><option value="">Opportunity *</option>{account.opportunities.map((o) => <option key={o.id} value={o.id}>{oppRoleLabel(o)}</option>)}</select></td>
-                <td className="px-2 py-1.5 text-[11px] text-ink-4" colSpan={2}>—</td>
-                <td className="px-1 py-1.5 text-center"><button type="button" disabled={!canAdd || createRole.isPending} onClick={submit} title="Add role" className="text-ink-3 hover:text-accent disabled:opacity-30"><Plus size={15} /></button></td>
-              </tr>
-            )}
-            {isLoading ? (
-              <tr><td colSpan={5} className="px-4 py-4 text-center text-[12px] text-ink-3">Loading…</td></tr>
-            ) : roles.length === 0 ? (
-              <tr><td colSpan={5} className="px-4 py-4 text-center text-[12px] italic text-ink-3">No roles yet.</td></tr>
-            ) : roles.map((r: AccountRole) => (
-              <tr key={r.id} className="border-t border-border-strong/60">
-                <td className="overflow-hidden px-2 py-1.5"><span className="truncate text-[12.5px] font-medium text-ink">{r.title || "Untitled role"}{r.is_trial ? <span className="ml-1 rounded-full bg-amber-soft px-1.5 py-0.5 text-[9px] font-medium text-amber">Trial</span> : null}</span></td>
-                <td className="overflow-hidden px-2 py-1.5"><OppTag oppId={r.opportunity_id} title={r.opp_title} /></td>
-                <td className="overflow-hidden px-2 py-1.5 text-[11.5px] text-ink-3">{r.commitment === "open-market" ? "Open-market" : "Committed"}</td>
-                <td className="overflow-hidden px-2 py-1.5">
-                  <InlineSelect<string> value={r.status} options={ROLE_STATUS_OPTIONS} emptyLabel="—"
-                    renderValue={(v) => <span className={cn("inline-flex rounded-full px-2 py-0.5 text-[10px] font-medium leading-none", ROLE_STATUS_BADGE[v ?? ""] ?? "bg-stone-100 text-stone-500")}>{v ?? "—"}</span>}
-                    onSave={(v) => updateRole.mutateAsync({ roleId: r.id, oppId: r.opportunity_id, status: v as RoleStatus }).then(() => undefined)} />
-                </td>
-                <td className="overflow-hidden px-2 py-1.5 text-[11.5px] text-ink-2">{r.approx_salary ? `$${r.approx_salary.toLocaleString()}` : "—"}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+    <div className="flex flex-col gap-4 p-3">
+      {opps.map((o) => (
+        <div key={o.id}>
+          <div className="mb-1.5 flex items-center gap-1.5 text-[12px] font-semibold text-ink">
+            <Briefcase size={11} className="text-ink-4" />
+            <Link to={jobsOpportunityPath(o.id)} state={jobsRef} className="hover:text-accent">{oppRoleLabel(o)}</Link>
+          </div>
+          <OppRolesSection oppId={o.id} />
+        </div>
+      ))}
     </div>
   );
 }
