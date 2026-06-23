@@ -214,6 +214,7 @@ export interface JobContactWithDeal extends JobContact {
   recent_activity_count?: number;
   last_activity_at?: string | null;
   responded?: boolean;
+  activity_actors?: string[];
   open_tasks?: number;
 }
 
@@ -333,7 +334,7 @@ export function useContactsByAccount(dealType?: string) {
 // Account-level hub: every company (keyed by normalized name) with its
 // opportunities + prospects nested and a derived status (same vocabulary as the
 // portfolio Accounts tab). Backed by GET /api/jobs/accounts.
-export type JobsAccountStatus = "Prospect" | "Pursuing" | "Stewarding" | "Re-activating" | "Dormant";
+export type JobsAccountStatus = "Prospect" | "Activated" | "Pursuing" | "Stewarding" | "Re-activating" | "Dormant";
 
 export interface JobsAccountOpp {
   id: string;
@@ -372,6 +373,8 @@ export interface JobsAccount {
   recent_activity_count?: number;
   last_activity_at?: string | null;
   responded?: boolean;
+  /** Jobs-team members (emails) who have touched this account — for the team filter. */
+  activity_actors?: string[];
 }
 
 export function useJobsAccounts(dealType?: string) {

@@ -19,6 +19,7 @@ import { InlineSelect } from "@/components/ui/InlineEdit";
 import { SavedViewsPicker } from "@/components/ui/SavedViewsPicker";
 import { SortableHeader } from "@/components/ui/SortableHeader";
 import { Toolbar } from "@/components/ui/Toolbar";
+import { ACTIVITY_WINDOWS, inActivityWindow } from "@/lib/activityWindow";
 import { useColumnVisibility } from "@/lib/columnVisibility";
 import { useSessionState } from "@/lib/useSessionState";
 import { useSort, sortBy, type SortState } from "@/lib/sort";
@@ -214,6 +215,8 @@ function ContactRow({ contact, expanded, onOpen, visibleCols }: { contact: JobCo
 export function JobsContacts({ initialQuery, initialContactId }: { initialQuery?: string; initialContactId?: number } = {}) {
   const [query, setQuery] = useState(initialQuery ?? "");
   const [rules, setRules] = useState<FilterRule<Field>[]>([]);
+  const [activityWindow, setActivityWindow] = useState("all");
+  const [teamMember, setTeamMember] = useState("all");
   const [groupBy, setGroupBy] = useSessionState<string>("jobs-contacts:groupBy", "");
   const [collapsedGroups, setCollapsedGroups] = useSessionState<string[]>("jobs-contacts:groupCollapsed", EMPTY);
   const [showNewContact, setShowNewContact] = useState(false);
@@ -254,6 +257,11 @@ export function JobsContacts({ initialQuery, initialContactId }: { initialQuery?
   const selectOptions: Partial<Record<Field, { value: string; label: string }[]>> = useMemo(() => ({
     stage: CONTACT_STAGE_SELECT, has_deal: YESNO,
   }), []);
+  // Team members who've touched any contact (from activity_actors), labeled by email local-part.
+  const teamMemberOptions = useMemo(() => {
+    const emails = [...new Set(allContacts.flatMap((c) => c.activity_actors ?? []))];
+    return emails.sort().map((e) => ({ value: e, label: e.split("@")[0] }));
+  }, [allContacts]);
 
   const collapsedSet = useMemo(() => new Set(collapsedGroups), [collapsedGroups]);
   const toggleGroup = useCallback((k: string) => setCollapsedGroups((p) => p.includes(k) ? p.filter((x) => x !== k) : [...p, k]), [setCollapsedGroups]);
@@ -262,12 +270,14 @@ export function JobsContacts({ initialQuery, initialContactId }: { initialQuery?
   const filtered = useMemo(() => {
     const f = allContacts.filter((c) => {
       for (const r of rules) if (!ruleApplies(c, r, FILTERABLE)) return false;
+      if (!inActivityWindow(c.last_activity_at, activityWindow)) return false;
+      if (teamMember !== "all" && !(c.activity_actors ?? []).includes(teamMember)) return false;
       if (!q) return true;
       return (c.full_name ?? "").toLowerCase().includes(q) || (c.email ?? "").toLowerCase().includes(q)
         || (c.current_company ?? "").toLowerCase().includes(q) || (c.current_title ?? "").toLowerCase().includes(q);
     });
     return sort.key == null ? f : sortBy(f, sort, (c, k) => extract(c, k));
-  }, [allContacts, q, rules, sort]);
+  }, [allContacts, q, rules, sort, activityWindow, teamMember]);
 
   const groupLabel = useCallback((k: string) => {
     if (k === "") return "—";
@@ -345,6 +355,15 @@ export function JobsContacts({ initialQuery, initialContactId }: { initialQuery?
           <input placeholder="Search name, company, title, email…" value={query} onChange={(e) => setQuery(e.target.value)} className="h-7 w-60 rounded border border-border-strong bg-surface pl-7 pr-3 text-[12.5px] font-medium text-ink-2 outline-none placeholder:font-normal placeholder:text-ink-3 focus:border-accent focus:text-ink" />
         </div>
         <AddFilterButton<Field> filterable={FILTERABLE as Record<Field, FieldMeta<unknown>>} selectOptions={selectOptions} onAdd={(r) => setRules((p) => [...p, r])} buttonLabel="Filter" />
+        <select value={activityWindow} onChange={(e) => setActivityWindow(e.target.value)} title="Filter by when the contact was last touched" className="h-7 rounded border border-border-strong bg-surface px-2 text-[12.5px] text-ink-2 outline-none focus:border-accent">
+          {ACTIVITY_WINDOWS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+        </select>
+        {teamMemberOptions.length > 0 && (
+          <select value={teamMember} onChange={(e) => setTeamMember(e.target.value)} title="Filter by who did the outreach" className="h-7 rounded border border-border-strong bg-surface px-2 text-[12.5px] text-ink-2 outline-none focus:border-accent">
+            <option value="all">Any team member</option>
+            {teamMemberOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
+        )}
         <select value={groupBy} onChange={(e) => { setGroupBy(e.target.value); setCollapsedGroups([]); }} title="Group rows by a field" className="h-7 rounded border border-border-strong bg-surface px-2 text-[12.5px] text-ink-2 outline-none focus:border-accent">
           {GROUP_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
         </select>
@@ -375,7 +394,7 @@ export function JobsContacts({ initialQuery, initialContactId }: { initialQuery?
             ) : isError ? (
               <tr><td colSpan={visibleCols.length} className="px-6 py-10 text-center text-[13px] text-red">Couldn't load contacts.{" "}<button type="button" className="text-accent underline underline-offset-2" onClick={() => refetch()}>Retry</button></td></tr>
             ) : filtered.length === 0 ? (
-              <tr><td colSpan={visibleCols.length} className="px-6 py-10 text-center text-[13px] text-ink-3">No contacts match.{" "}<button type="button" className="text-accent underline underline-offset-2" onClick={() => { setQuery(""); setRules([]); }}>Clear filters</button></td></tr>
+              <tr><td colSpan={visibleCols.length} className="px-6 py-10 text-center text-[13px] text-ink-3">No contacts match.{" "}<button type="button" className="text-accent underline underline-offset-2" onClick={() => { setQuery(""); setRules([]); setActivityWindow("all"); setTeamMember("all"); }}>Clear filters</button></td></tr>
             ) : grouped ? (
               grouped.map((item) => item.kind === "header" ? (
                 <tr key={`g-${item.key}`} className="cursor-pointer border-y border-border-strong bg-surface-2/70 hover:bg-surface-2" onClick={() => toggleGroup(item.key)}>

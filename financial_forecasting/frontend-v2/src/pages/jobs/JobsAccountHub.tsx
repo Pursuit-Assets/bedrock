@@ -21,6 +21,7 @@ import { SortableHeader } from "@/components/ui/SortableHeader";
 import { Tag } from "@/components/ui/Tag";
 import { Toolbar } from "@/components/ui/Toolbar";
 import { accountStatusVariant } from "@/lib/accountStatus";
+import { ACTIVITY_WINDOWS, inActivityWindow } from "@/lib/activityWindow";
 import { useColumnVisibility } from "@/lib/columnVisibility";
 import { useSessionState } from "@/lib/useSessionState";
 import { useSort, sortBy, type SortState } from "@/lib/sort";
@@ -90,7 +91,7 @@ const GROUP_OPTIONS = [
   { value: "owner", label: "Group by Owner" },
   { value: "has_opps", label: "Group by Has opportunities" },
 ];
-const STATUSES: JobsAccountStatus[] = ["Pursuing", "Stewarding", "Re-activating", "Prospect", "Dormant"];
+const STATUSES: JobsAccountStatus[] = ["Pursuing", "Stewarding", "Re-activating", "Activated", "Prospect", "Dormant"];
 const YESNO = [{ value: "yes", label: "Yes" }, { value: "no", label: "No" }];
 
 const DEAL_TYPE_FILTER: { value: string; label: string }[] = [
@@ -152,6 +153,8 @@ export function JobsAccountHub({ initialQuery }: { initialQuery?: string } = {})
   const [query, setQuery] = useState(initialQuery ?? "");
   const [rules, setRules] = useState<FilterRule<Field>[]>([]);
   const [dealType, setDealType] = useState("all");
+  const [activityWindow, setActivityWindow] = useState("all");
+  const [teamMember, setTeamMember] = useState("all");
   const [groupBy, setGroupBy] = useSessionState<string>("jobs-accounts:groupBy", "");
   const [collapsedGroups, setCollapsedGroups] = useSessionState<string[]>("jobs-accounts:groupCollapsed", EMPTY);
   // Persisted so returning from a contact/opportunity detail page restores the
@@ -179,6 +182,11 @@ export function JobsAccountHub({ initialQuery }: { initialQuery?: string } = {})
     const emails = [...new Set(accounts.map((a) => a.owner_email).filter(Boolean) as string[])];
     return emails.map((e) => ({ value: e, label: staff.find((s) => s.email === e)?.name ?? e.split("@")[0] }));
   }, [accounts, staff]);
+  // Team members who've actually touched any account (from activity_actors).
+  const teamMemberOptions = useMemo(() => {
+    const emails = [...new Set(accounts.flatMap((a) => a.activity_actors ?? []))];
+    return emails.sort().map((e) => ({ value: e, label: staff.find((s) => s.email === e)?.name ?? e.split("@")[0] }));
+  }, [accounts, staff]);
   const selectOptions: Partial<Record<Field, { value: string; label: string }[]>> = useMemo(() => ({
     status: STATUSES.map((s) => ({ value: s, label: s })),
     owner: ownerOptions,
@@ -193,13 +201,15 @@ export function JobsAccountHub({ initialQuery }: { initialQuery?: string } = {})
   const filtered = useMemo(() => {
     const f = accounts.filter((a) => {
       for (const r of rules) if (!ruleApplies(a, r, FILTERABLE)) return false;
+      if (!inActivityWindow(a.last_activity_at, activityWindow)) return false;
+      if (teamMember !== "all" && !(a.activity_actors ?? []).includes(teamMember)) return false;
       if (!q) return true;
       return a.account.toLowerCase().includes(q)
         || a.prospects.some((p) => (p.full_name ?? "").toLowerCase().includes(q) || (p.email ?? "").toLowerCase().includes(q))
         || a.opportunities.some((o) => (o.title ?? "").toLowerCase().includes(q));
     });
     return sort.key == null ? f : sortBy(f, sort, (a, k) => extract(a, k));
-  }, [accounts, q, rules, sort]);
+  }, [accounts, q, rules, sort, activityWindow, teamMember]);
 
   const groupLabel = useCallback((k: string) => {
     if (k === "") return "—";
@@ -238,6 +248,15 @@ export function JobsAccountHub({ initialQuery }: { initialQuery?: string } = {})
         <select value={dealType} onChange={(e) => setDealType(e.target.value)} title="Filter to accounts with a deal of this type" className="h-7 rounded border border-border-strong bg-surface px-2 text-[12.5px] text-ink-2 outline-none focus:border-accent">
           {DEAL_TYPE_FILTER.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
         </select>
+        <select value={activityWindow} onChange={(e) => setActivityWindow(e.target.value)} title="Filter by when the account was last touched" className="h-7 rounded border border-border-strong bg-surface px-2 text-[12.5px] text-ink-2 outline-none focus:border-accent">
+          {ACTIVITY_WINDOWS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+        </select>
+        {teamMemberOptions.length > 0 && (
+          <select value={teamMember} onChange={(e) => setTeamMember(e.target.value)} title="Filter by who did the outreach" className="h-7 rounded border border-border-strong bg-surface px-2 text-[12.5px] text-ink-2 outline-none focus:border-accent">
+            <option value="all">Any team member</option>
+            {teamMemberOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
+        )}
         <select value={groupBy} onChange={(e) => { setGroupBy(e.target.value); setCollapsedGroups([]); }} title="Group rows by a field" className="h-7 rounded border border-border-strong bg-surface px-2 text-[12.5px] text-ink-2 outline-none focus:border-accent">
           {GROUP_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
         </select>
@@ -286,7 +305,7 @@ export function JobsAccountHub({ initialQuery }: { initialQuery?: string } = {})
                 <button type="button" className="text-accent underline underline-offset-2" onClick={() => refetch()}>Retry</button></td></tr>
             ) : filtered.length === 0 ? (
               <tr><td colSpan={visibleCols.length} className="px-6 py-10 text-center text-[13px] text-ink-3">No accounts match.{" "}
-                <button type="button" className="text-accent underline underline-offset-2" onClick={() => { setQuery(""); setRules([]); setDealType("all"); }}>Clear filters</button></td></tr>
+                <button type="button" className="text-accent underline underline-offset-2" onClick={() => { setQuery(""); setRules([]); setDealType("all"); setActivityWindow("all"); setTeamMember("all"); }}>Clear filters</button></td></tr>
             ) : grouped ? (
               grouped.map((item) => item.kind === "header" ? (
                 <tr key={`g-${item.key}`} className="cursor-pointer border-y border-border-strong bg-surface-2/70 hover:bg-surface-2" onClick={() => toggleGroup(item.key)}>

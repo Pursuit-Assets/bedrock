@@ -25,6 +25,7 @@ export interface SfUser {
  *  from services/account_status.py — kept in sync there. */
 export type AccountStatus =
   | "Prospect"
+  | "Activated"
   | "Pursuing"
   | "Stewarding"
   | "Re-activating"
