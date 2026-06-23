@@ -340,7 +340,53 @@ async def metric_drilldown(
         ]
         return {"columns": cols, "child_columns": child_cols}, out, "placement"
 
+    async def any_paid(_where: str):
+        rows = await conn.fetch("SELECT * FROM bedrock.secured_jobs() WHERE payment_amount > 0 ORDER BY builder")
+        seen: dict = {}
+        for r in rows:
+            seen.setdefault(r["user_id"], r)
+        out = [{
+            "builder": r["builder"],
+            "company": r["company_name"] or "—",
+            "role": r["role_title"] or "—",
+            "type": ("Full-Time" if r["employment_type"] == "full_time"
+                     else (r["employment_type"] or "—").replace("_", " ").title()),
+            "salary": f"${int(r['payment_amount']):,}" if r["payment_amount"] else "—",
+        } for r in seen.values()]
+        cols = [{"key": "builder", "label": "Builder"}, {"key": "company", "label": "Company"},
+                {"key": "role", "label": "Role"}, {"key": "type", "label": "Type"}, {"key": "salary", "label": "Pay"}]
+        return cols, out, "builder"
+
+    async def committed_roles(_where: str):
+        rows = await conn.fetch("""
+            SELECT o.account_name, r.title, r.approx_salary
+            FROM bedrock.jobs_role r JOIN bedrock.jobs_opportunity o ON o.id = r.opportunity_id
+            WHERE r.status='open' AND o.deleted_at IS NULL AND r.commitment='committed' AND r.is_trial=false
+              AND (r.employment_type='full_time' OR (r.employment_type IS NULL AND o.deal_type='ft'))
+            ORDER BY o.account_name
+        """)
+        out = [{"company": r["account_name"] or "—", "role": r["title"] or "FT role",
+                "salary": f"${int(r['approx_salary']):,}" if r["approx_salary"] else "—"} for r in rows]
+        cols = [{"key": "company", "label": "Company"}, {"key": "role", "label": "Role"}, {"key": "salary", "label": "Expected Pay"}]
+        return cols, out, "role"
+
+    async def builders_interviewing(_where: str):
+        rows = await conn.fetch("""
+            SELECT trim(split_part(notes, ':', 1)) AS builder, company_name, role_title
+            FROM public.job_applications
+            WHERE stage='interview' AND source_type='Pursuit_referred'
+            ORDER BY company_name
+        """)
+        out = [{"builder": r["builder"] or "—", "company": r["company_name"] or "—",
+                "role": r["role_title"] or "—", "stage": "Interviewing"} for r in rows]
+        cols = [{"key": "builder", "label": "Builder"}, {"key": "company", "label": "Company"},
+                {"key": "role", "label": "Role"}, {"key": "stage", "label": "Stage"}]
+        return cols, out, "builder"
+
     DISPATCH = {
+        "any_paid":             ("Builders With Paid Work",   lambda: any_paid("true")),
+        "committed_roles":      ("Committed FT Roles (unfilled)", lambda: committed_roles("true")),
+        "interviewing_builders": ("Builders Interviewing",    lambda: builders_interviewing("true")),
         "total_leads":          ("Total Leads",              lambda: contacts("true")),
         "engaged_leads":        ("Engaged Prospects",        lambda: engaged_prospects("true")),
         "outreach_week":        ("New Contacts Emailed — Last 7 Days", lambda: first_touch("email", "ext.first_touch >= now() - interval '7 days'")),
@@ -383,13 +429,26 @@ async def metric_drilldown(
 
 
 @router.get("/placements")
-async def get_placements(user=Depends(require_auth), conn=Depends(get_db)):
+async def get_placements(
+    segment: Optional[str] = Query(None),
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
     """Secured jobs — single source of truth = public.employment_records.
 
     Counts ALL placements (incl. builder self-sourced, no deal link) and
-    separates by `influenced` (jobs-team influenced / self-sourced / unclassified).
+    separates by `influenced`. `segment` (an L3 cohort) scopes the builder-side
+    numbers to that segment of the L3+ pool; committed roles stay global (demand).
     """
+    seg = segment if segment and segment != "all" else None
+    seg_uids: Optional[set] = None
+    if seg:
+        prows = await conn.fetch(f"WITH {_L3PLUS_POOL} SELECT user_id, segment FROM pool")
+        seg_uids = {r["user_id"] for r in prows if r["segment"] == seg}
+
     rows = await conn.fetch("SELECT * FROM bedrock.secured_jobs() WHERE payment_amount > 0")
+    if seg_uids is not None:
+        rows = [r for r in rows if r["user_id"] in seg_uids]
 
     # Metric is DISTINCT BUILDERS placed (a builder with 2 PT jobs counts once).
     # Two tracked numbers: any paid work, and full-time.
@@ -426,6 +485,36 @@ async def get_placements(user=Depends(require_auth), conn=Depends(get_db)):
           AND (r.employment_type = 'full_time' OR (r.employment_type IS NULL AND o.deal_type = 'ft'))
     """) or 0
 
+    # Avg salaries: per FT-placed builder's representative FT pay (placed), and
+    # that pool blended with committed FT roles' expected salary (secured).
+    ft_pay = {}
+    for r in rows:
+        if r["employment_type"] == "full_time" and r["payment_amount"]:
+            uid = r["user_id"]
+            ft_pay[uid] = max(ft_pay.get(uid, 0), float(r["payment_amount"]))
+    placed_salaries = list(ft_pay.values())
+    avg_salary_ft_placed = round(sum(placed_salaries) / len(placed_salaries)) if placed_salaries else None
+    crows = await conn.fetch("""
+        SELECT r.approx_salary FROM bedrock.jobs_role r
+        JOIN bedrock.jobs_opportunity o ON o.id = r.opportunity_id
+        WHERE r.status='open' AND o.deleted_at IS NULL AND r.commitment='committed' AND r.is_trial=false
+          AND (r.employment_type='full_time' OR (r.employment_type IS NULL AND o.deal_type='ft'))
+          AND r.approx_salary IS NOT NULL
+    """)
+    committed_salaries = [float(r["approx_salary"]) for r in crows if r["approx_salary"]]
+    secured_salaries = placed_salaries + committed_salaries
+    avg_salary_ft_secured = round(sum(secured_salaries) / len(secured_salaries)) if secured_salaries else None
+
+    # Builders currently interviewing (job_applications), optionally segment-scoped.
+    iv_rows = await conn.fetch("""
+        SELECT DISTINCT ja.builder_id FROM public.job_applications ja
+        WHERE ja.stage = 'interview' AND ja.source_type = 'Pursuit_referred' AND ja.builder_id IS NOT NULL
+    """)
+    iv_uids = {r["builder_id"] for r in iv_rows}
+    if seg_uids is not None:
+        iv_uids &= seg_uids
+    interviewing = len(iv_uids)
+
     # One row per builder for the drill list (their representative placement)
     out = []
     for uid, r in sorted(by_builder.items(),
@@ -455,6 +544,9 @@ async def get_placements(user=Depends(require_auth), conn=Depends(get_db)):
             "influenced_any": infl_any,
             "committed_ft_roles": committed_ft_roles,
             "ft_roles_secured": ft_builders + committed_ft_roles,
+            "avg_salary_ft_placed": avg_salary_ft_placed,
+            "avg_salary_ft_secured": avg_salary_ft_secured,
+            "interviewing": interviewing,
             "rows": out,
         },
     }
