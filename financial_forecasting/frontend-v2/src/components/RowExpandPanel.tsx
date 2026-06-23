@@ -44,7 +44,7 @@ export function RowExpandPanel({
     >
       <div
         role="tablist"
-        className="flex items-center gap-1 border-b border-border-strong bg-surface px-4 pt-2"
+        className="flex flex-wrap items-center gap-1 border-b border-border-strong bg-surface px-4 pt-2"
       >
         {tabs.map((t) => {
           const isActive = t.id === active;
