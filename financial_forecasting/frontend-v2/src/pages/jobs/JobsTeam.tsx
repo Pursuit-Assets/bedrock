@@ -1,4 +1,4 @@
-import { Fragment, useState } from "react";
+import { Fragment, useCallback, useMemo, useState } from "react";
 import {
   useJobsOpportunities,
   useJobsOpportunity,
@@ -8,6 +8,8 @@ import {
   useDeleteActivity,
   useBuilders,
   useContactSearch,
+  useUpdateContact,
+  useContactDetail,
   useOppPlacements,
   useUnlinkedPlacements,
   useCreatePlacement,
@@ -16,7 +18,6 @@ import {
   type Staff,
   STAGE_LABELS,
   DEAL_TYPE_LABELS,
-  ACTIVE_STAGES,
   STAGES_ORDERED,
   type JobStage,
   type DealType,
@@ -28,17 +29,32 @@ import {
   type ContactSearchResult,
   type OppPlacement,
 } from "@/services/jobs";
-import { JobStageChip } from "@/components/jobs/JobStageChip";
+import { ActivitySourceIcon } from "@/components/ActivitySourceIcon";
 import { OppRolesSection } from "@/components/jobs/OppRolesSection";
 import { OppBuilderActivity } from "@/components/jobs/OppBuilderActivity";
 import { JobsTasks } from "@/components/jobs/JobsTasks";
 import { JobsComments } from "@/components/jobs/JobsComments";
 import { CommittedRolesModal } from "@/components/jobs/CommittedRolesModal";
 import { RowExpandPanel, type ExpandTab } from "@/components/RowExpandPanel";
-import { InlineText, InlineDate, InlineSelect } from "@/components/ui/InlineEdit";
-import { useSort, sortBy } from "@/lib/sort";
+import { InlineText, InlineSelect } from "@/components/ui/InlineEdit";
+import { useSort, sortBy, type SortState } from "@/lib/sort";
 import { SortableHeader } from "@/components/ui/SortableHeader";
-import { ChevronDown, ChevronRight, Mail, Linkedin, Trash2, X, Plus, Check } from "lucide-react";
+import { SavedViewsPicker } from "@/components/ui/SavedViewsPicker";
+import { ColumnChooser } from "@/components/ui/ColumnChooser";
+import { ResizableTh } from "@/components/ui/ResizableTable";
+import { Toolbar } from "@/components/ui/Toolbar";
+import { useColumnVisibility } from "@/lib/columnVisibility";
+import { totalWidth, useColumnWidths } from "@/lib/columnWidths";
+import { useSessionState } from "@/lib/useSessionState";
+import {
+  AddFilterButton,
+  FilterChip,
+  describeRule,
+  ruleApplies,
+  type FieldMeta,
+  type FilterRule,
+} from "@/pages/cleanup/Filters";
+import { ChevronDown, ChevronRight, Mail, Linkedin, Trash2, X, Plus, Check, Search } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { format, formatDistanceToNow } from "date-fns";
 
@@ -57,23 +73,68 @@ const OWNERS: OwnerDef[] = [
   { label: "Devika", email: "devika@pursuit.org",           initials: "De", color: "bg-rose-100 text-rose-700" },
 ];
 
-// ── Stage group filter ────────────────────────────────────────────────────────
+// ── Calculated status (read-only roll-up of the 9-stage field) ─────────────────
 
-type StageGroup = "all" | "active" | "on_hold" | "closed";
+const STATUS_OPTIONS: { value: string; label: string }[] = [
+  { value: "active", label: "Active" },
+  { value: "on_hold", label: "On Hold" },
+  { value: "closed", label: "Closed" },
+];
 
-const STAGE_GROUP_LABELS: Record<StageGroup, string> = {
-  all:     "All",
-  active:  "Active",
-  on_hold: "On Hold",
-  closed:  "Closed",
+const STATUS_STYLES: Record<"active" | "on_hold" | "closed", { label: string; className: string }> = {
+  active:  { label: "Active",  className: "bg-emerald-50 text-emerald-700" },
+  on_hold: { label: "On Hold", className: "bg-amber-50 text-amber-600" },
+  closed:  { label: "Closed",  className: "bg-stone-100 text-stone-500" },
 };
 
-function stageMatchesGroup(stage: JobStage, group: StageGroup): boolean {
-  if (group === "all") return true;
-  if (group === "active") return ACTIVE_STAGES.includes(stage) || stage === "lead_submitted" || stage === "initial_outreach";
-  if (group === "on_hold") return stage.startsWith("on_hold");
-  if (group === "closed") return stage.startsWith("closed");
-  return true;
+function stageStatus(stage: JobStage): "active" | "on_hold" | "closed" {
+  if (stage.startsWith("closed")) return "closed";
+  if (stage.startsWith("on_hold")) return "on_hold";
+  return "active";
+}
+
+function StatusChip({ stage }: { stage: JobStage }) {
+  const s = STATUS_STYLES[stageStatus(stage)];
+  return (
+    <span className={cn("inline-flex w-fit items-center rounded px-1.5 py-0.5 text-[9.5px] font-semibold uppercase tracking-wide leading-none", s.className)}>
+      {s.label}
+    </span>
+  );
+}
+
+/** Row indicator: shows recent (trailing-7d) activity so the team can spot which
+ *  accounts moved this week at a glance. */
+function RecentActivityDot({ recent, last }: { recent: number | undefined; last: string | null | undefined }) {
+  if (!recent || recent <= 0) return null;
+  return (
+    <span
+      className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-1.5 py-0.5 text-[9.5px] font-semibold leading-none text-emerald-700"
+      title={last ? `Last activity ${fmtRelative(last)}` : "Recent activity"}
+    >
+      <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+      {recent} this wk
+    </span>
+  );
+}
+
+// priority stored 1–5 (5 = highest). Display as P1 (highest) … P5 (lowest).
+const PRIORITY_BADGE: Record<number, { label: string; className: string }> = {
+  5: { label: "P1", className: "bg-red-100 text-red-700" },
+  4: { label: "P2", className: "bg-orange-100 text-orange-700" },
+  3: { label: "P3", className: "bg-amber-100 text-amber-700" },
+  2: { label: "P4", className: "bg-stone-100 text-stone-600" },
+  1: { label: "P5", className: "bg-stone-100 text-stone-400" },
+};
+
+function PriorityBadge({ priority }: { priority: number | null | undefined }) {
+  if (priority == null) return null;
+  const p = PRIORITY_BADGE[priority];
+  if (!p) return null;
+  return (
+    <span className={cn("inline-flex items-center rounded px-1 py-0.5 text-[9.5px] font-bold leading-none", p.className)} title={`Priority ${p.label}`}>
+      {p.label}
+    </span>
+  );
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -94,6 +155,17 @@ function fmtShortDate(iso: string | null): string {
   } catch {
     return "—";
   }
+}
+
+// Synced email bodies arrive with raw HTML entities (e.g. "you&#39;re").
+// Decode them for display via a detached textarea (no DOM injection).
+let _entityDecoder: HTMLTextAreaElement | null = null;
+function decodeEntities(s: string | null | undefined): string {
+  if (!s) return "";
+  if (typeof document === "undefined") return s;
+  _entityDecoder = _entityDecoder ?? document.createElement("textarea");
+  _entityDecoder.innerHTML = s;
+  return _entityDecoder.value;
 }
 
 // ── Sub-components ────────────────────────────────────────────────────────────
@@ -393,11 +465,17 @@ function StaffPicker({
   }
 
   return (
-    <div className="relative">
+    <div
+      className="relative"
+      // Close only when focus leaves the whole picker. The dropdown's autofocus
+      // search input would otherwise blur the toggle button and snap it shut.
+      onBlur={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setOpen(false);
+      }}
+    >
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        onBlur={() => setTimeout(() => setOpen(false), 150)}
         className="group flex w-full items-center gap-1.5 rounded px-1 py-0.5 text-left text-[12px] text-ink-2 hover:bg-surface-2"
       >
         <span className={cn(value ? "text-ink-2" : "text-ink-4")}>{displayLabel}</span>
@@ -466,6 +544,70 @@ const LIKELIHOOD_OPTIONS: { value: Likelihood; label: string }[] = [
   { value: "high",   label: "High" },
 ];
 
+const PRIORITY_OPTIONS: { value: string; label: string }[] = [
+  { value: "5", label: "P1 — Highest" },
+  { value: "4", label: "P2 — High" },
+  { value: "3", label: "P3 — Medium" },
+  { value: "2", label: "P4 — Low" },
+  { value: "1", label: "P5 — Lowest" },
+];
+
+const SEGMENT_OPTIONS: { value: string; label: string }[] = [
+  { value: "vc_pe",      label: "VC / PE" },
+  { value: "enterprise", label: "Enterprise" },
+  { value: "startup",    label: "Startup" },
+  { value: "smb",        label: "SMB" },
+  { value: "nonprofit",  label: "Nonprofit" },
+  { value: "government", label: "Government" },
+  { value: "other",      label: "Other" },
+];
+
+const SEGMENT_LABELS: Record<string, string> = Object.fromEntries(SEGMENT_OPTIONS.map((s) => [s.value, s.label]));
+const CLOSED_LOST_LABELS: Record<string, string> = {
+  budget: "No budget", timing: "Timing / not now", hired_elsewhere: "Hired elsewhere",
+  not_a_fit: "Not a fit", no_response: "Went cold", role_cancelled: "Role cancelled", other: "Other",
+};
+
+/** Compact editable context strip at the top of an expanded deal: priority,
+ *  segment, warm-intro attribution, and the closed-lost reason when applicable. */
+function DealContextStrip({ deal }: { deal: JobsOpportunity }) {
+  const updateOpp = useUpdateOpportunity();
+  const patch = (fields: Record<string, unknown>) =>
+    new Promise<void>((resolve, reject) =>
+      updateOpp.mutate({ id: deal.id, ...fields }, { onSuccess: () => resolve(), onError: reject }),
+    );
+  const isClosedLost = deal.stage === "closed_lost";
+  // Priority + Segment are edited inline in the row now; the strip keeps the
+  // overridable priority suggestion, warm-intro attribution, and closed-lost reason.
+  return (
+    <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5 border-b border-border-strong bg-surface-2/30 px-4 py-2">
+      {deal.priority == null && deal.priority_suggested != null ? (
+        <Field label="Suggested priority">
+          <button
+            type="button"
+            onClick={() => void patch({ priority: deal.priority_suggested })}
+            className="text-[12px] text-accent hover:underline"
+            title="Apply the suggested priority to the row (you can change it)"
+          >
+            {PRIORITY_BADGE[deal.priority_suggested]?.label ?? deal.priority_suggested} · use
+          </button>
+        </Field>
+      ) : null}
+      <Field label="Warm intro by">
+        <InlineText value={deal.intro_by} placeholder="—" onSave={(v) => patch({ intro_by: v || null })} />
+      </Field>
+      {isClosedLost ? (
+        <Field label="Closed-lost reason">
+          <span className="text-[12px] text-ink-2">
+            {deal.closed_lost_reason ? (CLOSED_LOST_LABELS[deal.closed_lost_reason] ?? deal.closed_lost_reason) : "—"}
+            {deal.closed_lost_note ? <span className="text-ink-3"> — {deal.closed_lost_note}</span> : null}
+          </span>
+        </Field>
+      ) : null}
+    </div>
+  );
+}
+
 /**
  * Tabbed expand panel matching PortfolioOpportunities. Drops below an
  * expanded deal row. Reuses the shared {@link RowExpandPanel} shell so the
@@ -484,29 +626,6 @@ function DealExpandPanel({
 
   const tabs: ExpandTab[] = [
     {
-      id: "details",
-      label: "Details",
-      render: () => <DetailsTab deal={deal} detail={detail} loading={detailQ.isLoading} />,
-    },
-    {
-      id: "roles",
-      label: "Roles",
-      render: () => (
-        <div className="px-4 py-3">
-          <OppRolesSection oppId={deal.id} />
-        </div>
-      ),
-    },
-    {
-      id: "builder-activity",
-      label: "Builder Activity",
-      render: () => (
-        <div className="px-4 py-3">
-          <OppBuilderActivity oppId={deal.id} />
-        </div>
-      ),
-    },
-    {
       id: "activity",
       label: "Activity",
       count: detail?.activity?.length ?? null,
@@ -519,6 +638,34 @@ function DealExpandPanel({
             <LogActivityForm dealId={deal.id} />
           </div>
         ),
+    },
+    {
+      id: "roles",
+      label: "Roles",
+      render: () => (
+        <div className="px-4 py-3">
+          <OppRolesSection oppId={deal.id} />
+        </div>
+      ),
+    },
+    {
+      id: "builders",
+      label: "Builders",
+      render: () => (
+        <div className="px-4 py-3">
+          <BuildersTab deal={deal} />
+        </div>
+      ),
+    },
+    {
+      id: "contacts",
+      label: "Contacts",
+      count: detail?.contacts?.length ?? null,
+      render: () => (
+        <div className="px-4 py-3">
+          <ContactsTab deal={deal} detail={detail} loading={detailQ.isLoading} />
+        </div>
+      ),
     },
     {
       id: "tasks",
@@ -538,22 +685,14 @@ function DealExpandPanel({
         </div>
       ),
     },
-    {
-      id: "history",
-      label: "History",
-      render: () =>
-        detailQ.isLoading ? <TabLoading /> : <HistoryTab entries={detail?.stage_history ?? []} />,
-    },
-    {
-      id: "contacts",
-      label: "Contacts",
-      count: detail?.contacts?.length ?? null,
-      render: () =>
-        detailQ.isLoading ? <TabLoading /> : <ContactsTab contacts={detail?.contacts ?? []} />,
-    },
   ];
 
-  return <RowExpandPanel tabs={tabs} defaultTab="details" />;
+  return (
+    <div className="flex flex-col">
+      <DealContextStrip deal={deal} />
+      <RowExpandPanel tabs={tabs} defaultTab="activity" />
+    </div>
+  );
 }
 
 function TabLoading() {
@@ -563,99 +702,17 @@ function TabLoading() {
 }
 
 /**
- * Details tab — the inline-edit fields that aren't shown in the row:
- * role title, follow-up date, expected salary, touch count, description /
- * notes, builders picker, contacts picker. Stage / deal type / likelihood /
- * # roles / owner are edited inline in the row itself.
+ * Builders tab — link builders to the deal (builder_ids) and log/track their
+ * applications + interviews against the opportunity. The linked-builder picker
+ * moved here from the old Details tab.
  */
-function DetailsTab({
-  deal,
-  detail,
-  loading,
-}: {
-  deal: JobsOpportunity;
-  detail: JobsOpportunityDetail | undefined;
-  loading: boolean;
-}) {
-  const updateOpp = useUpdateOpportunity();
-  const contacts = detail?.contacts ?? [];
-
-  function patch(fields: Record<string, unknown>) {
-    return new Promise<void>((resolve, reject) => {
-      updateOpp.mutate({ id: deal.id, ...fields }, { onSuccess: () => resolve(), onError: reject });
-    });
-  }
-
+function BuildersTab({ deal }: { deal: JobsOpportunity }) {
   return (
-    <div className="px-5 py-4">
-      <div className="grid grid-cols-2 gap-x-6 gap-y-3">
-        <Field label="Role Title" className="col-span-2">
-          <InlineText
-            value={deal.title}
-            placeholder="Add role title…"
-            onSave={(v) => patch({ title: v || null })}
-          />
-        </Field>
-
-        <Field label="Follow-up Date">
-          <InlineDate
-            value={deal.follow_up_date}
-            onSave={(v) => patch({ follow_up_date: v })}
-            variant="long"
-          />
-        </Field>
-
-        <Field label="Expected Salary $">
-          <InlineText
-            value={deal.salary_expected != null ? String(deal.salary_expected) : ""}
-            placeholder="—"
-            formatDisplay={(raw) => {
-              const n = Number(raw.replace(/[^0-9.]/g, ""));
-              return isNaN(n) ? raw : `$${n.toLocaleString("en-US")}`;
-            }}
-            onSave={(v) => {
-              const n = v === "" ? null : Number(v.replace(/[^0-9.]/g, ""));
-              return patch({ salary_expected: n === null || isNaN(n) ? null : n });
-            }}
-          />
-        </Field>
-
-        <Field label="Touch Count">
-          <InlineText
-            value={deal.touch_count > 0 ? String(deal.touch_count) : ""}
-            placeholder="0"
-            onSave={(v) => {
-              const n = v === "" ? 0 : parseInt(v, 10);
-              return patch({ touch_count: isNaN(n) ? 0 : n });
-            }}
-          />
-        </Field>
-
-        <Field label="Builders" className="col-span-2">
-          <BuilderPicker dealId={deal.id} builderIds={deal.builder_ids ?? []} />
-        </Field>
-
-        <Field label="Contacts" className="col-span-2">
-          {loading ? (
-            <span className="text-[12px] text-ink-4">Loading…</span>
-          ) : (
-            <ContactPicker
-              dealId={deal.id}
-              sfContactIds={deal.sf_contact_ids ?? []}
-              linkedContacts={contacts}
-            />
-          )}
-        </Field>
-
-        <Field label="Description / Notes" className="col-span-2">
-          <InlineText
-            value={deal.description}
-            placeholder="Add notes…"
-            multiline
-            onSave={(v) => patch({ description: v || null })}
-          />
-        </Field>
-      </div>
+    <div className="flex flex-col gap-4">
+      <Field label="Linked Builders">
+        <BuilderPicker dealId={deal.id} builderIds={deal.builder_ids ?? []} />
+      </Field>
+      <OppBuilderActivity oppId={deal.id} />
     </div>
   );
 }
@@ -795,49 +852,127 @@ function LogActivityForm({ dealId }: { dealId: string }) {
   );
 }
 
-function ActivitySourceBadge({ entry }: { entry: import("@/services/jobs").ActivityEntry }) {
-  if (entry.is_jobs) {
-    return (
-      <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium bg-accent-soft text-accent-ink">
-        Jobs
-      </span>
-    );
-  }
-  if (entry.source === "gmail-sync") {
-    return (
-      <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium bg-blue-50 text-blue-600">
-        Gmail
-      </span>
-    );
-  }
-  if (entry.source === "calendar-sync") {
-    return (
-      <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium bg-violet-50 text-violet-600">
-        Calendar
-      </span>
-    );
-  }
-  if (entry.source === "salesforce") {
-    return (
-      <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium bg-sky-50 text-sky-600">
-        SF
-      </span>
-    );
-  }
-  // manual and not is_jobs
+/** Map a jobs activity row to the source/type the shared icon understands. */
+function activityIconProps(e: import("@/services/jobs").ActivityEntry): { source: string; type: string } {
+  if (e.source === "gmail-sync") return { source: "gmail", type: "email" };
+  if (e.source === "calendar-sync") return { source: "calendar", type: "meeting" };
+  if (e.source === "salesforce") return { source: "salesforce", type: e.type ?? "" };
+  return { source: e.source ?? "", type: e.type ?? "" };
+}
+
+function ActivityRow({
+  e,
+  isExpanded,
+  onToggle,
+  onDelete,
+}: {
+  e: import("@/services/jobs").ActivityEntry;
+  isExpanded: boolean;
+  onToggle: () => void;
+  onDelete: () => void;
+}) {
+  const icon = activityIconProps(e);
+  const preview = decodeEntities(e.description || e.email_snippet);
+  const body = decodeEntities(e.email_body_text || e.description || e.email_snippet);
   return (
-    <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium bg-stone-100 text-stone-500">
-      Manual
-    </span>
+    <li
+      className="cursor-pointer px-4 py-2.5 hover:bg-surface-2/40 transition-colors"
+      onClick={onToggle}
+    >
+      <div className="flex items-start gap-2.5">
+        <span className="mt-0.5 shrink-0">
+          <ActivitySourceIcon source={icon.source} type={icon.type} size={15} />
+        </span>
+        <div className="flex flex-col gap-0.5 min-w-0 flex-1">
+          <span className="text-[12px] font-medium text-ink">
+            {decodeEntities(e.subject) || e.type || "Activity"}
+          </span>
+          {!isExpanded && preview ? (
+            <span className="text-[11.5px] text-ink-3 line-clamp-2">{preview}</span>
+          ) : null}
+          {e.logged_by ? (
+            <span className="text-[10.5px] text-ink-4">by {e.logged_by}</span>
+          ) : null}
+          {isExpanded && (
+            <div className="mt-1.5 flex flex-col gap-1">
+              {e.email_from ? (
+                <span className="text-[11px] text-ink-3">
+                  <span className="font-medium">From:</span> {e.email_from}
+                </span>
+              ) : null}
+              {e.email_to && e.email_to.length > 0 ? (
+                <span className="text-[11px] text-ink-3">
+                  <span className="font-medium">To:</span> {e.email_to.join(", ")}
+                </span>
+              ) : null}
+              {e.meeting_duration_minutes != null ? (
+                <span className="text-[11px] text-ink-3">
+                  <span className="font-medium">Duration:</span> {e.meeting_duration_minutes} min
+                </span>
+              ) : null}
+              {body ? (
+                <p className="mt-0.5 max-h-72 overflow-y-auto whitespace-pre-wrap rounded bg-surface-2/40 p-2 text-[11.5px] leading-relaxed text-ink-2">
+                  {body}
+                </p>
+              ) : null}
+            </div>
+          )}
+        </div>
+        <div className="flex shrink-0 items-center gap-1.5">
+          <span className="font-mono text-[10.5px] text-ink-4">
+            {e.activity_date ? format(new Date(e.activity_date), "MMM d") : "—"}
+          </span>
+          {e.is_jobs ? (
+            <button
+              type="button"
+              title="Delete activity"
+              onClick={(ev) => {
+                ev.stopPropagation();
+                onDelete();
+              }}
+              className="text-ink-4 hover:text-red-500 transition-colors"
+            >
+              <Trash2 size={13} />
+            </button>
+          ) : null}
+        </div>
+      </div>
+    </li>
   );
 }
 
+function ActivitySection({
+  label,
+  count,
+  children,
+}: {
+  label: string;
+  count: number;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="flex flex-col">
+      <div className="flex items-center gap-2 bg-surface-2/50 px-4 py-1.5">
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-ink-3">{label}</span>
+        <span className="font-mono text-[10px] text-ink-4">{count}</span>
+      </div>
+      <ul className="divide-y divide-border-strong">{children}</ul>
+    </div>
+  );
+}
+
+/**
+ * Activity tab — jobs-team logs separated from synced email/calendar so the
+ * team can see what they did vs. what flowed in automatically. All activity for
+ * the company (deal-tagged + account-level) is pulled in by the detail endpoint.
+ */
 function ActivityTab({
   entries,
 }: {
   entries: import("@/services/jobs").ActivityEntry[];
 }) {
   const [expandedActivityId, setExpandedActivityId] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
   const deleteActivity = useDeleteActivity();
 
   if (entries.length === 0) {
@@ -847,113 +982,74 @@ function ActivityTab({
       </div>
     );
   }
-  return (
-    <ul className="divide-y divide-border-strong">
-      {entries.map((e) => {
-        const isExpanded = expandedActivityId === e.id;
-        return (
-          <li
-            key={e.id}
-            className="cursor-pointer px-4 py-2.5 hover:bg-surface-2/40 transition-colors"
-            onClick={() => setExpandedActivityId(isExpanded ? null : e.id)}
-          >
-            <div className="flex items-start justify-between gap-2">
-              <div className="flex flex-col gap-0.5 min-w-0 flex-1">
-                <span className="text-[12px] font-medium text-ink">
-                  {e.subject ?? e.type ?? "Activity"}
-                </span>
-                {!isExpanded && e.description ? (
-                  <span className="text-[11.5px] text-ink-3 line-clamp-2">{e.description}</span>
-                ) : null}
-                {e.logged_by ? (
-                  <span className="text-[10.5px] text-ink-4">by {e.logged_by}</span>
-                ) : null}
-                {isExpanded && (
-                  <div className="mt-1.5 flex flex-col gap-1">
-                    {e.description ? (
-                      <p className="text-[11.5px] text-ink-2 whitespace-pre-wrap">{e.description}</p>
-                    ) : null}
-                    {e.email_from ? (
-                      <span className="text-[11px] text-ink-3">
-                        <span className="font-medium">From:</span> {e.email_from}
-                      </span>
-                    ) : null}
-                    {e.meeting_duration_minutes != null ? (
-                      <span className="text-[11px] text-ink-3">
-                        <span className="font-medium">Duration:</span> {e.meeting_duration_minutes} min
-                      </span>
-                    ) : null}
-                  </div>
-                )}
-              </div>
-              <div className="flex shrink-0 items-center gap-1.5">
-                <ActivitySourceBadge entry={e} />
-                <span className="font-mono text-[10.5px] text-ink-4">
-                  {e.activity_date ? format(new Date(e.activity_date), "MMM d") : "—"}
-                </span>
-                {e.is_jobs ? (
-                  <button
-                    type="button"
-                    title="Delete activity"
-                    onClick={(ev) => {
-                      ev.stopPropagation();
-                      deleteActivity.mutate(e.id);
-                    }}
-                    className="text-ink-4 hover:text-red-500 transition-colors"
-                  >
-                    <Trash2 size={13} />
-                  </button>
-                ) : null}
-              </div>
-            </div>
-          </li>
-        );
-      })}
-    </ul>
-  );
-}
 
-function HistoryTab({
-  entries,
-}: {
-  entries: import("@/services/jobs").StageHistoryEntry[];
-}) {
-  if (entries.length === 0) {
-    return (
-      <div className="px-4 py-6 text-center text-[12px] text-ink-3">
-        No stage changes recorded yet.
-      </div>
-    );
-  }
+  // Search by participant (from/to/logged-by) and content (subject/body/snippet).
+  // Fields may be null, strings, or arrays (email_to is text[]) — coerce safely.
+  const q = query.trim().toLowerCase();
+  const fieldText = (f: unknown): string =>
+    Array.isArray(f) ? f.join(" ") : f == null ? "" : String(f);
+  const matches = q
+    ? entries.filter((e) =>
+        [e.email_from, e.email_to, e.logged_by, e.subject, e.description, e.email_snippet, e.email_body_text]
+          .some((f) => fieldText(f).toLowerCase().includes(q)),
+      )
+    : entries;
+
+  const jobsEntries = matches.filter((e) => e.is_jobs);
+  const syncedEntries = matches.filter((e) => !e.is_jobs);
+
+  const renderRow = (e: import("@/services/jobs").ActivityEntry) => (
+    <ActivityRow
+      key={e.id}
+      e={e}
+      isExpanded={expandedActivityId === e.id}
+      onToggle={() => setExpandedActivityId(expandedActivityId === e.id ? null : e.id)}
+      onDelete={() => deleteActivity.mutate(e.id)}
+    />
+  );
+
   return (
-    <ul className="divide-y divide-border-strong">
-      {entries.map((e) => (
-        <li key={e.id} className="px-4 py-2.5">
-          <div className="flex items-start justify-between gap-2">
-            <div className="flex flex-col gap-1">
-              <div className="flex items-center gap-1.5 text-[11.5px]">
-                {e.from_stage ? (
-                  <>
-                    <span className="text-ink-3">{STAGE_LABELS[e.from_stage]}</span>
-                    <span className="text-ink-4">→</span>
-                  </>
-                ) : null}
-                <span className="font-medium text-ink">{STAGE_LABELS[e.to_stage]}</span>
-              </div>
-              {e.note ? (
-                <span className="text-[11px] text-ink-3 italic">{e.note}</span>
-              ) : null}
-              {e.changed_by ? (
-                <span className="text-[10.5px] text-ink-4">by {e.changed_by}</span>
-              ) : null}
-            </div>
-            <span className="shrink-0 font-mono text-[10.5px] text-ink-4">
-              {format(new Date(e.changed_at), "MMM d")}
-            </span>
-          </div>
-        </li>
-      ))}
-    </ul>
+    <div className="flex flex-col">
+      {/* Participant / content search */}
+      <div className="flex items-center gap-2 border-b border-border-strong px-4 py-2">
+        <div className="relative flex-1">
+          <Search size={12} className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-ink-4" />
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search by participant or content…"
+            className="h-7 w-full rounded border border-border-strong bg-surface pl-7 pr-6 text-[12px] text-ink-2 placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40"
+          />
+          {query ? (
+            <button
+              type="button"
+              onClick={() => setQuery("")}
+              className="absolute right-1.5 top-1/2 -translate-y-1/2 text-ink-4 hover:text-ink-2"
+              title="Clear"
+            >
+              <X size={12} />
+            </button>
+          ) : null}
+        </div>
+      </div>
+
+      {matches.length === 0 ? (
+        <div className="px-4 py-6 text-center text-[12px] text-ink-3">No activity matches “{query}”.</div>
+      ) : (
+        <>
+          {jobsEntries.length > 0 && (
+            <ActivitySection label="Jobs activity" count={jobsEntries.length}>
+              {jobsEntries.map(renderRow)}
+            </ActivitySection>
+          )}
+          {syncedEntries.length > 0 && (
+            <ActivitySection label="Email & calendar" count={syncedEntries.length}>
+              {syncedEntries.map(renderRow)}
+            </ActivitySection>
+          )}
+        </>
+      )}
+    </div>
   );
 }
 
@@ -969,21 +1065,10 @@ const CONTACT_STAGE_STYLES: Record<
   on_hold:          { label: "On Hold",          className: "bg-amber-50 text-amber-600" },
 };
 
-function ContactStagePill({ stage }: { stage: string | null }) {
-  if (!stage) return null;
-  const style = CONTACT_STAGE_STYLES[stage];
-  if (!style) return null;
-  return (
-    <span
-      className={cn(
-        "inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium leading-none",
-        style.className,
-      )}
-    >
-      {style.label}
-    </span>
-  );
-}
+const CONTACT_STAGE_OPTIONS = Object.entries(CONTACT_STAGE_STYLES).map(([value, s]) => ({
+  value,
+  label: s.label,
+}));
 
 function contactInitials(contact: JobContact): string {
   if (contact.first_name && contact.last_name) {
@@ -999,64 +1084,130 @@ function contactInitials(contact: JobContact): string {
   return "??";
 }
 
-function ContactsTab({ contacts }: { contacts: JobContact[] }) {
-  if (contacts.length === 0) {
-    return (
-      <div className="px-4 py-6 text-center text-[12px] text-ink-3">
-        No contacts linked to this deal.
-      </div>
-    );
-  }
+/** A single linked contact: inline stage editor + expandable per-contact activity. */
+function ContactRow({ contact }: { contact: JobContact }) {
+  const [expanded, setExpanded] = useState(false);
+  const updateContact = useUpdateContact();
+  const detailQ = useContactDetail(expanded ? contact.contact_id : null);
+  const activity = detailQ.data?.activity ?? [];
+
+  const name =
+    contact.full_name ?? (`${contact.first_name ?? ""} ${contact.last_name ?? ""}`.trim() || "—");
+
   return (
-    <ul className="divide-y divide-border-strong">
-      {contacts.map((c) => (
-        <li key={c.contact_id} className="flex items-center gap-3 px-4 py-2.5">
-          {/* Initials avatar */}
-          <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-accent-soft text-[11px] font-semibold leading-none text-accent-ink">
-            {contactInitials(c)}
-          </span>
+    <li className="flex flex-col">
+      <div className="flex items-center gap-3 px-3 py-2.5">
+        <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-accent-soft text-[11px] font-semibold leading-none text-accent-ink">
+          {contactInitials(contact)}
+        </span>
 
-          {/* Middle — name / title / stage */}
-          <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-            <span className="truncate text-[13px] font-semibold text-ink">
-              {c.full_name ?? (`${c.first_name ?? ""} ${c.last_name ?? ""}`.trim() || "—")}
+        <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+          <span className="truncate text-[13px] font-semibold text-ink">{name}</span>
+          {(contact.current_title || contact.current_company) ? (
+            <span className="truncate text-[12px] text-ink-3">
+              {[contact.current_title, contact.current_company].filter(Boolean).join(" @ ")}
             </span>
-            {(c.current_title || c.current_company) ? (
-              <span className="truncate text-[12px] text-ink-3">
-                {[c.current_title, c.current_company].filter(Boolean).join(" @ ")}
-              </span>
-            ) : null}
-            <ContactStagePill stage={c.contact_stage} />
-          </div>
+          ) : null}
+        </div>
 
-          {/* Right — email + LinkedIn */}
-          <div className="flex shrink-0 items-center gap-2">
-            {c.email ? (
-              <a
-                href={`mailto:${c.email}`}
-                title={c.email}
-                className="text-ink-3 transition-colors hover:text-accent"
-                onClick={(e) => e.stopPropagation()}
-              >
-                <Mail size={14} />
-              </a>
-            ) : null}
-            {c.linkedin_url ? (
-              <a
-                href={c.linkedin_url}
-                target="_blank"
-                rel="noreferrer"
-                title="LinkedIn"
-                className="text-ink-3 transition-colors hover:text-accent"
-                onClick={(e) => e.stopPropagation()}
-              >
-                <Linkedin size={14} />
-              </a>
-            ) : null}
-          </div>
-        </li>
-      ))}
-    </ul>
+        <div className="flex shrink-0 items-center gap-2">
+          {/* Inline stage editor */}
+          <select
+            value={contact.contact_stage ?? ""}
+            onChange={(e) =>
+              updateContact.mutate({ id: contact.contact_id, contact_stage: e.target.value })
+            }
+            disabled={updateContact.isPending}
+            className="rounded-full border border-border-strong bg-surface-2 px-2 py-0.5 text-[10px] font-medium text-ink-2 focus:outline-none focus:ring-1 focus:ring-accent/40"
+            title="Update contact stage"
+          >
+            <option value="">— stage —</option>
+            {CONTACT_STAGE_OPTIONS.map((s) => (
+              <option key={s.value} value={s.value}>{s.label}</option>
+            ))}
+          </select>
+          {contact.email ? (
+            <a href={`mailto:${contact.email}`} title={contact.email} className="text-ink-3 hover:text-accent">
+              <Mail size={14} />
+            </a>
+          ) : null}
+          {contact.linkedin_url ? (
+            <a href={contact.linkedin_url} target="_blank" rel="noreferrer" title="LinkedIn" className="text-ink-3 hover:text-accent">
+              <Linkedin size={14} />
+            </a>
+          ) : null}
+          <button
+            type="button"
+            onClick={() => setExpanded((v) => !v)}
+            className="text-ink-4 hover:text-ink-2"
+            title="Show activity"
+          >
+            {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+          </button>
+        </div>
+      </div>
+
+      {expanded && (
+        <div className="border-t border-border-strong bg-surface-2/30 px-4 py-2">
+          {detailQ.isLoading ? (
+            <span className="text-[11.5px] text-ink-4">Loading activity…</span>
+          ) : activity.length === 0 ? (
+            <span className="text-[11.5px] text-ink-4">No activity for this contact.</span>
+          ) : (
+            <ul className="flex flex-col gap-1.5">
+              {activity.slice(0, 12).map((a) => (
+                <li key={a.id} className="flex items-start justify-between gap-2">
+                  <span className="min-w-0 flex-1 text-[11.5px] text-ink-2">
+                    <span className="font-medium">{a.subject ?? a.type}</span>
+                    {a.description ? <span className="text-ink-3"> — {a.description}</span> : null}
+                  </span>
+                  <span className="shrink-0 font-mono text-[10px] text-ink-4">
+                    {a.activity_date ? format(new Date(a.activity_date), "MMM d") : "—"}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+    </li>
+  );
+}
+
+function ContactsTab({
+  deal,
+  detail,
+  loading,
+}: {
+  deal: JobsOpportunity;
+  detail: JobsOpportunityDetail | undefined;
+  loading: boolean;
+}) {
+  const contacts = detail?.contacts ?? [];
+  return (
+    <div className="flex flex-col gap-3">
+      <Field label="Link a contact">
+        {loading ? (
+          <span className="text-[12px] text-ink-4">Loading…</span>
+        ) : (
+          <ContactPicker
+            dealId={deal.id}
+            sfContactIds={deal.sf_contact_ids ?? []}
+            linkedContacts={contacts}
+          />
+        )}
+      </Field>
+
+      {contacts.length === 0 ? (
+        <div className="py-4 text-center text-[12px] text-ink-3">No contacts linked to this deal.</div>
+      ) : (
+        <ul className="flex flex-col divide-y divide-border-strong rounded-md border border-border-strong">
+          {contacts.map((c) => (
+            <ContactRow key={c.contact_id} contact={c} />
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }
 
@@ -1067,11 +1218,115 @@ const STAGE_OPTIONS: { value: JobStage; label: string }[] = STAGES_ORDERED.map((
   label: STAGE_LABELS[s],
 }));
 
+// Lead Submitted + Initial Outreach happen at the prospect/contact level — a deal
+// becomes an Opportunity once it's active. So the opp stage picker drops them, but
+// still shows a legacy value if a deal somehow already sits there.
+const HIDDEN_OPP_STAGES = new Set<JobStage>(["lead_submitted"]);
+const OPP_STAGE_OPTIONS = STAGE_OPTIONS.filter((o) => !HIDDEN_OPP_STAGES.has(o.value));
+function stageOptionsFor(stage: JobStage): { value: JobStage; label: string }[] {
+  return HIDDEN_OPP_STAGES.has(stage)
+    ? [{ value: stage, label: STAGE_LABELS[stage] }, ...OPP_STAGE_OPTIONS]
+    : OPP_STAGE_OPTIONS;
+}
+
+// Structured closed-lost reasons (drives the "why deals die" analysis).
+const CLOSED_LOST_REASONS: { value: string; label: string }[] = [
+  { value: "budget",          label: "No budget" },
+  { value: "timing",          label: "Timing / not now" },
+  { value: "hired_elsewhere", label: "Hired elsewhere" },
+  { value: "not_a_fit",       label: "Not a fit" },
+  { value: "no_response",     label: "Went cold / no response" },
+  { value: "role_cancelled",  label: "Role cancelled" },
+  { value: "other",           label: "Other" },
+];
+
 const DEAL_TYPE_OPTIONS: { value: DealType; label: string }[] = (
   Object.entries(DEAL_TYPE_LABELS) as [DealType, string][]
 ).map(([value, label]) => ({ value, label }));
 
-const TOTAL_COLS = 8;
+// ── Column model (mirrors the portfolio Accounts table) ───────────────────────
+
+type OppColKey =
+  | "company" | "role" | "salary" | "stage" | "status" | "deal_type"
+  | "priority" | "segment" | "likelihood" | "num_roles" | "owner" | "recent" | "updated";
+
+const OPP_COLUMN_ORDER: OppColKey[] = [
+  "company", "role", "salary", "stage", "status", "deal_type",
+  "priority", "segment", "likelihood", "num_roles", "owner", "recent", "updated",
+];
+
+const OPP_DEFAULT_VISIBLE: OppColKey[] = [
+  "company", "role", "salary", "stage", "status", "deal_type", "priority", "segment", "owner",
+];
+
+const OPP_COL_LABELS: Record<OppColKey, string> = {
+  company: "Company", role: "Role", salary: "Salary", stage: "Stage", status: "Status",
+  deal_type: "Deal Type", priority: "Priority", segment: "Segment", likelihood: "Likelihood",
+  num_roles: "# Roles", owner: "Owner", recent: "Recent activity", updated: "Updated",
+};
+
+const OPP_DEFAULT_WIDTHS: Record<OppColKey, number> = {
+  company: 280, role: 210, salary: 120, stage: 210, status: 104, deal_type: 140,
+  priority: 96, segment: 150, likelihood: 116, num_roles: 84, owner: 190, recent: 120, updated: 120,
+};
+
+const LIKELIHOOD_RANK: Record<Likelihood, number> = { low: 1, medium: 2, high: 3 };
+
+/** Sort accessor per column. */
+function extractOpp(d: JobsOpportunity, key: OppColKey): string | number {
+  switch (key) {
+    case "company":    return d.account_name ?? "";
+    case "role":       return d.title ?? "";
+    case "salary":     return d.salary_expected ?? 0;
+    case "stage":      return STAGE_LABELS[d.stage] ?? "";
+    case "status":     return stageStatus(d.stage);
+    case "deal_type":  return d.deal_type ? DEAL_TYPE_LABELS[d.deal_type] : "";
+    case "priority":   return d.priority ?? 0;
+    case "segment":    return d.segment ? (SEGMENT_LABELS[d.segment] ?? d.segment) : "";
+    case "likelihood": return d.likelihood ? LIKELIHOOD_RANK[d.likelihood] : 0;
+    case "num_roles":  return d.num_roles ?? 0;
+    case "owner":      return d.owner_email ?? "";
+    case "recent":     return d.recent_activity_count ?? 0;
+    case "updated":    return d.updated_at ?? "";
+  }
+}
+
+// ── Filter rules + group-by metadata (reuses the Cleanup/Accounts rules rig) ──
+
+type OppField =
+  | "company" | "role" | "stage" | "status" | "deal_type" | "segment"
+  | "priority" | "likelihood" | "owner" | "salary" | "num_roles" | "recent" | "updated";
+
+const OPP_FILTERABLE: Record<OppField, FieldMeta<JobsOpportunity>> = {
+  company:    { label: "Company",    type: "text",   getValue: (d) => d.account_name ?? "" },
+  role:       { label: "Role",       type: "text",   getValue: (d) => d.title ?? "" },
+  stage:      { label: "Stage",      type: "select", getValue: (d) => d.stage },
+  status:     { label: "Status",     type: "select", getValue: (d) => stageStatus(d.stage) },
+  deal_type:  { label: "Deal type",  type: "select", getValue: (d) => d.deal_type ?? "" },
+  segment:    { label: "Segment",    type: "select", getValue: (d) => d.segment ?? "" },
+  priority:   { label: "Priority",   type: "select", getValue: (d) => (d.priority != null ? String(d.priority) : "") },
+  likelihood: { label: "Likelihood", type: "select", getValue: (d) => d.likelihood ?? "" },
+  owner:      { label: "Owner",      type: "select", getValue: (d) => d.owner_email ?? "" },
+  salary:     { label: "Salary",     type: "number", getValue: (d) => d.salary_expected ?? null },
+  num_roles:  { label: "# Roles",    type: "number", getValue: (d) => d.num_roles ?? null },
+  recent:     { label: "Recent activity (7d)", type: "number", getValue: (d) => d.recent_activity_count ?? 0 },
+  updated:    { label: "Updated",    type: "date",   getValue: (d) => d.updated_at ?? null },
+};
+
+const OPP_GROUP_OPTIONS: { value: string; label: string }[] = [
+  { value: "",          label: "No grouping" },
+  { value: "segment",   label: "Group by Segment" },
+  { value: "owner",     label: "Group by Owner" },
+  { value: "deal_type", label: "Group by Deal type" },
+  { value: "stage",     label: "Group by Stage" },
+  { value: "status",    label: "Group by Status" },
+];
+
+// Columns whose <td> should swallow clicks (inline editors) so editing
+// doesn't toggle the row's expand.
+const OPP_EDITABLE_COLS = new Set<OppColKey>([
+  "role", "salary", "stage", "deal_type", "likelihood", "priority", "segment", "num_roles", "owner",
+]);
 
 function DealRow({
   deal,
@@ -1079,12 +1334,16 @@ function DealRow({
   onToggle,
   onRecordPlacements,
   onCommittedRoles,
+  onClosedLost,
+  visibleCols,
 }: {
   deal: JobsOpportunity;
   isExpanded: boolean;
   onToggle: () => void;
   onRecordPlacements: (deal: { id: string; account_name: string }) => void;
   onCommittedRoles: (deal: { id: string; account_name: string }) => void;
+  onClosedLost: (deal: { id: string; account_name: string }) => void;
+  visibleCols: OppColKey[];
 }) {
   const updateOpp = useUpdateOpportunity();
 
@@ -1098,7 +1357,7 @@ function DealRow({
     });
   }
 
-  /** Stage change fires the committed-roles / placements modal handshake. */
+  /** Stage change fires the committed-roles / placements / closed-lost modals. */
   function saveStage(stage: JobStage) {
     if (stage === deal.stage) return Promise.resolve();
     return new Promise<void>((resolve, reject) => {
@@ -1108,11 +1367,9 @@ function DealRow({
           onSuccess: () => {
             if (stage === "closed_won" && isPlacementType) {
               onRecordPlacements({ id: deal.id, account_name: deal.account_name });
+            } else if (stage === "closed_lost") {
+              onClosedLost({ id: deal.id, account_name: deal.account_name });
             } else if (stage === "active_opportunity_confirmed" && (deal.num_roles ?? 0) === 0) {
-              // Only prompt for committed roles the FIRST time a deal is
-              // confirmed (no roles captured yet). Re-confirming a deal that
-              // already has roles won't re-open the modal and duplicate them;
-              // roles are managed in the Roles tab thereafter.
               onCommittedRoles({ id: deal.id, account_name: deal.account_name });
             }
             resolve();
@@ -1123,6 +1380,108 @@ function DealRow({
     });
   }
 
+  const cells: Record<OppColKey, React.ReactNode> = {
+    company: (
+      <div className="flex min-w-0 items-center gap-2">
+        {isExpanded ? (
+          <ChevronDown size={13} className="shrink-0 text-ink-4" />
+        ) : (
+          <ChevronRight size={13} className="shrink-0 text-ink-4" />
+        )}
+        <span className="truncate text-[13px] font-semibold text-ink">{deal.account_name}</span>
+        <RecentActivityDot recent={deal.recent_activity_count} last={deal.last_activity_at} />
+      </div>
+    ),
+    role: (
+      <InlineText value={deal.title} placeholder="Add role title…" onSave={(v) => patch({ title: v || null })} />
+    ),
+    salary: (
+      <InlineText
+        value={deal.salary_expected != null ? String(deal.salary_expected) : ""}
+        placeholder="—"
+        formatDisplay={(raw) => {
+          const n = Number(raw.replace(/[^0-9.]/g, ""));
+          return isNaN(n) ? raw : `$${n.toLocaleString("en-US")}`;
+        }}
+        onSave={(v) => {
+          const n = v === "" ? null : Number(v.replace(/[^0-9.]/g, ""));
+          return patch({ salary_expected: n === null || isNaN(n) ? null : n });
+        }}
+      />
+    ),
+    stage: (
+      <InlineSelect<JobStage>
+        value={deal.stage}
+        options={stageOptionsFor(deal.stage)}
+        onSave={saveStage}
+        renderValue={(v) => (
+          <span className="flex items-center gap-1 text-[12.5px] text-ink-2">
+            <span className="truncate">{v ? STAGE_LABELS[v] : "—"}</span>
+            <ChevronDown size={12} className="shrink-0 text-ink-4" />
+          </span>
+        )}
+      />
+    ),
+    status: <StatusChip stage={deal.stage} />,
+    deal_type: (
+      <InlineSelect<DealType>
+        value={deal.deal_type}
+        options={DEAL_TYPE_OPTIONS}
+        emptyLabel="—"
+        onSave={(v) => patch({ deal_type: v })}
+      />
+    ),
+    likelihood: (
+      <InlineSelect<Likelihood>
+        value={deal.likelihood}
+        options={LIKELIHOOD_OPTIONS}
+        emptyLabel="—"
+        onSave={(v) => patch({ likelihood: v })}
+      />
+    ),
+    priority: (
+      <InlineSelect<string>
+        value={deal.priority != null ? String(deal.priority) : null}
+        options={PRIORITY_OPTIONS}
+        emptyLabel="—"
+        renderValue={(v) => (v ? <PriorityBadge priority={Number(v)} /> : <span className="text-ink-4">—</span>)}
+        onSave={(v) => patch({ priority: v ? Number(v) : null })}
+      />
+    ),
+    segment: (
+      <InlineSelect<string>
+        value={deal.segment ?? null}
+        options={SEGMENT_OPTIONS}
+        emptyLabel="—"
+        renderValue={(v) =>
+          v ? <span className="text-[12px] text-ink-2">{SEGMENT_LABELS[v] ?? v}</span> : <span className="text-ink-4">—</span>
+        }
+        onSave={(v) => patch({ segment: v || null })}
+      />
+    ),
+    num_roles: (
+      <InlineText
+        value={deal.num_roles != null ? String(deal.num_roles) : ""}
+        placeholder="—"
+        className="justify-end text-right"
+        onSave={(v) => {
+          if (v.trim() === "") return patch({ num_roles: null });
+          const n = parseInt(v.replace(/[^0-9]/g, ""), 10);
+          return patch({ num_roles: isNaN(n) ? null : n });
+        }}
+      />
+    ),
+    owner: <StaffPicker value={deal.owner_email} onChange={(email) => patch({ owner_email: email })} />,
+    recent: deal.recent_activity_count
+      ? <RecentActivityDot recent={deal.recent_activity_count} last={deal.last_activity_at} />
+      : <span className="text-ink-4">—</span>,
+    updated: (
+      <span className="font-mono text-[11px] text-ink-4" title={fmtShortDate(deal.updated_at)}>
+        {fmtRelative(deal.updated_at)}
+      </span>
+    ),
+  };
+
   return (
     <Fragment>
       <tr
@@ -1132,95 +1491,23 @@ function DealRow({
         )}
         onClick={onToggle}
       >
-        {/* Chevron */}
-        <td className="w-7 px-2 py-1.5 align-middle">
-          {isExpanded ? (
-            <ChevronDown size={13} className="text-ink-4" />
-          ) : (
-            <ChevronRight size={13} className="text-ink-4" />
-          )}
-        </td>
-
-        {/* Company + deal-title subline */}
-        <td className="px-3 py-1.5 align-middle">
-          <div className="min-w-0">
-            <span className="block truncate text-[13px] font-semibold text-ink">
-              {deal.account_name}
-            </span>
-            {deal.title ? (
-              <span className="block truncate text-[11px] text-ink-3">{deal.title}</span>
-            ) : null}
-          </div>
-        </td>
-
-        {/* Stage — inline select */}
-        <td className="w-[180px] px-3 py-1.5 align-middle" onClick={(e) => e.stopPropagation()}>
-          <InlineSelect<JobStage>
-            value={deal.stage}
-            options={STAGE_OPTIONS}
-            onSave={saveStage}
-            renderValue={(v) =>
-              v ? <JobStageChip stage={v} /> : <span className="text-ink-4">—</span>
-            }
-          />
-        </td>
-
-        {/* Deal Type — inline select */}
-        <td className="w-[130px] px-3 py-1.5 align-middle" onClick={(e) => e.stopPropagation()}>
-          <InlineSelect<DealType>
-            value={deal.deal_type}
-            options={DEAL_TYPE_OPTIONS}
-            emptyLabel="—"
-            onSave={(v) => patch({ deal_type: v })}
-          />
-        </td>
-
-        {/* Likelihood — inline select */}
-        <td className="w-[100px] px-3 py-1.5 align-middle" onClick={(e) => e.stopPropagation()}>
-          <InlineSelect<Likelihood>
-            value={deal.likelihood}
-            options={LIKELIHOOD_OPTIONS}
-            emptyLabel="—"
-            onSave={(v) => patch({ likelihood: v })}
-          />
-        </td>
-
-        {/* # Roles — inline text (numeric) */}
-        <td
-          className="w-[80px] px-3 py-1.5 text-right align-middle tabular-nums"
-          onClick={(e) => e.stopPropagation()}
-        >
-          <InlineText
-            value={deal.num_roles != null ? String(deal.num_roles) : ""}
-            placeholder="—"
-            className="justify-end text-right"
-            onSave={(v) => {
-              if (v.trim() === "") return patch({ num_roles: null });
-              const n = parseInt(v.replace(/[^0-9]/g, ""), 10);
-              return patch({ num_roles: isNaN(n) ? null : n });
-            }}
-          />
-        </td>
-
-        {/* Owner — StaffPicker */}
-        <td className="w-[150px] px-3 py-1.5 align-middle" onClick={(e) => e.stopPropagation()}>
-          <StaffPicker
-            value={deal.owner_email}
-            onChange={(email) => patch({ owner_email: email })}
-          />
-        </td>
-
-        {/* Updated */}
-        <td className="w-[120px] px-3 py-1.5 align-middle text-right">
-          <span className="font-mono text-[11px] text-ink-4" title={fmtShortDate(deal.updated_at)}>
-            {fmtRelative(deal.updated_at)}
-          </span>
-        </td>
+        {visibleCols.map((key) => (
+          <td
+            key={key}
+            className={cn(
+              "overflow-hidden px-3 py-1.5 align-middle",
+              key === "num_roles" && "text-right tabular-nums",
+            )}
+            onClick={OPP_EDITABLE_COLS.has(key) ? (e) => e.stopPropagation() : undefined}
+          >
+            {cells[key]}
+          </td>
+        ))}
       </tr>
 
       {isExpanded ? (
         <tr>
-          <td colSpan={TOTAL_COLS} className="p-0">
+          <td colSpan={visibleCols.length} className="p-0">
             <DealExpandPanel deal={deal} />
           </td>
         </tr>
@@ -1726,239 +2013,394 @@ function PlacementsModal({
   );
 }
 
-// ── Main component ────────────────────────────────────────────────────────────
+// ── Closed-lost reason modal ──────────────────────────────────────────────────
 
-type DealTypeFilter = "all" | DealType;
-type SortKey = "company" | "stage" | "type" | "likelihood" | "num_roles" | "updated";
+function ClosedLostModal({
+  deal,
+  onClose,
+}: {
+  deal: { id: string; account_name: string };
+  onClose: () => void;
+}) {
+  const [reason, setReason] = useState("");
+  const [note, setNote] = useState("");
+  const updateOpp = useUpdateOpportunity();
 
-const LIKELIHOOD_RANK: Record<Likelihood, number> = { low: 1, medium: 2, high: 3 };
-
-const DEAL_TYPE_FILTERS: DealTypeFilter[] = ["all", "ft", "pt_contract", "capstone", "volunteer", "workshop", "pilot"];
-
-function dealTypeFilterLabel(f: DealTypeFilter): string {
-  return f === "all" ? "All" : DEAL_TYPE_LABELS[f];
-}
-
-export function JobsTeam() {
-  const [ownerFilter, setOwnerFilter] = useState<string | null>(null);
-  const [stageGroup, setStageGroup] = useState<StageGroup>("all");
-  const [dealTypeFilter, setDealTypeFilter] = useState<DealTypeFilter>("ft");
-  const [expandedId, setExpandedId] = useState<string | null>(null);
-  const [showNewDeal, setShowNewDeal] = useState(false);
-  const [placementModalDeal, setPlacementModalDeal] = useState<{ id: string; account_name: string } | null>(null);
-  const [committedRolesDeal, setCommittedRolesDeal] = useState<{ id: string; account_name: string } | null>(null);
-  const { sort, toggle } = useSort<SortKey>();
-
-  const { data: rawData, isLoading } = useJobsOpportunities({
-    ...(ownerFilter ? { owner_email: ownerFilter } : {}),
-    ...(dealTypeFilter !== "all" ? { deal_type: dealTypeFilter } : {}),
-  });
-
-  const allDeals: JobsOpportunity[] = (rawData as { data: JobsOpportunity[]; total: number } | undefined)?.data ?? [];
-
-  const filtered = allDeals.filter((d) => stageMatchesGroup(d.stage, stageGroup));
-
-  const visible =
-    sort.key == null
-      ? filtered
-      : sortBy(filtered, sort, (d, key) => {
-          switch (key) {
-            case "company":    return d.account_name ?? "";
-            case "stage":      return STAGE_LABELS[d.stage] ?? "";
-            case "type":       return d.deal_type ? DEAL_TYPE_LABELS[d.deal_type] : "";
-            case "likelihood": return d.likelihood ? LIKELIHOOD_RANK[d.likelihood] : 0;
-            case "num_roles":  return d.num_roles ?? 0;
-            case "updated":    return d.updated_at ?? "";
-          }
-        });
-
-  const stageGroups: StageGroup[] = ["all", "active", "on_hold", "closed"];
+  function save() {
+    updateOpp.mutate(
+      { id: deal.id, closed_lost_reason: reason || null, closed_lost_note: note.trim() || null },
+      { onSuccess: () => onClose() },
+    );
+  }
 
   return (
-    <div className="flex flex-col">
-      {/* Toolbar */}
-      <div className="flex items-center gap-4 border-b border-border-strong bg-surface px-5 py-2.5">
-        {/* Owner pills */}
-        <div className="flex items-center gap-1.5">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/30"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div className="w-full max-w-sm rounded-xl border border-border-strong bg-surface shadow-xl">
+        <div className="flex items-center justify-between border-b border-border-strong px-5 py-4">
+          <h2 className="text-[15px] font-semibold text-ink">Why did {deal.account_name} fall through?</h2>
+          <button type="button" onClick={onClose} className="text-ink-3 hover:text-ink" aria-label="Close">
+            <X size={16} />
+          </button>
+        </div>
+        <div className="flex flex-col gap-3 px-5 py-4">
+          <div className="flex flex-col gap-1">
+            <label className="text-[11px] font-semibold uppercase tracking-wider text-ink-4">Reason</label>
+            <select
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              autoFocus
+              className="w-full rounded-md border border-border-strong bg-surface px-3 py-2 text-[13px] text-ink focus:outline-none focus:ring-1 focus:ring-accent/40"
+            >
+              <option value="">— select —</option>
+              {CLOSED_LOST_REASONS.map((r) => (
+                <option key={r.value} value={r.value}>{r.label}</option>
+              ))}
+            </select>
+          </div>
+          <div className="flex flex-col gap-1">
+            <label className="text-[11px] font-semibold uppercase tracking-wider text-ink-4">Note (optional)</label>
+            <textarea
+              rows={3}
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+              placeholder="Context — what happened, who said what…"
+              className="w-full resize-none rounded-md border border-border-strong bg-surface px-3 py-2 text-[13px] text-ink placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40"
+            />
+          </div>
+        </div>
+        <div className="flex items-center justify-end gap-3 border-t border-border-strong px-5 py-3">
+          <button type="button" onClick={onClose} className="text-[13px] font-medium text-ink-3 hover:text-ink">
+            Skip
+          </button>
           <button
             type="button"
-            onClick={() => setOwnerFilter(null)}
-            className={cn(
-              "rounded-full border px-3 py-1 text-[12px] font-medium transition-colors",
-              ownerFilter === null
-                ? "border-accent bg-accent/5 text-accent"
-                : "border-border-strong bg-surface text-ink-3 hover:text-ink-2",
-            )}
+            onClick={save}
+            disabled={updateOpp.isPending}
+            className="rounded-lg bg-accent px-4 py-2 text-[13px] font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
           >
-            All
+            {updateOpp.isPending ? "Saving…" : "Save reason"}
           </button>
-          {OWNERS.map((o) => (
-            <button
-              key={o.email}
-              type="button"
-              onClick={() => setOwnerFilter(ownerFilter === o.email ? null : o.email)}
-              className={cn(
-                "flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[12px] font-medium transition-colors",
-                ownerFilter === o.email
-                  ? "border-accent bg-accent/5 text-accent"
-                  : "border-border-strong bg-surface text-ink-2 hover:bg-surface-2",
-              )}
-            >
-              <span
-                className={cn(
-                  "inline-flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-semibold",
-                  o.color,
-                )}
-              >
-                {o.initials}
-              </span>
-              {o.label}
-            </button>
-          ))}
-        </div>
-
-        <div className="h-4 w-px bg-border-strong" />
-
-        {/* Stage group filter */}
-        <div className="flex items-center gap-0.5 rounded-md border border-border-strong bg-surface-2 p-0.5">
-          {stageGroups.map((g) => (
-            <button
-              key={g}
-              type="button"
-              onClick={() => setStageGroup(g)}
-              className={cn(
-                "rounded px-2.5 py-1 text-[12px] font-medium transition-colors",
-                stageGroup === g
-                  ? "bg-surface text-ink shadow-sm"
-                  : "text-ink-3 hover:text-ink-2",
-              )}
-            >
-              {STAGE_GROUP_LABELS[g]}
-            </button>
-          ))}
-        </div>
-
-        {/* Count badge */}
-        <span className="ml-auto font-mono text-[12px] text-ink-4">
-          {isLoading ? "…" : `${visible.length} deal${visible.length === 1 ? "" : "s"}`}
-        </span>
-
-        {/* New Deal button */}
-        <button
-          type="button"
-          onClick={() => setShowNewDeal(true)}
-          className="flex items-center gap-1.5 rounded-lg border border-border-strong bg-surface px-3 py-1.5 text-[12px] font-medium text-ink-2 transition-colors hover:border-accent hover:text-accent"
-        >
-          <Plus size={12} />
-          New Deal
-        </button>
-      </div>
-
-      {/* Deal-type quick filter — own dedicated row so the pills are clearly
-          visible and never get clipped in the crowded toolbar above. */}
-      <div className="flex items-center gap-2 border-b border-border-strong bg-surface-2/40 px-5 py-2">
-        <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
-          Deal Type
-        </span>
-        <div className="flex flex-wrap items-center gap-1.5">
-          {DEAL_TYPE_FILTERS.map((f) => (
-            <button
-              key={f}
-              type="button"
-              onClick={() => setDealTypeFilter(f)}
-              className={cn(
-                "rounded-full border px-3 py-1 text-[12px] font-medium transition-colors",
-                dealTypeFilter === f
-                  ? "border-accent bg-accent/5 text-accent"
-                  : "border-border-strong bg-surface text-ink-3 hover:text-ink-2",
-              )}
-            >
-              {dealTypeFilterLabel(f)}
-            </button>
-          ))}
         </div>
       </div>
-
-      {showNewDeal && (
-        <NewDealModal onClose={() => setShowNewDeal(false)} />
-      )}
-
-      {placementModalDeal && (
-        <PlacementsModal
-          deal={placementModalDeal}
-          onClose={() => setPlacementModalDeal(null)}
-        />
-      )}
-
-      {committedRolesDeal && (
-        <CommittedRolesModal
-          deal={committedRolesDeal}
-          onClose={() => setCommittedRolesDeal(null)}
-        />
-      )}
-
-      {/* Table */}
-      {isLoading ? (
-        <EmptyState>Loading deals…</EmptyState>
-      ) : visible.length === 0 ? (
-        <EmptyState>
-          No deals match your filters.{" "}
-          <button
-            type="button"
-            className="text-accent underline underline-offset-2"
-            onClick={() => { setOwnerFilter(null); setStageGroup("all"); setDealTypeFilter("all"); }}
-          >
-            Clear filters
-          </button>
-        </EmptyState>
-      ) : (
-        <table className="w-full text-[12.5px]">
-          <thead className="sticky top-0 z-10 bg-surface-2 text-[10.5px] uppercase tracking-wider text-ink-3">
-            <tr>
-              <th className="w-7 px-2 py-2" />
-              <th className="px-3 py-2 text-left font-semibold">
-                <SortableHeader label="Company" sortKey="company" sort={sort} onToggle={toggle} />
-              </th>
-              <th className="w-[180px] px-3 py-2 text-left font-semibold">
-                <SortableHeader label="Stage" sortKey="stage" sort={sort} onToggle={toggle} />
-              </th>
-              <th className="w-[130px] px-3 py-2 text-left font-semibold">
-                <SortableHeader label="Deal Type" sortKey="type" sort={sort} onToggle={toggle} />
-              </th>
-              <th className="w-[100px] px-3 py-2 text-left font-semibold">
-                <SortableHeader label="Likelihood" sortKey="likelihood" sort={sort} onToggle={toggle} />
-              </th>
-              <th className="w-[80px] px-3 py-2 text-right font-semibold">
-                <SortableHeader label="# Roles" sortKey="num_roles" sort={sort} onToggle={toggle} align="right" />
-              </th>
-              <th className="w-[150px] px-3 py-2 text-left font-semibold">Owner</th>
-              <th className="w-[120px] px-3 py-2 text-right font-semibold">
-                <SortableHeader label="Updated" sortKey="updated" sort={sort} onToggle={toggle} align="right" />
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {visible.map((deal) => (
-              <DealRow
-                key={deal.id}
-                deal={deal}
-                isExpanded={expandedId === deal.id}
-                onToggle={() => setExpandedId(expandedId === deal.id ? null : deal.id)}
-                onRecordPlacements={setPlacementModalDeal}
-                onCommittedRoles={setCommittedRolesDeal}
-              />
-            ))}
-          </tbody>
-        </table>
-      )}
     </div>
   );
 }
 
-function EmptyState({ children }: { children: React.ReactNode }) {
+// ── Main component ────────────────────────────────────────────────────────────
+
+type DealTypeFilter = "all" | DealType;
+
+// Persisted shape for Saved Views (personal + global) on the Opportunities tab —
+// mirrors the Accounts payload: quick filter, search, chip rules, columns, widths,
+// group-by, and sort.
+interface JobsOppView {
+  dealTypeFilter?: DealTypeFilter;
+  query?: string;
+  rules?: FilterRule<OppField>[];
+  visibleCols?: OppColKey[];
+  widths?: Partial<Record<OppColKey, number>>;
+  groupBy?: string;
+  sort?: SortState<OppColKey>;
+}
+
+// Stable empty array so useSessionState's setter identity stays stable.
+const EMPTY_COLLAPSED: string[] = [];
+
+export function JobsTeam() {
+  // Deal-type pills were removed (filter via the Filter rules instead); default
+  // to all deals. The state stays for saved-view back-compat + the FT-via-rule path.
+  const [dealTypeFilter, setDealTypeFilter] = useState<DealTypeFilter>("all");
+  const [query, setQuery] = useState("");
+  const [rules, setRules] = useState<FilterRule<OppField>[]>([]);
+  const [groupBy, setGroupBy] = useSessionState<string>("jobs-opps:groupBy", "");
+  const [collapsedGroups, setCollapsedGroups] = useSessionState<string[]>("jobs-opps:groupCollapsed", EMPTY_COLLAPSED);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [showNewDeal, setShowNewDeal] = useState(false);
+  const [placementModalDeal, setPlacementModalDeal] = useState<{ id: string; account_name: string } | null>(null);
+  const [committedRolesDeal, setCommittedRolesDeal] = useState<{ id: string; account_name: string } | null>(null);
+  const [closedLostDeal, setClosedLostDeal] = useState<{ id: string; account_name: string } | null>(null);
+
+  const { sort, toggle, setSort } = useSort<OppColKey>({ key: "priority", direction: "desc" });
+  const { visible: visibleCols, toggle: toggleCol, replaceAll: replaceVisibleCols } =
+    useColumnVisibility<OppColKey>("bedrock-v2:vis:jobs-opportunities", OPP_COLUMN_ORDER, OPP_DEFAULT_VISIBLE);
+  const { widths, startResize, replaceAll: replaceWidths } =
+    useColumnWidths<OppColKey>("bedrock-v2:cols:jobs-opportunities:v2", OPP_DEFAULT_WIDTHS);
+
+  const collapsedSet = useMemo(() => new Set(collapsedGroups), [collapsedGroups]);
+  const toggleGroup = useCallback(
+    (key: string) =>
+      setCollapsedGroups((prev) => (prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key])),
+    [setCollapsedGroups],
+  );
+
+  // Small dataset — load all opps and filter/sort/group client-side (mirrors Accounts).
+  const { data: rawData, isLoading } = useJobsOpportunities({ limit: 500 });
+  const allDeals: JobsOpportunity[] = (rawData as { data: JobsOpportunity[]; total: number } | undefined)?.data ?? [];
+
+  // Owner facet for the chip-filter + group labels.
+  const ownerOptions = useMemo(() => {
+    const m = new Map<string, string>(OWNERS.map((o) => [o.email, o.label]));
+    for (const d of allDeals) if (d.owner_email && !m.has(d.owner_email)) m.set(d.owner_email, d.owner_email);
+    return [...m].map(([value, label]) => ({ value, label }));
+  }, [allDeals]);
+  const ownerLabel = useCallback(
+    (email: string) => OWNERS.find((o) => o.email === email)?.label ?? email,
+    [],
+  );
+
+  const selectOptions: Partial<Record<OppField, { value: string; label: string }[]>> = useMemo(
+    () => ({
+      stage: OPP_STAGE_OPTIONS.map((o) => ({ value: o.value, label: o.label })),
+      status: STATUS_OPTIONS,
+      deal_type: DEAL_TYPE_OPTIONS.map((o) => ({ value: o.value, label: o.label })),
+      segment: SEGMENT_OPTIONS,
+      priority: PRIORITY_OPTIONS,
+      likelihood: LIKELIHOOD_OPTIONS.map((o) => ({ value: o.value, label: o.label })),
+      owner: ownerOptions,
+    }),
+    [ownerOptions],
+  );
+
+  const q = query.trim().toLowerCase();
+  const filtered = useMemo(() => {
+    const f = allDeals.filter((d) => {
+      if (dealTypeFilter !== "all" && d.deal_type !== dealTypeFilter) return false;
+      if (
+        q &&
+        !(
+          d.account_name.toLowerCase().includes(q) ||
+          (d.title ?? "").toLowerCase().includes(q) ||
+          (d.owner_email ?? "").toLowerCase().includes(q)
+        )
+      )
+        return false;
+      for (const r of rules) if (!ruleApplies(d, r, OPP_FILTERABLE)) return false;
+      return true;
+    });
+    return sort.key == null ? f : sortBy(f, sort, (d, key) => extractOpp(d, key));
+  }, [allDeals, dealTypeFilter, q, rules, sort]);
+
+  const groupLabelFor = useCallback(
+    (k: string) => {
+      if (k === "") return "—";
+      if (groupBy === "owner") return ownerLabel(k);
+      if (groupBy === "segment") return SEGMENT_LABELS[k] ?? k;
+      if (groupBy === "deal_type") return DEAL_TYPE_LABELS[k as DealType] ?? k;
+      if (groupBy === "stage") return STAGE_LABELS[k as JobStage] ?? k;
+      if (groupBy === "status") return STATUS_OPTIONS.find((s) => s.value === k)?.label ?? k;
+      return k;
+    },
+    [groupBy, ownerLabel],
+  );
+
+  type DisplayRow =
+    | { kind: "row"; deal: JobsOpportunity }
+    | { kind: "header"; key: string; label: string; count: number; collapsed: boolean };
+  const groupedRows: DisplayRow[] | null = useMemo(() => {
+    if (!groupBy) return null;
+    const field = OPP_FILTERABLE[groupBy as OppField];
+    if (!field) return null;
+    const buckets = new Map<string, JobsOpportunity[]>();
+    for (const d of filtered) {
+      const raw = field.getValue(d);
+      const k = raw == null || raw === "" ? "" : String(raw);
+      const list = buckets.get(k);
+      if (list) list.push(d);
+      else buckets.set(k, [d]);
+    }
+    const keys = [...buckets.keys()].sort((a, b) => groupLabelFor(a).localeCompare(groupLabelFor(b)));
+    const out: DisplayRow[] = [];
+    for (const k of keys) {
+      const list = buckets.get(k) ?? [];
+      const collapsed = collapsedSet.has(k);
+      out.push({ kind: "header", key: k, label: groupLabelFor(k), count: list.length, collapsed });
+      if (!collapsed) for (const d of list) out.push({ kind: "row", deal: d });
+    }
+    return out;
+  }, [filtered, groupBy, collapsedSet, groupLabelFor]);
+
+  const tableMinWidth = totalWidth(widths);
+
+  const renderDealRow = (deal: JobsOpportunity) => (
+    <DealRow
+      key={deal.id}
+      deal={deal}
+      isExpanded={expandedId === deal.id}
+      onToggle={() => setExpandedId(expandedId === deal.id ? null : deal.id)}
+      onRecordPlacements={setPlacementModalDeal}
+      onCommittedRoles={setCommittedRolesDeal}
+      onClosedLost={setClosedLostDeal}
+      visibleCols={visibleCols}
+    />
+  );
+
   return (
-    <div className="flex items-center justify-center px-6 py-16 text-center text-[13px] text-ink-3">
-      {children}
+    <div className="flex flex-col px-5 py-2">
+      <Toolbar>
+        <div className="relative">
+          <Search size={12} aria-hidden className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-3" />
+          <input
+            placeholder="Search company, role, owner…"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            className="h-7 w-56 rounded border border-border-strong bg-surface pl-7 pr-3 text-[12.5px] font-medium text-ink-2 outline-none placeholder:font-normal placeholder:text-ink-3 focus:border-accent focus:text-ink"
+          />
+        </div>
+        <AddFilterButton<OppField>
+          filterable={OPP_FILTERABLE as Record<OppField, FieldMeta<unknown>>}
+          selectOptions={selectOptions}
+          onAdd={(r) => setRules((prev) => [...prev, r])}
+          buttonLabel="Filter"
+        />
+        <select
+          value={groupBy}
+          onChange={(e) => {
+            setGroupBy(e.target.value);
+            setCollapsedGroups([]);
+          }}
+          title="Group rows by a field"
+          className="h-7 rounded border border-border-strong bg-surface px-2 text-[12.5px] text-ink-2 outline-none focus:border-accent"
+        >
+          {OPP_GROUP_OPTIONS.map((o) => (
+            <option key={o.value} value={o.value}>{o.label}</option>
+          ))}
+        </select>
+        <span className="font-mono text-[12px] text-ink-4">
+          {isLoading ? "…" : `${filtered.length} deal${filtered.length === 1 ? "" : "s"}`}
+        </span>
+        <div className="ml-auto flex items-center gap-2">
+          <ColumnChooser
+            allColumns={OPP_COLUMN_ORDER}
+            labels={OPP_COL_LABELS}
+            visible={visibleCols}
+            required={["company"]}
+            onToggle={toggleCol}
+          />
+          <SavedViewsPicker<JobsOppView>
+            scopeKey="jobs-opportunities"
+            currentFilters={{ dealTypeFilter, query, rules, visibleCols, widths, groupBy, sort }}
+            onLoad={(v) => {
+              setDealTypeFilter(v.dealTypeFilter ?? "all");
+              setQuery(v.query ?? "");
+              setRules(v.rules ?? []);
+              setGroupBy(v.groupBy ?? "");
+              setCollapsedGroups([]);
+              if (v.visibleCols && v.visibleCols.length > 0) replaceVisibleCols(v.visibleCols);
+              if (v.widths && Object.keys(v.widths).length > 0) replaceWidths(v.widths);
+              if (v.sort) setSort(v.sort);
+            }}
+          />
+          <button
+            type="button"
+            onClick={() => setShowNewDeal(true)}
+            className="inline-flex h-7 items-center gap-1.5 rounded border border-ink bg-ink px-3 text-[12.5px] font-medium text-surface hover:opacity-90"
+          >
+            <Plus size={13} /> New Deal
+          </button>
+        </div>
+      </Toolbar>
+
+      {/* Active filter chips */}
+      {rules.length > 0 ? (
+        <div className="flex flex-wrap items-center gap-1.5 border-x border-t border-border-strong bg-surface px-3 py-2">
+          {rules.map((r) => (
+            <FilterChip
+              key={r.id}
+              label={describeRule(r, OPP_FILTERABLE, (field, v) => {
+                if (field === "owner") return ownerLabel(v);
+                if (field === "segment") return SEGMENT_LABELS[v] ?? v;
+                if (field === "deal_type") return DEAL_TYPE_LABELS[v as DealType] ?? v;
+                if (field === "stage") return STAGE_LABELS[v as JobStage] ?? v;
+                if (field === "status") return STATUS_OPTIONS.find((s) => s.value === v)?.label ?? v;
+                if (field === "priority") return PRIORITY_OPTIONS.find((p) => p.value === v)?.label ?? v;
+                return v;
+              })}
+              onRemove={() => setRules((prev) => prev.filter((x) => x.id !== r.id))}
+            />
+          ))}
+          <button
+            type="button"
+            onClick={() => setRules([])}
+            className="ml-1 whitespace-nowrap text-[11.5px] font-medium text-ink-3 underline-offset-4 hover:text-ink-2 hover:underline"
+          >
+            Clear all
+          </button>
+        </div>
+      ) : null}
+
+      {showNewDeal && <NewDealModal onClose={() => setShowNewDeal(false)} />}
+      {placementModalDeal && <PlacementsModal deal={placementModalDeal} onClose={() => setPlacementModalDeal(null)} />}
+      {committedRolesDeal && <CommittedRolesModal deal={committedRolesDeal} onClose={() => setCommittedRolesDeal(null)} />}
+      {closedLostDeal && <ClosedLostModal deal={closedLostDeal} onClose={() => setClosedLostDeal(null)} />}
+
+      <div className="overflow-hidden rounded-b-lg border border-border-strong bg-surface">
+        <table className="w-full border-collapse" style={{ tableLayout: "fixed" }}>
+          {/* fluid widths: column px widths rendered as % of the total so the
+              table fills 100% and never scrolls horizontally; resizing still
+              works (it reproportions the columns). */}
+          <colgroup>{visibleCols.map((key) => <col key={key} style={{ width: `${(widths[key] / tableMinWidth) * 100}%` }} />)}</colgroup>
+          <thead className="sticky top-0 z-10">
+            <tr>
+              {visibleCols.map((key, idx) => (
+                <ResizableTh
+                  key={key}
+                  width={widths[key]}
+                  onStartResize={(e) => startResize(key, e)}
+                  align={key === "num_roles" || key === "salary" ? "right" : "left"}
+                  isLast={idx === visibleCols.length - 1}
+                >
+                  <SortableHeader label={OPP_COL_LABELS[key]} sortKey={key} sort={sort} onToggle={toggle} />
+                </ResizableTh>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {isLoading ? (
+              <tr>
+                <td colSpan={visibleCols.length} className="px-6 py-10 text-center text-[13px] text-ink-3">
+                  Loading deals…
+                </td>
+              </tr>
+            ) : filtered.length === 0 ? (
+              <tr>
+                <td colSpan={visibleCols.length} className="px-6 py-10 text-center text-[13px] text-ink-3">
+                  No deals match your filters.{" "}
+                  <button
+                    type="button"
+                    className="text-accent underline underline-offset-2"
+                    onClick={() => { setDealTypeFilter("all"); setQuery(""); setRules([]); }}
+                  >
+                    Clear filters
+                  </button>
+                </td>
+              </tr>
+            ) : groupedRows ? (
+              groupedRows.map((item) =>
+                item.kind === "header" ? (
+                  <tr
+                    key={`grp-${item.key}`}
+                    className="cursor-pointer border-y border-border-strong bg-surface-2/70 hover:bg-surface-2"
+                    onClick={() => toggleGroup(item.key)}
+                  >
+                    <td colSpan={visibleCols.length} className="px-3 py-1.5 text-[11.5px] font-semibold uppercase tracking-wider text-ink-2">
+                      <span className="inline-block w-3 text-ink-3">{item.collapsed ? "▸" : "▾"}</span>
+                      {item.label}
+                      <span className="ml-2 normal-case tracking-normal text-ink-3">{item.count}</span>
+                    </td>
+                  </tr>
+                ) : (
+                  renderDealRow(item.deal)
+                ),
+              )
+            ) : (
+              filtered.map((deal) => renderDealRow(deal))
+            )}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }

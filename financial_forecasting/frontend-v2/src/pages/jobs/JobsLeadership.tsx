@@ -6,8 +6,6 @@ import {
   Building2,
   ChevronUp,
   ChevronDown,
-  Phone,
-  Send,
   UserCheck,
 } from "lucide-react";
 
@@ -25,6 +23,7 @@ import {
 } from "@/services/jobs";
 import { cn } from "@/lib/utils";
 import { JobsFunnels } from "@/components/jobs/JobsFunnels";
+import { ActivityTrends } from "@/components/jobs/ActivityTrends";
 import { MetricDrawer } from "@/components/jobs/MetricDrawer";
 import { JobsStatBubble, type BubbleTone } from "@/components/jobs/JobsStatBubble";
 import { ThisWeekRecap } from "@/components/jobs/ThisWeekRecap";
@@ -121,10 +120,6 @@ export function JobsLeadership() {
   const contactsLoading = contactsQ.isLoading;
   const totalLeads = contactsQ.data?.contacts.total ?? null;
   const engagedLeads = contactsQ.data?.contacts.engaged ?? null;
-  const outreachAllTime = contactsQ.data?.activity.outreach_total ?? null;
-  const outreachThisWeek = contactsQ.data?.activity.outreach_this_week ?? null;
-  const callsAllTime = contactsQ.data?.activity.calls_total ?? null;
-  const callsThisWeek = contactsQ.data?.activity.calls_this_week ?? null;
 
   return (
     <div className="flex flex-col gap-7">
@@ -191,10 +186,9 @@ export function JobsLeadership() {
           Prospect Activity
         </div>
         <div className="text-[11px] text-ink-4">
-          Top-of-funnel engagement feeding the pipeline. Outreach counts first
-          touches by the jobs team only — each contact counts once, ever.
+          Top-of-funnel engagement feeding the pipeline.
         </div>
-        <div className="mt-1 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="mt-1 grid grid-cols-1 gap-3 sm:grid-cols-2">
           <JobsStatBubble
             label="Total Leads"
             value={totalLeads ?? 0}
@@ -217,26 +211,11 @@ export function JobsLeadership() {
             sub="prospects we've contacted"
             onClick={() => setOpenMetric("engaged_leads")}
           />
-          <JobsStatBubble
-            label="New Outreach · wk"
-            value={outreachThisWeek ?? 0}
-            tone="rose"
-            icon={<Send size={14} />}
-            isLoading={contactsLoading}
-            sub={`${outreachAllTime ?? "—"} contacts reached all time`}
-            onClick={() => setOpenMetric("outreach_week")}
-          />
-          <JobsStatBubble
-            label="New Calls/Mtgs · wk"
-            value={callsThisWeek ?? 0}
-            tone="amber"
-            icon={<Phone size={14} />}
-            isLoading={contactsLoading}
-            sub={`${callsAllTime ?? "—"} contacts met all time`}
-            onClick={() => setOpenMetric("calls_week")}
-          />
         </div>
       </div>
+
+      {/* ── ZONE 3a · Outreach & activation over time ─────────────────── */}
+      <ActivityTrends />
 
       {/* ── ZONE 3b · This Week recap ─────────────────────────────────── */}
       <ThisWeekRecap />

@@ -40,7 +40,16 @@ interface ResultItem {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-function buildItems(results: SearchResults): ResultItem[] {
+/** A bedrock/jobs contact (public.contacts) — not necessarily in Salesforce. */
+interface BedrockContact {
+  contact_id: number;
+  full_name: string | null;
+  email: string | null;
+  current_title: string | null;
+  current_company: string | null;
+}
+
+function buildItems(results: SearchResults, bedrockContacts: BedrockContact[]): ResultItem[] {
   const items: ResultItem[] = [];
 
   for (const r of results.Account ?? []) {
@@ -53,7 +62,12 @@ function buildItems(results: SearchResults): ResultItem[] {
       icon: <Building2 size={13} className="text-ink-3" />,
     });
   }
+
+  // SF contacts first; track their emails so we don't double-list a person who
+  // exists both in Salesforce and in the bedrock/jobs contact set.
+  const sfEmails = new Set<string>();
   for (const r of results.Contact ?? []) {
+    if (r.Email) sfEmails.add(r.Email.toLowerCase());
     items.push({
       id: r.Id,
       label: r.Name ?? r.Id,
@@ -63,6 +77,21 @@ function buildItems(results: SearchResults): ResultItem[] {
       icon: <User size={13} className="text-ink-3" />,
     });
   }
+  // Bedrock/jobs contacts (the 32k+ in public.contacts) — SF-only search missed
+  // these. Deep-link to the jobs Prospects tab with the search pre-filled.
+  for (const c of bedrockContacts) {
+    if (c.email && sfEmails.has(c.email.toLowerCase())) continue;
+    const name = c.full_name ?? c.email ?? `#${c.contact_id}`;
+    items.push({
+      id: `bedrock-${c.contact_id}`,
+      label: name,
+      sub: [c.current_title, c.current_company].filter(Boolean).join(" · ") || c.email || null,
+      href: `/jobs?view=contacts&q=${encodeURIComponent(c.email || name)}`,
+      group: "Contacts",
+      icon: <User size={13} className="text-ink-3" />,
+    });
+  }
+
   for (const r of results.Opportunity ?? []) {
     items.push({
       id: r.Id,
@@ -129,11 +158,21 @@ export function GlobalSearch({
     }
     setLoading(true);
     debounceRef.current = setTimeout(async () => {
+      const q = encodeURIComponent(query.trim());
       try {
-        const { data } = await api.get<SearchResults>(
-          `/api/salesforce/search?q=${encodeURIComponent(query.trim())}&limit=8`,
-        );
-        setItems(buildItems(data));
+        // Search Salesforce + bedrock/jobs contacts in parallel; either can fail
+        // independently without sinking the other.
+        const [sf, bedrock] = await Promise.all([
+          api
+            .get<SearchResults>(`/api/salesforce/search?q=${q}&limit=8`)
+            .then((r) => r.data)
+            .catch(() => ({ Contact: [], Account: [], Opportunity: [], Task: [] } as SearchResults)),
+          api
+            .get<{ success: boolean; data: BedrockContact[] }>(`/api/jobs/contacts/search?q=${q}&limit=8`)
+            .then((r) => r.data.data)
+            .catch(() => [] as BedrockContact[]),
+        ]);
+        setItems(buildItems(sf, bedrock));
         setActiveIdx(0);
       } catch {
         setItems([]);

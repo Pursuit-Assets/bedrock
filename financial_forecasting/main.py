@@ -73,6 +73,7 @@ from routes.admin_interaction_sync import router as admin_interaction_sync_route
 from routes.jobs import router as jobs_router
 from routes.jobs_tasks import router as jobs_tasks_router
 from routes.jobs_comments import router as jobs_comments_router
+from routes.jobs_sf import router as jobs_sf_router
 from routes.entity_comments import router as entity_comments_router
 from auth import get_current_user_dep, require_auth, IS_PRODUCTION, JWT_SECRET_KEY
 from security import validate_salesforce_id, escape_soql_string
@@ -162,6 +163,7 @@ app.include_router(admin_interaction_sync_router)
 app.include_router(jobs_router)
 app.include_router(jobs_tasks_router)
 app.include_router(jobs_comments_router)
+app.include_router(jobs_sf_router)
 app.include_router(entity_comments_router)
 
 # Service singletons — shared with dependencies.py so route files can use
@@ -218,7 +220,14 @@ async def startup_event():
             _services["data_sync_service"] = DataSyncService(client)
         asyncio.create_task(background_sync_task())
         asyncio.create_task(background_award_reconciler_task())
-        asyncio.create_task(background_interaction_sync_task())
+        # NOTE: the nightly interaction sync is triggered solely by Cloud
+        # Scheduler (`bedrock-interaction-sync`, 04:00 UTC) hitting
+        # /api/admin/interaction-sync. We intentionally do NOT also run it
+        # in-process: this task fires once *per Cloud Run instance*, so on any
+        # overnight scale-up it collided with the scheduler run (and itself) —
+        # two+ concurrent syncs exhausted the Gmail API / DB pool and produced
+        # broken-pipe + empty-error failures and 2h timeouts. One trigger only.
+        # asyncio.create_task(background_interaction_sync_task())
 
     # Cache the db pool on _services so background tasks (notification
     # Slack dispatcher) can acquire connections without going through

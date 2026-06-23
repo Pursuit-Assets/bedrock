@@ -1,26 +1,47 @@
-import { useState } from "react";
-import { BarChart3, Kanban, Users, GraduationCap } from "lucide-react";
+import { useEffect } from "react";
+import { useSearchParams } from "react-router-dom";
+import { BarChart3, Building2, Kanban, Users, GraduationCap } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
+import { useSessionState } from "@/lib/useSessionState";
 import { cn } from "@/lib/utils";
+import { JobsAccountHub } from "./jobs/JobsAccountHub";
 import { JobsTeam } from "./jobs/JobsTeam";
 import { JobsLeadership } from "./jobs/JobsLeadership";
 import { JobsContacts } from "./jobs/JobsContacts";
 import { JobsBuilders } from "./jobs/JobsBuilders";
 
-type View = "performance" | "team" | "contacts" | "builders";
+type View = "accounts" | "performance" | "team" | "contacts" | "builders";
 
 const VIEWS = [
   { id: "performance" as View, label: "Performance", icon: BarChart3, desc: "Pipeline health & metrics" },
+  { id: "accounts" as View,    label: "Accounts",    icon: Building2, desc: "Account-level hub — opps + contacts" },
   { id: "team" as View,        label: "Opportunities", icon: Kanban,  desc: "Day-to-day deal management" },
-  { id: "contacts" as View,    label: "Prospects",   icon: Users,     desc: "All employer prospects" },
+  { id: "contacts" as View,    label: "Contacts",    icon: Users,     desc: "All employer contacts" },
   { id: "builders" as View,    label: "Builders",    icon: GraduationCap, desc: "Per-builder job search" },
 ];
 
+const VALID_VIEWS = new Set<View>(["accounts", "performance", "team", "contacts", "builders"]);
+
 export function JobsPage() {
-  const [view, setView] = useState<View>("performance");
+  const [searchParams] = useSearchParams();
+  // Deep-link support (e.g. from global search):
+  //   ?view=contacts&q=<text>           — seed the find-any search
+  //   ?view=contacts&contact=<id>       — open that contact's detail drawer
+  const paramView = searchParams.get("view") as View | null;
+  const initialView: View = paramView && VALID_VIEWS.has(paramView) ? paramView : "accounts";
+  const initialQuery = searchParams.get("q") ?? undefined;
+  const contactParam = searchParams.get("contact");
+  const initialContactId = contactParam && /^\d+$/.test(contactParam) ? Number(contactParam) : undefined;
+  // Persisted so returning (Back) from a detail page restores the same tab.
+  const [view, setView] = useSessionState<View>("jobs:view", initialView);
+  // An explicit ?view= deep-link still wins.
+  useEffect(() => {
+    if (paramView && VALID_VIEWS.has(paramView)) setView(paramView);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [paramView]);
 
   return (
-    <div className="flex flex-col gap-0 px-7 py-6 pb-12">
+    <div className="flex flex-col gap-0 px-7 py-4 pb-12">
       <PageHeader
         title="Jobs Pipeline"
         subtitle="Employer outreach, builder matching, and placement tracking."
@@ -48,10 +69,11 @@ export function JobsPage() {
         }
       />
 
-      <div className="mt-2">
+      <div className="mt-1">
+        {view === "accounts"    && <JobsAccountHub initialQuery={initialQuery} />}
         {view === "performance" && <JobsLeadership />}
         {view === "team"        && <JobsTeam />}
-        {view === "contacts"    && <JobsContacts />}
+        {view === "contacts"    && <JobsContacts initialQuery={initialQuery} initialContactId={initialContactId} />}
         {view === "builders"    && <JobsBuilders />}
       </div>
     </div>

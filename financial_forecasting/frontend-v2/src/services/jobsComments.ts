@@ -10,7 +10,7 @@ interface ApiResponse<T> {
   data: T;
 }
 
-export type JobsCommentParentType = "opportunity" | "prospect";
+export type JobsCommentParentType = "opportunity" | "prospect" | "account";
 
 export interface JobsComment {
   id: string;
