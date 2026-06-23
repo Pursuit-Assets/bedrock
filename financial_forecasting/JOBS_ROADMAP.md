@@ -18,7 +18,7 @@ Discrete features from the feedback transcript, phased. `feat/jobs-opp-tab`.
 - **H1/H2.** Pending user files: SF spreadsheets (still-at-org filtered) + volunteer master list (outreach flag).
 
 ## Phases
-1. **Quick wins (no new data)** — A, B1, B2, F1. ← IN PROGRESS
+1. **Quick wins (no new data)** — A, B1, B2, F1. ✅ DONE (commits 0f47a00 backend, 7759ff2 frontend; F1 pre-existing). Not yet deployed.
 2. **Work queues** — B3, D.
 3. **Outreach analytics** — B4.
 4. **Full universe** — C, H1/H2, LinkedIn mapping. *Blocked on user files.*
