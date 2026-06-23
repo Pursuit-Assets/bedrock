@@ -84,6 +84,30 @@ def test_update_opportunity_priority_out_of_range_400():
     assert r.status_code == 400
 
 
+def test_update_opportunity_clears_owner_when_explicit_null():
+    # Unassigning an owner: an explicit null must write owner_email = NULL,
+    # not be silently dropped (the "owner won't save on unassigned opps" bug).
+    conn = FakeConn(rows={"FROM bedrock.jobs_opportunity WHERE id=$1": _opp_row(owner_email="a@p.org")})
+    c = make_jobs_client(conn)
+    r = c.patch(f"/api/jobs/opportunities/{UUID1}", json={"owner_email": None})
+    assert r.status_code == 200, r.text
+    upd = next(c2 for c2 in conn.calls if c2[0] == "execute"
+               and "UPDATE bedrock.jobs_opportunity SET" in c2[1])
+    assert "owner_email = $1" in upd[1]
+    assert upd[2][0] is None          # null is written through, clearing the owner
+
+
+def test_update_opportunity_ignores_omitted_owner():
+    # Omitting owner_email entirely must NOT touch it (only the sent field changes).
+    conn = FakeConn(rows={"FROM bedrock.jobs_opportunity WHERE id=$1": _opp_row(owner_email="a@p.org")})
+    c = make_jobs_client(conn)
+    r = c.patch(f"/api/jobs/opportunities/{UUID1}", json={"title": "New"})
+    assert r.status_code == 200, r.text
+    upd = next(c2 for c2 in conn.calls if c2[0] == "execute"
+               and "UPDATE bedrock.jobs_opportunity SET" in c2[1])
+    assert "owner_email" not in upd[1] and "title = $1" in upd[1]
+
+
 # ── delete ──────────────────────────────────────────────────────────────────────
 
 def test_delete_opportunity_not_found_404():

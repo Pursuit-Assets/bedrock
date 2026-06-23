@@ -2983,14 +2983,22 @@ async def update_opportunity(
     params: list = []
     i = 1
 
+    # An explicitly-sent null must CLEAR the column (e.g. unassigning an owner),
+    # so key off model_fields_set rather than `val is not None` — otherwise a
+    # null is indistinguishable from "field omitted" and is silently dropped.
+    # `stage` is NOT NULL, so it can never be cleared this way.
+    fields_set = body.model_fields_set
     for field in ("stage", "deal_type", "title", "description", "salary_expected",
                   "num_roles", "likelihood",
                   "source", "owner_email", "relationship_owner", "sf_contact_ids", "builder_ids",
                   "follow_up_date", "touch_count", "sf_opportunity_id",
                   "closed_lost_reason", "closed_lost_note", "priority", "segment", "intro_by"):
+        if field not in fields_set:
+            continue
         val = getattr(body, field, None)
-        if val is not None:
-            sets.append(f"{field} = ${i}"); params.append(val); i += 1
+        if val is None and field == "stage":
+            continue
+        sets.append(f"{field} = ${i}"); params.append(val); i += 1
 
     # Auto-set closed_at
     if body.stage in ("closed_won", "closed_lost") and not existing["closed_at"]:
