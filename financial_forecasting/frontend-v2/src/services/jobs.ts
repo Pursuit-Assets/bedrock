@@ -375,6 +375,10 @@ export interface JobsAccount {
   responded?: boolean;
   /** Jobs-team members (emails) who have touched this account — for the team filter. */
   activity_actors?: string[];
+  /** Builders we placed here (our DB). */
+  builders_hired?: number;
+  /** Historical Pursuit fellows hired here (from Salesforce); null until enriched. */
+  fellows_hired?: number | null;
 }
 
 export function useJobsAccounts(dealType?: string) {

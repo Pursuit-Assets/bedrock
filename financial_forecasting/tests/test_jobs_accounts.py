@@ -15,6 +15,7 @@ OPP_SQL = "FROM bedrock.jobs_opportunity"
 PROSPECT_SQL = "coalesce(trim(current_company)"
 JA_SQL = "account_key, owner_email, status_override, sf_account_id"  # the override-record SELECT (not jobs_account_task)
 ACT_SQL = "c.contact_id = a.participant_public_contact_id"  # the per-account warmth/actor aggregate
+HIRES_SQL = "count(DISTINCT user_id) AS n FROM ("           # builders-hired-per-account aggregate
 
 RECENT = datetime(2026, 6, 1, tzinfo=timezone.utc)   # within 90d of 2026-06-21
 OLD = datetime(2025, 1, 1, tzinfo=timezone.utc)      # > 90d
@@ -35,9 +36,9 @@ def _opp(account_name, stage, **ov):
     return row
 
 
-def _conn(opps=None, prospects=None, ja=None, activity=None):
+def _conn(opps=None, prospects=None, ja=None, activity=None, hires=None):
     return FakeConn(lists={OPP_SQL: opps or [], PROSPECT_SQL: prospects or [],
-                           JA_SQL: ja or [], ACT_SQL: activity or []})
+                           JA_SQL: ja or [], ACT_SQL: activity or [], HIRES_SQL: hires or []})
 
 
 def _act(company, recent=1, responded=False, actors=None, last=RECENT):
@@ -105,6 +106,19 @@ def test_activity_actors_surfaced():
                            activity=[_act("acme", actors=["avni@pursuit.org", "damon.kornhauser@pursuit.org"])]))
     assert _find(data, "Acme")["activity_actors"] == [
         "avni@pursuit.org", "damon.kornhauser@pursuit.org"]   # sorted distinct
+
+
+def test_builders_hired_count_surfaced():
+    data = _accounts(_conn(opps=[_opp("Acme", "closed_won")],
+                           hires=[{"company": "acme", "n": 3}]))
+    acc = _find(data, "Acme")
+    assert acc["builders_hired"] == 3
+    assert acc["fellows_hired"] is None   # SF half merged separately
+
+
+def test_builders_hired_defaults_zero():
+    data = _accounts(_conn(opps=[_opp("Acme", "active_in_discussions")]))
+    assert _find(data, "Acme")["builders_hired"] == 0
 
 
 def test_status_override_wins():

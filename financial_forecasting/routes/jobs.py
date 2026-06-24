@@ -2057,6 +2057,30 @@ async def jobs_accounts(
         for r in await conn.fetch(sql):
             _merge(r["company"], r["last_act"], r["recent"], r["responded"])
 
+    # Builders hired per account (distinct builders with an employment_record at
+    # the company), linked via the jobs opp OR the record's own company_name.
+    # Own-venture records aren't "hires" at an external account. Keyed on the
+    # normalized account name = account_key. (SF "fellows hired" is merged
+    # separately — historical Pursuit placements live only in Salesforce.)
+    hires_by_account: dict[str, int] = {
+        r["company"]: r["n"] for r in await conn.fetch(
+            """
+            SELECT company, count(DISTINCT user_id) AS n FROM (
+                SELECT er.user_id, lower(trim(o.account_name)) AS company
+                FROM public.employment_records er
+                JOIN bedrock.jobs_opportunity o ON o.id = er.opportunity_id
+                WHERE o.deleted_at IS NULL AND coalesce(trim(o.account_name),'') <> ''
+                  AND coalesce(er.is_own_venture, false) = false
+                UNION
+                SELECT er.user_id, lower(trim(er.company_name)) AS company
+                FROM public.employment_records er
+                WHERE coalesce(trim(er.company_name),'') <> ''
+                  AND coalesce(er.is_own_venture, false) = false
+            ) s GROUP BY company
+            """,
+        )
+    }
+
     dt = deal_type if deal_type and deal_type != "all" else None
     now = datetime.now(timezone.utc)
     out = []
@@ -2106,6 +2130,10 @@ async def jobs_accounts(
         g["responded"] = bool(a and a["responded"])
         # Which jobs-team members have touched this account (for the team filter).
         g["activity_actors"] = sorted(a["actors"]) if a else []
+        # # hired: builders we placed (our DB) + SF fellows hired (historical,
+        # merged from Salesforce by the caller; null until that enrichment runs).
+        g["builders_hired"] = hires_by_account.get(key, 0)
+        g["fellows_hired"] = None
         out.append(g)
 
     out.sort(key=lambda a: (
