@@ -117,3 +117,74 @@ export function useDeleteJobsTask(parentType: JobsTaskParentType, parentId: stri
     onError: () => toast.error("Failed to delete task"),
   });
 }
+
+// ── Command-center: all tasks across every parent ──────────────────────────────
+
+export interface JobsTaskEnriched extends JobsTask {
+  parent_label: string;
+  parent_sublabel: string | null;
+  parent_stage: string | null;
+  owner_names: string[];
+}
+
+const ALL_TASKS_KEY = ["jobs-tasks-all"] as const;
+
+export function useAllJobsTasks(includeCompleted = false) {
+  return useQuery({
+    queryKey: [...ALL_TASKS_KEY, includeCompleted],
+    queryFn: async (): Promise<JobsTaskEnriched[]> => {
+      const { data } = await api.get<ApiResponse<JobsTaskEnriched[]>>("/api/jobs/tasks/all", {
+        params: { include_completed: includeCompleted },
+      });
+      return data.data ?? [];
+    },
+    staleTime: 30_000,
+  });
+}
+
+/** Update any task by id (parent not known on the home board). Invalidates the
+ *  all-tasks list and the per-parent caches. */
+export function useUpdateTaskById() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ taskId, patch }: { taskId: string; patch: UpdateJobsTaskPatch }) => {
+      const { data } = await api.patch<ApiResponse<JobsTask>>(`/api/jobs/jobs-tasks/${taskId}`, patch);
+      return data.data;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ALL_TASKS_KEY });
+      qc.invalidateQueries({ queryKey: ["jobs-tasks"] });
+    },
+    onError: () => toast.error("Failed to update task"),
+  });
+}
+
+/** Create a task against an explicit parent (account/opp picked on the board). */
+export function useCreateTaskForParent() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (
+      input: CreateJobsTaskInput & { parent_type: JobsTaskParentType; parent_id: string },
+    ) => {
+      const { data } = await api.post<ApiResponse<JobsTask>>("/api/jobs/jobs-tasks", input);
+      return data.data;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ALL_TASKS_KEY });
+      qc.invalidateQueries({ queryKey: ["jobs-tasks"] });
+    },
+    onError: () => toast.error("Failed to create task"),
+  });
+}
+
+export function useDeleteTaskById() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (taskId: string) => { await api.delete(`/api/jobs/jobs-tasks/${taskId}`); },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ALL_TASKS_KEY });
+      qc.invalidateQueries({ queryKey: ["jobs-tasks"] });
+    },
+    onError: () => toast.error("Failed to delete task"),
+  });
+}

@@ -40,6 +40,8 @@
     --green-soft: oklch(0.94 0.04 155);
     --amber-soft: oklch(0.94 0.04 80);
     --red-soft: oklch(0.94 0.04 25);
+    --sky: oklch(0.55 0.13 245);
+    --sky-soft: oklch(0.95 0.03 245);
 
     --r-sm: 6px;
     --r-md: 8px;

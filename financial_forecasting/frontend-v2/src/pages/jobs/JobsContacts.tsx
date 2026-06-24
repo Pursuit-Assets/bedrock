@@ -19,6 +19,7 @@ import { InlineSelect } from "@/components/ui/InlineEdit";
 import { SavedViewsPicker } from "@/components/ui/SavedViewsPicker";
 import { SortableHeader } from "@/components/ui/SortableHeader";
 import { Toolbar } from "@/components/ui/Toolbar";
+import { RECENCY_OPTIONS, recencyLabel } from "@/lib/recencyFilter";
 import { useColumnVisibility } from "@/lib/columnVisibility";
 import { useSessionState } from "@/lib/useSessionState";
 import { useSort, sortBy, type SortState } from "@/lib/sort";
@@ -91,7 +92,7 @@ function extract(c: JobContactWithDeal, key: ColKey): string | number {
 }
 
 // ── filters + grouping ─────────────────────────────────────────────────────────
-type Field = "name" | "title" | "company" | "stage" | "has_deal" | "connected";
+type Field = "name" | "title" | "company" | "stage" | "has_deal" | "connected" | "last_activity";
 const FILTERABLE: Record<Field, FieldMeta<JobContactWithDeal>> = {
   name: { label: "Name", type: "text", getValue: (c) => c.full_name ?? "" },
   title: { label: "Title", type: "text", getValue: (c) => c.current_title ?? "" },
@@ -101,6 +102,8 @@ const FILTERABLE: Record<Field, FieldMeta<JobContactWithDeal>> = {
   // Text so you can filter "Connected staff contains <person>" (search by person),
   // plus is_empty / is_not_empty for has-any / none.
   connected: { label: "Connected staff", type: "text", getValue: (c) => (c.connected_staff_names ?? []).join(", ") },
+  // Top-of-funnel triage: filter by activity recency (Last 7/30/90 days dropdown).
+  last_activity: { label: "Last activity", type: "recency", getValue: (c) => c.last_activity_at ?? "" },
 };
 const GROUP_OPTIONS = [
   { value: "", label: "No grouping" },
@@ -252,7 +255,7 @@ export function JobsContacts({ initialQuery, initialContactId }: { initialQuery?
   }, [deepLinkDetail.data, openContact]);
 
   const selectOptions: Partial<Record<Field, { value: string; label: string }[]>> = useMemo(() => ({
-    stage: CONTACT_STAGE_SELECT, has_deal: YESNO,
+    stage: CONTACT_STAGE_SELECT, has_deal: YESNO, last_activity: RECENCY_OPTIONS,
   }), []);
 
   const collapsedSet = useMemo(() => new Set(collapsedGroups), [collapsedGroups]);
@@ -358,7 +361,7 @@ export function JobsContacts({ initialQuery, initialContactId }: { initialQuery?
 
       {rules.length > 0 && (
         <div className="flex flex-wrap items-center gap-1.5">
-          {rules.map((r) => <FilterChip key={r.id} label={describeRule(r, FILTERABLE, (f, v) => f === "stage" ? (CONTACT_STAGE_STYLES[v]?.label ?? v) : v)} onRemove={() => setRules((p) => p.filter((x) => x.id !== r.id))} />)}
+          {rules.map((r) => <FilterChip key={r.id} label={describeRule(r, FILTERABLE, (f, v) => f === "stage" ? (CONTACT_STAGE_STYLES[v]?.label ?? v) : f === "last_activity" ? recencyLabel(v) : v)} onRemove={() => setRules((p) => p.filter((x) => x.id !== r.id))} />)}
           <button type="button" onClick={() => setRules([])} className="ml-1 text-[11.5px] font-medium text-ink-3 underline-offset-4 hover:text-ink-2 hover:underline">Clear all</button>
         </div>
       )}

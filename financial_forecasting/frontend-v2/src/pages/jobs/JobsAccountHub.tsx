@@ -9,7 +9,7 @@
  */
 import { Fragment, useCallback, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { Briefcase, CheckSquare, ChevronDown, ChevronRight, ExternalLink, Users } from "lucide-react";
+import { Briefcase, CheckSquare, ChevronDown, ChevronRight, ExternalLink, UserCheck, Users } from "lucide-react";
 
 import { AccountAvatar } from "@/components/AccountAvatar";
 import { withReferrer } from "@/components/detail";
@@ -21,6 +21,8 @@ import { SortableHeader } from "@/components/ui/SortableHeader";
 import { Tag } from "@/components/ui/Tag";
 import { Toolbar } from "@/components/ui/Toolbar";
 import { accountStatusVariant } from "@/lib/accountStatus";
+import { RECENCY_OPTIONS, recencyLabel } from "@/lib/recencyFilter";
+import { useAccountsWithFellows } from "@/services/affiliations";
 import { useColumnVisibility } from "@/lib/columnVisibility";
 import { useSessionState } from "@/lib/useSessionState";
 import { useSort, sortBy, type SortState } from "@/lib/sort";
@@ -48,18 +50,21 @@ const dealTypesOf = (a: JobsAccount) =>
   [...new Set(a.opportunities.map((o) => o.deal_type).filter(Boolean))] as string[];
 
 // ── columns ──────────────────────────────────────────────────────────────────
-type ColKey = "account" | "status" | "warmth" | "owner" | "opps" | "contacts" | "tasks" | "deal_types" | "last_activity";
-const COLUMN_ORDER: ColKey[] = ["account", "status", "warmth", "owner", "opps", "contacts", "tasks", "deal_types", "last_activity"];
-const DEFAULT_VISIBLE: ColKey[] = ["account", "status", "warmth", "owner", "opps", "contacts", "tasks", "last_activity"];
+type ColKey = "account" | "status" | "warmth" | "owner" | "opps" | "contacts" | "hired" | "tasks" | "deal_types" | "last_activity";
+const COLUMN_ORDER: ColKey[] = ["account", "status", "warmth", "owner", "opps", "contacts", "hired", "tasks", "deal_types", "last_activity"];
+const DEFAULT_VISIBLE: ColKey[] = ["account", "status", "warmth", "owner", "opps", "contacts", "hired", "tasks", "last_activity"];
 const COL_LABELS: Record<ColKey, string> = {
   account: "Account", status: "Status", warmth: "Warmth", owner: "Owner", opps: "Opps",
-  contacts: "Contacts", tasks: "Open tasks", deal_types: "Deal types", last_activity: "Last activity",
+  contacts: "Contacts", hired: "Hired", tasks: "Open tasks", deal_types: "Deal types", last_activity: "Last activity",
 };
 // Relative weights → percentage widths (table-fixed, fluid, never overflows).
 const COL_WEIGHT: Record<ColKey, number> = {
-  account: 28, status: 12, warmth: 9, owner: 14, opps: 7, contacts: 8, tasks: 8, deal_types: 12, last_activity: 10,
+  account: 26, status: 12, warmth: 9, owner: 13, opps: 7, contacts: 8, hired: 7, tasks: 8, deal_types: 11, last_activity: 10,
 };
-const SORTABLE = new Set<ColKey>(["account", "status", "warmth", "owner", "opps", "contacts", "tasks", "last_activity"]);
+const SORTABLE = new Set<ColKey>(["account", "status", "warmth", "owner", "opps", "contacts", "hired", "tasks", "last_activity"]);
+
+// Total hired = builders we placed (our DB) + historical Pursuit fellows (SF).
+const totalHired = (a: JobsAccount) => (a.builders_hired ?? 0) + (a.fellows_hired ?? 0);
 
 function extract(a: JobsAccount, key: ColKey): string | number {
   switch (key) {
@@ -69,6 +74,7 @@ function extract(a: JobsAccount, key: ColKey): string | number {
     case "owner":         return a.owner_email ?? "";
     case "opps":          return a.opp_count;
     case "contacts":      return a.prospect_count;
+    case "hired":         return totalHired(a);
     case "tasks":         return a.open_tasks ?? 0;
     case "deal_types":    return dealTypesOf(a).join(",");
     case "last_activity": return a.last_activity ?? "";
@@ -76,13 +82,15 @@ function extract(a: JobsAccount, key: ColKey): string | number {
 }
 
 // ── filters + grouping ───────────────────────────────────────────────────────
-type Field = "account" | "status" | "owner" | "has_opps" | "has_contacts";
+type Field = "account" | "status" | "owner" | "has_opps" | "has_contacts" | "last_activity";
 const FILTERABLE: Record<Field, FieldMeta<JobsAccount>> = {
   account:      { label: "Account",  type: "text",   getValue: (a) => a.account },
   status:       { label: "Status",   type: "select", getValue: (a) => a.account_status },
   owner:        { label: "Owner",    type: "select", getValue: (a) => a.owner_email ?? "" },
   has_opps:     { label: "Has opportunities", type: "select", getValue: (a) => (a.opp_count > 0 ? "yes" : "no") },
   has_contacts: { label: "Has contacts",      type: "select", getValue: (a) => (a.prospect_count > 0 ? "yes" : "no") },
+  // Top-of-funnel triage: filter by activity recency (Last 7/30/90 days dropdown).
+  last_activity: { label: "Last activity", type: "recency", getValue: (a) => a.last_activity_at ?? "" },
 };
 const GROUP_OPTIONS = [
   { value: "", label: "No grouping" },
@@ -90,7 +98,7 @@ const GROUP_OPTIONS = [
   { value: "owner", label: "Group by Owner" },
   { value: "has_opps", label: "Group by Has opportunities" },
 ];
-const STATUSES: JobsAccountStatus[] = ["Pursuing", "Stewarding", "Re-activating", "Prospect", "Dormant"];
+const STATUSES: JobsAccountStatus[] = ["Pursuing", "Stewarding", "Re-activating", "Activating", "Prospect", "Dormant"];
 const YESNO = [{ value: "yes", label: "Yes" }, { value: "no", label: "No" }];
 
 const DEAL_TYPE_FILTER: { value: string; label: string }[] = [
@@ -129,6 +137,16 @@ function AccountRow({
     owner: <OwnerSelect owner={account.owner_email} staff={staff} onSave={(email) => onSaveOwner(account.account, email)} />,
     opps: account.opp_count > 0 ? <span className="inline-flex items-center gap-1 text-[12px] text-ink-2"><Briefcase size={11} className="text-ink-4" />{account.opp_count}</span> : <span className="text-ink-4">—</span>,
     contacts: account.prospect_count > 0 ? <span className="inline-flex items-center gap-1 text-[12px] text-ink-2"><Users size={11} className="text-ink-4" />{account.prospect_count}</span> : <span className="text-ink-4">—</span>,
+    hired: (() => {
+      const b = account.builders_hired ?? 0;
+      const f = account.fellows_hired ?? 0;
+      const total = b + f;
+      if (total === 0) return <span className="text-ink-4">—</span>;
+      const title = account.fellows_hired == null
+        ? `${b} builder${b === 1 ? "" : "s"} placed`
+        : `${b} builder${b === 1 ? "" : "s"} placed · ${f} fellow${f === 1 ? "" : "s"} (Salesforce)`;
+      return <span className="inline-flex items-center gap-1 text-[12px] text-ink-2" title={title}><UserCheck size={11} className="text-green" />{total}</span>;
+    })(),
     deal_types: (() => { const d = dealTypesOf(account); return d.length ? <span className="truncate text-[11.5px] text-ink-3">{d.map((t) => DEAL_TYPE_LABELS[t as keyof typeof DEAL_TYPE_LABELS] ?? t).join(", ")}</span> : <span className="text-ink-4">—</span>; })(),
     last_activity: <span className="whitespace-nowrap text-[11.5px] text-ink-4">{relativeDays(account.last_activity)}</span>,
   };
@@ -167,7 +185,23 @@ export function JobsAccountHub({ initialQuery }: { initialQuery?: string } = {})
   const { visible: visibleCols, toggle: toggleCol, replaceAll: replaceVisibleCols } =
     useColumnVisibility<ColKey>("bedrock-v2:vis:jobs-accounts", COLUMN_ORDER, DEFAULT_VISIBLE);
 
-  const { data: accounts = [], isLoading, isError, refetch } = useJobsAccounts(dealType);
+  const { data: rawAccounts = [], isLoading, isError, refetch } = useJobsAccounts(dealType);
+  // Historical Pursuit fellows hired, from Salesforce (Affiliation object),
+  // keyed by SF account id. Merged in client-side so /accounts stays SF-free
+  // and the page still renders if SF is unavailable. When the affiliation
+  // object isn't configured, fellows stays null (Hired = builders only).
+  const { data: fellowsData } = useAccountsWithFellows();
+  const accounts = useMemo(() => {
+    if (!fellowsData?.affiliation_available) return rawAccounts;
+    const counts = fellowsData.fellow_counts ?? {};
+    return rawAccounts.map((a) => {
+      // Sum fellow counts across every SF account id this account maps to
+      // (a company can have more than one SF account record).
+      const ids = a.sf_account_ids?.length ? a.sf_account_ids : (a.account_id ? [a.account_id] : []);
+      const fellows = ids.reduce((sum, id) => sum + (counts[id] ?? 0), 0);
+      return { ...a, fellows_hired: fellows };
+    });
+  }, [rawAccounts, fellowsData]);
   const { data: staff = [] } = useJobsStaff();
   const updateAccount = useUpdateJobsAccount();
   const saveOwner = useCallback(
@@ -183,6 +217,7 @@ export function JobsAccountHub({ initialQuery }: { initialQuery?: string } = {})
     status: STATUSES.map((s) => ({ value: s, label: s })),
     owner: ownerOptions,
     has_opps: YESNO, has_contacts: YESNO,
+    last_activity: RECENCY_OPTIONS,
   }), [ownerOptions]);
 
   const collapsedSet = useMemo(() => new Set(collapsedGroups), [collapsedGroups]);
@@ -260,7 +295,7 @@ export function JobsAccountHub({ initialQuery }: { initialQuery?: string } = {})
       {rules.length > 0 && (
         <div className="flex flex-wrap items-center gap-1.5">
           {rules.map((r) => (
-            <FilterChip key={r.id} label={describeRule(r, FILTERABLE, (f, v) => f === "owner" ? (staff.find((s) => s.email === v)?.name ?? v) : v)} onRemove={() => setRules((p) => p.filter((x) => x.id !== r.id))} />
+            <FilterChip key={r.id} label={describeRule(r, FILTERABLE, (f, v) => f === "owner" ? (staff.find((s) => s.email === v)?.name ?? v) : f === "last_activity" ? recencyLabel(v) : v)} onRemove={() => setRules((p) => p.filter((x) => x.id !== r.id))} />
           ))}
           <button type="button" onClick={() => setRules([])} className="ml-1 text-[11.5px] font-medium text-ink-3 underline-offset-4 hover:text-ink-2 hover:underline">Clear all</button>
         </div>

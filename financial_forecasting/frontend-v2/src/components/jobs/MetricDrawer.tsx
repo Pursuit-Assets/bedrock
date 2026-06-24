@@ -5,6 +5,7 @@ import {
   useMetricDrill,
   useUpdateOpportunity,
   useUpdateContact,
+  useUpdatePlacementSalary,
   STAGES_ORDERED,
   STAGE_LABELS,
   DEAL_TYPE_LABELS,
@@ -12,6 +13,7 @@ import {
   type DealType,
   type MetricDrill,
 } from "@/services/jobs";
+import { useUpdateRole } from "@/services/jobsOpps2";
 import { useQueryClient } from "@tanstack/react-query";
 
 // Pretty-print known coded values; pass everything else through.
@@ -66,7 +68,21 @@ export function MetricDrawer({
   const { data, isLoading } = useMetricDrill(metricKey);
   const updateOpportunity = useUpdateOpportunity();
   const updateContact = useUpdateContact();
+  const updatePlacementSalary = useUpdatePlacementSalary();
+  const updateRole = useUpdateRole();
   const queryClient = useQueryClient();
+
+  // Save an edited salary from the FT-salary drill: placed rows write to the
+  // placement, committed rows to the role (both stay in sync server-side).
+  async function saveSalary(row: Record<string, string | null>, value: number) {
+    if (row.kind === "committed") {
+      await updateRole.mutateAsync({ roleId: String(row.id), approx_salary: value });
+      queryClient.invalidateQueries({ queryKey: ["jobs", "metric"] });
+      queryClient.invalidateQueries({ queryKey: ["jobs", "placements"] });
+    } else if (row.id != null) {
+      await updatePlacementSalary.mutateAsync({ id: String(row.id), salary: value });
+    }
+  }
   const open = metricKey !== null;
   const [expandedRow, setExpandedRow] = useState<number | null>(null);
 
@@ -239,12 +255,15 @@ export function MetricDrawer({
                 <tr key={i} className="border-t border-border-strong hover:bg-surface-2/50">
                   {data.columns.map((c, ci) => {
                     const editable = getEditableSelect(data.entity, c.key, row);
+                    const salaryEditable = data.entity === "salary" && c.key === "salary";
                     return (
                       <td
                         key={c.key}
                         className={ci === 0 ? "px-3 py-2 font-medium text-ink" : "px-3 py-2 text-ink-2"}
                       >
-                        {editable ? (
+                        {salaryEditable ? (
+                          <SalaryInput value={row.salary} onSave={(v) => saveSalary(row, v)} />
+                        ) : editable ? (
                           <select
                             className={selectClass}
                             value={editable.value}
@@ -274,5 +293,33 @@ export function MetricDrawer({
         )}
       </div>
     </Drawer>
+  );
+}
+
+// Inline-editable salary (number) for the FT-salary drill. Saves on Enter/blur
+// when the value changed; shows a $-prefixed numeric input.
+function SalaryInput({ value, onSave }: { value: string | null; onSave: (v: number) => void }) {
+  const initial = value ?? "";
+  const [draft, setDraft] = useState(initial);
+  const [saving, setSaving] = useState(false);
+  const commit = async () => {
+    const n = parseInt(draft.replace(/[^0-9]/g, ""), 10);
+    if (Number.isNaN(n) || String(n) === initial) { setDraft(initial); return; }
+    setSaving(true);
+    try { await onSave(n); } finally { setSaving(false); }
+  };
+  return (
+    <span className="inline-flex items-center gap-0.5">
+      <span className="text-ink-3">$</span>
+      <input
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); if (e.key === "Escape") setDraft(initial); }}
+        disabled={saving}
+        inputMode="numeric"
+        className="w-24 rounded border border-border-strong bg-surface px-1.5 py-0.5 text-[12px] tabular-nums outline-none focus:border-accent disabled:opacity-50"
+      />
+    </span>
   );
 }
