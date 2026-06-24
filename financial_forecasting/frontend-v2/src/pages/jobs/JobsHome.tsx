@@ -1,20 +1,18 @@
 /**
  * Jobs command center — the home tab Damon & Avni manage the pipeline from.
+ * Styled to match the Performance tab: full-width (inherits the page's px-7),
+ * gap-7 zones, lightweight uppercase section labels, bordered surface panels.
  *
- * Three zones:
  *   1. Tasks       — every open task across opps/prospects/accounts, with a
  *                    My / per-person filter, inline edit/assign/complete, and a
  *                    quick-add tied to an account.
  *   2. Interviews  — confirmed roles and the builders progressing through them,
  *                    advanceable inline (applied → interview → accepted/hired).
- *   3. Triage      — accounts with new activity, and stale accounts that have
- *                    gone quiet, so nothing slips.
  */
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { Circle, Plus, Briefcase } from "lucide-react";
 
-import { SectionCard } from "@/components/detail";
 import { Tag } from "@/components/ui/Tag";
 import { InlineDate } from "@/components/ui/InlineEdit";
 import { cn } from "@/lib/utils";
@@ -31,6 +29,24 @@ import {
 } from "@/services/jobsOpps2";
 
 const todayIso = () => new Date().toISOString().slice(0, 10);
+
+// ── Section label + bordered panel (mirrors the Performance tab's SectionWrap) ──
+function Section({ title, count, action, children }: {
+  title: string; count?: number; action?: React.ReactNode; children: React.ReactNode;
+}) {
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-baseline gap-2">
+          <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">{title}</span>
+          {count != null && <span className="text-[11px] tabular-nums text-ink-4">{count}</span>}
+        </div>
+        {action}
+      </div>
+      {children}
+    </div>
+  );
+}
 
 // ── Tasks zone ────────────────────────────────────────────────────────────────
 function dueBucket(deadline: string | null): "overdue" | "today" | "upcoming" | "none" {
@@ -143,21 +159,21 @@ function TasksZone() {
   };
 
   return (
-    <SectionCard title={`Tasks · ${filtered.length}`} storageScope="jobs-home-tasks" action={
+    <Section title="Tasks" count={filtered.length} action={
       <div className="flex items-center gap-2">
         <select value={assignee} onChange={(e) => setAssignee(e.target.value)}
-          className="h-7 rounded border border-border-strong bg-surface px-2 text-[12px] text-ink-2 outline-none focus:border-accent">
+          className="h-7 rounded-md border border-border-strong bg-surface px-2 text-[12px] text-ink-2 outline-none focus:border-accent">
           <option value="all">Everyone</option>
           <option value="me" disabled={!myId}>My tasks</option>
           {taskAssignees.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
         </select>
         <button type="button" onClick={() => setAdding((v) => !v)}
-          className="inline-flex h-7 items-center gap-1 rounded border border-border-strong bg-surface px-2 text-[12px] text-ink-2 hover:bg-surface-2">
+          className="inline-flex h-7 items-center gap-1 rounded-md border border-border-strong bg-surface px-2 text-[12px] text-ink-2 hover:bg-surface-2">
           <Plus size={12} /> Add
         </button>
       </div>
     }>
-      <div className="flex flex-col">
+      <div className="flex flex-col overflow-hidden rounded-lg border border-border-strong bg-surface">
         {adding && (
           <div className="flex flex-wrap items-center gap-2 border-b border-border-strong bg-surface-2/40 px-3 py-2">
             <input autoFocus value={newTitle} onChange={(e) => setNewTitle(e.target.value)} placeholder="Task title…"
@@ -196,7 +212,7 @@ function TasksZone() {
           </div>
         ))}
       </div>
-    </SectionCard>
+    </Section>
   );
 }
 
@@ -262,17 +278,17 @@ function InterviewCard({ opp }: { opp: InterviewPipelineOpp }) {
 function InterviewsZone() {
   const { data: opps = [], isLoading } = useInterviewPipeline();
   return (
-    <SectionCard title={`Builders in interviews · ${opps.length}`} storageScope="jobs-home-interviews">
+    <Section title="Builders in interviews" count={opps.length}>
       {isLoading ? (
-        <div className="px-3 py-8 text-center text-[12.5px] text-ink-3">Loading…</div>
+        <div className="rounded-lg border border-border-strong bg-surface px-3 py-8 text-center text-[12.5px] text-ink-3">Loading…</div>
       ) : opps.length === 0 ? (
-        <div className="px-3 py-8 text-center text-[12.5px] text-ink-3">No confirmed roles with builders yet.</div>
+        <div className="rounded-lg border border-border-strong bg-surface px-3 py-8 text-center text-[12.5px] text-ink-3">No confirmed roles with builders yet.</div>
       ) : (
-        <div className="grid grid-cols-1 gap-3 p-3 lg:grid-cols-2">
+        <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
           {opps.map((o) => <InterviewCard key={o.opportunity_id} opp={o} />)}
         </div>
       )}
-    </SectionCard>
+    </Section>
   );
 }
 
@@ -302,10 +318,10 @@ export function JobsHome() {
   ].filter(Boolean).join("  ·  ");
 
   return (
-    <div className="mx-auto flex w-full max-w-[1280px] flex-col gap-5 px-5 py-5">
-      <div className="flex flex-col gap-0.5">
-        <h1 className="text-[20px] font-semibold tracking-tight text-ink">{greeting}</h1>
-        <p className="text-[12.5px] text-ink-3">{digest}</p>
+    <div className="flex flex-col gap-7">
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+        <h1 className="text-[15px] font-semibold text-ink">{greeting}</h1>
+        <span className="text-[11px] text-ink-4">{digest}</span>
       </div>
 
       <TasksZone />
