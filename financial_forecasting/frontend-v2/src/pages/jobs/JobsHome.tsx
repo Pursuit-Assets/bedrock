@@ -143,7 +143,7 @@ function TasksZone() {
   };
 
   return (
-    <SectionCard title="Tasks" storageScope="jobs-home-tasks" action={
+    <SectionCard title={`Tasks · ${filtered.length}`} storageScope="jobs-home-tasks" action={
       <div className="flex items-center gap-2">
         <select value={assignee} onChange={(e) => setAssignee(e.target.value)}
           className="h-7 rounded border border-border-strong bg-surface px-2 text-[12px] text-ink-2 outline-none focus:border-accent">
@@ -262,7 +262,7 @@ function InterviewCard({ opp }: { opp: InterviewPipelineOpp }) {
 function InterviewsZone() {
   const { data: opps = [], isLoading } = useInterviewPipeline();
   return (
-    <SectionCard title="Builders in interviews" storageScope="jobs-home-interviews">
+    <SectionCard title={`Builders in interviews · ${opps.length}`} storageScope="jobs-home-interviews">
       {isLoading ? (
         <div className="px-3 py-8 text-center text-[12.5px] text-ink-3">Loading…</div>
       ) : opps.length === 0 ? (
@@ -279,6 +279,12 @@ function InterviewsZone() {
 // ── Page ────────────────────────────────────────────────────────────────────
 export function JobsHome() {
   const { data: me } = useCurrentUser();
+  const { data: tasks = [] } = useAllJobsTasks();
+  const { data: pipeline = [] } = useInterviewPipeline();
+
+  const overdue = tasks.filter((t) => dueBucket(t.deadline) === "overdue").length;
+  const dueToday = tasks.filter((t) => dueBucket(t.deadline) === "today").length;
+  const interviewing = pipeline.reduce((n, o) => n + o.summary.interview, 0);
 
   const greeting = (() => {
     const h = new Date().getHours();
@@ -287,11 +293,19 @@ export function JobsHome() {
     return `Good ${tod}${first ? `, ${first}` : ""}`;
   })();
 
+  // A quiet one-line digest (not chunky metric chips) — the at-a-glance read.
+  const digest = [
+    `${tasks.length} open task${tasks.length === 1 ? "" : "s"}`,
+    overdue > 0 && `${overdue} overdue`,
+    dueToday > 0 && `${dueToday} due today`,
+    interviewing > 0 && `${interviewing} builder${interviewing === 1 ? "" : "s"} interviewing`,
+  ].filter(Boolean).join("  ·  ");
+
   return (
-    <div className="flex flex-col gap-4 px-5 py-4">
-      <div>
-        <h1 className="text-[18px] font-semibold text-ink">{greeting}</h1>
-        <p className="text-[12.5px] text-ink-3">Here's what needs you today.</p>
+    <div className="mx-auto flex w-full max-w-[1280px] flex-col gap-5 px-5 py-5">
+      <div className="flex flex-col gap-0.5">
+        <h1 className="text-[20px] font-semibold tracking-tight text-ink">{greeting}</h1>
+        <p className="text-[12.5px] text-ink-3">{digest}</p>
       </div>
 
       <TasksZone />
