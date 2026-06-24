@@ -18,8 +18,10 @@ Discrete features from the feedback transcript, phased. `feat/jobs-opp-tab`.
 - **H1/H2.** Pending user files: SF spreadsheets (still-at-org filtered) + volunteer master list (outreach flag).
 
 ## Phases
-1. **Quick wins (no new data)** — A, B1, B2, F1. ✅ DONE (commits 0f47a00 backend, 7759ff2 frontend; F1 pre-existing). Not yet deployed.
-2. **Work queues** — B3, D.
-3. **Outreach analytics** — B4.
-4. **Full universe** — C, H1/H2, LinkedIn mapping. *Blocked on user files.*
-5. **Sputnik merge** — E.
+1. **Quick wins (no new data)** — A (renamed Activating), B1 (recency dropdown), B2 (folded into +Filter), F1. ✅ DONE. Plus **# Hired** column (builders + SF fellows via affiliations, name-bridged). Not yet deployed.
+2. **Command center** — **D ✅ DONE v1** (commits 65a53a8 backend `tasks/all`+`interview-pipeline`, 193ec5b frontend `JobsHome.tsx` = new default Home tab: tasks board w/ My/assignee filter + create/assign/complete, builders-in-interviews tracker, new-activity/stale triage, KPIs). **B3 — SKIPPED** (user does on frontend). **F2 — SKIPPED for now.**
+3. **Outreach analytics** — **B4** = make the ActivityTrends chart click-into-a-bar → activity list, + a real email viewer (not snippets). PENDING. Open Q for user: "filter by percent" = % split bars, or threshold filter? (asked, not answered)
+4. **Full universe** — C, H1/H2, LinkedIn mapping. *Blocked on user files.* SKIP for now.
+5. **Sputnik merge** — E. SKIP for now.
+
+Not deployed yet (whole branch feat/jobs-opp-tab). Browser/Playwright was locked all session → no visual QA; verified via tsc+build+live API.
