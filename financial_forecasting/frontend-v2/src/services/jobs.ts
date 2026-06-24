@@ -214,6 +214,7 @@ export interface JobContactWithDeal extends JobContact {
   recent_activity_count?: number;
   last_activity_at?: string | null;
   responded?: boolean;
+  activity_actors?: string[];
   open_tasks?: number;
 }
 
@@ -333,7 +334,7 @@ export function useContactsByAccount(dealType?: string) {
 // Account-level hub: every company (keyed by normalized name) with its
 // opportunities + prospects nested and a derived status (same vocabulary as the
 // portfolio Accounts tab). Backed by GET /api/jobs/accounts.
-export type JobsAccountStatus = "Prospect" | "Pursuing" | "Stewarding" | "Re-activating" | "Dormant";
+export type JobsAccountStatus = "Prospect" | "Activating" | "Pursuing" | "Stewarding" | "Re-activating" | "Dormant";
 
 export interface JobsAccountOpp {
   id: string;
@@ -372,6 +373,14 @@ export interface JobsAccount {
   recent_activity_count?: number;
   last_activity_at?: string | null;
   responded?: boolean;
+  /** Jobs-team members (emails) who have touched this account — for the team filter. */
+  activity_actors?: string[];
+  /** Builders we placed here (our DB). */
+  builders_hired?: number;
+  /** Historical Pursuit fellows hired here (from Salesforce); null until enriched. */
+  fellows_hired?: number | null;
+  /** All SF account ids this account resolves to (for joining SF fellow counts). */
+  sf_account_ids?: string[];
 }
 
 export function useJobsAccounts(dealType?: string) {
@@ -489,7 +498,7 @@ export interface MetricDrill {
   columns: { key: string; label: string }[];
   rows: (Record<string, string | null> & { _children?: Record<string, string | null>[] })[];
   count: number;
-  entity: "deal" | "contact" | "activity" | "company" | "placement";
+  entity: "deal" | "contact" | "activity" | "company" | "placement" | "salary";
   child_columns: { key: string; label: string }[] | null;
 }
 
@@ -674,6 +683,21 @@ export function useUpdatePlacement() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["jobs", "placements"] });
       toast.success("Attribution updated");
+    },
+    onError: () => toast.error("Update failed"),
+  });
+}
+
+export function useUpdatePlacementSalary() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, salary }: { id: string; salary: number }) => {
+      await api.patch(`/api/jobs/placements/${id}`, { salary });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["jobs", "placements"] });
+      qc.invalidateQueries({ queryKey: ["jobs", "metric"] });
+      toast.success("Salary updated");
     },
     onError: () => toast.error("Update failed"),
   });

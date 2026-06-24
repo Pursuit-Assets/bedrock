@@ -71,6 +71,10 @@ const config: Config = {
           DEFAULT: "var(--red)",
           soft: "var(--red-soft)",
         },
+        sky: {
+          DEFAULT: "var(--sky)",
+          soft: "var(--sky-soft)",
+        },
 
         // shadcn-style aliases (so off-the-shelf components work)
         background: "var(--bg)",

@@ -113,7 +113,8 @@ export function JobsLeadership() {
             format="salary"
             isLoading={pLoading}
             subLead="secured (placed + committed)"
-            sub={p?.avg_salary_ft_placed != null ? `Placed: $${p.avg_salary_ft_placed.toLocaleString()}` : undefined}
+            sub={p?.avg_salary_ft_placed != null ? `Placed: $${p.avg_salary_ft_placed.toLocaleString()} · click to edit` : "click to edit"}
+            onClick={() => setOpenMetric("ft_salaries")}
           />
         </div>
       </SectionWrap>

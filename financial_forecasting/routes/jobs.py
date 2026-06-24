@@ -340,6 +340,37 @@ async def metric_drilldown(
         ]
         return {"columns": cols, "child_columns": child_cols}, out, "placement"
 
+    async def salaries(_where: str):
+        # Flat, EDITABLE breakdown of everything feeding Avg FT Salary: each FT
+        # placement (employment_record) + each committed open FT role, with the
+        # id needed to edit it inline. Placed rows edit via the placement; committed
+        # via the role (both stay in sync once filled).
+        placed = await conn.fetch(
+            "SELECT id, builder, company_name, role_title, payment_amount "
+            "FROM bedrock.secured_jobs() WHERE payment_amount > 0 AND employment_type='full_time' ORDER BY builder")
+        committed = await conn.fetch("""
+            SELECT r.id, o.account_name, r.title, r.approx_salary
+            FROM bedrock.jobs_role r JOIN bedrock.jobs_opportunity o ON o.id = r.opportunity_id
+            WHERE r.status='open' AND o.deleted_at IS NULL AND r.commitment='committed' AND r.is_trial=false
+              AND (r.employment_type='full_time' OR (r.employment_type IS NULL AND o.deal_type='ft'))
+            ORDER BY o.account_name""")
+        out = []
+        for r in placed:
+            out.append({"id": str(r["id"]), "kind": "placed", "name": r["builder"],
+                        "where": r["company_name"] or "—", "role": r["role_title"] or "—",
+                        "status": "Placed", "salary": str(int(r["payment_amount"])) if r["payment_amount"] else ""})
+        for r in committed:
+            out.append({"id": str(r["id"]), "kind": "committed", "name": r["account_name"] or "—",
+                        "where": r["account_name"] or "—", "role": r["title"] or "FT role",
+                        "status": "Committed", "salary": str(int(r["approx_salary"])) if r["approx_salary"] else ""})
+        cols = [
+            {"key": "name", "label": "Builder / Account"},
+            {"key": "role", "label": "Role"},
+            {"key": "status", "label": "Status"},
+            {"key": "salary", "label": "Salary"},
+        ]
+        return cols, out, "salary"
+
     async def any_paid(_where: str):
         rows = await conn.fetch("SELECT * FROM bedrock.secured_jobs() WHERE payment_amount > 0 ORDER BY builder")
         seen: dict = {}
@@ -398,6 +429,7 @@ async def metric_drilldown(
         "in_discussion":        ("In Discussion",            lambda: deals("stage='active_in_discussions'")),
         "builder_interviews":   ("Builder Interview",        lambda: deals("stage='active_builder_interview'")),
         "placements":           ("FT Roles Secured", lambda: placements("true")),
+        "ft_salaries":          ("FT Salaries", lambda: salaries("true")),
         "candidates_submitted": ("Companies w/ Candidates Submitted", lambda: companies("stage IN ('applied','interview','accepted')")),
         "interviewing":         ("Companies Interviewing Builders",   lambda: companies("stage='interview'")),
     }
@@ -713,6 +745,7 @@ async def link_opp_placement(
 
 class PlacementUpdate(BaseModel):
     influenced: Optional[bool] = None  # true / false / null (unclassify)
+    salary: Optional[int] = None       # edit payment_amount (the secured-jobs SoT)
 
 
 @router.patch("/placements/{placement_id}")
@@ -722,14 +755,26 @@ async def update_placement(
     user=Depends(require_auth),
     conn=Depends(get_db),
 ):
-    """Set the influence attribution on a secured job."""
+    """Edit a secured job: influence attribution and/or salary (payment_amount)."""
+    sets, params, i = [], [], 1
+    fields = body.model_dump(exclude_unset=True)
+    if "influenced" in fields:
+        sets.append(f"influenced=${i}"); params.append(body.influenced); i += 1
+    if "salary" in fields:
+        sets.append(f"payment_amount=${i}"); params.append(body.salary); i += 1
+    if not sets:
+        return {"success": True, "data": {"id": placement_id}}
+    params.append(placement_id)
     result = await conn.execute(
-        "UPDATE public.employment_records SET influenced=$1, updated_at=now() WHERE id=$2",
-        body.influenced, placement_id,
-    )
+        f"UPDATE public.employment_records SET {', '.join(sets)}, updated_at=now() WHERE id=${i}", *params)
     if result == "UPDATE 0":
         raise HTTPException(404, "Placement not found")
-    return {"success": True, "data": {"id": placement_id, "influenced": body.influenced}}
+    # Keep the linked role's salary in sync (the other half of the filled-role pair).
+    if "salary" in fields:
+        await conn.execute(
+            "UPDATE bedrock.jobs_role SET approx_salary=$1, updated_at=now() WHERE employment_record_id=$2",
+            body.salary, placement_id)
+    return {"success": True, "data": {"id": placement_id, **fields}}
 
 
 # ── Roles (jobs_role) — open roles on an opportunity ──────────────────────────
@@ -892,6 +937,13 @@ async def update_role(
         f"UPDATE bedrock.jobs_role SET {', '.join(sets)}, updated_at=now() WHERE id=${i} RETURNING *",
         *params,
     )
+    # Keep a FILLED role's salary in sync with its placement (the org-wide source
+    # of truth that the Avg-Salary metric reads), so the two never diverge.
+    if body.approx_salary is not None and row["employment_record_id"]:
+        await conn.execute(
+            "UPDATE public.employment_records SET payment_amount=$1, updated_at=now() WHERE id=$2",
+            body.approx_salary, row["employment_record_id"],
+        )
     return {"success": True, "data": _role_dict(row)}
 
 
@@ -1000,6 +1052,85 @@ async def opp_builder_activity(
             "date_applied":       r["date_applied"].isoformat() if r["date_applied"] else None,
         })
     return {"success": True, "data": {"rows": out, "summary": summary}}
+
+
+@router.get("/interview-pipeline")
+async def interview_pipeline(
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Confirmed roles across all live opportunities, each with the builders
+    progressing through them — the command center's interview tracker.
+
+    An opportunity is included when it has at least one committed role OR at
+    least one builder application/interview/hire tied to it. Builders are
+    grouped under the role they're applying to (jobs_role_id) when known, else
+    listed at the opportunity level. Closed/deleted opps are excluded.
+    """
+    roles = await conn.fetch(
+        """
+        SELECT r.id, r.opportunity_id, r.title, r.status, r.employment_type,
+               r.approx_salary, r.filled_by_user_id,
+               o.account_name, o.stage AS opp_stage, o.owner_email
+        FROM bedrock.jobs_role r
+        JOIN bedrock.jobs_opportunity o ON o.id = r.opportunity_id
+        WHERE o.deleted_at IS NULL AND o.stage NOT IN ('closed_won', 'closed_lost')
+        ORDER BY o.account_name, r.created_at
+        """,
+    )
+    apps = await conn.fetch(
+        """
+        SELECT ja.job_application_id, ja.jobs_opportunity_id, ja.jobs_role_id,
+               trim(split_part(ja.notes, ':', 1)) AS builder,
+               ja.role_title, ja.stage, ja.date_applied,
+               o.account_name, o.stage AS opp_stage, o.owner_email
+        FROM public.job_applications ja
+        JOIN bedrock.jobs_opportunity o ON o.id = ja.jobs_opportunity_id
+        WHERE o.deleted_at IS NULL AND o.stage NOT IN ('closed_won', 'closed_lost')
+          AND ja.stage IN ('applied', 'interview', 'accepted')
+        ORDER BY ja.date_applied DESC NULLS LAST
+        """,
+    )
+
+    opps: dict = {}
+
+    def _opp(opp_id, account_name, stage, owner_email):
+        key = str(opp_id)
+        if key not in opps:
+            opps[key] = {
+                "opportunity_id": key, "account_name": account_name,
+                "stage": stage, "owner_email": owner_email,
+                "roles": [], "builders": [],
+                "summary": {"applied": 0, "interview": 0, "accepted": 0, "open_roles": 0},
+            }
+        return opps[key]
+
+    for r in roles:
+        g = _opp(r["opportunity_id"], r["account_name"], r["opp_stage"], r["owner_email"])
+        g["roles"].append({
+            "id": str(r["id"]), "title": r["title"], "status": r["status"],
+            "employment_type": r["employment_type"], "approx_salary": r["approx_salary"],
+            "filled_by_user_id": r["filled_by_user_id"],
+        })
+        if r["status"] == "open":
+            g["summary"]["open_roles"] += 1
+
+    for a in apps:
+        g = _opp(a["jobs_opportunity_id"], a["account_name"], a["opp_stage"], a["owner_email"])
+        g["builders"].append({
+            "job_application_id": a["job_application_id"], "builder": a["builder"],
+            "role_title": a["role_title"], "jobs_role_id": str(a["jobs_role_id"]) if a["jobs_role_id"] else None,
+            "stage": a["stage"], "date_applied": a["date_applied"].isoformat() if a["date_applied"] else None,
+        })
+        if a["stage"] in g["summary"]:
+            g["summary"][a["stage"]] += 1
+
+    # Opps actively interviewing first, then by builder volume.
+    out = sorted(
+        opps.values(),
+        key=lambda g: (-(g["summary"]["interview"]), -len(g["builders"]), g["account_name"] or ""),
+    )
+    return {"success": True, "data": out}
 
 
 # public.job_applications.stage vocabulary (builder-side submission funnel).
@@ -1831,8 +1962,12 @@ async def contacts_by_account(
 #   Pursuing     – an active open opportunity
 #   Re-activating– only stale opps (on-hold/lost) but touched in the last 90 days
 #   Dormant      – only stale opps, no recent touch
-#   Prospect     – prospects only, no opportunity yet
-_ACCOUNT_STATUS_RANK = {"Pursuing": 0, "Stewarding": 1, "Re-activating": 2, "Prospect": 3, "Dormant": 4}
+#   Activating    – no opportunity yet, but we've made contact / done outreach
+#   Prospect     – no opportunity AND no activity (untouched)
+_ACCOUNT_STATUS_RANK = {
+    "Pursuing": 0, "Stewarding": 1, "Re-activating": 2,
+    "Activating": 3, "Prospect": 4, "Dormant": 5,
+}
 
 
 @router.get("/accounts")
@@ -1945,36 +2080,47 @@ async def jobs_accounts(
     # participant-linked (emails/calls) + meeting attendees (calendar, which has
     # no participant link), so meetings/manual aren't undercounted.
     team_sender = " OR ".join(f"a.email_from ILIKE '%{e}%'" for e in JOBS_TEAM_EMAILS)
+    # SQL expr → the jobs-team member who authored a row (NULL if none), so we can
+    # aggregate the distinct set of team members who've touched each account.
+    actor_case = "CASE " + " ".join(
+        f"WHEN a.email_from ILIKE '%{e}%' OR a.logged_by ILIKE '%{e}%' THEN '{e}'"
+        for e in JOBS_TEAM_EMAILS
+    ) + " END"
     acct_act: dict = {}
 
-    def _merge(company, last_act, recent, responded):
-        cur = acct_act.setdefault(company, {"recent": 0, "last": None, "responded": False})
+    def _merge(company, last_act, recent, responded, actors=None):
+        cur = acct_act.setdefault(
+            company, {"recent": 0, "last": None, "responded": False, "actors": set()})
         cur["recent"] += recent or 0
         if last_act and (cur["last"] is None or last_act > cur["last"]):
             cur["last"] = last_act
         cur["responded"] = cur["responded"] or bool(responded)
+        if actors:
+            cur["actors"].update(a for a in actors if a)
 
     for r in await conn.fetch(f"""
         SELECT lower(trim(c.current_company)) AS company,
                max(a.activity_date) AS last_act,
                count(*) FILTER (WHERE a.activity_date >= now() - interval '90 days') AS recent,
                bool_or(a.type IN ('call','meeting')
-                       OR (a.type = 'email' AND NOT ({team_sender}))) AS responded
+                       OR (a.type = 'email' AND NOT ({team_sender}))) AS responded,
+               array_agg(DISTINCT {actor_case}) AS actors
         FROM bedrock.activity a JOIN public.contacts c ON c.contact_id = a.participant_public_contact_id
         WHERE a.deleted_at IS NULL AND coalesce(trim(c.current_company),'') <> ''
         GROUP BY 1"""):
-        _merge(r["company"], r["last_act"], r["recent"], r["responded"])
-    for r in await conn.fetch("""
+        _merge(r["company"], r["last_act"], r["recent"], r["responded"], r["actors"])
+    for r in await conn.fetch(f"""
         SELECT lower(trim(c.current_company)) AS company,
                max(a.activity_date) AS last_act,
                count(*) FILTER (WHERE a.activity_date >= now() - interval '90 days') AS recent,
-               true AS responded
+               true AS responded,
+               array_agg(DISTINCT {actor_case}) AS actors
         FROM bedrock.activity a, jsonb_array_elements(coalesce(a.meeting_attendees, '[]'::jsonb)) att
         JOIN public.contacts c ON lower(c.email) = lower(att->>'email')
         WHERE a.deleted_at IS NULL AND a.source = 'calendar-sync'
           AND coalesce(trim(c.current_company),'') <> ''
         GROUP BY 1"""):
-        _merge(r["company"], r["last_act"], r["recent"], r["responded"])
+        _merge(r["company"], r["last_act"], r["recent"], r["responded"], r["actors"])
     # A role created or a hire tagged is real momentum — count it as responded,
     # by account (keyed on normalized account_name = account_key).
     for sql in (
@@ -1989,6 +2135,49 @@ async def jobs_accounts(
     ):
         for r in await conn.fetch(sql):
             _merge(r["company"], r["last_act"], r["recent"], r["responded"])
+
+    # Builders hired per account (distinct builders with an employment_record at
+    # the company), linked via the jobs opp OR the record's own company_name.
+    # Own-venture records aren't "hires" at an external account. Keyed on the
+    # normalized account name = account_key. (SF "fellows hired" is merged
+    # separately — historical Pursuit placements live only in Salesforce.)
+    hires_by_account: dict[str, int] = {
+        r["company"]: r["n"] for r in await conn.fetch(
+            """
+            SELECT company, count(DISTINCT user_id) AS n FROM (
+                SELECT er.user_id, lower(trim(o.account_name)) AS company
+                FROM public.employment_records er
+                JOIN bedrock.jobs_opportunity o ON o.id = er.opportunity_id
+                WHERE o.deleted_at IS NULL AND coalesce(trim(o.account_name),'') <> ''
+                  AND coalesce(er.is_own_venture, false) = false
+                UNION
+                SELECT er.user_id, lower(trim(er.company_name)) AS company
+                FROM public.employment_records er
+                WHERE coalesce(trim(er.company_name),'') <> ''
+                  AND coalesce(er.is_own_venture, false) = false
+            ) s GROUP BY company
+            """,
+        )
+    }
+
+    # Resolve every Salesforce account id that maps to each account (by company
+    # name → public.companies → sf_account_company_map). Most jobs accounts have
+    # no direct SF id on their opps, so without this bridge the SF "fellows
+    # hired" counts (keyed by sf_account_id) would only attach to ~15% of
+    # accounts. One name can map to several SF accounts (e.g. a company with
+    # multiple SF records) — return all so fellow counts can be summed.
+    name_sf_ids: dict[str, list[str]] = {
+        r["key"]: [x for x in (r["ids"] or []) if x]
+        for r in await conn.fetch(
+            """
+            SELECT lower(trim(co.name)) AS key, array_agg(DISTINCT m.sf_account_id) AS ids
+            FROM public.companies co
+            JOIN bedrock.sf_account_company_map m ON m.public_company_id = co.company_id
+            WHERE coalesce(trim(co.name), '') <> '' AND m.sf_account_id IS NOT NULL
+            GROUP BY 1
+            """,
+        )
+    }
 
     dt = deal_type if deal_type and deal_type != "all" else None
     now = datetime.now(timezone.utc)
@@ -2013,6 +2202,8 @@ async def jobs_accounts(
         has_won = "closed_won" in stages
         last = g.pop("_last")
         recent = bool(last and (now - last).days <= 90)
+        a = acct_act.get(key)
+        has_activity = bool(a and (a["last"] or a["recent"]))
         if rec and rec["status_override"]:
             status = rec["status_override"]
         elif has_open:
@@ -2021,6 +2212,9 @@ async def jobs_accounts(
             status = "Stewarding"
         elif opps:
             status = "Re-activating" if recent else "Dormant"
+        elif has_activity:
+            # No opportunity yet, but we've reached out / made contact.
+            status = "Activating"
         else:
             status = "Prospect"
         g["account_key"] = key
@@ -2029,10 +2223,24 @@ async def jobs_accounts(
         g["prospect_count"] = len(g["prospects"])
         g["last_activity"] = last.isoformat() if last else None
         g["open_tasks"] = open_tasks.get(key, 0)
-        a = acct_act.get(key)
         g["recent_activity_count"] = a["recent"] if a else 0
         g["last_activity_at"] = a["last"].isoformat() if (a and a["last"]) else None
         g["responded"] = bool(a and a["responded"])
+        # Which jobs-team members have touched this account (for the team filter).
+        g["activity_actors"] = sorted(a["actors"]) if a else []
+        # # hired: builders we placed (our DB) + SF fellows hired (historical,
+        # merged from Salesforce by the caller; null until that enrichment runs).
+        g["builders_hired"] = hires_by_account.get(key, 0)
+        g["fellows_hired"] = None
+        # Every SF account id this account resolves to (direct opp link + explicit
+        # jobs_account link + company-name bridge), so the SF fellow counts can
+        # attach to far more than just the directly-SF-linked accounts.
+        sf_ids = set(name_sf_ids.get(key, []))
+        if g["account_id"] and str(g["account_id"]).startswith("001"):
+            sf_ids.add(g["account_id"])
+        if rec and rec["sf_account_id"]:
+            sf_ids.add(rec["sf_account_id"])
+        g["sf_account_ids"] = sorted(sf_ids)
         out.append(g)
 
     out.sort(key=lambda a: (
@@ -2043,7 +2251,7 @@ async def jobs_accounts(
     return {"success": True, "data": out}
 
 
-_VALID_ACCOUNT_STATUS = {"Prospect", "Pursuing", "Stewarding", "Re-activating", "Dormant"}
+_VALID_ACCOUNT_STATUS = {"Prospect", "Activating", "Pursuing", "Stewarding", "Re-activating", "Dormant"}
 
 
 class JobsAccountUpdate(BaseModel):
@@ -2379,6 +2587,10 @@ async def list_contacts(
     # and whether they've RESPONDED (a meeting/call, or an inbound email — not
     # just our outbound).
     team_sender = " OR ".join(f"a.email_from ILIKE '%{e}%'" for e in JOBS_TEAM_EMAILS)
+    actor_case = "CASE " + " ".join(
+        f"WHEN a.email_from ILIKE '%{e}%' OR a.logged_by ILIKE '%{e}%' THEN '{e}'"
+        for e in JOBS_TEAM_EMAILS
+    ) + " END"
     activity_by_contact: dict[int, dict] = {}
     if contact_ids:
         arows = await conn.fetch(
@@ -2387,14 +2599,17 @@ async def list_contacts(
                    count(*) FILTER (WHERE a.activity_date >= now() - interval '90 days') AS recent,
                    max(a.activity_date) AS last_act,
                    bool_or(a.type IN ('call','meeting')
-                           OR (a.type = 'email' AND NOT ({team_sender}))) AS responded
+                           OR (a.type = 'email' AND NOT ({team_sender}))) AS responded,
+                   array_agg(DISTINCT {actor_case}) AS actors
             FROM bedrock.activity a
             WHERE a.deleted_at IS NULL AND a.participant_public_contact_id = ANY($1::int[])
             GROUP BY a.participant_public_contact_id
             """,
             contact_ids,
         )
-        activity_by_contact = {a["cid"]: {"recent": a["recent"], "last": a["last_act"], "responded": a["responded"]} for a in arows}
+        activity_by_contact = {a["cid"]: {"recent": a["recent"], "last": a["last_act"],
+                                          "responded": a["responded"],
+                                          "actors": sorted(x for x in (a["actors"] or []) if x)} for a in arows}
 
     # Open tasks per contact (parent_type='prospect').
     tasks_by_contact: dict[int, int] = {}
@@ -2423,6 +2638,7 @@ async def list_contacts(
                 "recent_activity_count": (activity_by_contact.get(r["contact_id"]) or {}).get("recent", 0),
                 "last_activity_at": (lambda v: v.isoformat() if v else None)((activity_by_contact.get(r["contact_id"]) or {}).get("last")),
                 "responded": bool((activity_by_contact.get(r["contact_id"]) or {}).get("responded")),
+                "activity_actors": (activity_by_contact.get(r["contact_id"]) or {}).get("actors", []),
                 "open_tasks": tasks_by_contact.get(r["contact_id"], 0),
             }
             for r in rows
@@ -2931,14 +3147,22 @@ async def update_opportunity(
     params: list = []
     i = 1
 
+    # An explicitly-sent null must CLEAR the column (e.g. unassigning an owner),
+    # so key off model_fields_set rather than `val is not None` — otherwise a
+    # null is indistinguishable from "field omitted" and is silently dropped.
+    # `stage` is NOT NULL, so it can never be cleared this way.
+    fields_set = body.model_fields_set
     for field in ("stage", "deal_type", "title", "description", "salary_expected",
                   "num_roles", "likelihood",
                   "source", "owner_email", "relationship_owner", "sf_contact_ids", "builder_ids",
                   "follow_up_date", "touch_count", "sf_opportunity_id",
                   "closed_lost_reason", "closed_lost_note", "priority", "segment", "intro_by"):
+        if field not in fields_set:
+            continue
         val = getattr(body, field, None)
-        if val is not None:
-            sets.append(f"{field} = ${i}"); params.append(val); i += 1
+        if val is None and field == "stage":
+            continue
+        sets.append(f"{field} = ${i}"); params.append(val); i += 1
 
     # Auto-set closed_at
     if body.stage in ("closed_won", "closed_lost") and not existing["closed_at"]:

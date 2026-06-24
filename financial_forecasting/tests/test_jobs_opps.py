@@ -84,6 +84,30 @@ def test_update_opportunity_priority_out_of_range_400():
     assert r.status_code == 400
 
 
+def test_update_opportunity_clears_owner_when_explicit_null():
+    # Unassigning an owner: an explicit null must write owner_email = NULL,
+    # not be silently dropped (the "owner won't save on unassigned opps" bug).
+    conn = FakeConn(rows={"FROM bedrock.jobs_opportunity WHERE id=$1": _opp_row(owner_email="a@p.org")})
+    c = make_jobs_client(conn)
+    r = c.patch(f"/api/jobs/opportunities/{UUID1}", json={"owner_email": None})
+    assert r.status_code == 200, r.text
+    upd = next(c2 for c2 in conn.calls if c2[0] == "execute"
+               and "UPDATE bedrock.jobs_opportunity SET" in c2[1])
+    assert "owner_email = $1" in upd[1]
+    assert upd[2][0] is None          # null is written through, clearing the owner
+
+
+def test_update_opportunity_ignores_omitted_owner():
+    # Omitting owner_email entirely must NOT touch it (only the sent field changes).
+    conn = FakeConn(rows={"FROM bedrock.jobs_opportunity WHERE id=$1": _opp_row(owner_email="a@p.org")})
+    c = make_jobs_client(conn)
+    r = c.patch(f"/api/jobs/opportunities/{UUID1}", json={"title": "New"})
+    assert r.status_code == 200, r.text
+    upd = next(c2 for c2 in conn.calls if c2[0] == "execute"
+               and "UPDATE bedrock.jobs_opportunity SET" in c2[1])
+    assert "owner_email" not in upd[1] and "title = $1" in upd[1]
+
+
 # ── delete ──────────────────────────────────────────────────────────────────────
 
 def test_delete_opportunity_not_found_404():
@@ -126,6 +150,41 @@ def test_create_role_opp_not_found_404():
     c = make_jobs_client(FakeConn())   # opp lookup returns None
     r = c.post(f"/api/jobs/opportunities/{UUID1}/roles", json={"title": "Eng"})
     assert r.status_code == 404
+
+
+def test_update_placement_salary_syncs_role():
+    conn = FakeConn()  # execute default "OK" (not "UPDATE 0")
+    c = make_jobs_client(conn)
+    r = c.patch("/api/jobs/placements/75", json={"salary": 87500})
+    assert r.status_code == 200, r.text
+    erc = conn.executed("UPDATE public.employment_records SET")
+    assert erc and 87500 in erc[0][2]
+    role = conn.executed("UPDATE bedrock.jobs_role SET approx_salary")
+    assert role and role[0][2] == (87500, 75)   # sync linked role
+
+
+def test_update_role_salary_syncs_filled_placement():
+    # editing a FILLED role's salary writes through to its employment_record
+    conn = FakeConn(rows={
+        "SELECT * FROM bedrock.jobs_role WHERE id": {"id": UUID1, "employment_record_id": 75, "status": "filled"},
+        "UPDATE bedrock.jobs_role SET": {"id": UUID1, "employment_record_id": 75, "approx_salary": 87500},
+    })
+    c = make_jobs_client(conn)
+    r = c.patch(f"/api/jobs/roles/{UUID1}", json={"approx_salary": 87500})
+    assert r.status_code == 200, r.text
+    sync = conn.executed("UPDATE public.employment_records SET payment_amount")
+    assert sync and sync[0][2] == (87500, 75)
+
+
+def test_update_role_salary_no_sync_when_unfilled():
+    conn = FakeConn(rows={
+        "SELECT * FROM bedrock.jobs_role WHERE id": {"id": UUID1, "employment_record_id": None, "status": "open"},
+        "UPDATE bedrock.jobs_role SET": {"id": UUID1, "employment_record_id": None, "approx_salary": 90000},
+    })
+    c = make_jobs_client(conn)
+    r = c.patch(f"/api/jobs/roles/{UUID1}", json={"approx_salary": 90000})
+    assert r.status_code == 200, r.text
+    assert not conn.executed("UPDATE public.employment_records SET payment_amount")  # no placement to sync
 
 
 def test_create_role_happy():

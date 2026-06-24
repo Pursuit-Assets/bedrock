@@ -1,18 +1,20 @@
 import { useEffect } from "react";
 import { useSearchParams } from "react-router-dom";
-import { BarChart3, Building2, Kanban, Users, GraduationCap } from "lucide-react";
+import { Home, BarChart3, Building2, Kanban, Users, GraduationCap } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { useSessionState } from "@/lib/useSessionState";
 import { cn } from "@/lib/utils";
+import { JobsHome } from "./jobs/JobsHome";
 import { JobsAccountHub } from "./jobs/JobsAccountHub";
 import { JobsTeam } from "./jobs/JobsTeam";
 import { JobsLeadership } from "./jobs/JobsLeadership";
 import { JobsContacts } from "./jobs/JobsContacts";
 import { JobsBuilders } from "./jobs/JobsBuilders";
 
-type View = "accounts" | "performance" | "team" | "contacts" | "builders";
+type View = "home" | "accounts" | "performance" | "team" | "contacts" | "builders";
 
 const VIEWS = [
+  { id: "home" as View,        label: "Home",        icon: Home,      desc: "Daily command center — tasks, interviews, triage" },
   { id: "performance" as View, label: "Performance", icon: BarChart3, desc: "Pipeline health & metrics" },
   { id: "accounts" as View,    label: "Accounts",    icon: Building2, desc: "Account-level hub — opps + contacts" },
   { id: "team" as View,        label: "Opportunities", icon: Kanban,  desc: "Day-to-day deal management" },
@@ -20,7 +22,7 @@ const VIEWS = [
   { id: "builders" as View,    label: "Builders",    icon: GraduationCap, desc: "Per-builder job search" },
 ];
 
-const VALID_VIEWS = new Set<View>(["accounts", "performance", "team", "contacts", "builders"]);
+const VALID_VIEWS = new Set<View>(["home", "accounts", "performance", "team", "contacts", "builders"]);
 
 export function JobsPage() {
   const [searchParams] = useSearchParams();
@@ -28,7 +30,7 @@ export function JobsPage() {
   //   ?view=contacts&q=<text>           — seed the find-any search
   //   ?view=contacts&contact=<id>       — open that contact's detail drawer
   const paramView = searchParams.get("view") as View | null;
-  const initialView: View = paramView && VALID_VIEWS.has(paramView) ? paramView : "performance";
+  const initialView: View = paramView && VALID_VIEWS.has(paramView) ? paramView : "home";
   const initialQuery = searchParams.get("q") ?? undefined;
   const contactParam = searchParams.get("contact");
   const initialContactId = contactParam && /^\d+$/.test(contactParam) ? Number(contactParam) : undefined;
@@ -70,6 +72,7 @@ export function JobsPage() {
       />
 
       <div className="mt-1">
+        {view === "home"        && <JobsHome />}
         {view === "accounts"    && <JobsAccountHub initialQuery={initialQuery} />}
         {view === "performance" && <JobsLeadership />}
         {view === "team"        && <JobsTeam />}

@@ -254,3 +254,51 @@ export function useUpdateBuilderActivity(oppId: string) {
     onError: () => toast.error("Update failed"),
   });
 }
+
+// ── Command-center interview pipeline (confirmed roles + builders, all opps) ───
+
+export interface InterviewPipelineRole {
+  id: string;
+  title: string | null;
+  status: string;
+  employment_type: string | null;
+  approx_salary: number | null;
+  filled_by_user_id: number | null;
+}
+
+export interface InterviewPipelineOpp {
+  opportunity_id: string;
+  account_name: string | null;
+  stage: string;
+  owner_email: string | null;
+  roles: InterviewPipelineRole[];
+  builders: BuilderActivityRow[];
+  summary: { applied: number; interview: number; accepted: number; open_roles: number };
+}
+
+export function useInterviewPipeline() {
+  return useQuery<InterviewPipelineOpp[]>({
+    queryKey: ["jobs", "interview-pipeline"],
+    queryFn: async () => {
+      const { data } = await api.get<ApiResponse<InterviewPipelineOpp[]>>("/api/jobs/interview-pipeline");
+      return data.data ?? [];
+    },
+    staleTime: 30_000,
+  });
+}
+
+/** Advance a builder's interview stage from the command-center board. */
+export function useAdvanceBuilderStage() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ appId, stage }: { appId: number; stage: AppStage }) => {
+      await api.patch(`/api/jobs/builder-activity/${appId}`, { stage });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["jobs", "interview-pipeline"] });
+      invalidateOppDependents(qc, [["jobs", "placements"], ["jobs", "builders"]]);
+      toast.success("Stage updated");
+    },
+    onError: () => toast.error("Update failed"),
+  });
+}

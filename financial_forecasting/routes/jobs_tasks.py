@@ -170,6 +170,95 @@ async def update_jobs_task(
     return {"success": True, "data": _serialize(row)}
 
 
+@router.get("/tasks/all")
+async def list_all_jobs_tasks(
+    status: Optional[str] = Query(None, description="filter to one status; omit for all open (non-Completed)"),
+    include_completed: bool = Query(False),
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Every jobs task across opportunities, prospects, and accounts in one list
+    — the data behind the command-center task board. Each row is enriched with
+    its parent label (so you can see *what* the task is about) and assignee
+    display names (owner_ids → public.org_users). Defaults to open tasks; pass
+    include_completed=true or a specific status to widen.
+    """
+    where = "deleted_at IS NULL"
+    if status:
+        if status not in VALID_STATUSES:
+            raise HTTPException(400, f"Invalid status: {status}")
+        where += " AND status = $1"
+    elif not include_completed:
+        where += " AND status <> 'Completed'"
+    params = [status] if status else []
+
+    rows = []
+    for tbl in ("bedrock.jobs_task", "bedrock.jobs_account_task"):
+        rows += await conn.fetch(f"SELECT {_COLS} FROM {tbl} WHERE {where}", *params)
+
+    tasks = [_serialize(r) for r in rows]
+
+    # ── Resolve parent labels (what the task is about) ──────────────────────
+    opp_ids, contact_ids = [], []
+    for t in tasks:
+        if t["parent_type"] == "opportunity":
+            try:
+                opp_ids.append(uuid.UUID(t["parent_id"]))
+            except (ValueError, AttributeError):
+                pass
+        elif t["parent_type"] == "prospect":
+            try:
+                contact_ids.append(int(t["parent_id"]))
+            except (ValueError, TypeError):
+                pass
+
+    opp_labels: dict = {}
+    if opp_ids:
+        for r in await conn.fetch(
+            "SELECT id, account_name, title, stage FROM bedrock.jobs_opportunity WHERE id = ANY($1::uuid[])",
+            opp_ids,
+        ):
+            opp_labels[str(r["id"])] = {
+                "label": r["account_name"] or "(untitled)",
+                "sublabel": r["title"], "stage": r["stage"],
+            }
+    contact_labels: dict = {}
+    if contact_ids:
+        for r in await conn.fetch(
+            "SELECT contact_id, full_name, current_company FROM public.contacts WHERE contact_id = ANY($1::int[])",
+            contact_ids,
+        ):
+            contact_labels[str(r["contact_id"])] = {
+                "label": r["full_name"] or "(unnamed)", "sublabel": r["current_company"], "stage": None,
+            }
+
+    # ── Resolve assignee names (owner_ids → org_users) ──────────────────────
+    all_owner_ids = {oid for t in tasks for oid in t["owner_ids"]}
+    owner_names: dict = {}
+    if all_owner_ids:
+        for r in await conn.fetch(
+            "SELECT id, display_name, email FROM public.org_users WHERE id = ANY($1::uuid[])",
+            [uuid.UUID(x) for x in all_owner_ids],
+        ):
+            owner_names[str(r["id"])] = r["display_name"] or r["email"]
+
+    for t in tasks:
+        if t["parent_type"] == "opportunity":
+            meta = opp_labels.get(t["parent_id"])
+        elif t["parent_type"] == "prospect":
+            meta = contact_labels.get(t["parent_id"])
+        else:  # account — parent_id is the account key (normalized name)
+            meta = {"label": t["parent_id"], "sublabel": None, "stage": None}
+        t["parent_label"] = (meta or {}).get("label") or t["parent_id"]
+        t["parent_sublabel"] = (meta or {}).get("sublabel")
+        t["parent_stage"] = (meta or {}).get("stage")
+        t["owner_names"] = [owner_names.get(oid, oid) for oid in t["owner_ids"]]
+
+    # Soonest deadline first (nulls last), then newest.
+    tasks.sort(key=lambda t: (t["deadline"] or "9999-12-31", t["created_at"] or ""))
+    return {"success": True, "data": tasks}
+
+
 @router.delete("/jobs-tasks/{task_id}")
 async def delete_jobs_task(
     task_id: str,

@@ -15,7 +15,7 @@ import { ChevronDown, Filter as FilterIcon, Plus, X } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 
-export type FieldType = "select" | "text" | "number" | "date";
+export type FieldType = "select" | "text" | "number" | "date" | "recency";
 
 export type Operator =
   | "equals"
@@ -26,7 +26,8 @@ export type Operator =
   | "gt"
   | "lt"
   | "before"
-  | "after";
+  | "after"
+  | "within";
 
 export interface FieldMeta<T> {
   label: string;
@@ -70,6 +71,11 @@ export const OPS_BY_TYPE: Record<FieldType, { value: Operator; label: string }[]
     { value: "equals", label: "is" },
     { value: "not_equals", label: "is not" },
     { value: "is_empty", label: "is empty" },
+  ],
+  // A recency window picked from a dropdown (Last 7/30/90 days, etc.). The
+  // value is a number-of-days string, or "none" for "nothing in 90+ days".
+  recency: [
+    { value: "within", label: "within" },
   ],
 };
 
@@ -125,6 +131,15 @@ export function ruleApplies<T, F extends string>(
     if (r.op === "after") return ms > target;
     if (r.op === "equals") return String(v).slice(0, 10) === first;
     if (r.op === "not_equals") return String(v).slice(0, 10) !== first;
+  }
+
+  if (meta.type === "recency") {
+    // getValue returns an ISO timestamp of the last touch (or null/empty).
+    const ms = v == null || v === "" ? null : new Date(String(v)).getTime();
+    const daysAgo = ms == null || !Number.isFinite(ms) ? Infinity : (Date.now() - ms) / 86_400_000;
+    if (first === "none") return daysAgo > 90;        // quiet for 90+ days (incl. never)
+    const win = Number(first);
+    return Number.isFinite(win) && daysAgo <= win;     // active within the window
   }
 
   return true;
@@ -228,8 +243,11 @@ export function AddFilterButton<F extends string>({
   // option in the value list.
   const valueOptions = useMemo(() => {
     if (!rawValueOptions) return null;
+    // The "(empty)" sentinel only makes sense for select multi-select fields.
+    // A recency window dropdown has no empty bucket.
+    if (meta.type !== "select") return rawValueOptions;
     return [{ value: "", label: "(empty)" }, ...rawValueOptions];
-  }, [rawValueOptions]);
+  }, [rawValueOptions, meta.type]);
 
   const filteredOptions = useMemo(() => {
     if (!valueOptions) return null;

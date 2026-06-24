@@ -3,6 +3,7 @@ import {
   useJobsOpportunities,
   useJobsOpportunity,
   useUpdateOpportunity,
+  useDeleteOpportunity,
   useCreateOpportunity,
   useLogActivity,
   useDeleteActivity,
@@ -572,10 +573,16 @@ const CLOSED_LOST_LABELS: Record<string, string> = {
  *  segment, warm-intro attribution, and the closed-lost reason when applicable. */
 function DealContextStrip({ deal }: { deal: JobsOpportunity }) {
   const updateOpp = useUpdateOpportunity();
+  const deleteOpp = useDeleteOpportunity();
   const patch = (fields: Record<string, unknown>) =>
     new Promise<void>((resolve, reject) =>
       updateOpp.mutate({ id: deal.id, ...fields }, { onSuccess: () => resolve(), onError: reject }),
     );
+  const removeOpp = () => {
+    if (window.confirm(`Delete the "${deal.account_name}" opportunity? This removes it from the pipeline.`)) {
+      deleteOpp.mutate(deal.id);
+    }
+  };
   const isClosedLost = deal.stage === "closed_lost";
   // Priority + Segment are edited inline in the row now; the strip keeps the
   // overridable priority suggestion, warm-intro attribution, and closed-lost reason.
@@ -604,6 +611,15 @@ function DealContextStrip({ deal }: { deal: JobsOpportunity }) {
           </span>
         </Field>
       ) : null}
+      <button
+        type="button"
+        onClick={removeOpp}
+        disabled={deleteOpp.isPending}
+        className="ml-auto inline-flex items-center gap-1 rounded px-2 py-1 text-[12px] text-ink-3 hover:bg-red-soft hover:text-red disabled:opacity-50"
+        title="Delete this opportunity"
+      >
+        <Trash2 size={12} /> Delete
+      </button>
     </div>
   );
 }

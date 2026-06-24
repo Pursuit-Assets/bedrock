@@ -227,10 +227,10 @@ export function JobsStatBubble({
           {display}
         </span>
         {progressPct != null ? (
-          <ProgressRing pct={isLoading ? 0 : progressPct} tone={spec} size={big ? 62 : 46}>
+          <ProgressRing pct={isLoading ? 0 : progressPct} tone={spec} size={big ? 84 : 60} stroke={big ? 8 : 6}>
             {progressLabel ? (
               <span
-                className="font-mono text-[10px] font-bold tabular-nums"
+                className={cn("font-mono font-bold tabular-nums", big ? "text-[17px]" : "text-[12.5px]")}
                 style={{ color: spec.ink }}
               >
                 {isLoading ? "" : progressLabel}
