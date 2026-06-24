@@ -195,8 +195,11 @@ export function JobsAccountHub({ initialQuery }: { initialQuery?: string } = {})
     if (!fellowsData?.affiliation_available) return rawAccounts;
     const counts = fellowsData.fellow_counts ?? {};
     return rawAccounts.map((a) => {
-      const sfId = a.account_id ?? a.sf_account_id ?? null;
-      return { ...a, fellows_hired: sfId ? (counts[sfId] ?? 0) : 0 };
+      // Sum fellow counts across every SF account id this account maps to
+      // (a company can have more than one SF account record).
+      const ids = a.sf_account_ids?.length ? a.sf_account_ids : (a.account_id ? [a.account_id] : []);
+      const fellows = ids.reduce((sum, id) => sum + (counts[id] ?? 0), 0);
+      return { ...a, fellows_hired: fellows };
     });
   }, [rawAccounts, fellowsData]);
   const { data: staff = [] } = useJobsStaff();

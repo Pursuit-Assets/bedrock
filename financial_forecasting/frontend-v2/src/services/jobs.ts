@@ -379,6 +379,8 @@ export interface JobsAccount {
   builders_hired?: number;
   /** Historical Pursuit fellows hired here (from Salesforce); null until enriched. */
   fellows_hired?: number | null;
+  /** All SF account ids this account resolves to (for joining SF fellow counts). */
+  sf_account_ids?: string[];
 }
 
 export function useJobsAccounts(dealType?: string) {

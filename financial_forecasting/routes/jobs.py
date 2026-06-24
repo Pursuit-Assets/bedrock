@@ -2081,6 +2081,25 @@ async def jobs_accounts(
         )
     }
 
+    # Resolve every Salesforce account id that maps to each account (by company
+    # name → public.companies → sf_account_company_map). Most jobs accounts have
+    # no direct SF id on their opps, so without this bridge the SF "fellows
+    # hired" counts (keyed by sf_account_id) would only attach to ~15% of
+    # accounts. One name can map to several SF accounts (e.g. a company with
+    # multiple SF records) — return all so fellow counts can be summed.
+    name_sf_ids: dict[str, list[str]] = {
+        r["key"]: [x for x in (r["ids"] or []) if x]
+        for r in await conn.fetch(
+            """
+            SELECT lower(trim(co.name)) AS key, array_agg(DISTINCT m.sf_account_id) AS ids
+            FROM public.companies co
+            JOIN bedrock.sf_account_company_map m ON m.public_company_id = co.company_id
+            WHERE coalesce(trim(co.name), '') <> '' AND m.sf_account_id IS NOT NULL
+            GROUP BY 1
+            """,
+        )
+    }
+
     dt = deal_type if deal_type and deal_type != "all" else None
     now = datetime.now(timezone.utc)
     out = []
@@ -2134,6 +2153,15 @@ async def jobs_accounts(
         # merged from Salesforce by the caller; null until that enrichment runs).
         g["builders_hired"] = hires_by_account.get(key, 0)
         g["fellows_hired"] = None
+        # Every SF account id this account resolves to (direct opp link + explicit
+        # jobs_account link + company-name bridge), so the SF fellow counts can
+        # attach to far more than just the directly-SF-linked accounts.
+        sf_ids = set(name_sf_ids.get(key, []))
+        if g["account_id"] and str(g["account_id"]).startswith("001"):
+            sf_ids.add(g["account_id"])
+        if rec and rec["sf_account_id"]:
+            sf_ids.add(rec["sf_account_id"])
+        g["sf_account_ids"] = sorted(sf_ids)
         out.append(g)
 
     out.sort(key=lambda a: (
