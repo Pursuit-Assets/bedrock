@@ -1054,6 +1054,85 @@ async def opp_builder_activity(
     return {"success": True, "data": {"rows": out, "summary": summary}}
 
 
+@router.get("/interview-pipeline")
+async def interview_pipeline(
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Confirmed roles across all live opportunities, each with the builders
+    progressing through them — the command center's interview tracker.
+
+    An opportunity is included when it has at least one committed role OR at
+    least one builder application/interview/hire tied to it. Builders are
+    grouped under the role they're applying to (jobs_role_id) when known, else
+    listed at the opportunity level. Closed/deleted opps are excluded.
+    """
+    roles = await conn.fetch(
+        """
+        SELECT r.id, r.opportunity_id, r.title, r.status, r.employment_type,
+               r.approx_salary, r.filled_by_user_id,
+               o.account_name, o.stage AS opp_stage, o.owner_email
+        FROM bedrock.jobs_role r
+        JOIN bedrock.jobs_opportunity o ON o.id = r.opportunity_id
+        WHERE o.deleted_at IS NULL AND o.stage NOT IN ('closed_won', 'closed_lost')
+        ORDER BY o.account_name, r.created_at
+        """,
+    )
+    apps = await conn.fetch(
+        """
+        SELECT ja.job_application_id, ja.jobs_opportunity_id, ja.jobs_role_id,
+               trim(split_part(ja.notes, ':', 1)) AS builder,
+               ja.role_title, ja.stage, ja.date_applied,
+               o.account_name, o.stage AS opp_stage, o.owner_email
+        FROM public.job_applications ja
+        JOIN bedrock.jobs_opportunity o ON o.id = ja.jobs_opportunity_id
+        WHERE o.deleted_at IS NULL AND o.stage NOT IN ('closed_won', 'closed_lost')
+          AND ja.stage IN ('applied', 'interview', 'accepted')
+        ORDER BY ja.date_applied DESC NULLS LAST
+        """,
+    )
+
+    opps: dict = {}
+
+    def _opp(opp_id, account_name, stage, owner_email):
+        key = str(opp_id)
+        if key not in opps:
+            opps[key] = {
+                "opportunity_id": key, "account_name": account_name,
+                "stage": stage, "owner_email": owner_email,
+                "roles": [], "builders": [],
+                "summary": {"applied": 0, "interview": 0, "accepted": 0, "open_roles": 0},
+            }
+        return opps[key]
+
+    for r in roles:
+        g = _opp(r["opportunity_id"], r["account_name"], r["opp_stage"], r["owner_email"])
+        g["roles"].append({
+            "id": str(r["id"]), "title": r["title"], "status": r["status"],
+            "employment_type": r["employment_type"], "approx_salary": r["approx_salary"],
+            "filled_by_user_id": r["filled_by_user_id"],
+        })
+        if r["status"] == "open":
+            g["summary"]["open_roles"] += 1
+
+    for a in apps:
+        g = _opp(a["jobs_opportunity_id"], a["account_name"], a["opp_stage"], a["owner_email"])
+        g["builders"].append({
+            "job_application_id": a["job_application_id"], "builder": a["builder"],
+            "role_title": a["role_title"], "jobs_role_id": str(a["jobs_role_id"]) if a["jobs_role_id"] else None,
+            "stage": a["stage"], "date_applied": a["date_applied"].isoformat() if a["date_applied"] else None,
+        })
+        if a["stage"] in g["summary"]:
+            g["summary"][a["stage"]] += 1
+
+    # Opps actively interviewing first, then by builder volume.
+    out = sorted(
+        opps.values(),
+        key=lambda g: (-(g["summary"]["interview"]), -len(g["builders"]), g["account_name"] or ""),
+    )
+    return {"success": True, "data": out}
+
+
 # public.job_applications.stage vocabulary (builder-side submission funnel).
 VALID_APP_STAGES = {"applied", "interview", "accepted", "rejected", "withdrawn"}
 
