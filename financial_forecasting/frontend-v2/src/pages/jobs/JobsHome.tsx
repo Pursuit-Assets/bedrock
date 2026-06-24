@@ -12,14 +12,11 @@
  */
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import {
-  CheckCircle2, Circle, Plus, Briefcase, Flame, Clock, AlertTriangle, Trophy,
-} from "lucide-react";
+import { Circle, Plus, Briefcase } from "lucide-react";
 
-import { SectionCard, withReferrer } from "@/components/detail";
+import { SectionCard } from "@/components/detail";
 import { Tag } from "@/components/ui/Tag";
 import { InlineDate } from "@/components/ui/InlineEdit";
-import { jobsAccountPath } from "@/components/jobs/jobsEntity";
 import { cn } from "@/lib/utils";
 import { useActiveUsers } from "@/services/projects";
 import { useCurrentUser } from "@/services/auth";
@@ -34,25 +31,6 @@ import {
 } from "@/services/jobsOpps2";
 
 const todayIso = () => new Date().toISOString().slice(0, 10);
-
-// ── KPI chip ────────────────────────────────────────────────────────────────
-function Kpi({ icon, label, value, tone = "default" }: {
-  icon: React.ReactNode; label: string; value: number | string;
-  tone?: "default" | "red" | "amber" | "violet" | "green";
-}) {
-  const toneCls = {
-    default: "text-ink-3", red: "text-red", amber: "text-amber", violet: "text-accent", green: "text-green",
-  }[tone];
-  return (
-    <div className="flex items-center gap-2.5 rounded-lg border border-border-strong bg-surface px-3.5 py-2.5">
-      <span className={toneCls}>{icon}</span>
-      <div className="flex flex-col">
-        <span className="text-[18px] font-semibold leading-none text-ink tabular-nums">{value}</span>
-        <span className="mt-0.5 text-[11px] text-ink-3">{label}</span>
-      </div>
-    </div>
-  );
-}
 
 // ── Tasks zone ────────────────────────────────────────────────────────────────
 function dueBucket(deadline: string | null): "overdue" | "today" | "upcoming" | "none" {
@@ -122,6 +100,13 @@ function TasksZone() {
     () => users.find((u) => u.email?.toLowerCase() === me?.email?.toLowerCase())?.id ?? null,
     [users, me],
   );
+  // Filter dropdown lists only people who actually have tasks (names come from
+  // the enriched owner_ids/owner_names parallel arrays).
+  const taskAssignees = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const t of tasks) t.owner_ids.forEach((id, i) => m.set(id, t.owner_names[i] ?? id));
+    return [...m].map(([value, label]) => ({ value, label })).sort((a, b) => a.label.localeCompare(b.label));
+  }, [tasks]);
 
   const [assignee, setAssignee] = useState<string>("all"); // all | me | <ownerId>
   const filtered = useMemo(() => {
@@ -164,7 +149,7 @@ function TasksZone() {
           className="h-7 rounded border border-border-strong bg-surface px-2 text-[12px] text-ink-2 outline-none focus:border-accent">
           <option value="all">Everyone</option>
           <option value="me" disabled={!myId}>My tasks</option>
-          {ownerOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+          {taskAssignees.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
         </select>
         <button type="button" onClick={() => setAdding((v) => !v)}
           className="inline-flex h-7 items-center gap-1 rounded border border-border-strong bg-surface px-2 text-[12px] text-ink-2 hover:bg-surface-2">
@@ -291,78 +276,9 @@ function InterviewsZone() {
   );
 }
 
-// ── Triage zone ────────────────────────────────────────────────────────────────
-function daysSince(iso: string | null | undefined): number {
-  if (!iso) return Infinity;
-  return Math.floor((Date.now() - new Date(iso).getTime()) / 86_400_000);
-}
-
-function AccountMiniRow({ name, accountKey, sub, tone }: {
-  name: string; accountKey: string; sub: string; tone: "violet" | "amber";
-}) {
-  return (
-    <Link to={jobsAccountPath(accountKey)} state={withReferrer({ pathname: "/jobs", label: "Jobs" })}
-      className="flex items-center justify-between gap-2 border-t border-border-strong px-3 py-1.5 hover:bg-surface-2/40">
-      <span className="truncate text-[12.5px] text-ink">{name}</span>
-      <span className={cn("shrink-0 text-[11px]", tone === "amber" ? "text-amber" : "text-ink-3")}>{sub}</span>
-    </Link>
-  );
-}
-
-function TriageZone() {
-  const { data: accounts = [], isLoading } = useJobsAccounts("all");
-
-  const newActivity = useMemo(
-    () => accounts
-      .filter((a) => daysSince(a.last_activity_at) <= 14)
-      .sort((x, y) => daysSince(x.last_activity_at) - daysSince(y.last_activity_at))
-      .slice(0, 12),
-    [accounts],
-  );
-  // Stale = pursuing/active accounts (have an opp) with no activity in 30+ days.
-  const stale = useMemo(
-    () => accounts
-      .filter((a) => a.opp_count > 0 && a.account_status === "Pursuing" && daysSince(a.last_activity_at) >= 30)
-      .sort((x, y) => daysSince(y.last_activity_at) - daysSince(x.last_activity_at))
-      .slice(0, 12),
-    [accounts],
-  );
-
-  return (
-    <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
-      <SectionCard title="New activity · last 14 days" storageScope="jobs-home-new">
-        {isLoading ? <div className="px-3 py-8 text-center text-[12.5px] text-ink-3">Loading…</div>
-          : newActivity.length === 0 ? <div className="px-3 py-8 text-center text-[12.5px] text-ink-3">Quiet lately.</div>
-          : newActivity.map((a) => (
-            <AccountMiniRow key={a.account_key} name={a.account} accountKey={a.account_key}
-              sub={daysSince(a.last_activity_at) === 0 ? "today" : `${daysSince(a.last_activity_at)}d ago`} tone="violet" />
-          ))}
-      </SectionCard>
-      <SectionCard title="Stale · pursuing, no touch 30d+" storageScope="jobs-home-stale">
-        {isLoading ? <div className="px-3 py-8 text-center text-[12.5px] text-ink-3">Loading…</div>
-          : stale.length === 0 ? <div className="px-3 py-8 text-center text-[12.5px] text-ink-3">Nothing stale. 👏</div>
-          : stale.map((a) => (
-            <AccountMiniRow key={a.account_key} name={a.account} accountKey={a.account_key}
-              sub={Number.isFinite(daysSince(a.last_activity_at)) ? `${daysSince(a.last_activity_at)}d` : "never"} tone="amber" />
-          ))}
-      </SectionCard>
-    </div>
-  );
-}
-
 // ── Page ────────────────────────────────────────────────────────────────────
 export function JobsHome() {
   const { data: me } = useCurrentUser();
-  const { data: tasks = [] } = useAllJobsTasks();
-  const { data: pipeline = [] } = useInterviewPipeline();
-  const { data: accounts = [] } = useJobsAccounts("all");
-
-  const overdue = tasks.filter((t) => dueBucket(t.deadline) === "overdue").length;
-  const dueToday = tasks.filter((t) => dueBucket(t.deadline) === "today").length;
-  const interviewing = pipeline.reduce((n, o) => n + o.summary.interview, 0);
-  const staleCount = accounts.filter(
-    (a) => a.opp_count > 0 && a.account_status === "Pursuing" && daysSince(a.last_activity_at) >= 30,
-  ).length;
 
   const greeting = (() => {
     const h = new Date().getHours();
@@ -378,17 +294,8 @@ export function JobsHome() {
         <p className="text-[12.5px] text-ink-3">Here's what needs you today.</p>
       </div>
 
-      <div className="flex flex-wrap gap-2.5">
-        <Kpi icon={<Clock size={16} />} label="Open tasks" value={tasks.length} tone="violet" />
-        <Kpi icon={<AlertTriangle size={16} />} label="Overdue" value={overdue} tone={overdue ? "red" : "default"} />
-        <Kpi icon={<CheckCircle2 size={16} />} label="Due today" value={dueToday} tone={dueToday ? "amber" : "default"} />
-        <Kpi icon={<Trophy size={16} />} label="Builders interviewing" value={interviewing} tone="green" />
-        <Kpi icon={<Flame size={16} />} label="Stale accounts" value={staleCount} tone={staleCount ? "amber" : "default"} />
-      </div>
-
       <TasksZone />
       <InterviewsZone />
-      <TriageZone />
     </div>
   );
 }
