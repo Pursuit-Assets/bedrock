@@ -4,7 +4,7 @@ import type { AccountStatus } from "@/types/salesforce";
  * Playbook Account Status → Tag color variant.
  *
  *   Prospect       default (neutral — untouched)
- *   Activated      sky     (we've made contact, but no opportunity yet)
+ *   Activating     sky     (we've made contact, but no opportunity yet)
  *   Pursuing       accent  (purple — active hunt)
  *   Stewarding     green   (healthy delivery in flight)
  *   Re-activating  amber   (recent touch, but no open opp / award)
@@ -17,7 +17,7 @@ export function accountStatusVariant(
   s: AccountStatus,
 ): "default" | "accent" | "green" | "amber" | "red" | "sky" {
   switch (s) {
-    case "Activated": return "sky";
+    case "Activating": return "sky";
     case "Pursuing": return "accent";
     case "Stewarding": return "green";
     case "Re-activating": return "amber";

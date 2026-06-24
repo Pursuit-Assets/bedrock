@@ -89,14 +89,14 @@ def test_status_prospect_when_only_contacts():
 
 def test_status_activated_when_contact_touched_no_opp():
     # A prospect we've done outreach to (activity exists) but with no opportunity
-    # is "Activated" — between untouched Prospect and active Pursuing.
+    # is "Activating" — between untouched Prospect and active Pursuing.
     prospects = [{"contact_id": 1, "full_name": "Jo", "email": "j@x.com", "current_title": "PM",
                   "current_company": "Acme", "contact_stage": "lead", "linkedin_url": None,
                   "updated_at": RECENT}]
     data = _accounts(_conn(prospects=prospects,
                            activity=[_act("acme", recent=2, actors=["avni@pursuit.org"])]))
     acc = _find(data, "Acme")
-    assert acc["account_status"] == "Activated"
+    assert acc["account_status"] == "Activating"
     assert acc["opp_count"] == 0 and acc["recent_activity_count"] == 2
 
 

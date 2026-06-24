@@ -1883,11 +1883,11 @@ async def contacts_by_account(
 #   Pursuing     – an active open opportunity
 #   Re-activating– only stale opps (on-hold/lost) but touched in the last 90 days
 #   Dormant      – only stale opps, no recent touch
-#   Activated    – no opportunity yet, but we've made contact / done outreach
+#   Activating    – no opportunity yet, but we've made contact / done outreach
 #   Prospect     – no opportunity AND no activity (untouched)
 _ACCOUNT_STATUS_RANK = {
     "Pursuing": 0, "Stewarding": 1, "Re-activating": 2,
-    "Activated": 3, "Prospect": 4, "Dormant": 5,
+    "Activating": 3, "Prospect": 4, "Dormant": 5,
 }
 
 
@@ -2092,7 +2092,7 @@ async def jobs_accounts(
             status = "Re-activating" if recent else "Dormant"
         elif has_activity:
             # No opportunity yet, but we've reached out / made contact.
-            status = "Activated"
+            status = "Activating"
         else:
             status = "Prospect"
         g["account_key"] = key
@@ -2116,7 +2116,7 @@ async def jobs_accounts(
     return {"success": True, "data": out}
 
 
-_VALID_ACCOUNT_STATUS = {"Prospect", "Pursuing", "Stewarding", "Re-activating", "Dormant"}
+_VALID_ACCOUNT_STATUS = {"Prospect", "Activating", "Pursuing", "Stewarding", "Re-activating", "Dormant"}
 
 
 class JobsAccountUpdate(BaseModel):
