@@ -22,6 +22,7 @@ import { Tag } from "@/components/ui/Tag";
 import { Toolbar } from "@/components/ui/Toolbar";
 import { accountStatusVariant } from "@/lib/accountStatus";
 import { RECENCY_OPTIONS, recencyLabel } from "@/lib/recencyFilter";
+import { useAccountsWithFellows } from "@/services/affiliations";
 import { useColumnVisibility } from "@/lib/columnVisibility";
 import { useSessionState } from "@/lib/useSessionState";
 import { useSort, sortBy, type SortState } from "@/lib/sort";
@@ -184,7 +185,20 @@ export function JobsAccountHub({ initialQuery }: { initialQuery?: string } = {})
   const { visible: visibleCols, toggle: toggleCol, replaceAll: replaceVisibleCols } =
     useColumnVisibility<ColKey>("bedrock-v2:vis:jobs-accounts", COLUMN_ORDER, DEFAULT_VISIBLE);
 
-  const { data: accounts = [], isLoading, isError, refetch } = useJobsAccounts(dealType);
+  const { data: rawAccounts = [], isLoading, isError, refetch } = useJobsAccounts(dealType);
+  // Historical Pursuit fellows hired, from Salesforce (Affiliation object),
+  // keyed by SF account id. Merged in client-side so /accounts stays SF-free
+  // and the page still renders if SF is unavailable. When the affiliation
+  // object isn't configured, fellows stays null (Hired = builders only).
+  const { data: fellowsData } = useAccountsWithFellows();
+  const accounts = useMemo(() => {
+    if (!fellowsData?.affiliation_available) return rawAccounts;
+    const counts = fellowsData.fellow_counts ?? {};
+    return rawAccounts.map((a) => {
+      const sfId = a.account_id ?? a.sf_account_id ?? null;
+      return { ...a, fellows_hired: sfId ? (counts[sfId] ?? 0) : 0 };
+    });
+  }, [rawAccounts, fellowsData]);
   const { data: staff = [] } = useJobsStaff();
   const updateAccount = useUpdateJobsAccount();
   const saveOwner = useCallback(
