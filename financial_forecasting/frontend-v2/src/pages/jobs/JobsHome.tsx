@@ -201,7 +201,12 @@ function TasksZone() {
           <div className="px-3 py-8 text-center text-[12.5px] text-ink-3">No open tasks. 🎉</div>
         ) : groups.map((g) => (
           <div key={g.key}>
-            <div className="bg-surface-2/60 px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-ink-4">
+            <div className={cn(
+              "px-3 py-1 text-[10px] font-semibold uppercase tracking-wider",
+              g.key === "overdue" ? "bg-red-soft text-red"
+                : g.key === "today" ? "bg-amber-soft text-amber"
+                : "bg-surface-2/60 text-ink-4",
+            )}>
               {g.label} · {g.items.length}
             </div>
             {g.items.map((t) => (
@@ -223,6 +228,15 @@ const STAGE_COLS: { stage: AppStage; label: string }[] = [
   { stage: "accepted", label: "Accepted" },
 ];
 const NEXT_STAGE: Partial<Record<AppStage, AppStage>> = { applied: "interview", interview: "accepted" };
+
+// Per-stage tint so the interview columns read with color (like Performance).
+const STAGE_COL_STYLE: Record<AppStage, { col: string; head: string }> = {
+  applied:   { col: "border-border-strong/60 bg-surface-2/40", head: "text-ink-4" },
+  interview: { col: "border-accent/30 bg-accent-soft/50", head: "text-accent-ink" },
+  accepted:  { col: "border-green/30 bg-green-soft/50", head: "text-green" },
+  rejected:  { col: "border-border-strong/60 bg-surface-2/40", head: "text-ink-4" },
+  withdrawn: { col: "border-border-strong/60 bg-surface-2/40", head: "text-ink-4" },
+};
 
 function InterviewCard({ opp }: { opp: InterviewPipelineOpp }) {
   const advance = useAdvanceBuilderStage();
@@ -248,9 +262,10 @@ function InterviewCard({ opp }: { opp: InterviewPipelineOpp }) {
       <div className="grid grid-cols-3 gap-2">
         {STAGE_COLS.map((col) => {
           const rows = byStage(col.stage);
+          const c = STAGE_COL_STYLE[col.stage];
           return (
-            <div key={col.stage} className="rounded border border-border-strong/60 bg-surface-2/30 p-1.5">
-              <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-ink-4">{col.label} · {rows.length}</div>
+            <div key={col.stage} className={cn("rounded border p-1.5", c.col)}>
+              <div className={cn("mb-1 text-[10px] font-semibold uppercase tracking-wider", c.head)}>{col.label} · {rows.length}</div>
               <div className="flex flex-col gap-1">
                 {rows.map((b) => {
                   const next = NEXT_STAGE[b.stage as AppStage];
@@ -309,19 +324,16 @@ export function JobsHome() {
     return `Good ${tod}${first ? `, ${first}` : ""}`;
   })();
 
-  // A quiet one-line digest (not chunky metric chips) — the at-a-glance read.
-  const digest = [
-    `${tasks.length} open task${tasks.length === 1 ? "" : "s"}`,
-    overdue > 0 && `${overdue} overdue`,
-    dueToday > 0 && `${dueToday} due today`,
-    interviewing > 0 && `${interviewing} builder${interviewing === 1 ? "" : "s"} interviewing`,
-  ].filter(Boolean).join("  ·  ");
-
   return (
     <div className="flex flex-col gap-7">
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
         <h1 className="text-[15px] font-semibold text-ink">{greeting}</h1>
-        <span className="text-[11px] text-ink-4">{digest}</span>
+        <span className="flex flex-wrap items-baseline gap-x-2.5 text-[11.5px]">
+          <span className="text-ink-4">{tasks.length} open task{tasks.length === 1 ? "" : "s"}</span>
+          {overdue > 0 && <span className="font-semibold text-red">· {overdue} overdue</span>}
+          {dueToday > 0 && <span className="font-semibold text-amber">· {dueToday} due today</span>}
+          {interviewing > 0 && <span className="font-semibold text-green">· {interviewing} interviewing</span>}
+        </span>
       </div>
 
       <TasksZone />
