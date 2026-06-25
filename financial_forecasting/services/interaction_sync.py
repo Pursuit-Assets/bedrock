@@ -6,13 +6,24 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
-async def run_interaction_sync(conn_or_pool, days_back: int = 90) -> dict[str, Any]:
+async def run_interaction_sync(
+    conn_or_pool,
+    days_back: int = 90,
+    staff_emails: list[str] | None = None,
+    since_days: int | None = None,
+) -> dict[str, Any]:
     """Sync Gmail and Calendar for all enabled staff. Returns per-staff summary.
 
     Accepts either a single asyncpg connection or a connection pool.
     A pool is strongly preferred for long syncs — each staff member acquires
     a fresh connection so a slow Gmail run cannot time out the shared connection.
+
+    staff_emails — restrict the run to these addresses (else all enabled staff).
+    since_days   — force a historical backfill from N days ago, bypassing each
+                   staff member's incremental watermark (needed the first time
+                   we capture Sent mail, which the watermark never covered).
     """
+    from datetime import datetime, timedelta, timezone
     from services.gmail_sync import sync_gmail_for_staff
     from services.calendar_sync import sync_calendar_for_staff
     from services.google_dwd import is_dwd_configured
@@ -21,6 +32,10 @@ async def run_interaction_sync(conn_or_pool, days_back: int = 90) -> dict[str, A
     if not is_dwd_configured():
         logger.warning("interaction sync skipped — GOOGLE_SERVICE_ACCOUNT_JSON not set")
         return {"skipped": True, "reason": "DWD not configured"}
+
+    override_since = (
+        datetime.now(timezone.utc) - timedelta(days=since_days) if since_days else None
+    )
 
     is_pool = isinstance(conn_or_pool, asyncpg.pool.Pool)
 
@@ -37,7 +52,9 @@ async def run_interaction_sync(conn_or_pool, days_back: int = 90) -> dict[str, A
     list_conn = await _get_conn()
     try:
         staff_rows = await list_conn.fetch(
-            "SELECT email FROM bedrock.sync_staff WHERE enabled = true ORDER BY email"
+            "SELECT email FROM bedrock.sync_staff WHERE enabled = true "
+            "AND ($1::text[] IS NULL OR email = ANY($1)) ORDER BY email",
+            staff_emails,
         )
     finally:
         await _release_conn(list_conn)
@@ -53,7 +70,7 @@ async def run_interaction_sync(conn_or_pool, days_back: int = 90) -> dict[str, A
         staff_conn = await _get_conn()
         try:
             try:
-                gmail_result = await sync_gmail_for_staff(staff_conn, email, days_back=days_back)
+                gmail_result = await sync_gmail_for_staff(staff_conn, email, days_back=days_back, override_since=override_since)
             except Exception as e:
                 # repr(), not str(): connection-reset / cancelled-task errors
                 # have an empty str() and were logging as "failed for X: " (blank).
@@ -61,7 +78,7 @@ async def run_interaction_sync(conn_or_pool, days_back: int = 90) -> dict[str, A
                 gmail_result = {"staff_email": email, "error": repr(e) or type(e).__name__}
 
             try:
-                cal_result = await sync_calendar_for_staff(staff_conn, email, days_back=days_back)
+                cal_result = await sync_calendar_for_staff(staff_conn, email, days_back=days_back, override_since=override_since)
             except Exception as e:
                 logger.error("calendar sync failed for %s: %r", email, e)
                 cal_result = {"staff_email": email, "error": repr(e) or type(e).__name__}
