@@ -365,7 +365,12 @@ async def sync_gmail_for_staff(
         since = watermark if watermark else datetime.now(timezone.utc) - timedelta(days=days_back)
 
     date_str = since.strftime("%Y/%m/%d")
-    query = f"after:{date_str} in:inbox"
+    # Capture BOTH received and sent mail. `in:inbox` alone missed pure outbound
+    # (cold outreach that never got a reply lives only in Sent), so the jobs
+    # team's outbound never reached bedrock.activity. Internal @pursuit-only
+    # threads are still dropped downstream (see all_external filter), and
+    # message-id dedup prevents an inbox+sent thread from double-inserting.
+    query = f"after:{date_str} (in:inbox OR in:sent)"
     if override_until:
         query += f" before:{override_until.strftime('%Y/%m/%d')}"
 
