@@ -30,14 +30,17 @@ class StaffRequest(BaseModel):
     display_name: str | None = None
 
 
-async def _run_sync_background():
+async def _run_sync_background(staff_emails=None, since_days=None):
     async with _sync_lock:
         _sync_status["running"] = True
         try:
             from services.interaction_sync import run_interaction_sync
             pool = get_pool()
-            async with pool.acquire() as conn:
-                summary = await run_interaction_sync(conn)
+            # Pass the pool (not a single conn) so long backfills get a fresh
+            # connection per staff member and can't time out a shared one.
+            summary = await run_interaction_sync(
+                pool, staff_emails=staff_emails, since_days=since_days,
+            )
             _sync_status["last_summary"] = summary
             logger.info("interaction sync complete: %s", summary)
         except Exception as e:
@@ -47,16 +50,33 @@ async def _run_sync_background():
             _sync_status["running"] = False
 
 
+class SyncRequest(BaseModel):
+    # Restrict to specific staff (else all enabled). since_days forces a
+    # historical backfill bypassing the incremental watermark.
+    staff_emails: list[str] | None = None
+    since_days: int | None = None
+
+
 @router.post("/run")
 async def trigger_sync(
     background_tasks: BackgroundTasks,
+    body: SyncRequest | None = None,
     user=Depends(require_admin),
 ):
-    """Manually trigger a full interaction sync in the background."""
+    """Manually trigger an interaction sync in the background.
+
+    Optional body: {"staff_emails": [...], "since_days": 90} to target a subset
+    of staff and/or force a historical backfill (e.g. the first Sent-mail pull).
+    """
     if _sync_status["running"]:
         return {"success": False, "data": {"message": "Sync already running"}}
-    background_tasks.add_task(_run_sync_background)
-    return {"success": True, "data": {"message": "Sync started in background"}}
+    staff_emails = body.staff_emails if body else None
+    since_days = body.since_days if body else None
+    background_tasks.add_task(_run_sync_background, staff_emails, since_days)
+    return {"success": True, "data": {
+        "message": "Sync started in background",
+        "staff_emails": staff_emails, "since_days": since_days,
+    }}
 
 
 @router.get("/status")
