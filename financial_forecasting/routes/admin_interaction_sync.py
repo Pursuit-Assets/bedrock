@@ -79,6 +79,27 @@ async def trigger_sync(
     }}
 
 
+@router.post("/cron")
+async def cron_sync(
+    background_tasks: BackgroundTasks,
+    body: SyncRequest | None = None,
+    x_cron_key: str | None = Header(default=None),
+):
+    """Scheduler-friendly trigger (no user login). Authenticated by a shared
+    secret in the X-Cron-Key header, matched against env CRON_SECRET, so
+    Cloud Scheduler can run the nightly sync without a JWT. Same body as /run.
+    """
+    secret = os.environ.get("CRON_SECRET")
+    if not secret or x_cron_key != secret:
+        raise HTTPException(status_code=403, detail="bad cron key")
+    if _sync_status["running"]:
+        return {"success": False, "data": {"message": "Sync already running"}}
+    staff_emails = body.staff_emails if body else None
+    since_days = body.since_days if body else None
+    background_tasks.add_task(_run_sync_background, staff_emails, since_days)
+    return {"success": True, "data": {"message": "Cron sync started", "since_days": since_days}}
+
+
 @router.get("/status")
 async def get_sync_status(user=Depends(require_admin)):
     """Current sync state + last summary."""
