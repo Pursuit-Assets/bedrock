@@ -3358,7 +3358,7 @@ async def list_candidates(
         FROM public.contacts c
         LEFT JOIN bedrock.activity a
           ON a.participant_public_contact_id = c.contact_id AND a.deleted_at IS NULL
-        WHERE c.deleted_at IS NULL AND c.contact_stage = 'candidate'
+        WHERE c.contact_stage = 'candidate'
           AND 'email_review' = ANY(c.tags)
         GROUP BY c.contact_id
         ORDER BY max(a.activity_date) DESC NULLS LAST, c.email
@@ -3414,10 +3414,11 @@ async def dismiss_candidate(
     user=Depends(require_auth),
     conn=Depends(get_db),
 ):
-    """Dismiss a candidate (soft-delete the contact). Its activity stays in the DB."""
-    email = user.get("email") if isinstance(user, dict) else getattr(user, "email", None)
+    """Dismiss a candidate: move it out of the queue (public.contacts has no
+    soft-delete) by clearing the stage + email_review tag. Activity stays linked."""
     res = await conn.execute(
-        "UPDATE public.contacts SET deleted_at=now(), updated_at=now() "
+        "UPDATE public.contacts SET contact_stage='dismissed', "
+        "tags=array_remove(coalesce(tags,'{}'), 'email_review'), updated_at=now() "
         "WHERE contact_id=$1 AND contact_stage='candidate'", contact_id)
     if res == "UPDATE 0":
         raise HTTPException(404, "Candidate not found")
