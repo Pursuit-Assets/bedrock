@@ -1040,6 +1040,7 @@ export interface CandidateEnrichment {
   is_employer_contact?: boolean;
   confidence?: "high" | "medium" | "low";
   reasoning?: string;
+  possible_duplicates?: { contact_id: number; full_name: string | null; current_company: string | null; current_title: string | null }[];
   error?: string;
 }
 

@@ -111,6 +111,13 @@ function CandidateDrawer({ contactId, onClose }: { contactId: number | null; onC
                   <Tag variant={confTone(ai.confidence)}>{ai.confidence} confidence</Tag>
                 </div>
                 {ai.reasoning && <p className="text-[11.5px] leading-relaxed text-ink-2">{ai.reasoning}</p>}
+                {ai.possible_duplicates && ai.possible_duplicates.length > 0 && (
+                  <div className="mt-1 rounded border border-amber/40 bg-amber-soft/50 px-2 py-1.5 text-[11.5px] text-ink-2">
+                    <span className="font-semibold text-amber">Possible existing contact{ai.possible_duplicates.length > 1 ? "s" : ""}:</span>{" "}
+                    {ai.possible_duplicates.map((d) => `${d.full_name}${d.current_company ? ` (${d.current_company})` : ""}`).join(", ")}
+                    {" "}— dismiss this candidate if it's a duplicate.
+                  </div>
+                )}
                 <div className="mt-1 flex flex-wrap gap-1.5">
                   {ai.full_name && ai.full_name !== name && <Suggest label={`Name: ${ai.full_name}`} onClick={() => setName(ai.full_name!)} />}
                   {ai.title && ai.title !== title && <Suggest label={`Title: ${ai.title}`} onClick={() => setTitle(ai.title!)} />}

@@ -3439,6 +3439,27 @@ async def enrich_candidate_endpoint(
            ORDER BY activity_date DESC LIMIT 6""", contact_id)
     emails = [{"subject": r["subject"], "body": r["body"], "date": r["date"], "direction": "outbound"} for r in rows]
     result = await _asyncio.to_thread(enrich_candidate, c["email"], emails)
+
+    # Contact-linkage: surface existing pipeline contacts that look like this
+    # person (by AI-extracted name) so the reviewer can dismiss a duplicate
+    # rather than create a second record.
+    dups = []
+    name = (result.get("full_name") or "").strip()
+    if name and len(name) >= 3:
+        first = name.split()[0]
+        last = name.split()[-1]
+        drows = await conn.fetch(
+            """SELECT contact_id, full_name, current_company, current_title
+               FROM public.contacts
+               WHERE is_jobs_contact = true AND coalesce(contact_stage,'') <> 'candidate'
+                 AND contact_id <> $1
+                 AND (full_name ILIKE $2 OR (full_name ILIKE $3 AND full_name ILIKE $4))
+               LIMIT 5""",
+            contact_id, f"%{name}%", f"%{first}%", f"%{last}%")
+        dups = [{"contact_id": d["contact_id"], "full_name": d["full_name"],
+                 "current_company": d["current_company"], "current_title": d["current_title"]}
+                for d in drows]
+    result["possible_duplicates"] = dups
     return {"success": True, "data": result}
 
 
