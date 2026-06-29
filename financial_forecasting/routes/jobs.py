@@ -3347,31 +3347,99 @@ async def list_candidates(
     user=Depends(require_auth),
     conn=Depends(get_db),
 ):
-    """Pending email-review candidates, newest-emailed first, with the count +
-    latest subject of the emails that surfaced them (so the reviewer has context)."""
+    """Pending email-review candidates, newest-emailed first. Includes the email
+    domain + an exact-domain account suggestion (cheap, set-based) so the list
+    can show a linkage chip; the detail endpoint adds fuzzy matching + AI."""
     rows = await conn.fetch(
         """
         SELECT c.contact_id, c.full_name, c.email, c.current_company, c.current_title,
+               lower(split_part(c.email,'@',2)) AS domain,
                count(a.id) AS email_count,
                max(a.activity_date) AS last_email,
-               (array_agg(a.subject ORDER BY a.activity_date DESC))[1] AS last_subject
+               (array_agg(a.subject ORDER BY a.activity_date DESC))[1] AS last_subject,
+               aed.sf_account_name AS suggested_account
         FROM public.contacts c
         LEFT JOIN bedrock.activity a
           ON a.participant_public_contact_id = c.contact_id AND a.deleted_at IS NULL
+        LEFT JOIN bedrock.account_email_domain aed
+          ON aed.domain = lower(split_part(c.email,'@',2))
         WHERE c.contact_stage = 'candidate'
           AND 'email_review' = ANY(c.tags)
-        GROUP BY c.contact_id
+        GROUP BY c.contact_id, aed.sf_account_name
         ORDER BY max(a.activity_date) DESC NULLS LAST, c.email
         """,
     )
     return {"success": True, "data": [
         {"contact_id": r["contact_id"], "full_name": r["full_name"], "email": r["email"],
          "current_company": r["current_company"], "current_title": r["current_title"],
+         "domain": r["domain"], "suggested_account": r["suggested_account"],
          "email_count": r["email_count"],
          "last_email": r["last_email"].isoformat() if r["last_email"] else None,
          "last_subject": r["last_subject"]}
         for r in rows
     ]}
+
+
+@router.get("/candidates/{contact_id}")
+async def candidate_detail(
+    contact_id: int,
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Full candidate: the emails that surfaced them + the best account linkage
+    suggestion (exact domain → fuzzy → propose-new)."""
+    from services.candidate_enrich import suggest_account
+    c = await conn.fetchrow(
+        "SELECT contact_id, full_name, email, current_company, current_title, linkedin_url "
+        "FROM public.contacts WHERE contact_id=$1", contact_id)
+    if not c:
+        raise HTTPException(404, "Candidate not found")
+    emails = await conn.fetch(
+        """
+        SELECT a.id, a.subject, a.email_from, a.email_to, a.email_snippet,
+               left(a.email_body_text, 4000) AS body, a.type, a.source,
+               a.activity_date
+        FROM bedrock.activity a
+        WHERE a.participant_public_contact_id = $1 AND a.deleted_at IS NULL
+        ORDER BY a.activity_date DESC LIMIT 50
+        """, contact_id)
+    suggestion = await suggest_account(conn, c["email"])
+    return {"success": True, "data": {
+        "contact": {"contact_id": c["contact_id"], "full_name": c["full_name"], "email": c["email"],
+                    "current_company": c["current_company"], "current_title": c["current_title"],
+                    "linkedin_url": c["linkedin_url"]},
+        "suggested_account": suggestion,
+        "emails": [
+            {"id": str(e["id"]), "subject": e["subject"], "email_from": e["email_from"],
+             "email_to": list(e["email_to"]) if e["email_to"] else None,
+             "snippet": e["email_snippet"], "body": e["body"], "type": e["type"], "source": e["source"],
+             "activity_date": e["activity_date"].isoformat() if e["activity_date"] else None}
+            for e in emails
+        ],
+    }}
+
+
+@router.post("/candidates/{contact_id}/enrich")
+async def enrich_candidate_endpoint(
+    contact_id: int,
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """AI-extract name/title/company/linkedin from the candidate's emails (Claude
+    Haiku). Returns suggestions for the reviewer to accept — does not overwrite."""
+    import asyncio as _asyncio
+    from services.candidate_enrich import enrich_candidate
+    c = await conn.fetchrow("SELECT email FROM public.contacts WHERE contact_id=$1", contact_id)
+    if not c:
+        raise HTTPException(404, "Candidate not found")
+    rows = await conn.fetch(
+        """SELECT subject, left(coalesce(email_body_text, email_snippet), 1500) AS body,
+                  activity_date::date::text AS date
+           FROM bedrock.activity WHERE participant_public_contact_id=$1 AND deleted_at IS NULL
+           ORDER BY activity_date DESC LIMIT 6""", contact_id)
+    emails = [{"subject": r["subject"], "body": r["body"], "date": r["date"], "direction": "outbound"} for r in rows]
+    result = await _asyncio.to_thread(enrich_candidate, c["email"], emails)
+    return {"success": True, "data": result}
 
 
 class CandidatePromote(BaseModel):

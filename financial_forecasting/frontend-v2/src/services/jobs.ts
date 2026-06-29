@@ -1001,9 +1001,46 @@ export interface JobCandidate {
   email: string;
   current_company: string | null;
   current_title: string | null;
+  domain?: string | null;
+  suggested_account?: string | null;
   email_count: number;
   last_email: string | null;
   last_subject: string | null;
+}
+
+export interface AccountSuggestion {
+  account_key: string | null;
+  account_name: string | null;
+  sf_account_id: string | null;
+  confidence: "high" | "medium" | "low";
+  in_pipeline: boolean;
+  reason: string;
+}
+export interface CandidateEmail {
+  id: string;
+  subject: string | null;
+  email_from: string | null;
+  email_to: string[] | null;
+  snippet: string | null;
+  body: string | null;
+  type: string | null;
+  source: string | null;
+  activity_date: string | null;
+}
+export interface CandidateDetail {
+  contact: { contact_id: number; full_name: string | null; email: string; current_company: string | null; current_title: string | null; linkedin_url: string | null };
+  suggested_account: AccountSuggestion | null;
+  emails: CandidateEmail[];
+}
+export interface CandidateEnrichment {
+  full_name?: string | null;
+  title?: string | null;
+  company?: string | null;
+  linkedin_url?: string | null;
+  is_employer_contact?: boolean;
+  confidence?: "high" | "medium" | "low";
+  reasoning?: string;
+  error?: string;
 }
 
 export function useCandidates() {
@@ -1014,6 +1051,27 @@ export function useCandidates() {
       return data.data ?? [];
     },
     staleTime: 30_000,
+  });
+}
+
+export function useCandidateDetail(contactId: number | null) {
+  return useQuery({
+    queryKey: ["jobs", "candidate", contactId],
+    queryFn: async (): Promise<CandidateDetail> => {
+      const { data } = await api.get<ApiResponse<CandidateDetail>>(`/api/jobs/candidates/${contactId}`);
+      return data.data;
+    },
+    enabled: contactId != null,
+  });
+}
+
+/** AI-extract name/title/company from the candidate's emails (Claude). */
+export function useEnrichCandidate() {
+  return useMutation({
+    mutationFn: async (contactId: number): Promise<CandidateEnrichment> => {
+      const { data } = await api.post<ApiResponse<CandidateEnrichment>>(`/api/jobs/candidates/${contactId}/enrich`, {});
+      return data.data;
+    },
   });
 }
 
