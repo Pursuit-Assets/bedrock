@@ -994,6 +994,57 @@ export function useUpdateContact() {
   });
 }
 
+// ── Email-review candidates (Home page queue) ─────────────────────────────────
+export interface JobCandidate {
+  contact_id: number;
+  full_name: string | null;
+  email: string;
+  current_company: string | null;
+  current_title: string | null;
+  email_count: number;
+  last_email: string | null;
+  last_subject: string | null;
+}
+
+export function useCandidates() {
+  return useQuery({
+    queryKey: ["jobs", "candidates"],
+    queryFn: async (): Promise<JobCandidate[]> => {
+      const { data } = await api.get<ApiResponse<JobCandidate[]>>("/api/jobs/candidates");
+      return data.data ?? [];
+    },
+    staleTime: 30_000,
+  });
+}
+
+export function usePromoteCandidate() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, ...body }: { id: number; full_name?: string; current_company?: string; current_title?: string; contact_stage?: string }) => {
+      const { data } = await api.post<ApiResponse<unknown>>(`/api/jobs/candidates/${id}/promote`, body);
+      return data.data;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["jobs", "candidates"] });
+      qc.invalidateQueries({ queryKey: ["jobs", "contacts"] });
+      toast.success("Added to pipeline");
+    },
+    onError: () => toast.error("Promote failed"),
+  });
+}
+
+export function useDismissCandidate() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: number) => { await api.post(`/api/jobs/candidates/${id}/dismiss`); },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["jobs", "candidates"] });
+      toast.success("Dismissed");
+    },
+    onError: () => toast.error("Dismiss failed"),
+  });
+}
+
 export interface ActivityCreateBody {
   jobs_opportunity_id: string;
   type: "call" | "text" | "linkedin";

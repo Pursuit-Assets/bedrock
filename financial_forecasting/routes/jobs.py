@@ -3336,6 +3336,94 @@ async def update_contact(
     return {"success": True, "data": dict(row)}
 
 
+# ── Candidate review queue ────────────────────────────────────────────────────
+# Email recipients we auto-created but couldn't confidently identify (personal
+# domains / no full name) land as 'candidate' contacts tagged 'email_review'.
+# Avni/Damon review them on the Home page: fill name/company then promote into
+# the pipeline, or dismiss. Promote flips is_jobs_contact=true + drops the tag.
+
+@router.get("/candidates")
+async def list_candidates(
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Pending email-review candidates, newest-emailed first, with the count +
+    latest subject of the emails that surfaced them (so the reviewer has context)."""
+    rows = await conn.fetch(
+        """
+        SELECT c.contact_id, c.full_name, c.email, c.current_company, c.current_title,
+               count(a.id) AS email_count,
+               max(a.activity_date) AS last_email,
+               (array_agg(a.subject ORDER BY a.activity_date DESC))[1] AS last_subject
+        FROM public.contacts c
+        LEFT JOIN bedrock.activity a
+          ON a.participant_public_contact_id = c.contact_id AND a.deleted_at IS NULL
+        WHERE c.deleted_at IS NULL AND c.contact_stage = 'candidate'
+          AND 'email_review' = ANY(c.tags)
+        GROUP BY c.contact_id
+        ORDER BY max(a.activity_date) DESC NULLS LAST, c.email
+        """,
+    )
+    return {"success": True, "data": [
+        {"contact_id": r["contact_id"], "full_name": r["full_name"], "email": r["email"],
+         "current_company": r["current_company"], "current_title": r["current_title"],
+         "email_count": r["email_count"],
+         "last_email": r["last_email"].isoformat() if r["last_email"] else None,
+         "last_subject": r["last_subject"]}
+        for r in rows
+    ]}
+
+
+class CandidatePromote(BaseModel):
+    full_name: Optional[str] = None
+    current_company: Optional[str] = None
+    current_title: Optional[str] = None
+    contact_stage: str = "lead"
+
+
+@router.post("/candidates/{contact_id}/promote")
+async def promote_candidate(
+    contact_id: int,
+    body: CandidatePromote,
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Promote a candidate into the pipeline: set the filled-in fields, flip
+    is_jobs_contact=true, and drop the 'email_review' tag so it leaves the queue."""
+    sets = ["is_jobs_contact = true",
+            "contact_stage = $2",
+            "tags = array_remove(coalesce(tags,'{}'), 'email_review')",
+            "updated_at = now()"]
+    params = [contact_id, body.contact_stage]
+    i = 3
+    for field in ("full_name", "current_company", "current_title"):
+        val = getattr(body, field)
+        if val:
+            sets.append(f"{field} = ${i}"); params.append(val); i += 1
+    res = await conn.execute(
+        f"UPDATE public.contacts SET {', '.join(sets)} "
+        f"WHERE contact_id = $1 AND contact_stage = 'candidate'", *params)
+    if res == "UPDATE 0":
+        raise HTTPException(404, "Candidate not found")
+    return {"success": True, "data": {"contact_id": contact_id, "promoted": True}}
+
+
+@router.post("/candidates/{contact_id}/dismiss")
+async def dismiss_candidate(
+    contact_id: int,
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Dismiss a candidate (soft-delete the contact). Its activity stays in the DB."""
+    email = user.get("email") if isinstance(user, dict) else getattr(user, "email", None)
+    res = await conn.execute(
+        "UPDATE public.contacts SET deleted_at=now(), updated_at=now() "
+        "WHERE contact_id=$1 AND contact_stage='candidate'", contact_id)
+    if res == "UPDATE 0":
+        raise HTTPException(404, "Candidate not found")
+    return {"success": True, "data": {"contact_id": contact_id, "dismissed": True}}
+
+
 # ── Activity logging ─────────────────────────────────────────────────────────
 
 class ActivityCreate(BaseModel):

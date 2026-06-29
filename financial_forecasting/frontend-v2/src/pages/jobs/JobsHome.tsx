@@ -11,14 +11,17 @@
  */
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { Circle, Plus, Briefcase } from "lucide-react";
+import { Circle, Plus, Briefcase, UserPlus, X } from "lucide-react";
 
 import { Tag } from "@/components/ui/Tag";
 import { InlineDate } from "@/components/ui/InlineEdit";
 import { cn } from "@/lib/utils";
 import { useActiveUsers } from "@/services/projects";
 import { useCurrentUser } from "@/services/auth";
-import { useJobsAccounts, STAGE_LABELS, type JobStage } from "@/services/jobs";
+import {
+  useJobsAccounts, STAGE_LABELS, type JobStage,
+  useCandidates, usePromoteCandidate, useDismissCandidate, type JobCandidate,
+} from "@/services/jobs";
 import {
   useAllJobsTasks, useUpdateTaskById, useCreateTaskForParent, useDeleteTaskById,
   type JobsTaskEnriched,
@@ -307,6 +310,73 @@ function InterviewsZone() {
   );
 }
 
+// ── Candidate review queue ────────────────────────────────────────────────────
+// Email recipients auto-created from Avni/Damon's sent mail that need a human to
+// confirm identity. Fill name/company inline → Add to pipeline, or Dismiss.
+function CandidateRow({ cand }: { cand: JobCandidate }) {
+  const promote = usePromoteCandidate();
+  const dismiss = useDismissCandidate();
+  const [name, setName] = useState(cand.full_name ?? "");
+  const [company, setCompany] = useState(cand.current_company ?? "");
+  const busy = promote.isPending || dismiss.isPending;
+  return (
+    <div className="flex flex-wrap items-center gap-2 border-t border-border-strong px-3 py-2 hover:bg-surface-2/40">
+      <div className="min-w-0 flex-1">
+        <div className="truncate text-[12.5px] text-ink">{cand.email}</div>
+        <div className="truncate text-[11px] text-ink-4">
+          {cand.email_count} email{cand.email_count === 1 ? "" : "s"}
+          {cand.last_subject ? ` · ${cand.last_subject}` : ""}
+        </div>
+      </div>
+      <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Full name"
+        className="h-7 w-32 rounded border border-border-strong bg-surface px-2 text-[12px] text-ink outline-none focus:border-accent" />
+      <input value={company} onChange={(e) => setCompany(e.target.value)} placeholder="Company"
+        className="h-7 w-36 rounded border border-border-strong bg-surface px-2 text-[12px] text-ink outline-none focus:border-accent" />
+      <button type="button" disabled={busy}
+        onClick={() => promote.mutate({ id: cand.contact_id, full_name: name || undefined, current_company: company || undefined })}
+        className="inline-flex h-7 items-center gap-1 rounded bg-accent px-2.5 text-[12px] font-medium text-white disabled:opacity-40"
+        title="Add to pipeline">
+        <UserPlus size={12} /> Add
+      </button>
+      <button type="button" disabled={busy} onClick={() => dismiss.mutate(cand.contact_id)}
+        className="grid h-7 w-7 place-items-center rounded text-ink-4 hover:bg-red-soft hover:text-red disabled:opacity-40"
+        title="Dismiss">
+        <X size={14} />
+      </button>
+    </div>
+  );
+}
+
+function CandidatesZone() {
+  const { data: cands = [], isLoading } = useCandidates();
+  const [showAll, setShowAll] = useState(false);
+  const shown = showAll ? cands : cands.slice(0, 15);
+  return (
+    <Section title="Candidates to review" count={cands.length}>
+      <div className="flex flex-col overflow-hidden rounded-lg border border-border-strong bg-surface">
+        {isLoading ? (
+          <div className="px-3 py-8 text-center text-[12.5px] text-ink-3">Loading…</div>
+        ) : cands.length === 0 ? (
+          <div className="px-3 py-8 text-center text-[12.5px] text-ink-3">Nothing to review. 🎉</div>
+        ) : (
+          <>
+            <div className="bg-surface-2/60 px-3 py-1.5 text-[11px] text-ink-4">
+              People we emailed but couldn't auto-identify — confirm name/company, then add or dismiss.
+            </div>
+            {shown.map((c) => <CandidateRow key={c.contact_id} cand={c} />)}
+            {cands.length > shown.length && (
+              <button type="button" onClick={() => setShowAll(true)}
+                className="border-t border-border-strong px-3 py-2 text-[12px] text-accent hover:bg-surface-2/50">
+                Show all {cands.length}
+              </button>
+            )}
+          </>
+        )}
+      </div>
+    </Section>
+  );
+}
+
 // ── Page ────────────────────────────────────────────────────────────────────
 export function JobsHome() {
   const { data: me } = useCurrentUser();
@@ -337,6 +407,7 @@ export function JobsHome() {
       </div>
 
       <TasksZone />
+      <CandidatesZone />
       <InterviewsZone />
     </div>
   );
