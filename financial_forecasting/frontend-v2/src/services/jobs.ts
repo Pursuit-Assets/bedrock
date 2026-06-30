@@ -1090,6 +1090,47 @@ export function useEnrichCandidate() {
   });
 }
 
+export interface SfContactMatch {
+  sf_contact_id: string;
+  name: string | null;
+  title: string | null;
+  account_id: string | null;
+  account_name: string | null;
+}
+
+/** Look this candidate's email up in Salesforce (Email/Home/Work). */
+export function useCandidateSfMatch(contactId: number | null) {
+  return useQuery({
+    queryKey: ["jobs", "candidate-sf", contactId],
+    queryFn: async (): Promise<{ match: SfContactMatch | null; error?: string }> => {
+      const { data } = await api.get<ApiResponse<{ match: SfContactMatch | null; error?: string }>>(`/api/jobs/candidates/${contactId}/sf-match`);
+      return data.data;
+    },
+    enabled: contactId != null,
+    retry: false,
+  });
+}
+
+/** Approve a Salesforce match: import the SF contact to the pipeline + link. */
+export function useLinkCandidateSf() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, match }: { id: number; match: SfContactMatch }) => {
+      const { data } = await api.post<ApiResponse<unknown>>(`/api/jobs/candidates/${id}/link-sf`, {
+        sf_contact_id: match.sf_contact_id, name: match.name, account_name: match.account_name,
+        account_id: match.account_id, title: match.title,
+      });
+      return data.data;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["jobs", "candidates"] });
+      qc.invalidateQueries({ queryKey: ["jobs", "contacts"] });
+      toast.success("Linked to Salesforce contact + added to pipeline");
+    },
+    onError: () => toast.error("Link failed"),
+  });
+}
+
 /** Approve a duplicate match: re-point this candidate's emails onto an existing
  *  contact and retire the candidate (one-click merge). */
 export function useLinkCandidate() {

@@ -12,6 +12,7 @@ import { Drawer } from "@/components/ui/Drawer";
 import { Tag } from "@/components/ui/Tag";
 import {
   useCandidates, useCandidateDetail, useEnrichCandidate, useLinkCandidate,
+  useCandidateSfMatch, useLinkCandidateSf,
   usePromoteCandidate, useDismissCandidate, useJobsAccounts,
   type JobCandidate,
 } from "@/services/jobs";
@@ -45,6 +46,8 @@ function CandidateDrawer({ contactId, onClose }: { contactId: number | null; onC
   const { data, isLoading } = useCandidateDetail(contactId);
   const enrich = useEnrichCandidate();
   const link = useLinkCandidate();
+  const sfMatch = useCandidateSfMatch(contactId);
+  const linkSf = useLinkCandidateSf();
   const promote = usePromoteCandidate();
   const dismiss = useDismissCandidate();
   const { data: accounts = [] } = useJobsAccounts("all");
@@ -66,7 +69,8 @@ function CandidateDrawer({ contactId, onClose }: { contactId: number | null; onC
   const e = data?.enrichment;
   const sug = data?.suggested_account;
   const dups = data?.possible_duplicates ?? [];
-  const busy = promote.isPending || dismiss.isPending || link.isPending;
+  const sf = sfMatch.data?.match;
+  const busy = promote.isPending || dismiss.isPending || link.isPending || linkSf.isPending;
 
   return (
     <Drawer open={contactId != null} onClose={onClose}
@@ -103,6 +107,23 @@ function CandidateDrawer({ contactId, onClose }: { contactId: number | null; onC
               </div>
             )}
           </div>
+
+          {/* Salesforce match — definitive (email). Approve → import + pipeline. */}
+          {sf && (
+            <div className="flex items-center justify-between gap-2 rounded-lg border border-green/40 bg-green-soft/40 p-3">
+              <div className="min-w-0">
+                <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-green"><Building2 size={12} /> Found in Salesforce</div>
+                <div className="mt-1 truncate text-[12.5px] text-ink">
+                  {sf.name}{sf.account_name ? <span className="text-ink-4"> · {sf.account_name}</span> : ""}{sf.title ? <span className="text-ink-4"> · {sf.title}</span> : ""}
+                </div>
+              </div>
+              <button type="button" disabled={busy}
+                onClick={() => contactId && linkSf.mutate({ id: contactId, match: sf }, { onSuccess: onClose })}
+                className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md bg-green px-2.5 text-[12px] font-medium text-white disabled:opacity-40">
+                <Link2 size={12} /> Link
+              </button>
+            </div>
+          )}
 
           {/* One-click duplicate links */}
           {dups.length > 0 && (

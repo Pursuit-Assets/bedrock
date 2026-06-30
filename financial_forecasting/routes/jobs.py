@@ -18,6 +18,7 @@ from pydantic import BaseModel
 
 from auth import require_auth
 from db import get_db
+from dependencies import require_sf_mcp_client
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
@@ -3510,6 +3511,132 @@ async def link_candidate(
         await conn.execute(
             "UPDATE public.contacts SET is_jobs_contact=true WHERE contact_id=$1", body.target_contact_id)
     return {"success": True, "data": {"linked_to": body.target_contact_id}}
+
+
+# ── Salesforce matching (MECE: search DB + SF by email; SF hit → link + pipeline)
+
+async def _upsert_sf_contact(conn, sf: dict, source_email: str) -> int:
+    """Ensure the SF-matched contact exists in public.contacts (jobs pipeline)
+    and return its contact_id. Reuses an existing link/email row when present;
+    otherwise inserts a new pipeline contact + records the SF link."""
+    sf_id = sf.get("sf_contact_id")
+    # 1) already linked?
+    pid = await conn.fetchval(
+        "SELECT public_contact_id FROM bedrock.sf_contact_link WHERE sf_contact_id=$1", sf_id)
+    if not pid:
+        # 2) existing public contact by the matched email?
+        pid = await conn.fetchval("SELECT contact_id FROM public.contacts WHERE lower(email)=lower($1) AND contact_id <> $2 LIMIT 1",
+                                  source_email, -1)
+    if not pid:
+        # 3) create a pipeline contact from the SF record
+        pid = await conn.fetchval(
+            """INSERT INTO public.contacts
+               (full_name, email, current_company, current_title, dedup_key, source, contact_stage, is_jobs_contact, created_at, updated_at)
+               VALUES ($1,$2,$3,$4,$5,'salesforce','lead',true,now(),now()) RETURNING contact_id""",
+            sf.get("name"), source_email, sf.get("account_name"), sf.get("title"), f"sf:{sf_id}")
+    await conn.execute("UPDATE public.contacts SET is_jobs_contact=true WHERE contact_id=$1", pid)
+    if sf_id:
+        await conn.execute(
+            """INSERT INTO bedrock.sf_contact_link (sf_contact_id, public_contact_id, confidence, matched_by, sf_account_id)
+               VALUES ($1,$2,'email','candidate_resolve',$3)
+               ON CONFLICT DO NOTHING""", sf_id, pid, sf.get("account_id"))
+    return pid
+
+
+async def _link_candidate(conn, candidate_id: int, target_pid: int) -> None:
+    """Re-point a candidate's emails onto an existing contact + retire it."""
+    await conn.execute(
+        "UPDATE bedrock.activity SET participant_public_contact_id=$1 WHERE participant_public_contact_id=$2",
+        target_pid, candidate_id)
+    await conn.execute(
+        "UPDATE public.contacts SET contact_stage='merged', is_jobs_contact=false, "
+        "tags=array_remove(coalesce(tags,'{}'),'email_review'), updated_at=now() WHERE contact_id=$1", candidate_id)
+    await conn.execute("DELETE FROM bedrock.candidate_enrichment WHERE contact_id=$1", candidate_id)
+
+
+@router.post("/candidates/resolve-sf")
+async def resolve_candidates_sf(
+    user=Depends(require_auth),
+    client=Depends(require_sf_mcp_client),
+    conn=Depends(get_db),
+):
+    """MECE batch: for every candidate, look the email up in Salesforce
+    (Email / HomeEmail / WorkEmail). A match is definitive → import the SF
+    contact into the pipeline, re-point the candidate's emails onto it, retire
+    the candidate. Unmatched candidates stay for human review."""
+    from services.candidate_enrich import sf_contact_match_soql, index_sf_matches
+    cands = await conn.fetch(
+        "SELECT contact_id, email FROM public.contacts WHERE contact_stage='candidate' AND 'email_review'=ANY(tags)")
+    emails = [c["email"] for c in cands if c["email"]]
+    matched_index: dict = {}
+    for i in range(0, len(emails), 150):   # batch SOQL
+        batch = emails[i:i + 150]
+        try:
+            res = await client.salesforce.query(sf_contact_match_soql(batch))
+            matched_index.update(index_sf_matches(res.get("records", [])))
+        except Exception as e:
+            logger.warning("resolve-sf batch failed: %s", e)
+    linked = 0
+    async with conn.transaction():
+        for c in cands:
+            sf = matched_index.get((c["email"] or "").lower().strip())
+            if not sf:
+                continue
+            pid = await _upsert_sf_contact(conn, sf, c["email"])
+            if pid and pid != c["contact_id"]:
+                await _link_candidate(conn, c["contact_id"], pid)
+                linked += 1
+    return {"success": True, "data": {"candidates": len(cands), "salesforce_linked": linked,
+                                      "remaining": len(cands) - linked}}
+
+
+@router.get("/candidates/{contact_id}/sf-match")
+async def candidate_sf_match(
+    contact_id: int,
+    user=Depends(require_auth),
+    client=Depends(require_sf_mcp_client),
+    conn=Depends(get_db),
+):
+    """Salesforce contact(s) matching this candidate's email — for the drawer."""
+    from services.candidate_enrich import sf_contact_match_soql, index_sf_matches
+    c = await conn.fetchrow("SELECT email FROM public.contacts WHERE contact_id=$1", contact_id)
+    if not c:
+        raise HTTPException(404, "Candidate not found")
+    try:
+        res = await client.salesforce.query(sf_contact_match_soql([c["email"]]))
+    except Exception as e:
+        return {"success": True, "data": {"match": None, "error": str(e)[:120]}}
+    idx = index_sf_matches(res.get("records", []))
+    return {"success": True, "data": {"match": idx.get((c["email"] or "").lower().strip())}}
+
+
+class CandidateLinkSf(BaseModel):
+    sf_contact_id: str
+    name: Optional[str] = None
+    account_name: Optional[str] = None
+    account_id: Optional[str] = None
+    title: Optional[str] = None
+
+
+@router.post("/candidates/{contact_id}/link-sf")
+async def link_candidate_sf(
+    contact_id: int,
+    body: CandidateLinkSf,
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Approve a Salesforce match: import the SF contact into the pipeline and
+    re-point this candidate's emails onto it."""
+    c = await conn.fetchrow("SELECT email FROM public.contacts WHERE contact_id=$1", contact_id)
+    if not c:
+        raise HTTPException(404, "Candidate not found")
+    async with conn.transaction():
+        pid = await _upsert_sf_contact(conn, {
+            "sf_contact_id": body.sf_contact_id, "name": body.name, "title": body.title,
+            "account_name": body.account_name, "account_id": body.account_id}, c["email"])
+        if pid != contact_id:
+            await _link_candidate(conn, contact_id, pid)
+    return {"success": True, "data": {"linked_to": pid}}
 
 
 class CandidatePromote(BaseModel):

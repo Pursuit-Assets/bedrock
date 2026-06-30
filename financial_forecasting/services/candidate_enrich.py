@@ -171,6 +171,38 @@ async def find_duplicate_contacts(conn, contact_id: int, name: str) -> list[int]
     return [r["contact_id"] for r in rows]
 
 
+# ── Salesforce contact matching (MECE: email is the key) ──────────────────────
+
+# A fellow/known contact's personal email can live in any of these SF fields.
+SF_EMAIL_FIELDS = ("Email", "npe01__HomeEmail__c", "npe01__WorkEmail__c")
+
+
+def sf_contact_match_soql(emails: list[str]) -> str:
+    """SOQL to find SF Contacts whose any email field matches one of `emails`."""
+    quoted = ",".join("'" + e.replace("'", r"\'") + "'" for e in emails if e)
+    clauses = " OR ".join(f"{f} IN ({quoted})" for f in SF_EMAIL_FIELDS)
+    return (
+        "SELECT Id, Name, Email, npe01__HomeEmail__c, npe01__WorkEmail__c, Title, "
+        "AccountId, Account.Name FROM Contact "
+        f"WHERE {clauses} LIMIT 400"
+    )
+
+
+def index_sf_matches(records: list[dict]) -> dict[str, dict]:
+    """Map each candidate email (lowercased) → its SF contact record. A contact
+    can match on several email fields; we index all of them."""
+    out: dict[str, dict] = {}
+    for r in records or []:
+        acct = (r.get("Account") or {}).get("Name") if isinstance(r.get("Account"), dict) else None
+        info = {"sf_contact_id": r.get("Id"), "name": r.get("Name"), "title": r.get("Title"),
+                "account_id": r.get("AccountId"), "account_name": acct}
+        for f in SF_EMAIL_FIELDS:
+            v = r.get(f)
+            if v:
+                out.setdefault(v.lower().strip(), info)
+    return out
+
+
 async def enrich_and_store(conn, contact_id: int) -> dict:
     """Run AI enrichment + account suggestion + duplicate detection for one
     candidate and persist to bedrock.candidate_enrichment (upsert). Returns the
