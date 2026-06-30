@@ -137,6 +137,9 @@ async def auto_flag_jobs_prospects(conn) -> dict[str, Any]:
         FROM public.contacts c
         WHERE coalesce(c.is_jobs_contact, false) = false
           AND c.email IS NOT NULL AND c.email <> ''
+          -- Email-review candidates are staged for human review, not the main
+          -- pipeline — never auto-promote them into is_jobs_contact via activity.
+          AND coalesce(c.contact_stage, '') <> 'candidate'
           AND (
               lower(c.email) IN (SELECT em FROM part_email WHERE em IS NOT NULL)
               OR c.contact_id IN (SELECT contact_id FROM linked_cid)
