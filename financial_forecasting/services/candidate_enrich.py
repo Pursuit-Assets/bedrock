@@ -107,8 +107,10 @@ def enrich_candidate(email: str, emails: list[dict]) -> dict:
     parts = [f"Candidate email address: {email}", ""]
     for e in emails[:6]:
         body = (e.get("body") or e.get("snippet") or "").strip().replace("\r", "")
-        if len(body) > 800:
-            body = body[:800] + "…"
+        # Keep head AND tail when long — email signatures (title/company/phone/
+        # LinkedIn) sit at the bottom, so a top-only truncation loses them.
+        if len(body) > 1400:
+            body = body[:900] + "\n…[trimmed]…\n" + body[-500:]
         parts.append(f"[{e.get('direction','?')} · {e.get('date','')}] Subject: {e.get('subject') or '(none)'}")
         if body:
             parts.append(body)
@@ -146,19 +148,26 @@ def enrich_candidate(email: str, emails: list[dict]) -> dict:
 # ── Persisted / batch enrichment ──────────────────────────────────────────────
 
 async def find_duplicate_contacts(conn, contact_id: int, name: str) -> list[int]:
-    """Existing pipeline contact ids that look like this person (by name)."""
-    name = (name or "").strip()
-    if len(name) < 3:
+    """Existing pipeline contact ids that are plausibly the SAME PERSON.
+
+    Requires a real first AND last name, both present on the candidate — a
+    shared first name alone ("Rachel") is NOT a match and returns []. This keeps
+    the "likely existing contact" suggestion tight; company linkage is handled
+    separately by the account suggestion.
+    """
+    parts = [p for p in (name or "").split() if len(p) >= 2]
+    if len(parts) < 2:
         return []
-    parts = name.split()
     first, last = parts[0], parts[-1]
+    if first.lower() == last.lower():
+        return []
     rows = await conn.fetch(
         """SELECT contact_id FROM public.contacts
            WHERE is_jobs_contact = true AND coalesce(contact_stage,'') NOT IN ('candidate','dismissed','merged')
              AND contact_id <> $1
-             AND (full_name ILIKE $2 OR (full_name ILIKE $3 AND full_name ILIKE $4))
+             AND full_name ILIKE $2 AND full_name ILIKE $3
            LIMIT 6""",
-        contact_id, f"%{name}%", f"%{first}%", f"%{last}%")
+        contact_id, f"%{first}%", f"%{last}%")
     return [r["contact_id"] for r in rows]
 
 
@@ -170,12 +179,17 @@ async def enrich_and_store(conn, contact_id: int) -> dict:
     c = await conn.fetchrow("SELECT email FROM public.contacts WHERE contact_id=$1", contact_id)
     if not c:
         return {}
+    # Prefer the person's OWN emails (inbound) first — that's where their
+    # signature (title/company/phone/LinkedIn) lives. Full body (capped) so the
+    # signature at the bottom isn't truncated away.
     rows = await conn.fetch(
-        """SELECT subject, left(coalesce(email_body_text, email_snippet), 1500) AS body,
-                  activity_date::date::text AS date
+        """SELECT subject, left(coalesce(email_body_text, email_snippet), 6000) AS body,
+                  activity_date::date::text AS date,
+                  (email_from NOT ILIKE '%pursuit%') AS inbound
            FROM bedrock.activity WHERE participant_public_contact_id=$1 AND deleted_at IS NULL
-           ORDER BY activity_date DESC LIMIT 6""", contact_id)
-    emails = [{"subject": r["subject"], "body": r["body"], "date": r["date"], "direction": "outbound"} for r in rows]
+           ORDER BY (email_from NOT ILIKE '%pursuit%') DESC, activity_date DESC LIMIT 6""", contact_id)
+    emails = [{"subject": r["subject"], "body": r["body"], "date": r["date"],
+               "direction": "inbound (from them)" if r["inbound"] else "outbound (to them)"} for r in rows]
     ai = await asyncio.to_thread(enrich_candidate, c["email"], emails)
     sug = await suggest_account(conn, c["email"])
     dup_ids = await find_duplicate_contacts(conn, contact_id, ai.get("full_name") or "")
