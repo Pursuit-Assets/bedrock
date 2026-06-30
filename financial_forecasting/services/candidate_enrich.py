@@ -178,29 +178,65 @@ SF_EMAIL_FIELDS = ("Email", "npe01__HomeEmail__c", "npe01__WorkEmail__c")
 
 
 def sf_contact_match_soql(emails: list[str]) -> str:
-    """SOQL to find SF Contacts whose any email field matches one of `emails`."""
+    """SOQL to find SF Contacts whose any email field matches one of `emails`.
+
+    NOTE: Contact.AccountId is the NPSP *Household* (e.g. "Pires (Armando)
+    Household"), NOT the employer — so we don't select it as the company. The
+    employer comes from the primary Affiliation (see sf_affiliation_employer_soql);
+    Primary_Affiliation_Name__c is a text fallback (ignored when it's a Household).
+    """
     quoted = ",".join("'" + e.replace("'", r"\'") + "'" for e in emails if e)
     clauses = " OR ".join(f"{f} IN ({quoted})" for f in SF_EMAIL_FIELDS)
     return (
         "SELECT Id, Name, Email, npe01__HomeEmail__c, npe01__WorkEmail__c, Title, "
-        "AccountId, Account.Name FROM Contact "
+        "Primary_Affiliation_Name__c, Primary_Affiliation_Entity__c FROM Contact "
         f"WHERE {clauses} LIMIT 400"
     )
 
 
+def sf_affiliation_employer_soql(contact_ids: list[str]) -> str:
+    """SOQL: authoritative employer Account id per fellow Contact, from the
+    primary Affiliation's fellow-specific lookup (Account_ForFellowsOnly__c)."""
+    quoted = ",".join("'" + i + "'" for i in contact_ids if i)
+    return (
+        "SELECT npe5__Contact__c, Account_ForFellowsOnly__c FROM npe5__Affiliation__c "
+        f"WHERE npe5__Primary__c = true AND Account_ForFellowsOnly__c != null "
+        f"AND npe5__Contact__c IN ({quoted}) LIMIT 400"
+    )
+
+
 def index_sf_matches(records: list[dict]) -> dict[str, dict]:
-    """Map each candidate email (lowercased) → its SF contact record. A contact
-    can match on several email fields; we index all of them."""
+    """Map each candidate email (lowercased) → its SF contact. A contact can
+    match on several email fields; index all. Company is left to the affiliation
+    resolution; the text Primary_Affiliation_Name__c is a fallback (not Household)."""
     out: dict[str, dict] = {}
     for r in records or []:
-        acct = (r.get("Account") or {}).get("Name") if isinstance(r.get("Account"), dict) else None
+        entity = (r.get("Primary_Affiliation_Entity__c") or "")
+        aff_name = r.get("Primary_Affiliation_Name__c")
+        fallback_company = aff_name if aff_name and "household" not in entity.lower() else None
         info = {"sf_contact_id": r.get("Id"), "name": r.get("Name"), "title": r.get("Title"),
-                "account_id": r.get("AccountId"), "account_name": acct}
+                "employer_account_id": None, "company": fallback_company}
         for f in SF_EMAIL_FIELDS:
             v = r.get(f)
             if v:
                 out.setdefault(v.lower().strip(), info)
     return out
+
+
+async def resolve_employer_company(conn, sf_account_id: str | None) -> str | None:
+    """Resolve an employer SF account id → a jobs company name (never a Household).
+    Chain: sf_account_company_map → companies, then account_email_domain."""
+    if not sf_account_id:
+        return None
+    row = await conn.fetchval(
+        """SELECT co.name FROM bedrock.sf_account_company_map m
+           JOIN public.companies co ON co.company_id = m.public_company_id
+           WHERE m.sf_account_id = $1 LIMIT 1""", sf_account_id)
+    if row:
+        return row
+    return await conn.fetchval(
+        "SELECT sf_account_name FROM bedrock.account_email_domain WHERE sf_account_id = $1 LIMIT 1",
+        sf_account_id)
 
 
 async def enrich_and_store(conn, contact_id: int) -> dict:

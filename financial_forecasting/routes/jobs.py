@@ -3515,31 +3515,35 @@ async def link_candidate(
 
 # ── Salesforce matching (MECE: search DB + SF by email; SF hit → link + pipeline)
 
-async def _upsert_sf_contact(conn, sf: dict, source_email: str) -> int:
+async def _upsert_sf_contact(conn, sf: dict, source_email: str, company: str | None,
+                             employer_account_id: str | None = None) -> int:
     """Ensure the SF-matched contact exists in public.contacts (jobs pipeline)
-    and return its contact_id. Reuses an existing link/email row when present;
-    otherwise inserts a new pipeline contact + records the SF link."""
+    and return its contact_id. `company` is the resolved EMPLOYER (from the
+    primary affiliation), never the NPSP Household. Reuses an existing
+    link/email row when present; else inserts a new pipeline contact + SF link."""
     sf_id = sf.get("sf_contact_id")
-    # 1) already linked?
     pid = await conn.fetchval(
         "SELECT public_contact_id FROM bedrock.sf_contact_link WHERE sf_contact_id=$1", sf_id)
     if not pid:
-        # 2) existing public contact by the matched email?
-        pid = await conn.fetchval("SELECT contact_id FROM public.contacts WHERE lower(email)=lower($1) AND contact_id <> $2 LIMIT 1",
-                                  source_email, -1)
+        pid = await conn.fetchval("SELECT contact_id FROM public.contacts WHERE lower(email)=lower($1) LIMIT 1", source_email)
     if not pid:
-        # 3) create a pipeline contact from the SF record
         pid = await conn.fetchval(
             """INSERT INTO public.contacts
                (full_name, email, current_company, current_title, dedup_key, source, contact_stage, is_jobs_contact, created_at, updated_at)
                VALUES ($1,$2,$3,$4,$5,'salesforce','lead',true,now(),now()) RETURNING contact_id""",
-            sf.get("name"), source_email, sf.get("account_name"), sf.get("title"), f"sf:{sf_id}")
+            sf.get("name"), source_email, company, sf.get("title"), f"sf:{sf_id}")
+    else:
+        # backfill company on the existing record if we have one and it's blank
+        if company:
+            await conn.execute(
+                "UPDATE public.contacts SET current_company=coalesce(nullif(current_company,''),$2) WHERE contact_id=$1",
+                pid, company)
     await conn.execute("UPDATE public.contacts SET is_jobs_contact=true WHERE contact_id=$1", pid)
     if sf_id:
         await conn.execute(
             """INSERT INTO bedrock.sf_contact_link (sf_contact_id, public_contact_id, confidence, matched_by, sf_account_id)
                VALUES ($1,$2,'email','candidate_resolve',$3)
-               ON CONFLICT DO NOTHING""", sf_id, pid, sf.get("account_id"))
+               ON CONFLICT DO NOTHING""", sf_id, pid, employer_account_id)
     return pid
 
 
@@ -3564,25 +3568,37 @@ async def resolve_candidates_sf(
     (Email / HomeEmail / WorkEmail). A match is definitive → import the SF
     contact into the pipeline, re-point the candidate's emails onto it, retire
     the candidate. Unmatched candidates stay for human review."""
-    from services.candidate_enrich import sf_contact_match_soql, index_sf_matches
+    from services.candidate_enrich import (
+        sf_contact_match_soql, index_sf_matches, sf_affiliation_employer_soql, resolve_employer_company)
     cands = await conn.fetch(
         "SELECT contact_id, email FROM public.contacts WHERE contact_stage='candidate' AND 'email_review'=ANY(tags)")
     emails = [c["email"] for c in cands if c["email"]]
     matched_index: dict = {}
-    for i in range(0, len(emails), 150):   # batch SOQL
-        batch = emails[i:i + 150]
+    for i in range(0, len(emails), 150):   # batch SOQL: contacts by email
         try:
-            res = await client.salesforce.query(sf_contact_match_soql(batch))
+            res = await client.salesforce.query(sf_contact_match_soql(emails[i:i + 150]))
             matched_index.update(index_sf_matches(res.get("records", [])))
         except Exception as e:
-            logger.warning("resolve-sf batch failed: %s", e)
+            logger.warning("resolve-sf contact batch failed: %s", e)
+    # Employer per matched contact, from the primary affiliation (not Household).
+    sf_ids = list({m["sf_contact_id"] for m in matched_index.values() if m.get("sf_contact_id")})
+    employer_by_contact: dict = {}
+    for i in range(0, len(sf_ids), 150):
+        try:
+            res = await client.salesforce.query(sf_affiliation_employer_soql(sf_ids[i:i + 150]))
+            for r in res.get("records", []):
+                employer_by_contact[r.get("npe5__Contact__c")] = r.get("Account_ForFellowsOnly__c")
+        except Exception as e:
+            logger.warning("resolve-sf affiliation batch failed: %s", e)
     linked = 0
     async with conn.transaction():
         for c in cands:
             sf = matched_index.get((c["email"] or "").lower().strip())
             if not sf:
                 continue
-            pid = await _upsert_sf_contact(conn, sf, c["email"])
+            emp_acct = employer_by_contact.get(sf["sf_contact_id"])
+            company = await resolve_employer_company(conn, emp_acct) or sf.get("company")
+            pid = await _upsert_sf_contact(conn, sf, c["email"], company, emp_acct)
             if pid and pid != c["contact_id"]:
                 await _link_candidate(conn, c["contact_id"], pid)
                 linked += 1
@@ -3597,8 +3613,10 @@ async def candidate_sf_match(
     client=Depends(require_sf_mcp_client),
     conn=Depends(get_db),
 ):
-    """Salesforce contact(s) matching this candidate's email — for the drawer."""
-    from services.candidate_enrich import sf_contact_match_soql, index_sf_matches
+    """Salesforce contact matching this candidate's email, with the resolved
+    EMPLOYER (primary affiliation → jobs company) — for the drawer."""
+    from services.candidate_enrich import (
+        sf_contact_match_soql, index_sf_matches, sf_affiliation_employer_soql, resolve_employer_company)
     c = await conn.fetchrow("SELECT email FROM public.contacts WHERE contact_id=$1", contact_id)
     if not c:
         raise HTTPException(404, "Candidate not found")
@@ -3606,8 +3624,19 @@ async def candidate_sf_match(
         res = await client.salesforce.query(sf_contact_match_soql([c["email"]]))
     except Exception as e:
         return {"success": True, "data": {"match": None, "error": str(e)[:120]}}
-    idx = index_sf_matches(res.get("records", []))
-    return {"success": True, "data": {"match": idx.get((c["email"] or "").lower().strip())}}
+    match = index_sf_matches(res.get("records", [])).get((c["email"] or "").lower().strip())
+    if match and match.get("sf_contact_id"):
+        try:
+            aff = await client.salesforce.query(sf_affiliation_employer_soql([match["sf_contact_id"]]))
+            recs = aff.get("records", [])
+            emp_acct = recs[0].get("Account_ForFellowsOnly__c") if recs else None
+            company = await resolve_employer_company(conn, emp_acct) or match.get("company")
+            match["employer_account_id"] = emp_acct
+            match["account_name"] = company
+        except Exception as e:
+            logger.warning("sf-match affiliation lookup failed: %s", e)
+            match["account_name"] = match.get("company")
+    return {"success": True, "data": {"match": match}}
 
 
 class CandidateLinkSf(BaseModel):
@@ -3631,9 +3660,10 @@ async def link_candidate_sf(
     if not c:
         raise HTTPException(404, "Candidate not found")
     async with conn.transaction():
-        pid = await _upsert_sf_contact(conn, {
-            "sf_contact_id": body.sf_contact_id, "name": body.name, "title": body.title,
-            "account_name": body.account_name, "account_id": body.account_id}, c["email"])
+        # body.account_name is the resolved EMPLOYER company (from sf-match).
+        pid = await _upsert_sf_contact(conn,
+            {"sf_contact_id": body.sf_contact_id, "name": body.name, "title": body.title},
+            c["email"], body.account_name, body.account_id)
         if pid != contact_id:
             await _link_candidate(conn, contact_id, pid)
     return {"success": True, "data": {"linked_to": pid}}
