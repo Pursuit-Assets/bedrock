@@ -13,9 +13,15 @@ import { Tag } from "@/components/ui/Tag";
 import {
   useCandidates, useCandidateDetail, useEnrichCandidate, useLinkCandidate,
   useCandidateSfMatch, useLinkCandidateSf,
-  usePromoteCandidate, useDismissCandidate, useJobsAccounts,
+  usePromoteCandidate, useDismissCandidate, useJobsAccountNames, useCandidateOwners,
   type JobCandidate,
 } from "@/services/jobs";
+
+/** Short display label for a staff owner email (e.g. "avni@pursuit.org" -> "Avni"). */
+const ownerLabel = (email: string) => {
+  const lp = email.split("@")[0].replace(/[._]/g, " ");
+  return lp.split(" ").map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
+};
 
 const fmtDate = (iso: string | null) =>
   iso ? new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "";
@@ -50,7 +56,7 @@ function CandidateDrawer({ contactId, onClose }: { contactId: number | null; onC
   const linkSf = useLinkCandidateSf();
   const promote = usePromoteCandidate();
   const dismiss = useDismissCandidate();
-  const { data: accounts = [] } = useJobsAccounts("all");
+  const { data: accounts = [] } = useJobsAccountNames();
 
   const [name, setName] = useState("");
   const [title, setTitle] = useState("");
@@ -220,12 +226,13 @@ function Suggest({ label, onClick }: { label: string; onClick: () => void }) {
   );
 }
 
-function Section({ title, count, children }: { title: string; count?: number; children: React.ReactNode }) {
+function Section({ title, count, action, children }: { title: string; count?: number; action?: React.ReactNode; children: React.ReactNode }) {
   return (
     <div className="flex flex-col gap-3">
       <div className="flex items-baseline gap-2">
         <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">{title}</span>
         {count != null && <span className="text-[11px] tabular-nums text-ink-4">{count}</span>}
+        {action && <div className="ml-auto self-center">{action}</div>}
       </div>
       {children}
     </div>
@@ -255,22 +262,38 @@ function CandidateRow({ c, onOpen }: { c: JobCandidate; onOpen: () => void }) {
   );
 }
 
-export function CandidatesZone() {
-  const { data: cands = [], isLoading } = useCandidates();
+export function CandidatesZone({ defaultOwner }: { defaultOwner?: string } = {}) {
+  const [owner, setOwner] = useState<string>(defaultOwner ?? "");  // "" = everyone
+  const { data: cands = [], isLoading } = useCandidates(owner || undefined);
+  const { data: owners = [] } = useCandidateOwners();
   const [openId, setOpenId] = useState<number | null>(null);
   const [showAll, setShowAll] = useState(false);
   const shown = showAll ? cands : cands.slice(0, 20);
+  const ownerPicker = (
+    <select
+      value={owner}
+      onChange={(e) => { setOwner(e.target.value); setShowAll(false); }}
+      className="rounded border border-border-strong bg-surface px-2 py-1 text-[12px] text-ink"
+    >
+      <option value="">Everyone</option>
+      {owners.map((o) => (
+        <option key={o.owner} value={o.owner}>{ownerLabel(o.owner)} ({o.count})</option>
+      ))}
+    </select>
+  );
   return (
-    <Section title="Candidates to review" count={cands.length}>
+    <Section title="Candidates to review" count={cands.length} action={ownerPicker}>
       <div className="flex flex-col overflow-hidden rounded-lg border border-border-strong bg-surface">
         {isLoading ? (
           <div className="px-3 py-8 text-center text-[12.5px] text-ink-3">Loading…</div>
         ) : cands.length === 0 ? (
-          <div className="px-3 py-8 text-center text-[12.5px] text-ink-3">Nothing to review. 🎉</div>
+          <div className="px-3 py-8 text-center text-[12.5px] text-ink-3">
+            {owner ? `No candidates for ${ownerLabel(owner)}. 🎉` : "Nothing to review. 🎉"}
+          </div>
         ) : (
           <>
             <div className="bg-surface-2/60 px-3 py-1.5 text-[11px] text-ink-4">
-              People we emailed, enriched by AI. Open to confirm the match, then add or dismiss.
+              People we emailed{owner ? ` (${ownerLabel(owner)})` : ""}, enriched by AI. Open to confirm the match, then add or dismiss.
             </div>
             {shown.map((c) => <CandidateRow key={c.contact_id} c={c} onOpen={() => setOpenId(c.contact_id)} />)}
             {cands.length > shown.length && (

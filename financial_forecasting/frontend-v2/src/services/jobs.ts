@@ -396,6 +396,20 @@ export function useJobsAccounts(dealType?: string) {
   });
 }
 
+export interface JobsAccountName { account_key: string; account: string }
+/** Lightweight account names for dropdowns — avoids the full /accounts payload
+ *  (which nests every prospect, ~38k rows). */
+export function useJobsAccountNames() {
+  return useQuery<JobsAccountName[]>({
+    queryKey: ["jobs", "account-names"],
+    queryFn: async () => {
+      const { data } = await api.get<ApiResponse<JobsAccountName[]>>("/api/jobs/accounts/names");
+      return data.data ?? [];
+    },
+    staleTime: 5 * 60_000,
+  });
+}
+
 export interface ContactOpportunity {
   id: string;
   account_name: string;
@@ -797,13 +811,32 @@ export interface ActivityTrends {
   coverage_note: string | null;
 }
 
-export function useActivityTrends(granularity: "week" | "month", channel: OutreachChannel) {
+export function useActivityTrends(granularity: "week" | "month", channel: OutreachChannel, owner?: string) {
   return useQuery<ActivityTrends>({
-    queryKey: ["jobs", "activity-trends", granularity, channel],
+    queryKey: ["jobs", "activity-trends", granularity, channel, owner ?? "team"],
     queryFn: async () => {
-      const { data } = await api.get<ApiResponse<ActivityTrends>>(
-        `/api/jobs/activity-trends?granularity=${granularity}&channel=${channel}`,
-      );
+      const p = new URLSearchParams({ granularity, channel });
+      if (owner) p.set("owner", owner);
+      const { data } = await api.get<ApiResponse<ActivityTrends>>(`/api/jobs/activity-trends?${p}`);
+      return data.data;
+    },
+    staleTime: 60_000,
+  });
+}
+
+export interface OutreachTouch { activity_id: string; contact_id: number | null; contact: string | null; subject: string | null; channel: string; date: string | null }
+export interface OutreachAccountDetail { account: string; touches: OutreachTouch[] }
+export interface ActivityTrendDetail { period: string; accounts: OutreachAccountDetail[]; total_touches: number; total_accounts: number }
+
+/** Drill-down for a clicked outreach bar. `period` null = disabled (no fetch). */
+export function useActivityTrendDetail(period: string | null, granularity: "week" | "month", channel: OutreachChannel, owner?: string) {
+  return useQuery<ActivityTrendDetail>({
+    enabled: !!period,
+    queryKey: ["jobs", "activity-trend-detail", period, granularity, channel, owner ?? "team"],
+    queryFn: async () => {
+      const p = new URLSearchParams({ period: period!, granularity, channel });
+      if (owner) p.set("owner", owner);
+      const { data } = await api.get<ApiResponse<ActivityTrendDetail>>(`/api/jobs/activity-trends/detail?${p}`);
       return data.data;
     },
     staleTime: 60_000,
@@ -1010,6 +1043,9 @@ export interface JobCandidate {
   dup_count?: number;
   enriched?: boolean;
   email_count: number;
+  owners?: string[];
+  channels?: string[];
+  tier?: string | null;
   last_email: string | null;
   last_subject: string | null;
 }
@@ -1053,14 +1089,28 @@ export interface CandidateEnrichment {
   error?: string;
 }
 
-export function useCandidates() {
+export function useCandidates(owner?: string) {
   return useQuery({
-    queryKey: ["jobs", "candidates"],
+    queryKey: ["jobs", "candidates", owner ?? "all"],
     queryFn: async (): Promise<JobCandidate[]> => {
-      const { data } = await api.get<ApiResponse<JobCandidate[]>>("/api/jobs/candidates");
+      const { data } = await api.get<ApiResponse<JobCandidate[]>>("/api/jobs/candidates", {
+        params: owner ? { owner } : undefined,
+      });
       return data.data ?? [];
     },
     staleTime: 30_000,
+  });
+}
+
+export interface CandidateOwner { owner: string; count: number }
+export function useCandidateOwners() {
+  return useQuery({
+    queryKey: ["jobs", "candidate-owners"],
+    queryFn: async (): Promise<CandidateOwner[]> => {
+      const { data } = await api.get<ApiResponse<CandidateOwner[]>>("/api/jobs/candidates/owners");
+      return data.data ?? [];
+    },
+    staleTime: 60_000,
   });
 }
 
