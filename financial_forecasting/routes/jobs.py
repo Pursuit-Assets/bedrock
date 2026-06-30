@@ -3357,22 +3357,34 @@ async def list_candidates(
                count(a.id) AS email_count,
                max(a.activity_date) AS last_email,
                (array_agg(a.subject ORDER BY a.activity_date DESC))[1] AS last_subject,
-               aed.sf_account_name AS suggested_account
+               aed.sf_account_name AS domain_account,
+               e.full_name AS ai_name, e.company AS ai_company, e.confidence AS ai_confidence,
+               e.is_employer_contact,
+               e.account_suggestion->>'account_name' AS ai_account,
+               coalesce(array_length(e.possible_duplicate_ids, 1), 0) AS dup_count,
+               (e.contact_id IS NOT NULL) AS enriched
         FROM public.contacts c
         LEFT JOIN bedrock.activity a
           ON a.participant_public_contact_id = c.contact_id AND a.deleted_at IS NULL
         LEFT JOIN bedrock.account_email_domain aed
           ON aed.domain = lower(split_part(c.email,'@',2))
+        LEFT JOIN bedrock.candidate_enrichment e ON e.contact_id = c.contact_id
         WHERE c.contact_stage = 'candidate'
           AND 'email_review' = ANY(c.tags)
-        GROUP BY c.contact_id, aed.sf_account_name
-        ORDER BY max(a.activity_date) DESC NULLS LAST, c.email
+        GROUP BY c.contact_id, aed.sf_account_name, e.full_name, e.company, e.confidence,
+                 e.is_employer_contact, e.account_suggestion, e.possible_duplicate_ids, e.contact_id
+        ORDER BY (e.contact_id IS NOT NULL) DESC, max(a.activity_date) DESC NULLS LAST, c.email
         """,
     )
     return {"success": True, "data": [
         {"contact_id": r["contact_id"], "full_name": r["full_name"], "email": r["email"],
          "current_company": r["current_company"], "current_title": r["current_title"],
-         "domain": r["domain"], "suggested_account": r["suggested_account"],
+         "domain": r["domain"],
+         # Prefer AI account, then exact-domain map. Best name = stored AI name.
+         "suggested_account": r["ai_account"] or r["domain_account"],
+         "ai_name": r["ai_name"], "ai_company": r["ai_company"], "ai_confidence": r["ai_confidence"],
+         "is_employer_contact": r["is_employer_contact"],
+         "dup_count": r["dup_count"], "enriched": r["enriched"],
          "email_count": r["email_count"],
          "last_email": r["last_email"].isoformat() if r["last_email"] else None,
          "last_subject": r["last_subject"]}
@@ -3386,29 +3398,63 @@ async def candidate_detail(
     user=Depends(require_auth),
     conn=Depends(get_db),
 ):
-    """Full candidate: the emails that surfaced them + the best account linkage
-    suggestion (exact domain → fuzzy → propose-new)."""
+    """Full candidate: stored AI enrichment (instant — no live call), the best
+    account linkage suggestion, resolved duplicate contacts, and the emails."""
+    import json as _json
     from services.candidate_enrich import suggest_account
     c = await conn.fetchrow(
         "SELECT contact_id, full_name, email, current_company, current_title, linkedin_url "
         "FROM public.contacts WHERE contact_id=$1", contact_id)
     if not c:
         raise HTTPException(404, "Candidate not found")
+    enr = await conn.fetchrow("SELECT * FROM bedrock.candidate_enrichment WHERE contact_id=$1", contact_id)
+
+    enrichment = None
+    suggestion = None
+    dup_ids: list[int] = []
+    if enr:
+        enrichment = {
+            "full_name": enr["full_name"], "title": enr["title"], "company": enr["company"],
+            "linkedin_url": enr["linkedin_url"], "is_employer_contact": enr["is_employer_contact"],
+            "confidence": enr["confidence"], "reasoning": enr["reasoning"],
+            "enriched_at": enr["enriched_at"].isoformat() if enr["enriched_at"] else None,
+        }
+        if enr["account_suggestion"]:
+            suggestion = enr["account_suggestion"] if isinstance(enr["account_suggestion"], dict) else _json.loads(enr["account_suggestion"])
+        dup_ids = list(enr["possible_duplicate_ids"] or [])
+    if suggestion is None:
+        suggestion = await suggest_account(conn, c["email"])
+
+    # Resolve duplicate ids to contacts, deduped by (name, company).
+    possible_duplicates = []
+    if dup_ids:
+        drows = await conn.fetch(
+            "SELECT contact_id, full_name, current_company, current_title FROM public.contacts WHERE contact_id = ANY($1::int[])",
+            dup_ids)
+        seen = set()
+        for d in drows:
+            k = (d["full_name"], d["current_company"])
+            if k in seen:
+                continue
+            seen.add(k)
+            possible_duplicates.append({"contact_id": d["contact_id"], "full_name": d["full_name"],
+                                        "current_company": d["current_company"], "current_title": d["current_title"]})
+
     emails = await conn.fetch(
         """
         SELECT a.id, a.subject, a.email_from, a.email_to, a.email_snippet,
-               left(a.email_body_text, 4000) AS body, a.type, a.source,
-               a.activity_date
+               left(a.email_body_text, 4000) AS body, a.type, a.source, a.activity_date
         FROM bedrock.activity a
         WHERE a.participant_public_contact_id = $1 AND a.deleted_at IS NULL
         ORDER BY a.activity_date DESC LIMIT 50
         """, contact_id)
-    suggestion = await suggest_account(conn, c["email"])
     return {"success": True, "data": {
         "contact": {"contact_id": c["contact_id"], "full_name": c["full_name"], "email": c["email"],
                     "current_company": c["current_company"], "current_title": c["current_title"],
                     "linkedin_url": c["linkedin_url"]},
+        "enrichment": enrichment,
         "suggested_account": suggestion,
+        "possible_duplicates": possible_duplicates,
         "emails": [
             {"id": str(e["id"]), "subject": e["subject"], "email_from": e["email_from"],
              "email_to": list(e["email_to"]) if e["email_to"] else None,
@@ -3425,42 +3471,45 @@ async def enrich_candidate_endpoint(
     user=Depends(require_auth),
     conn=Depends(get_db),
 ):
-    """AI-extract name/title/company/linkedin from the candidate's emails (Claude
-    Haiku). Returns suggestions for the reviewer to accept — does not overwrite."""
-    import asyncio as _asyncio
-    from services.candidate_enrich import enrich_candidate
-    c = await conn.fetchrow("SELECT email FROM public.contacts WHERE contact_id=$1", contact_id)
+    """Re-run AI enrichment for one candidate and PERSIST it (manual refresh).
+    Normally enrichment is pre-computed in batch; this forces a fresh pass."""
+    from services.candidate_enrich import enrich_and_store
+    c = await conn.fetchrow("SELECT contact_id FROM public.contacts WHERE contact_id=$1", contact_id)
     if not c:
         raise HTTPException(404, "Candidate not found")
-    rows = await conn.fetch(
-        """SELECT subject, left(coalesce(email_body_text, email_snippet), 1500) AS body,
-                  activity_date::date::text AS date
-           FROM bedrock.activity WHERE participant_public_contact_id=$1 AND deleted_at IS NULL
-           ORDER BY activity_date DESC LIMIT 6""", contact_id)
-    emails = [{"subject": r["subject"], "body": r["body"], "date": r["date"], "direction": "outbound"} for r in rows]
-    result = await _asyncio.to_thread(enrich_candidate, c["email"], emails)
-
-    # Contact-linkage: surface existing pipeline contacts that look like this
-    # person (by AI-extracted name) so the reviewer can dismiss a duplicate
-    # rather than create a second record.
-    dups = []
-    name = (result.get("full_name") or "").strip()
-    if name and len(name) >= 3:
-        first = name.split()[0]
-        last = name.split()[-1]
-        drows = await conn.fetch(
-            """SELECT contact_id, full_name, current_company, current_title
-               FROM public.contacts
-               WHERE is_jobs_contact = true AND coalesce(contact_stage,'') <> 'candidate'
-                 AND contact_id <> $1
-                 AND (full_name ILIKE $2 OR (full_name ILIKE $3 AND full_name ILIKE $4))
-               LIMIT 5""",
-            contact_id, f"%{name}%", f"%{first}%", f"%{last}%")
-        dups = [{"contact_id": d["contact_id"], "full_name": d["full_name"],
-                 "current_company": d["current_company"], "current_title": d["current_title"]}
-                for d in drows]
-    result["possible_duplicates"] = dups
+    result = await enrich_and_store(conn, contact_id)
     return {"success": True, "data": result}
+
+
+class CandidateLink(BaseModel):
+    target_contact_id: int
+
+
+@router.post("/candidates/{contact_id}/link")
+async def link_candidate(
+    contact_id: int,
+    body: CandidateLink,
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Approve a duplicate match: re-point this candidate's emails onto the
+    existing contact and retire the candidate. One-click merge."""
+    target = await conn.fetchrow(
+        "SELECT contact_id FROM public.contacts WHERE contact_id=$1", body.target_contact_id)
+    if not target:
+        raise HTTPException(404, "Target contact not found")
+    async with conn.transaction():
+        await conn.execute(
+            "UPDATE bedrock.activity SET participant_public_contact_id=$1 "
+            "WHERE participant_public_contact_id=$2", body.target_contact_id, contact_id)
+        await conn.execute(
+            "UPDATE public.contacts SET contact_stage='merged', "
+            "tags=array_remove(coalesce(tags,'{}'), 'email_review'), updated_at=now() "
+            "WHERE contact_id=$1", contact_id)
+        await conn.execute("DELETE FROM bedrock.candidate_enrichment WHERE contact_id=$1", contact_id)
+        await conn.execute(
+            "UPDATE public.contacts SET is_jobs_contact=true WHERE contact_id=$1", body.target_contact_id)
+    return {"success": True, "data": {"linked_to": body.target_contact_id}}
 
 
 class CandidatePromote(BaseModel):

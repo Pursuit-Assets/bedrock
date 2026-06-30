@@ -1003,10 +1003,17 @@ export interface JobCandidate {
   current_title: string | null;
   domain?: string | null;
   suggested_account?: string | null;
+  ai_name?: string | null;
+  ai_company?: string | null;
+  ai_confidence?: "high" | "medium" | "low" | null;
+  is_employer_contact?: boolean | null;
+  dup_count?: number;
+  enriched?: boolean;
   email_count: number;
   last_email: string | null;
   last_subject: string | null;
 }
+export interface DuplicateContact { contact_id: number; full_name: string | null; current_company: string | null; current_title: string | null }
 
 export interface AccountSuggestion {
   account_key: string | null;
@@ -1029,7 +1036,9 @@ export interface CandidateEmail {
 }
 export interface CandidateDetail {
   contact: { contact_id: number; full_name: string | null; email: string; current_company: string | null; current_title: string | null; linkedin_url: string | null };
+  enrichment: CandidateEnrichment | null;
   suggested_account: AccountSuggestion | null;
+  possible_duplicates: DuplicateContact[];
   emails: CandidateEmail[];
 }
 export interface CandidateEnrichment {
@@ -1066,13 +1075,36 @@ export function useCandidateDetail(contactId: number | null) {
   });
 }
 
-/** AI-extract name/title/company from the candidate's emails (Claude). */
+/** Force a fresh AI enrichment pass (persisted). Normally pre-computed in batch. */
 export function useEnrichCandidate() {
+  const qc = useQueryClient();
   return useMutation({
-    mutationFn: async (contactId: number): Promise<CandidateEnrichment> => {
-      const { data } = await api.post<ApiResponse<CandidateEnrichment>>(`/api/jobs/candidates/${contactId}/enrich`, {});
+    mutationFn: async (contactId: number) => {
+      const { data } = await api.post<ApiResponse<unknown>>(`/api/jobs/candidates/${contactId}/enrich`, {});
       return data.data;
     },
+    onSuccess: (_d, contactId) => {
+      qc.invalidateQueries({ queryKey: ["jobs", "candidate", contactId] });
+      qc.invalidateQueries({ queryKey: ["jobs", "candidates"] });
+    },
+  });
+}
+
+/** Approve a duplicate match: re-point this candidate's emails onto an existing
+ *  contact and retire the candidate (one-click merge). */
+export function useLinkCandidate() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, target }: { id: number; target: number }) => {
+      const { data } = await api.post<ApiResponse<unknown>>(`/api/jobs/candidates/${id}/link`, { target_contact_id: target });
+      return data.data;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["jobs", "candidates"] });
+      qc.invalidateQueries({ queryKey: ["jobs", "contacts"] });
+      toast.success("Linked to existing contact");
+    },
+    onError: () => toast.error("Link failed"),
   });
 }
 

@@ -1,27 +1,25 @@
 /**
- * AI-first candidate review (human in the loop). The Home "Candidates to review"
- * queue + a detail drawer that: auto-enriches with Claude (name/title/company),
- * suggests an account linkage (exact domain → fuzzy → propose-new), shows the
- * actual emails, and lets the reviewer accept/edit then promote or dismiss.
+ * AI-first candidate review (human in the loop). Enrichment is pre-computed in
+ * the background and persisted, so the list + drawer show AI findings instantly.
+ * The drawer: shows the AI read (name/title/company + reasoning), proposes an
+ * account linkage, proposes existing-contact links you approve in one click,
+ * shows the emails, and promotes/dismisses.
  */
 import { useEffect, useMemo, useState } from "react";
-import { Sparkles, Building2, Mail, UserPlus, X, ChevronDown, ChevronRight, Loader2, Check } from "lucide-react";
+import { Sparkles, Building2, Mail, UserPlus, X, ChevronDown, ChevronRight, Loader2, Check, Link2, RefreshCw } from "lucide-react";
 
 import { Drawer } from "@/components/ui/Drawer";
 import { Tag } from "@/components/ui/Tag";
 import {
-  useCandidates, useCandidateDetail, useEnrichCandidate,
+  useCandidates, useCandidateDetail, useEnrichCandidate, useLinkCandidate,
   usePromoteCandidate, useDismissCandidate, useJobsAccounts,
-  type JobCandidate, type CandidateEnrichment,
+  type JobCandidate,
 } from "@/services/jobs";
 
 const fmtDate = (iso: string | null) =>
   iso ? new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "";
+const confTone = (c?: string | null) => (c === "high" ? "green" : c === "medium" ? "amber" : "default") as "green" | "amber" | "default";
 
-const confTone = (c?: string) => (c === "high" ? "green" : c === "medium" ? "amber" : "default") as
-  "green" | "amber" | "default";
-
-// ── one email, expandable ─────────────────────────────────────────────────────
 function EmailItem({ e }: { e: { subject: string | null; email_from: string | null; email_to: string[] | null; snippet: string | null; body: string | null; activity_date: string | null } }) {
   const [open, setOpen] = useState(false);
   return (
@@ -43,10 +41,10 @@ function EmailItem({ e }: { e: { subject: string | null; email_from: string | nu
   );
 }
 
-// ── detail drawer ─────────────────────────────────────────────────────────────
 function CandidateDrawer({ contactId, onClose }: { contactId: number | null; onClose: () => void }) {
   const { data, isLoading } = useCandidateDetail(contactId);
   const enrich = useEnrichCandidate();
+  const link = useLinkCandidate();
   const promote = usePromoteCandidate();
   const dismiss = useDismissCandidate();
   const { data: accounts = [] } = useJobsAccounts("all");
@@ -54,85 +52,86 @@ function CandidateDrawer({ contactId, onClose }: { contactId: number | null; onC
   const [name, setName] = useState("");
   const [title, setTitle] = useState("");
   const [company, setCompany] = useState("");
-  const [ai, setAi] = useState<CandidateEnrichment | null>(null);
 
-  // Seed fields from the contact, then auto-run AI enrichment once per candidate.
+  // Seed from persisted enrichment (or the contact) the moment detail loads.
   useEffect(() => {
     if (!data) return;
-    setName(data.contact.full_name ?? "");
-    setTitle(data.contact.current_title ?? "");
-    setCompany(data.contact.current_company ?? data.suggested_account?.account_name ?? "");
-    setAi(null);
-    if (contactId != null) {
-      enrich.mutate(contactId, {
-        onSuccess: (res) => {
-          setAi(res);
-          if (!res.error) {
-            setName((n) => n || res.full_name || "");
-            setTitle((t) => t || res.title || "");
-            setCompany((c) => c || res.company || "");
-          }
-        },
-      });
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [contactId, data?.contact.contact_id]);
+    const e = data.enrichment;
+    setName(data.contact.full_name || e?.full_name || "");
+    setTitle(data.contact.current_title || e?.title || "");
+    setCompany(data.contact.current_company || e?.company || data.suggested_account?.account_name || "");
+  }, [data?.contact.contact_id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const accountNames = useMemo(() => accounts.map((a) => a.account).sort(), [accounts]);
+  const e = data?.enrichment;
   const sug = data?.suggested_account;
-  const busy = promote.isPending || dismiss.isPending;
+  const dups = data?.possible_duplicates ?? [];
+  const busy = promote.isPending || dismiss.isPending || link.isPending;
 
   return (
     <Drawer open={contactId != null} onClose={onClose}
-      title={data?.contact.full_name || data?.contact.email || "Candidate"}
+      title={data?.contact.full_name || e?.full_name || data?.contact.email || "Candidate"}
       subtitle={data?.contact.email} width={680}>
       {isLoading || !data ? (
         <div className="flex items-center gap-2 p-6 text-[13px] text-ink-3"><Loader2 size={15} className="animate-spin" /> Loading…</div>
       ) : (
         <div className="flex flex-col gap-4 p-4">
-          {/* AI enrichment */}
+          {/* AI enrichment (pre-computed, instant) */}
           <div className="rounded-lg border border-accent/30 bg-accent-soft/40 p-3">
-            <div className="mb-2 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-accent-ink">
-              <Sparkles size={12} /> AI enrichment
-              {enrich.isPending && <Loader2 size={11} className="animate-spin" />}
+            <div className="mb-2 flex items-center justify-between">
+              <span className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-accent-ink"><Sparkles size={12} /> AI enrichment</span>
+              <button type="button" onClick={() => contactId && enrich.mutate(contactId)}
+                disabled={enrich.isPending}
+                className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-accent hover:bg-accent-soft disabled:opacity-50">
+                {enrich.isPending ? <Loader2 size={11} className="animate-spin" /> : <RefreshCw size={11} />} Re-enrich
+              </button>
             </div>
-            {enrich.isPending ? (
-              <div className="text-[12px] text-ink-3">Reading the emails…</div>
-            ) : ai?.error ? (
-              <div className="flex items-center justify-between text-[12px] text-ink-3">
-                <span>Couldn't enrich ({ai.error}).</span>
-                <button type="button" onClick={() => contactId && enrich.mutate(contactId, { onSuccess: setAi })}
-                  className="text-accent hover:underline">Retry</button>
-              </div>
-            ) : ai ? (
+            {!e ? (
+              <div className="text-[12px] text-ink-3">Not enriched yet — hit Re-enrich.</div>
+            ) : (
               <div className="flex flex-col gap-1.5 text-[12px]">
                 <div className="flex flex-wrap items-center gap-2">
-                  {ai.is_employer_contact === false && <Tag variant="amber">Not an employer contact</Tag>}
-                  <Tag variant={confTone(ai.confidence)}>{ai.confidence} confidence</Tag>
+                  {e.is_employer_contact === false && <Tag variant="amber">Not an employer contact</Tag>}
+                  {e.confidence && <Tag variant={confTone(e.confidence)}>{e.confidence} confidence</Tag>}
                 </div>
-                {ai.reasoning && <p className="text-[11.5px] leading-relaxed text-ink-2">{ai.reasoning}</p>}
-                {ai.possible_duplicates && ai.possible_duplicates.length > 0 && (
-                  <div className="mt-1 rounded border border-amber/40 bg-amber-soft/50 px-2 py-1.5 text-[11.5px] text-ink-2">
-                    <span className="font-semibold text-amber">Possible existing contact{ai.possible_duplicates.length > 1 ? "s" : ""}:</span>{" "}
-                    {ai.possible_duplicates.map((d) => `${d.full_name}${d.current_company ? ` (${d.current_company})` : ""}`).join(", ")}
-                    {" "}— dismiss this candidate if it's a duplicate.
-                  </div>
-                )}
+                {e.reasoning && <p className="text-[11.5px] leading-relaxed text-ink-2">{e.reasoning}</p>}
                 <div className="mt-1 flex flex-wrap gap-1.5">
-                  {ai.full_name && ai.full_name !== name && <Suggest label={`Name: ${ai.full_name}`} onClick={() => setName(ai.full_name!)} />}
-                  {ai.title && ai.title !== title && <Suggest label={`Title: ${ai.title}`} onClick={() => setTitle(ai.title!)} />}
-                  {ai.company && ai.company !== company && <Suggest label={`Company: ${ai.company}`} onClick={() => setCompany(ai.company!)} />}
+                  {e.full_name && e.full_name !== name && <Suggest label={`Name: ${e.full_name}`} onClick={() => setName(e.full_name!)} />}
+                  {e.title && e.title !== title && <Suggest label={`Title: ${e.title}`} onClick={() => setTitle(e.title!)} />}
+                  {e.company && e.company !== company && <Suggest label={`Company: ${e.company}`} onClick={() => setCompany(e.company!)} />}
                 </div>
               </div>
-            ) : null}
+            )}
           </div>
+
+          {/* One-click duplicate links */}
+          {dups.length > 0 && (
+            <div className="rounded-lg border border-amber/40 bg-amber-soft/40 p-3">
+              <div className="mb-2 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-amber"><Link2 size={12} /> Likely existing contact</div>
+              <div className="flex flex-col gap-1.5">
+                {dups.map((d) => (
+                  <div key={d.contact_id} className="flex items-center justify-between gap-2">
+                    <div className="min-w-0 text-[12.5px] text-ink">
+                      {d.full_name}{d.current_company ? <span className="text-ink-4"> · {d.current_company}</span> : ""}
+                      {d.current_title ? <span className="text-ink-4"> · {d.current_title}</span> : ""}
+                    </div>
+                    <button type="button" disabled={busy}
+                      onClick={() => contactId && link.mutate({ id: contactId, target: d.contact_id }, { onSuccess: onClose })}
+                      className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md bg-amber px-2.5 text-[12px] font-medium text-white disabled:opacity-40">
+                      <Link2 size={12} /> Link
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* Editable fields */}
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
-            <Field label="Full name"><input value={name} onChange={(e) => setName(e.target.value)} className={inputCls} /></Field>
-            <Field label="Title"><input value={title} onChange={(e) => setTitle(e.target.value)} className={inputCls} /></Field>
+            <Field label="Full name"><input value={name} onChange={(ev) => setName(ev.target.value)} className={inputCls} /></Field>
+            <Field label="Title"><input value={title} onChange={(ev) => setTitle(ev.target.value)} className={inputCls} /></Field>
             <Field label="Company / account">
-              <input value={company} onChange={(e) => setCompany(e.target.value)} list="cand-accounts" className={inputCls} placeholder="Type or pick…" />
+              <input value={company} onChange={(ev) => setCompany(ev.target.value)} list="cand-accounts" className={inputCls} placeholder="Type or pick…" />
               <datalist id="cand-accounts">{accountNames.map((n) => <option key={n} value={n} />)}</datalist>
             </Field>
           </div>
@@ -163,7 +162,7 @@ function CandidateDrawer({ contactId, onClose }: { contactId: number | null; onC
               <Mail size={12} /> Emails · {data.emails.length}
             </div>
             {data.emails.length === 0 ? <div className="px-3 py-4 text-[12px] text-ink-3">No emails.</div>
-              : data.emails.map((e) => <EmailItem key={e.id} e={e} />)}
+              : data.emails.map((em) => <EmailItem key={em.id} e={em} />)}
           </div>
 
           {/* Actions */}
@@ -200,7 +199,6 @@ function Suggest({ label, onClick }: { label: string; onClick: () => void }) {
   );
 }
 
-// ── Home section ──────────────────────────────────────────────────────────────
 function Section({ title, count, children }: { title: string; count?: number; children: React.ReactNode }) {
   return (
     <div className="flex flex-col gap-3">
@@ -214,17 +212,23 @@ function Section({ title, count, children }: { title: string; count?: number; ch
 }
 
 function CandidateRow({ c, onOpen }: { c: JobCandidate; onOpen: () => void }) {
+  const display = c.ai_name || c.full_name || c.email;
+  const company = c.ai_company || c.suggested_account;
   return (
     <button type="button" onClick={onOpen}
       className="flex w-full items-center gap-2 border-t border-border-strong px-3 py-2 text-left hover:bg-surface-2/40">
       <div className="min-w-0 flex-1">
-        <div className="truncate text-[12.5px] text-ink">{c.full_name || c.email}</div>
+        <div className="flex items-center gap-1.5">
+          <span className="truncate text-[12.5px] text-ink">{display}</span>
+          {c.enriched && <Sparkles size={11} className="shrink-0 text-accent" />}
+          {c.is_employer_contact === false && <span className="shrink-0 text-[10px] text-ink-4">· not employer</span>}
+        </div>
         <div className="truncate text-[11px] text-ink-4">
-          {c.full_name ? `${c.email} · ` : ""}{c.email_count} email{c.email_count === 1 ? "" : "s"}
-          {c.last_subject ? ` · ${c.last_subject}` : ""}
+          {c.email} · {c.email_count} email{c.email_count === 1 ? "" : "s"}{c.last_subject ? ` · ${c.last_subject}` : ""}
         </div>
       </div>
-      {c.suggested_account && <Tag variant="accent">{c.suggested_account}</Tag>}
+      {(c.dup_count ?? 0) > 0 && <Tag variant="amber">likely match</Tag>}
+      {company && <Tag variant="accent">{company}</Tag>}
       <ChevronRight size={14} className="shrink-0 text-ink-4" />
     </button>
   );
@@ -234,7 +238,7 @@ export function CandidatesZone() {
   const { data: cands = [], isLoading } = useCandidates();
   const [openId, setOpenId] = useState<number | null>(null);
   const [showAll, setShowAll] = useState(false);
-  const shown = showAll ? cands : cands.slice(0, 15);
+  const shown = showAll ? cands : cands.slice(0, 20);
   return (
     <Section title="Candidates to review" count={cands.length}>
       <div className="flex flex-col overflow-hidden rounded-lg border border-border-strong bg-surface">
@@ -245,7 +249,7 @@ export function CandidatesZone() {
         ) : (
           <>
             <div className="bg-surface-2/60 px-3 py-1.5 text-[11px] text-ink-4">
-              People we emailed but couldn't auto-identify — open to enrich with AI, confirm, then add or dismiss.
+              People we emailed, enriched by AI. Open to confirm the match, then add or dismiss.
             </div>
             {shown.map((c) => <CandidateRow key={c.contact_id} c={c} onOpen={() => setOpenId(c.contact_id)} />)}
             {cands.length > shown.length && (

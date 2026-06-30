@@ -141,3 +141,58 @@ def enrich_candidate(email: str, emails: list[dict]) -> dict:
     except Exception as e:
         logger.warning("candidate enrich failed for %s: %s", email, e)
         return {"error": str(e)[:160]}
+
+
+# ── Persisted / batch enrichment ──────────────────────────────────────────────
+
+async def find_duplicate_contacts(conn, contact_id: int, name: str) -> list[int]:
+    """Existing pipeline contact ids that look like this person (by name)."""
+    name = (name or "").strip()
+    if len(name) < 3:
+        return []
+    parts = name.split()
+    first, last = parts[0], parts[-1]
+    rows = await conn.fetch(
+        """SELECT contact_id FROM public.contacts
+           WHERE is_jobs_contact = true AND coalesce(contact_stage,'') NOT IN ('candidate','dismissed','merged')
+             AND contact_id <> $1
+             AND (full_name ILIKE $2 OR (full_name ILIKE $3 AND full_name ILIKE $4))
+           LIMIT 6""",
+        contact_id, f"%{name}%", f"%{first}%", f"%{last}%")
+    return [r["contact_id"] for r in rows]
+
+
+async def enrich_and_store(conn, contact_id: int) -> dict:
+    """Run AI enrichment + account suggestion + duplicate detection for one
+    candidate and persist to bedrock.candidate_enrichment (upsert). Returns the
+    stored record. Safe to re-run (idempotent upsert)."""
+    import asyncio, json
+    c = await conn.fetchrow("SELECT email FROM public.contacts WHERE contact_id=$1", contact_id)
+    if not c:
+        return {}
+    rows = await conn.fetch(
+        """SELECT subject, left(coalesce(email_body_text, email_snippet), 1500) AS body,
+                  activity_date::date::text AS date
+           FROM bedrock.activity WHERE participant_public_contact_id=$1 AND deleted_at IS NULL
+           ORDER BY activity_date DESC LIMIT 6""", contact_id)
+    emails = [{"subject": r["subject"], "body": r["body"], "date": r["date"], "direction": "outbound"} for r in rows]
+    ai = await asyncio.to_thread(enrich_candidate, c["email"], emails)
+    sug = await suggest_account(conn, c["email"])
+    dup_ids = await find_duplicate_contacts(conn, contact_id, ai.get("full_name") or "")
+    await conn.execute(
+        """INSERT INTO bedrock.candidate_enrichment
+           (contact_id, full_name, title, company, linkedin_url, is_employer_contact,
+            confidence, reasoning, account_suggestion, possible_duplicate_ids, model, enriched_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11,now())
+           ON CONFLICT (contact_id) DO UPDATE SET
+             full_name=EXCLUDED.full_name, title=EXCLUDED.title, company=EXCLUDED.company,
+             linkedin_url=EXCLUDED.linkedin_url, is_employer_contact=EXCLUDED.is_employer_contact,
+             confidence=EXCLUDED.confidence, reasoning=EXCLUDED.reasoning,
+             account_suggestion=EXCLUDED.account_suggestion,
+             possible_duplicate_ids=EXCLUDED.possible_duplicate_ids,
+             model=EXCLUDED.model, enriched_at=now()""",
+        contact_id, ai.get("full_name"), ai.get("title"), ai.get("company"),
+        ai.get("linkedin_url"), ai.get("is_employer_contact"), ai.get("confidence"),
+        ai.get("reasoning") or (ai.get("error") and f"error: {ai['error']}") or "",
+        json.dumps(sug) if sug else None, dup_ids, "claude-haiku-4-5-20251001")
+    return {"contact_id": contact_id, "ai": ai, "account_suggestion": sug, "possible_duplicate_ids": dup_ids}
