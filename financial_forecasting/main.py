@@ -2568,7 +2568,7 @@ async def create_opportunity_task(
         )
     except Exception as e:
         logger.error(f"Error creating task: {e}")
-        raise HTTPException(status_code=500, detail="Failed to create task")
+        raise sf_http_error(e, "task")
 
 
 @app.get("/api/salesforce/accounts/{account_id}/tasks")
@@ -2956,7 +2956,7 @@ async def create_account_task(
         )
     except Exception as e:
         logger.error(f"Error creating account task: {e}")
-        raise HTTPException(status_code=500, detail="Failed to create task")
+        raise sf_http_error(e, "task")
 
 
 @app.post("/api/salesforce/tasks")
@@ -3006,7 +3006,7 @@ async def create_task(
         raise
     except Exception as e:
         logger.error(f"Error creating task: {e}")
-        raise HTTPException(status_code=500, detail="Failed to create task")
+        raise sf_http_error(e, "task")
 
 
 @app.put("/api/salesforce/tasks/{task_id}")
@@ -3058,7 +3058,7 @@ async def update_task(
         raise
     except Exception as e:
         logger.error(f"Error updating task: {e}")
-        raise HTTPException(status_code=500, detail="Failed to update task")
+        raise sf_http_error(e, "task")
 
 
 @app.delete("/api/salesforce/tasks/{task_id}")
@@ -3156,7 +3156,7 @@ async def duplicate_task(
         raise
     except Exception as e:
         logger.error(f"Error duplicating task: {e}")
-        raise HTTPException(status_code=500, detail="Failed to duplicate task")
+        raise sf_http_error(e, "task")
 
 
 @app.get("/api/calendar/my-events")
