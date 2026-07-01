@@ -1058,7 +1058,24 @@ async def get_contacts(
         wheres = []
         if account_id:
             validate_salesforce_id(account_id, "account_id")
-            wheres.append(f"AccountId = '{account_id}'")
+            # NPSP: for ORGANIZATION accounts, contacts are linked via
+            # npe5__Affiliation__c (npe5__Organization__c), NOT Contact.AccountId
+            # (which points to the person's Household). SOQL forbids a semi-join
+            # sub-select with OR, so resolve the affiliated contact ids first and
+            # match AccountId OR an explicit Id IN (...) list.
+            aff_ids = []
+            try:
+                aff = await salesforce.query_all(
+                    f"SELECT npe5__Contact__c FROM npe5__Affiliation__c "
+                    f"WHERE npe5__Organization__c = '{account_id}' AND npe5__Contact__c != null")
+                aff_ids = [r["npe5__Contact__c"] for r in aff.get("records", []) if r.get("npe5__Contact__c")]
+            except Exception as ae:
+                logger.warning(f"affiliation lookup for {account_id} failed: {ae}")
+            if aff_ids:
+                id_list = ", ".join(f"'{i}'" for i in aff_ids[:2000])
+                wheres.append(f"(AccountId = '{account_id}' OR Id IN ({id_list}))")
+            else:
+                wheres.append(f"AccountId = '{account_id}'")
         elif active_only:
             # SF date-literal — anchors the window relative to today
             # without needing a server-side timestamp.
