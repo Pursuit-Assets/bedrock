@@ -1102,6 +1102,37 @@ export function useCandidates(owner?: string) {
   });
 }
 
+export interface NetworkConnection {
+  contact_id: number; full_name: string | null; current_title: string | null;
+  current_company: string | null; email: string | null; linkedin_url: string | null;
+  is_jobs_contact: boolean; relationship_strength: string | null;
+  activity_count: number; warm: boolean; last_activity: string | null;
+  co_connections: number; company_hired_before: boolean; has_open_opp: boolean;
+  status: string; status_reason: string | null;
+}
+export interface MyNetwork { mapped: boolean; total: number; connections: NetworkConnection[]; message?: string }
+export function useMyNetwork(q?: string) {
+  return useQuery<MyNetwork>({
+    queryKey: ["jobs", "my-network", q ?? ""],
+    queryFn: async () => {
+      const { data } = await api.get<ApiResponse<MyNetwork>>("/api/jobs/my-network", { params: q ? { q } : undefined });
+      return data.data;
+    },
+    staleTime: 60_000,
+  });
+}
+
+export function useSetConnectionStatus() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (body: { contact_id: number; status: string; reason?: string; note?: string }) => {
+      const { data } = await api.patch<ApiResponse<unknown>>("/api/jobs/my-network/status", body);
+      return data.data;
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["jobs", "my-network"] }),
+  });
+}
+
 export interface CandidateOwner { owner: string; count: number }
 export function useCandidateOwners() {
   return useQuery({

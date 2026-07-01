@@ -3473,6 +3473,116 @@ async def update_contact(
     return {"success": True, "data": dict(row)}
 
 
+# ── My Network (staff LinkedIn connections) ───────────────────────────────────
+@router.get("/my-network")
+async def my_network(
+    q: Optional[str] = Query(None, description="Search name/company/title"),
+    limit: int = Query(500, le=2000),
+    staff_email: Optional[str] = Query(None, description="Admin override; else the caller"),
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """The logged-in staff member's LinkedIn connections (from
+    staff_contact_relationships), joined to contacts + company, with flags for
+    whether we've had activity with them (warm) and whether they're already a
+    jobs prospect. Drives the "My Network" home zone. Sputnik staff ids are
+    mapped to emails via bedrock.staff_connection_map."""
+    email = (staff_email or (user.get("email") if isinstance(user, dict) else getattr(user, "email", None)) or "").lower()
+    sid = await conn.fetchval("SELECT staff_user_id FROM bedrock.staff_connection_map WHERE lower(email)=$1", email)
+    if sid is None:
+        return {"success": True, "data": {"mapped": False, "connections": [], "total": 0,
+                "message": "No LinkedIn connections mapped for this account yet."}}
+    params: list = [sid]
+    where = "r.staff_user_id = $1 AND coalesce(c.contact_stage,'') <> 'merged'"
+    if q:
+        params.append(f"%{q}%")
+        where += f" AND (c.full_name ILIKE ${len(params)} OR c.current_company ILIKE ${len(params)} OR c.current_title ILIKE ${len(params)})"
+    total = await conn.fetchval(
+        f"SELECT count(*) FROM public.staff_contact_relationships r JOIN public.contacts c ON c.contact_id=r.contact_id WHERE {where}", *params)
+    params.append(sid)   # for connection_status join
+    params.append(limit)
+    rows = await conn.fetch(
+        f"""
+        SELECT c.contact_id, c.full_name, c.current_title, c.current_company, c.email,
+               c.linkedin_url, c.is_jobs_contact, r.relationship_strength,
+               act.n AS activity_count, act.last AS last_activity,
+               coalesce(cc.n, 0) AS co_connections,
+               (hire.hired IS NOT NULL) AS company_hired_before,
+               (opp.has_open IS NOT NULL) AS has_open_opp,
+               cs.status AS status, cs.reason AS status_reason
+        FROM public.staff_contact_relationships r
+        JOIN public.contacts c ON c.contact_id = r.contact_id
+        LEFT JOIN LATERAL (
+            SELECT count(*) n, max(activity_date) last FROM bedrock.activity a
+            WHERE a.participant_public_contact_id = c.contact_id AND a.deleted_at IS NULL
+        ) act ON true
+        LEFT JOIN LATERAL (
+            SELECT count(*) - 1 AS n FROM public.staff_contact_relationships r2
+            WHERE r2.contact_id = c.contact_id
+        ) cc ON true
+        LEFT JOIN LATERAL (
+            SELECT 1 AS hired FROM public.employment_records e
+            WHERE c.current_company IS NOT NULL AND lower(e.company_name) = lower(c.current_company) LIMIT 1
+        ) hire ON true
+        LEFT JOIN LATERAL (
+            SELECT 1 AS has_open FROM bedrock.jobs_opportunity o
+            WHERE o.deleted_at IS NULL AND o.stage LIKE 'active%'
+              AND lower(trim(o.account_name)) = lower(trim(c.current_company)) LIMIT 1
+        ) opp ON true
+        LEFT JOIN bedrock.connection_status cs ON cs.contact_id = c.contact_id AND cs.staff_user_id = ${len(params)-1}
+        WHERE {where}
+        ORDER BY (act.n > 0) DESC, act.last DESC NULLS LAST, c.full_name
+        LIMIT ${len(params)}
+        """, *params)
+    return {"success": True, "data": {
+        "mapped": True, "total": total,
+        "connections": [{
+            "contact_id": r["contact_id"], "full_name": r["full_name"], "current_title": r["current_title"],
+            "current_company": r["current_company"], "email": r["email"], "linkedin_url": r["linkedin_url"],
+            "is_jobs_contact": r["is_jobs_contact"], "relationship_strength": r["relationship_strength"],
+            "activity_count": r["activity_count"] or 0,
+            "warm": (r["activity_count"] or 0) > 0,
+            "co_connections": r["co_connections"] or 0,
+            "company_hired_before": r["company_hired_before"],
+            "has_open_opp": r["has_open_opp"],
+            "status": r["status"] or "new",
+            "status_reason": r["status_reason"],
+            "last_activity": r["last_activity"].isoformat() if r["last_activity"] else None,
+        } for r in rows]}}
+
+
+class ConnectionStatusUpdate(BaseModel):
+    contact_id: int
+    status: str            # new | will_reach_out | declined
+    reason: Optional[str] = None
+    note: Optional[str] = None
+
+
+@router.patch("/my-network/status")
+async def set_connection_status(
+    body: ConnectionStatusUpdate,
+    staff_email: Optional[str] = Query(None),
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Set a staff member's disposition toward one of their connections
+    (new | will_reach_out | declined, with optional reason/note). Stored per
+    (staff, contact) in bedrock.connection_status."""
+    if body.status not in ("new", "will_reach_out", "declined"):
+        raise HTTPException(400, "invalid status")
+    email = (staff_email or (user.get("email") if isinstance(user, dict) else getattr(user, "email", None)) or "").lower()
+    sid = await conn.fetchval("SELECT staff_user_id FROM bedrock.staff_connection_map WHERE lower(email)=$1", email)
+    if sid is None:
+        raise HTTPException(400, "No connection mapping for this account")
+    await conn.execute(
+        """INSERT INTO bedrock.connection_status (staff_user_id, contact_id, status, reason, note, updated_by, updated_at)
+           VALUES ($1,$2,$3,$4,$5,$6,now())
+           ON CONFLICT (staff_user_id, contact_id) DO UPDATE
+             SET status=$3, reason=$4, note=$5, updated_by=$6, updated_at=now()""",
+        sid, body.contact_id, body.status, body.reason, body.note, email)
+    return {"success": True, "data": {"contact_id": body.contact_id, "status": body.status}}
+
+
 # ── Candidate review queue ────────────────────────────────────────────────────
 # Email recipients we auto-created but couldn't confidently identify (personal
 # domains / no full name) land as 'candidate' contacts tagged 'email_review'.

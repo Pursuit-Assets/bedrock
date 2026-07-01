@@ -20,7 +20,7 @@ import { useActiveUsers } from "@/services/projects";
 import { useCurrentUser } from "@/services/auth";
 import { useJobsAccountNames, STAGE_LABELS, type JobStage } from "@/services/jobs";
 import { CandidatesZone } from "./CandidateReview";
-import { useCandidateOwners } from "@/services/jobs";
+import { useCandidateOwners, useMyNetwork, useSetConnectionStatus, type NetworkConnection } from "@/services/jobs";
 import {
   useAllJobsTasks, useUpdateTaskById, useCreateTaskForParent, useDeleteTaskById,
   type JobsTaskEnriched,
@@ -309,6 +309,92 @@ function InterviewsZone() {
   );
 }
 
+// ── My Network (staff LinkedIn connections) ─────────────────────────────────
+// Fixed grid so columns line up: name | company | co-conns | signals | status.
+const NET_GRID = "grid grid-cols-[minmax(0,2.4fr)_minmax(0,1.6fr)_64px_minmax(0,1.4fr)_128px] items-center gap-2";
+const NET_STATUS = [
+  { value: "new", label: "New" },
+  { value: "will_reach_out", label: "Will reach out" },
+  { value: "declined", label: "Not a fit" },
+];
+
+function NetworkRow({ c }: { c: NetworkConnection }) {
+  const setStatus = useSetConnectionStatus();
+  return (
+    <div className={cn(NET_GRID, "border-t border-border-strong px-3 py-1.5 text-[12.5px] hover:bg-surface-2/40")}>
+      <div className="flex min-w-0 items-center gap-1.5">
+        {c.warm ? <span title="We've had activity with this connection" className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-400" />
+                : <span className="h-1.5 w-1.5 shrink-0 rounded-full border border-border-strong" />}
+        <Link to={`/jobs/contacts/${c.contact_id}`} className="min-w-0 truncate font-medium text-ink hover:text-accent">
+          {c.full_name || "—"}
+        </Link>
+        {c.current_title ? <span className="hidden truncate text-[11px] text-ink-4 lg:inline"> · {c.current_title}</span> : null}
+      </div>
+      <div className="min-w-0 truncate text-[11.5px] text-ink-3">{c.current_company || "—"}</div>
+      <div className="text-center text-[11.5px] tabular-nums text-ink-4" title="Other staff also connected">
+        {c.co_connections > 0 ? `+${c.co_connections}` : "—"}
+      </div>
+      <div className="flex min-w-0 flex-wrap items-center gap-1">
+        {c.is_jobs_contact && <Tag variant="default">pipeline</Tag>}
+        {c.has_open_opp && <Tag variant="green">open opp</Tag>}
+        {c.company_hired_before && <Tag variant="default">hired before</Tag>}
+      </div>
+      <select
+        value={c.status}
+        onChange={(e) => setStatus.mutate({ contact_id: c.contact_id, status: e.target.value })}
+        className={cn("h-7 w-full rounded border bg-surface px-1 text-[11.5px] outline-none focus:border-accent",
+          c.status === "declined" ? "border-red/40 text-red" : c.status === "will_reach_out" ? "border-green/40 text-green" : "border-border-strong text-ink-3")}
+      >
+        {NET_STATUS.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
+      </select>
+    </div>
+  );
+}
+
+function MyNetworkZone() {
+  const [q, setQ] = useState("");
+  const [showAll, setShowAll] = useState(false);
+  const [warmOnly, setWarmOnly] = useState(false);
+  const { data, isLoading } = useMyNetwork(q || undefined);
+  let conns = data?.connections ?? [];
+  if (warmOnly) conns = conns.filter((c) => c.warm);
+  const shown = showAll ? conns : conns.slice(0, 25);
+  const controls = (
+    <div className="flex items-center gap-2">
+      <label className="flex items-center gap-1 text-[11px] text-ink-4">
+        <input type="checkbox" checked={warmOnly} onChange={(e) => { setWarmOnly(e.target.checked); setShowAll(false); }} className="accent-accent" /> warm only
+      </label>
+      <input value={q} onChange={(e) => { setQ(e.target.value); setShowAll(false); }}
+        placeholder="Search name / company"
+        className="h-7 w-48 rounded-md border border-border-strong bg-surface px-2 text-[12px] text-ink outline-none focus:border-accent" />
+    </div>
+  );
+  return (
+    <Section title="My Network" count={data?.total} action={controls}>
+      <div className="flex flex-col overflow-hidden rounded-lg border border-border-strong bg-surface">
+        {isLoading ? (
+          <div className="px-3 py-8 text-center text-[12.5px] text-ink-3">Loading…</div>
+        ) : !data?.mapped ? (
+          <div className="px-3 py-8 text-center text-[12.5px] text-ink-3">{data?.message || "No LinkedIn connections mapped to your account yet."}</div>
+        ) : conns.length === 0 ? (
+          <div className="px-3 py-8 text-center text-[12.5px] text-ink-3">{q || warmOnly ? "No connections match the filters." : "No connections."}</div>
+        ) : (
+          <>
+            <div className={cn(NET_GRID, "bg-surface-2/60 px-3 py-1.5 text-[10.5px] font-semibold uppercase tracking-wider text-ink-4")}>
+              <span>Connection</span><span>Company</span><span className="text-center">Staff</span><span>Signals</span><span>Status</span>
+            </div>
+            {shown.map((c) => <NetworkRow key={c.contact_id} c={c} />)}
+            {conns.length > shown.length && (
+              <button type="button" onClick={() => setShowAll(true)}
+                className="border-t border-border-strong px-3 py-2 text-[12px] text-accent hover:bg-surface-2/50">Show all {conns.length} loaded</button>
+            )}
+          </>
+        )}
+      </div>
+    </Section>
+  );
+}
+
 // ── Page ────────────────────────────────────────────────────────────────────
 export function JobsHome() {
   const { data: me } = useCurrentUser();
@@ -343,6 +429,7 @@ export function JobsHome() {
 
       <TasksZone />
       <CandidatesZone key={me?.email ?? "anon"} defaultOwner={me?.email} />
+      <MyNetworkZone />
       <InterviewsZone />
     </div>
   );
