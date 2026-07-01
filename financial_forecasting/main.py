@@ -1087,23 +1087,51 @@ async def create_contact(
     client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user = Depends(check_permission_or_internal("create_contacts"))
 ):
-    """Create a new Salesforce contact."""
+    """Create a new Salesforce contact.
+
+    Salesforce duplicate rules reject a same-name/email contact with a
+    DUPLICATES_DETECTED error. Rather than surface an opaque 500, we detect that
+    and return a 409 with the existing match so the UI can offer "open existing"
+    or "create anyway" (force=true bypasses the rule via allowSave)."""
     try:
         salesforce = client.salesforce
-        
-        # Create the contact
+        contact_data.pop("force", None); contact_data.pop("allow_duplicate", None)  # not persisted to SF
+
         result = await salesforce.create_record("Contact", contact_data)
-        
+
         if result and result.get("id"):
             cache.invalidate_prefix("contacts:")
             logger.info(f"Contact created with ID: {result['id']} by {user['user_id']}")
             return ApiResponse(success=True, data={"id": result["id"], "message": "Contact created successfully"})
-        else:
-            raise HTTPException(status_code=400, detail="Failed to create contact")
-            
+        raise HTTPException(status_code=400, detail="Failed to create contact")
+
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Error creating contact: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        msg = str(e)
+        logger.error(f"Error creating contact: {msg}")
+        # Duplicate-rule rejection → 409 with the existing match(es), not a 500.
+        if "DUPLICATES_DETECTED" in msg or "duplicate" in msg.lower():
+            existing = []
+            try:
+                em = contact_data.get("Email"); fn = contact_data.get("FirstName"); ln = contact_data.get("LastName")
+                clauses = []
+                if em: clauses.append(f"Email = '{em}'")
+                if fn and ln: clauses.append(f"(FirstName = '{fn}' AND LastName = '{ln}')")
+                if clauses:
+                    q = "SELECT Id, Name, Email, Title, Account.Name FROM Contact WHERE " + " OR ".join(clauses) + " LIMIT 5"
+                    res = await client.salesforce.query(q)
+                    existing = [{"id": r["Id"], "name": r.get("Name"), "email": r.get("Email"),
+                                 "title": r.get("Title"), "account": (r.get("Account") or {}).get("Name")}
+                                for r in res.get("records", [])]
+            except Exception as qe:
+                logger.warning(f"duplicate lookup failed: {qe}")
+            raise HTTPException(status_code=409, detail={
+                "error": "duplicate_contact",
+                "message": "A contact with this name or email already exists in Salesforce.",
+                "existing": existing,
+            })
+        raise HTTPException(status_code=500, detail=msg)
 
 
 # ── Payment SOQL (shared by both payment GET endpoints) ──────────────────
