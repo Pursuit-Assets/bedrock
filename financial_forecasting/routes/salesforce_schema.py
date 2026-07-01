@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from auth import require_auth_or_internal
 from dependencies import get_mcp_client, require_sf_mcp_client
 from mcp_client import UnifiedMCPClient
+from sf_errors import sf_http_error
 
 logger = logging.getLogger(__name__)
 
@@ -196,6 +197,8 @@ async def describe_sobject(
 
         return response
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error describing {sobject}: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to describe {sobject}: {e}")
+        raise sf_http_error(e, "describe")

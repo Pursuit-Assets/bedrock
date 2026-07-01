@@ -574,9 +574,11 @@ async def get_opportunities(
 
         return records
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error fetching opportunities: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise sf_http_error(e, "records")
 
 
 
@@ -881,9 +883,11 @@ async def get_accounts(
         cache.set(cache_key, records, CACHE_TTL_ACCOUNTS)
         return records
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error fetching accounts: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise sf_http_error(e, "records")
 
 
 async def _attach_account_status(accounts: list, salesforce) -> None:
@@ -1208,9 +1212,11 @@ async def get_payments(
         cache.set(cache_key, records, CACHE_TTL_OPPORTUNITIES)
         return records
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error fetching payments: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise sf_http_error(e, "records")
 
 
 # ---------------------------------------------------------------------------
@@ -1259,9 +1265,11 @@ async def list_opportunity_files(
             }
             for r in records
         ]
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error listing files for opp {opportunity_id}: {e}")
-        raise HTTPException(status_code=500, detail="Failed to list files")
+        raise sf_http_error(e, "files")
 
 
 # Max upload size — SF REST API ContentVersion handles up to ~37 MB
@@ -1366,9 +1374,11 @@ async def get_opportunity_payments(
         cache.set(cache_key, records, CACHE_TTL_OPPORTUNITIES)
         return records
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error fetching payments for opportunity {opportunity_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise sf_http_error(e, "records")
 
 
 # ── ACV Summary: payments scheduled in FY from FY wins ──────────────────
@@ -1440,9 +1450,11 @@ async def get_acv_summary(
         cache.set(cache_key, summary, CACHE_TTL_OPPORTUNITIES)
         return summary
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error fetching ACV summary for year {year}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise sf_http_error(e, "records")
 
 
 _VALID_CASHFLOW_BUCKETS = {"all", "philanthropy", "pbc", "capital_grants", "other"}
@@ -1776,9 +1788,11 @@ async def get_cashflow_detail(
         cache.set(cache_key, records, 300)  # 5-min cache
         return records
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error fetching cashflow detail: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise sf_http_error(e, "records")
 
 
 # ── Update endpoints for Account, Contact, Payment ──────────────────────
@@ -2336,9 +2350,11 @@ async def get_users(
         cache.set(cache_key, users, CACHE_TTL_USERS)
         return users
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error fetching users: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise sf_http_error(e, "records")
 
 
 # ---------------------------------------------------------------------------
@@ -2396,9 +2412,11 @@ async def get_my_tasks(
         cache.set(cache_key, response, 120)  # 2 min TTL — tasks change frequently
         return response
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error fetching tasks: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise sf_http_error(e, "records")
 
 
 # ---------------------------------------------------------------------------
@@ -2494,9 +2512,11 @@ async def get_opportunity_tasks(
             })
 
         return ApiResponse(success=True, data=formatted, meta={"count": len(formatted)})
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error fetching opportunity tasks: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise sf_http_error(e, "records")
 
 
 @app.post("/api/salesforce/opportunities/{opportunity_id}/tasks")
@@ -2629,9 +2649,11 @@ async def get_account_tasks(
         response = ApiResponse(success=True, data=formatted, meta={"count": len(formatted)})
         cache.set(cache_key, response, ttl_seconds=60)
         return response
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error fetching account tasks: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise sf_http_error(e, "records")
 
 
 @app.get("/api/salesforce/users/{owner_id}/tasks")
@@ -2702,9 +2724,11 @@ async def get_user_tasks(
         response = ApiResponse(success=True, data=formatted, meta={"count": len(formatted)})
         cache.set(cache_key, response, ttl_seconds=60)
         return response
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error fetching user tasks: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise sf_http_error(e, "records")
 
 
 @app.get("/api/salesforce/contacts/{contact_id}/tasks")
@@ -2773,9 +2797,11 @@ async def get_contact_tasks(
         response = ApiResponse(success=True, data=formatted, meta={"count": len(formatted)})
         cache.set(cache_key, response, ttl_seconds=60)
         return response
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error fetching contact tasks: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise sf_http_error(e, "records")
 
 
 # Fields we read back when verifying a Task write. Anything we let the
@@ -3065,7 +3091,7 @@ async def delete_task(
         raise
     except Exception as e:
         logger.error(f"Error deleting task: {e}")
-        raise HTTPException(status_code=500, detail="Failed to delete task")
+        raise sf_http_error(e, "task")
 
 
 @app.post("/api/salesforce/tasks/{task_id}/duplicate")
@@ -3650,9 +3676,11 @@ async def search_opportunities(
             "opportunities": opportunities,
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error searching opportunities: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise sf_http_error(e, "records")
 
 
 @app.get("/api/matching/grant-invoices")

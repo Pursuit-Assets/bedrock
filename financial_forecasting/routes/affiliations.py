@@ -34,6 +34,7 @@ from dependencies import require_sf_mcp_client
 from mcp_client import UnifiedMCPClient
 from mcp_client.services.salesforce import _run_sf
 from security import validate_salesforce_id
+from sf_errors import sf_http_error
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/salesforce", tags=["affiliations"])
@@ -377,9 +378,11 @@ async def get_fellows_for_account(
     try:
         result = await salesforce.query(soql)
         rows = result.get("records", [])
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.warning("affiliations: fellow query failed: %s", exc)
-        raise HTTPException(500, f"Failed to fetch fellows: {exc}")
+        raise sf_http_error(exc, "fellows")
 
     contact_ids = [r.get(schema.contact_field) for r in rows if r.get(schema.contact_field)]
     contacts_by_id: Dict[str, Dict[str, Any]] = {}
