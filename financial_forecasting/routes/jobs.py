@@ -2469,6 +2469,11 @@ async def account_activity(
             OR ($2::text[] <> '{}' AND a.account_id = ANY($2::text[]))
             OR ($3::int[] <> '{}' AND a.participant_public_contact_id = ANY($3::int[]))
         )
+        -- Activity should be real mail + calendar only. Exclude Salesforce ToDo
+        -- tasks (sf_type='Task') that were imported as meeting/note — they show up
+        -- as bogus "calendar" entries. SF Tasks logged as emails/calls are kept
+        -- (those are real logged comms); genuine calendar events are sf_type='Event'.
+        AND NOT (a.sf_type = 'Task' AND a.type IN ('meeting', 'note'))
         ORDER BY a.activity_date DESC NULLS LAST
         LIMIT 250
         """,

@@ -133,10 +133,15 @@ function sfToFlat(t: SfMyTask, oppById: Map<string, SfOpportunity>): FlatTask {
   const parentLabel = opp?.Name ?? t.WhatName ?? null;
   const parentLink =
     t.WhatId && opp ? `/opportunities/${t.WhatId}` : null;
+  // Guard against junk SF subjects: ~1,266 SF Tasks have Subject literally set
+  // to the string "true" (a boolean stringified by whatever created them), which
+  // otherwise renders as a "true" task title. Treat true/false as untitled.
+  const rawSubject = (t.Subject ?? "").trim();
+  const cleanSubject = ["true", "false"].includes(rawSubject.toLowerCase()) ? "" : rawSubject;
   return {
     source: "crm",
     id: t.Id,
-    title: t.Subject ?? "(no subject)",
+    title: cleanSubject || "(no subject)",
     status: t.Status ?? "Open",
     priority: t.Priority ?? null,
     owner: t.OwnerName ?? null,
