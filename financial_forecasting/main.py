@@ -77,6 +77,7 @@ from routes.jobs_sf import router as jobs_sf_router
 from routes.entity_comments import router as entity_comments_router
 from auth import get_current_user_dep, require_auth, IS_PRODUCTION, JWT_SECRET_KEY
 from security import validate_salesforce_id, escape_soql_string
+from sf_errors import sf_http_error
 from services.crm_parser import refresh_opp_cache as _refresh_opp_cache
 from services.cache import cache, CACHE_TTL_OPPORTUNITIES, CACHE_TTL_ACCOUNTS, CACHE_TTL_USERS, CACHE_TTL_CASHFLOW
 
@@ -953,30 +954,6 @@ async def _attach_account_status(accounts: list, salesforce) -> None:
             awards_by_opp,
             latest_activity_by_account,
         )
-
-
-def sf_http_error(e: Exception, action: str = "operation") -> HTTPException:
-    """Map a Salesforce error to an actionable HTTP status instead of an opaque
-    500. Session-expired → 401 (reconnect), duplicate rule → 409, validation →
-    400 (with the SF message), access → 403; otherwise 500. Shared by SF-write
-    endpoints so the UI can route to the right recovery."""
-    msg = str(e)
-    low = msg.lower()
-    if "INVALID_SESSION_ID" in msg or "session expired" in low or "re-authentication failed" in low:
-        return HTTPException(status_code=401, detail={
-            "error": "sf_auth_required",
-            "message": "Salesforce session expired — reconnect Salesforce in Settings.",
-        })
-    if "DUPLICATES_DETECTED" in msg or "duplicate" in low:
-        return HTTPException(status_code=409, detail={
-            "error": "duplicate", "message": f"This {action} already exists in Salesforce."})
-    if any(x in msg for x in ("REQUIRED_FIELD_MISSING", "FIELD_CUSTOM_VALIDATION_EXCEPTION",
-                              "INVALID_CROSS_REFERENCE_KEY", "MALFORMED_QUERY", "FIELD_INTEGRITY_EXCEPTION")):
-        return HTTPException(status_code=400, detail={"error": "validation_failed", "message": msg})
-    if "INSUFFICIENT_ACCESS" in msg:
-        return HTTPException(status_code=403, detail={
-            "error": "insufficient_access", "message": "You don't have permission for this in Salesforce."})
-    return HTTPException(status_code=500, detail=msg)
 
 
 @app.post("/api/salesforce/accounts")

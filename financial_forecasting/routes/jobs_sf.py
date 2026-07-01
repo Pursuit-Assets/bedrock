@@ -34,6 +34,16 @@ from auth import require_auth
 from db import get_db
 from dependencies import get_mcp_client, require_sf_mcp_client
 from mcp_client import UnifiedMCPClient
+from sf_errors import sf_http_error
+
+
+async def _sf_create(sf, sobject: str, data: dict, action: str):
+    """create_record that maps SF errors (duplicate/validation/session) to
+    actionable HTTP statuses instead of letting them bubble to a raw 500."""
+    try:
+        return await sf.create_record(sobject, data)
+    except Exception as e:
+        raise sf_http_error(e, action)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/jobs/sf", tags=["jobs"])
@@ -260,7 +270,7 @@ async def promote_contact(
             acct_name = (acct.name or c["current_company"] or "").strip()
             if not acct_name:
                 raise HTTPException(400, "account name required to create an account")
-            res = await sf.create_record("Account", {"Name": acct_name})
+            res = await _sf_create(sf, "Account", {"Name": acct_name}, "account")
             sf_account_id = _result_id(res)
             if not sf_account_id:
                 raise HTTPException(502, f"Failed to create Salesforce account: {res}")
@@ -295,7 +305,7 @@ async def promote_contact(
         if body.fields:                      # preview overrides
             data.update({k: v for k, v in body.fields.items() if v is not None})
         data = {k: v for k, v in data.items() if v not in (None, "")}
-        res = await sf.create_record("Contact", data)
+        res = await _sf_create(sf, "Contact", data, "contact")
         sf_contact_id = _result_id(res)
         if not sf_contact_id:
             raise HTTPException(502, f"Failed to create Salesforce contact: {res}")
@@ -361,7 +371,7 @@ async def handoff_opportunity(
     # resolve account
     account_id = body.account_sf_id
     if not account_id and body.account_create_name:
-        res = await sf.create_record("Account", {"Name": body.account_create_name.strip()})
+        res = await _sf_create(sf, "Account", {"Name": body.account_create_name.strip()}, "account")
         account_id = _result_id(res)
         if not account_id:
             raise HTTPException(502, f"Failed to create Salesforce account: {res}")
@@ -393,7 +403,7 @@ async def handoff_opportunity(
     if body.primary_contact_sf_id:
         data["npsp__Primary_Contact__c"] = body.primary_contact_sf_id
 
-    res = await sf.create_record("Opportunity", data)
+    res = await _sf_create(sf, "Opportunity", data, "opportunity")
     sf_opp_id = _result_id(res)
     if not sf_opp_id:
         raise HTTPException(502, f"Failed to create Salesforce opportunity: {res}")
