@@ -3499,13 +3499,15 @@ async def my_network(
         where += f" AND (c.full_name ILIKE ${len(params)} OR c.current_company ILIKE ${len(params)} OR c.current_title ILIKE ${len(params)})"
     total = await conn.fetchval(
         f"SELECT count(*) FROM public.staff_contact_relationships r JOIN public.contacts c ON c.contact_id=r.contact_id WHERE {where}", *params)
-    params.append(sid)   # for connection_status join
-    params.append(limit)
+    params.append(f"%{email}%"); p_email = len(params)   # staff-specific activity match
+    params.append(sid);          p_sid = len(params)       # connection_status join
+    params.append(limit);        p_lim = len(params)
     rows = await conn.fetch(
         f"""
         SELECT c.contact_id, c.full_name, c.current_title, c.current_company, c.email,
                c.linkedin_url, c.is_jobs_contact, r.relationship_strength,
-               act.n AS activity_count, act.last AS last_activity,
+               act.n AS activity_count, act.last AS last_activity, act.last_type AS last_channel,
+               coalesce(mine.n, 0) AS my_activity_count, mine.last AS my_last_activity,
                coalesce(cc.n, 0) AS co_connections,
                (hire.hired IS NOT NULL) AS company_hired_before,
                (opp.has_open IS NOT NULL) AS has_open_opp,
@@ -3513,9 +3515,16 @@ async def my_network(
         FROM public.staff_contact_relationships r
         JOIN public.contacts c ON c.contact_id = r.contact_id
         LEFT JOIN LATERAL (
-            SELECT count(*) n, max(activity_date) last FROM bedrock.activity a
+            SELECT count(*) n, max(activity_date) last,
+                   (array_agg(type ORDER BY activity_date DESC))[1] AS last_type
+            FROM bedrock.activity a
             WHERE a.participant_public_contact_id = c.contact_id AND a.deleted_at IS NULL
         ) act ON true
+        LEFT JOIN LATERAL (
+            SELECT count(*) n, max(activity_date) last FROM bedrock.activity a
+            WHERE a.participant_public_contact_id = c.contact_id AND a.deleted_at IS NULL
+              AND (a.email_from ILIKE ${p_email} OR a.logged_by ILIKE ${p_email})
+        ) mine ON true
         LEFT JOIN LATERAL (
             SELECT count(*) - 1 AS n FROM public.staff_contact_relationships r2
             WHERE r2.contact_id = c.contact_id
@@ -3529,10 +3538,10 @@ async def my_network(
             WHERE o.deleted_at IS NULL AND o.stage LIKE 'active%'
               AND lower(trim(o.account_name)) = lower(trim(c.current_company)) LIMIT 1
         ) opp ON true
-        LEFT JOIN bedrock.connection_status cs ON cs.contact_id = c.contact_id AND cs.staff_user_id = ${len(params)-1}
+        LEFT JOIN bedrock.connection_status cs ON cs.contact_id = c.contact_id AND cs.staff_user_id = ${p_sid}
         WHERE {where}
-        ORDER BY (act.n > 0) DESC, act.last DESC NULLS LAST, c.full_name
-        LIMIT ${len(params)}
+        ORDER BY (mine.n > 0) DESC, (act.n > 0) DESC, coalesce(mine.last, act.last) DESC NULLS LAST, c.full_name
+        LIMIT ${p_lim}
         """, *params)
     return {"success": True, "data": {
         "mapped": True, "total": total,
@@ -3541,13 +3550,19 @@ async def my_network(
             "current_company": r["current_company"], "email": r["email"], "linkedin_url": r["linkedin_url"],
             "is_jobs_contact": r["is_jobs_contact"], "relationship_strength": r["relationship_strength"],
             "activity_count": r["activity_count"] or 0,
-            "warm": (r["activity_count"] or 0) > 0,
+            "last_activity": r["last_activity"].isoformat() if r["last_activity"] else None,
+            "last_channel": r["last_channel"],
+            "my_activity_count": r["my_activity_count"] or 0,
+            "my_last_activity": r["my_last_activity"].isoformat() if r["my_last_activity"] else None,
+            # "warm" = THIS staff member has been in touch with their connection
+            "warm": (r["my_activity_count"] or 0) > 0,
+            # "touched" = anyone at Pursuit has activity with them
+            "touched": (r["activity_count"] or 0) > 0,
             "co_connections": r["co_connections"] or 0,
             "company_hired_before": r["company_hired_before"],
             "has_open_opp": r["has_open_opp"],
             "status": r["status"] or "new",
             "status_reason": r["status_reason"],
-            "last_activity": r["last_activity"].isoformat() if r["last_activity"] else None,
         } for r in rows]}}
 
 

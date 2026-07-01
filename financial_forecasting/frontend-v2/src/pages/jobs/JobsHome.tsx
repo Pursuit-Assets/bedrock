@@ -311,19 +311,29 @@ function InterviewsZone() {
 
 // ── My Network (staff LinkedIn connections) ─────────────────────────────────
 // Fixed grid so columns line up: name | company | co-conns | signals | status.
-const NET_GRID = "grid grid-cols-[minmax(0,2.4fr)_minmax(0,1.6fr)_64px_minmax(0,1.4fr)_128px] items-center gap-2";
+const NET_GRID = "grid grid-cols-[minmax(0,2.2fr)_minmax(0,1.4fr)_minmax(0,1.1fr)_52px_minmax(0,1.2fr)_120px] items-center gap-2";
 const NET_STATUS = [
   { value: "new", label: "New" },
   { value: "will_reach_out", label: "Will reach out" },
   { value: "declined", label: "Not a fit" },
 ];
+const relDay = (iso: string | null) => {
+  if (!iso) return null;
+  const d = Math.floor((Date.now() - new Date(iso).getTime()) / 86400000);
+  return d <= 0 ? "today" : d === 1 ? "1d" : d < 30 ? `${d}d` : d < 365 ? `${Math.floor(d / 30)}mo` : `${Math.floor(d / 365)}y`;
+};
 
 function NetworkRow({ c }: { c: NetworkConnection }) {
   const setStatus = useSetConnectionStatus();
+  // Last touch: prefer MY touch (warm), fall back to team touch.
+  const mine = c.my_activity_count > 0;
+  const touchIso = mine ? c.my_last_activity : c.last_activity;
+  const chIcon = c.last_channel === "meeting" ? "📅" : c.last_channel === "email" ? "✉️" : "";
   return (
     <div className={cn(NET_GRID, "border-t border-border-strong px-3 py-1.5 text-[12.5px] hover:bg-surface-2/40")}>
       <div className="flex min-w-0 items-center gap-1.5">
-        {c.warm ? <span title="We've had activity with this connection" className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-400" />
+        {c.warm ? <span title={`You've been in touch (${c.my_activity_count})`} className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-400" />
+                : c.touched ? <span title="Pursuit has activity, but not you" className="h-1.5 w-1.5 shrink-0 rounded-full bg-border-strong" />
                 : <span className="h-1.5 w-1.5 shrink-0 rounded-full border border-border-strong" />}
         <Link to={`/jobs/contacts/${c.contact_id}`} className="min-w-0 truncate font-medium text-ink hover:text-accent">
           {c.full_name || "—"}
@@ -331,6 +341,13 @@ function NetworkRow({ c }: { c: NetworkConnection }) {
         {c.current_title ? <span className="hidden truncate text-[11px] text-ink-4 lg:inline"> · {c.current_title}</span> : null}
       </div>
       <div className="min-w-0 truncate text-[11.5px] text-ink-3">{c.current_company || "—"}</div>
+      <div className="min-w-0 truncate text-[11px] tabular-nums" title={touchIso ? new Date(touchIso).toLocaleString() : "No activity"}>
+        {touchIso ? (
+          <span className={mine ? "text-amber-600" : "text-ink-4"}>
+            {chIcon} {relDay(touchIso)}{mine ? ` · you (${c.my_activity_count})` : c.touched ? ` · team (${c.activity_count})` : ""}
+          </span>
+        ) : <span className="text-ink-4">—</span>}
+      </div>
       <div className="text-center text-[11.5px] tabular-nums text-ink-4" title="Other staff also connected">
         {c.co_connections > 0 ? `+${c.co_connections}` : "—"}
       </div>
@@ -381,7 +398,7 @@ function MyNetworkZone() {
         ) : (
           <>
             <div className={cn(NET_GRID, "bg-surface-2/60 px-3 py-1.5 text-[10.5px] font-semibold uppercase tracking-wider text-ink-4")}>
-              <span>Connection</span><span>Company</span><span className="text-center">Staff</span><span>Signals</span><span>Status</span>
+              <span>Connection</span><span>Company</span><span>Last touch</span><span className="text-center">Staff</span><span>Signals</span><span>Status</span>
             </div>
             {shown.map((c) => <NetworkRow key={c.contact_id} c={c} />)}
             {conns.length > shown.length && (

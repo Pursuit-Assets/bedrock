@@ -1106,7 +1106,10 @@ export interface NetworkConnection {
   contact_id: number; full_name: string | null; current_title: string | null;
   current_company: string | null; email: string | null; linkedin_url: string | null;
   is_jobs_contact: boolean; relationship_strength: string | null;
-  activity_count: number; warm: boolean; last_activity: string | null;
+  activity_count: number; last_activity: string | null; last_channel: string | null;
+  my_activity_count: number; my_last_activity: string | null;
+  warm: boolean;      // this staff member has touched their connection
+  touched: boolean;   // anyone at Pursuit has activity with them
   co_connections: number; company_hired_before: boolean; has_open_opp: boolean;
   status: string; status_reason: string | null;
 }
