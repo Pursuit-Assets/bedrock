@@ -1091,9 +1091,11 @@ async def get_contacts(
         cache.set(cache_key, contacts, CACHE_TTL_ACCOUNTS)
         return contacts
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error fetching contacts: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise sf_http_error(e, "contacts")
 
 
 @app.post("/api/salesforce/contacts")
@@ -1146,7 +1148,7 @@ async def create_contact(
                 "message": "A contact with this name or email already exists in Salesforce.",
                 "existing": existing,
             })
-        raise HTTPException(status_code=500, detail=msg)
+        raise sf_http_error(e, "contact")
 
 
 # ── Payment SOQL (shared by both payment GET endpoints) ──────────────────

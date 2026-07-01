@@ -439,7 +439,7 @@ async def promote_account(
         name = (body.display_name or "").strip()
         if not name:
             raise HTTPException(400, "Account needs a name to create in Salesforce")
-        res = await client.salesforce.create_record("Account", {"Name": name})
+        res = await _sf_create(client.salesforce, "Account", {"Name": name}, "account")
         sf_account_id = _result_id(res)
         if not sf_account_id:
             raise HTTPException(502, f"Failed to create Salesforce account: {res}")

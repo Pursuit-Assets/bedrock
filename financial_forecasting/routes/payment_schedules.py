@@ -44,6 +44,7 @@ from dependencies import get_mcp_client, require_sf_mcp_client
 from mcp_client import UnifiedMCPClient
 from routes.permissions import check_permission
 from security import validate_salesforce_id, escape_soql_string
+from sf_errors import sf_http_error
 from services.cache import cache
 
 logger = logging.getLogger(__name__)
@@ -119,7 +120,7 @@ async def get_payment_schedule(
         raise
     except Exception as e:
         logger.exception("Error in get_payment_schedule")
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise sf_http_error(e, "payment schedule")
 
 
 # ---------------------------------------------------------------------------
@@ -246,13 +247,7 @@ async def create_payment_schedule(
         # required field, validation rule, deletion of paid payment,
         # etc.) — burying them behind a generic 500 leaves the user
         # debugging blind.
-        raise HTTPException(
-            status_code=500,
-            detail={
-                "error": "Failed to create payment schedule",
-                "message": str(e) or e.__class__.__name__,
-            },
-        )
+        raise sf_http_error(e, "payment schedule")
 
 
 # ---------------------------------------------------------------------------
@@ -345,7 +340,7 @@ async def update_payment(
         raise
     except Exception as e:
         logger.exception("Error in update_payment")
-        raise HTTPException(status_code=500, detail="Failed to update payment")
+        raise sf_http_error(e, "payment")
 
 
 @router.delete("/api/opportunities/{opportunity_id}/payment-schedule/{payment_id}")
@@ -368,4 +363,4 @@ async def delete_payment(
         raise
     except Exception as e:
         logger.exception("Error in delete_payment")
-        raise HTTPException(status_code=500, detail="Failed to delete payment")
+        raise sf_http_error(e, "payment")
