@@ -3486,9 +3486,9 @@ async def my_network(
     staff_contact_relationships), joined to contacts + company, with flags for
     whether we've had activity with them (warm) and whether they're already a
     jobs prospect. Drives the "My Network" home zone. Sputnik staff ids are
-    mapped to emails via bedrock.staff_connection_map."""
+    mapped to emails via bedrock.staff_user_id_map."""
     email = (staff_email or (user.get("email") if isinstance(user, dict) else getattr(user, "email", None)) or "").lower()
-    sid = await conn.fetchval("SELECT staff_user_id FROM bedrock.staff_connection_map WHERE lower(email)=$1", email)
+    sid = await conn.fetchval("SELECT staff_user_id FROM bedrock.staff_user_id_map WHERE lower(email)=$1", email)
     if sid is None:
         return {"success": True, "data": {"mapped": False, "connections": [], "total": 0,
                 "message": "No LinkedIn connections mapped for this account yet."}}
@@ -3571,7 +3571,7 @@ async def set_connection_status(
     if body.status not in ("new", "will_reach_out", "declined"):
         raise HTTPException(400, "invalid status")
     email = (staff_email or (user.get("email") if isinstance(user, dict) else getattr(user, "email", None)) or "").lower()
-    sid = await conn.fetchval("SELECT staff_user_id FROM bedrock.staff_connection_map WHERE lower(email)=$1", email)
+    sid = await conn.fetchval("SELECT staff_user_id FROM bedrock.staff_user_id_map WHERE lower(email)=$1", email)
     if sid is None:
         raise HTTPException(400, "No connection mapping for this account")
     await conn.execute(
