@@ -634,7 +634,7 @@ async def create_opportunity(
         raise
     except Exception as e:
         logger.error(f"Error creating opportunity: {e}")
-        raise HTTPException(500, str(e))
+        raise sf_http_error(e, "opportunity")
 
 
 @app.put("/api/salesforce/opportunities/{opportunity_id}")
@@ -955,6 +955,30 @@ async def _attach_account_status(accounts: list, salesforce) -> None:
         )
 
 
+def sf_http_error(e: Exception, action: str = "operation") -> HTTPException:
+    """Map a Salesforce error to an actionable HTTP status instead of an opaque
+    500. Session-expired → 401 (reconnect), duplicate rule → 409, validation →
+    400 (with the SF message), access → 403; otherwise 500. Shared by SF-write
+    endpoints so the UI can route to the right recovery."""
+    msg = str(e)
+    low = msg.lower()
+    if "INVALID_SESSION_ID" in msg or "session expired" in low or "re-authentication failed" in low:
+        return HTTPException(status_code=401, detail={
+            "error": "sf_auth_required",
+            "message": "Salesforce session expired — reconnect Salesforce in Settings.",
+        })
+    if "DUPLICATES_DETECTED" in msg or "duplicate" in low:
+        return HTTPException(status_code=409, detail={
+            "error": "duplicate", "message": f"This {action} already exists in Salesforce."})
+    if any(x in msg for x in ("REQUIRED_FIELD_MISSING", "FIELD_CUSTOM_VALIDATION_EXCEPTION",
+                              "INVALID_CROSS_REFERENCE_KEY", "MALFORMED_QUERY", "FIELD_INTEGRITY_EXCEPTION")):
+        return HTTPException(status_code=400, detail={"error": "validation_failed", "message": msg})
+    if "INSUFFICIENT_ACCESS" in msg:
+        return HTTPException(status_code=403, detail={
+            "error": "insufficient_access", "message": "You don't have permission for this in Salesforce."})
+    return HTTPException(status_code=500, detail=msg)
+
+
 @app.post("/api/salesforce/accounts")
 async def create_account(
     account_data: Dict[str, Any],
@@ -964,20 +988,17 @@ async def create_account(
     """Create a new Salesforce account."""
     try:
         salesforce = client.salesforce
-
-        # Create the account
         result = await salesforce.create_record("Account", account_data)
-
         if result and result.get("id"):
             cache.invalidate_prefix("accounts:")
             logger.info(f"Account created with ID: {result['id']} by {user['user_id']}")
             return ApiResponse(success=True, data={"id": result["id"], "message": "Account created successfully"})
-        else:
-            raise HTTPException(status_code=400, detail="Failed to create account")
-            
+        raise HTTPException(status_code=400, detail="Failed to create account")
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error creating account: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise sf_http_error(e, "account")
 
 
 @app.get("/api/salesforce/contacts")
@@ -1133,8 +1154,8 @@ async def create_contact(
             try:
                 em = contact_data.get("Email"); fn = contact_data.get("FirstName"); ln = contact_data.get("LastName")
                 clauses = []
-                if em: clauses.append(f"Email = '{em}'")
-                if fn and ln: clauses.append(f"(FirstName = '{fn}' AND LastName = '{ln}')")
+                if em: clauses.append(f"Email = '{escape_soql_string(em)}'")
+                if fn and ln: clauses.append(f"(FirstName = '{escape_soql_string(fn)}' AND LastName = '{escape_soql_string(ln)}')")
                 if clauses:
                     q = "SELECT Id, Name, Email, Title, Account.Name FROM Contact WHERE " + " OR ".join(clauses) + " LIMIT 5"
                     res = await client.salesforce.query(q)
@@ -1336,7 +1357,7 @@ async def upload_opportunity_file(
         raise
     except Exception as e:
         logger.error(f"Error uploading file to opp {opportunity_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to upload file")
+        raise sf_http_error(e, "file")
 
 
 @app.get("/api/salesforce/opportunities/{opportunity_id}/payments")

@@ -327,7 +327,7 @@ export function ContactDetail({ contactId }: { contactId: number }) {
               <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-ink-4">Linked Deal</div>
               <div className="mb-1.5 flex items-center gap-1.5 text-[12px] font-medium text-ink-2">
                 <Building2 size={11} className="flex-shrink-0 text-ink-4" />
-                {data.deal.account_name}
+                {data.deal.account_name || "—"}
               </div>
               {dealStageStyle && (
                 <span className={cn("inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium leading-4", dealStageStyle)}>
