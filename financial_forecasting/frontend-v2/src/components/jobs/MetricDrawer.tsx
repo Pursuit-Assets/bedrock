@@ -140,7 +140,11 @@ export function MetricDrawer({
       open={open}
       onClose={onClose}
       title={data?.title ?? "Details"}
-      subtitle={data ? `${data.count} record${data.count === 1 ? "" : "s"}` : undefined}
+      subtitle={data
+        ? data.count >= 500
+          ? "500 most recent shown — the metric counts all records"
+          : `${data.count} record${data.count === 1 ? "" : "s"}`
+        : undefined}
       width={760}
     >
       <div className="flex-1 overflow-auto p-4">
