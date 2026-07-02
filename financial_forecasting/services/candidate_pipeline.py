@@ -175,12 +175,21 @@ async def resolve_and_queue_candidates(conn, days_back: Optional[int] = 3,
         nm = name_for[addr] or _localpart_name(addr)
         first = nm.split()[0] if nm else None
         last_n = " ".join(nm.split()[1:]) if nm and len(nm.split()) > 1 else None
+        # Queue for human review only when the thread is warm (recent touch or
+        # a real back-and-forth). Historical backfills surface thousands of
+        # year-old one-off counterparties — those become plain linked contacts,
+        # not review candidates (a 365d backfill once flooded the queue 8x).
+        from datetime import datetime, timedelta, timezone
+        warm = ((last.get(addr) and last[addr] >= datetime.now(timezone.utc) - timedelta(days=90))
+                or (freq.get(addr, 0) >= 3))
+        stage = "candidate" if warm else None
+        tags = ["email_review"] if warm else []
         cid = await conn.fetchval("""
             INSERT INTO public.contacts (full_name, first_name, last_name, email, current_company, company_id,
                 is_jobs_contact, contact_stage, source, tags, created_at, updated_at)
-            VALUES ($1,$2,$3,$4,$5,$6,false,'candidate','email_candidate', ARRAY['email_review'], now(), now())
+            VALUES ($1,$2,$3,$4,$5,$6,false,$7,'email_candidate',$8, now(), now())
             ON CONFLICT (email) DO NOTHING RETURNING contact_id""",
-            nm or addr, first, last_n, addr, company, company_id)
+            nm or addr, first, last_n, addr, company, company_id, stage, tags)
         if not cid:
             cid = await conn.fetchval("SELECT contact_id FROM public.contacts WHERE lower(email)=$1", addr)
             if not cid:
