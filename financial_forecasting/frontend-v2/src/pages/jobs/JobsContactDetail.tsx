@@ -19,7 +19,7 @@ import {
   ContactStagePill,
 } from "@/components/jobs/jobsEntity";
 import { InlineSelect, InlineText } from "@/components/ui/InlineEdit";
-import { useContactDetail, useUpdateContact } from "@/services/jobs";
+import { useContactConnectors, useContactDetail, useUpdateContact } from "@/services/jobs";
 import { useContactSfStatus } from "@/services/jobsSf";
 
 const STAGE_OPTIONS = [
@@ -48,6 +48,7 @@ export function JobsContactDetailPage() {
   const sfStatus = useContactSfStatus(Number.isNaN(contactId) ? null : contactId);
   const [promoteOpen, setPromoteOpen] = useState(false);
   const [introOpen, setIntroOpen] = useState(false);
+  const { data: connectors } = useContactConnectors(Number.isNaN(contactId) ? null : contactId);
   const patch = async (field: string, val: string | null) => { await updateContact.mutateAsync({ id: contactId, [field]: val }); };
 
   if (isLoading) return <div className="px-7 py-6 text-[13px] text-ink-3">Loading contact…</div>;
@@ -71,6 +72,7 @@ export function JobsContactDetailPage() {
 
   const lastActivity = c.activity?.find((a) => !a.deleted_at)?.activity_date ?? null;
   const connectedStaff = (c.connected_staff ?? []).filter((s) => s.name);
+  const hasPendingIntro = (connectors ?? []).some((s) => s.has_pending_request);
 
   return (
     <div className="flex flex-col gap-4 px-7 py-4 pb-16">
@@ -119,8 +121,13 @@ export function JobsContactDetailPage() {
             {connectedStaff.map((s) => (
               <span key={s.staff_user_id} className="rounded-full bg-accent-soft px-2 py-0.5 text-[11px] font-medium text-accent-ink">{s.name}</span>
             ))}
+            {hasPendingIntro && (
+              <span className="ml-auto rounded-full bg-amber-soft px-2 py-0.5 text-[10.5px] font-medium text-amber">intro request pending</span>
+            )}
             <button type="button" onClick={() => setIntroOpen(true)}
-              className="ml-auto rounded-lg border border-accent px-2.5 py-1 text-[11.5px] font-medium text-accent hover:bg-accent-soft">
+              className={hasPendingIntro
+                ? "rounded-lg border border-accent px-2.5 py-1 text-[11.5px] font-medium text-accent hover:bg-accent-soft"
+                : "ml-auto rounded-lg border border-accent px-2.5 py-1 text-[11.5px] font-medium text-accent hover:bg-accent-soft"}>
               Request intro
             </button>
           </div>

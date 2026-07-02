@@ -12,6 +12,7 @@ import { JobsActivityList } from "@/components/jobs/JobsActivityList";
 import { JobsComments } from "@/components/jobs/JobsComments";
 import { JobsTasks } from "@/components/jobs/JobsTasks";
 import { initials, LogActivityForm } from "@/components/jobs/ProspectAccountExpandPanel";
+import { RequestIntroDialog } from "@/components/jobs/RequestIntroDialog";
 import { RowExpandPanel } from "@/components/RowExpandPanel";
 import { InlineSelect, InlineText } from "@/components/ui/InlineEdit";
 import { cn } from "@/lib/utils";
@@ -236,19 +237,34 @@ export function ContactActivityTab({ contactId }: { contactId: number }) {
   );
 }
 
-/** The full contact expand panel — Activity · Opportunities · Tasks · Comments. */
+/** The full contact expand panel — Activity · Opportunities · Tasks · Comments,
+ * plus the contact-level actions (open detail, request intro) so the row a
+ * user is already working in covers the whole workflow. */
 export function ContactExpandTabs({ contactId }: { contactId: number }) {
   const { data } = useContactOpportunities(contactId);
+  const [introOpen, setIntroOpen] = useState(false);
   const id = String(contactId);
   return (
-    <RowExpandPanel
-      tabs={[
-        { id: "activity", label: "Activity", render: () => <ContactActivityTab contactId={contactId} /> },
-        { id: "opps", label: "Opportunities", count: data?.length ?? null, render: () => <ContactOppsTab contactId={contactId} /> },
-        { id: "tasks", label: "Tasks", render: () => <div className="p-3"><JobsTasks parentType="prospect" parentId={id} /></div> },
-        { id: "comments", label: "Comments", render: () => <div className="p-3"><JobsComments parentType="prospect" parentId={id} /></div> },
-      ]}
-    />
+    <div className="relative">
+      <div className="absolute right-3 top-1.5 z-10 flex items-center gap-2">
+        <button type="button" onClick={() => setIntroOpen(true)}
+          className="rounded border border-border-strong px-2 py-0.5 text-[11px] font-medium text-ink-3 hover:border-accent hover:text-accent">
+          Request intro
+        </button>
+        <Link to={jobsContactPath(contactId)} state={jobsRef} className="rounded border border-border-strong px-2 py-0.5 text-[11px] font-medium text-ink-3 hover:border-accent hover:text-accent">
+          Open ↗
+        </Link>
+      </div>
+      <RowExpandPanel
+        tabs={[
+          { id: "activity", label: "Activity", render: () => <ContactActivityTab contactId={contactId} /> },
+          { id: "opps", label: "Opportunities", count: data?.length ?? null, render: () => <ContactOppsTab contactId={contactId} /> },
+          { id: "tasks", label: "Tasks", render: () => <div className="p-3"><JobsTasks parentType="prospect" parentId={id} /></div> },
+          { id: "comments", label: "Comments", render: () => <div className="p-3"><JobsComments parentType="prospect" parentId={id} /></div> },
+        ]}
+      />
+      {introOpen && <RequestIntroDialog contactId={contactId} contactName="this contact" onClose={() => setIntroOpen(false)} />}
+    </div>
   );
 }
 

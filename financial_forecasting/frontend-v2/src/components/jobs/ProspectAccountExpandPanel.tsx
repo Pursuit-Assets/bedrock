@@ -30,6 +30,7 @@ import { format, formatDistanceToNow } from "date-fns";
 
 import { JobsComments } from "@/components/jobs/JobsComments";
 import { JobsTasks } from "@/components/jobs/JobsTasks";
+import { RequestIntroDialog } from "@/components/jobs/RequestIntroDialog";
 import { RowExpandPanel } from "@/components/RowExpandPanel";
 import { InlineSelect, InlineText } from "@/components/ui/InlineEdit";
 import { cn } from "@/lib/utils";
@@ -243,6 +244,7 @@ export function ContactDetail({ contactId }: { contactId: number }) {
   const { mutateAsync: updateContact } = useUpdateContact();
   const { mutate: deleteActivity } = useDeleteActivity();
   const [showLogForm, setShowLogForm] = useState(false);
+  const [introOpen, setIntroOpen] = useState(false);
   const [expandedActivityId, setExpandedActivityId] = useState<string | null>(null);
 
   if (isLoading) {
@@ -321,6 +323,14 @@ export function ContactDetail({ contactId }: { contactId: number }) {
               <InlineText value={data.linkedin_url} onSave={save("linkedin_url")} placeholder="LinkedIn URL" />
             </div>
           </div>
+
+          <button type="button" onClick={() => setIntroOpen(true)}
+            className="self-start rounded-lg border border-accent px-2.5 py-1 text-[11.5px] font-medium text-accent hover:bg-accent-soft">
+            Request intro
+          </button>
+          {introOpen && (
+            <RequestIntroDialog contactId={contactId} contactName={data.full_name ?? "this contact"} onClose={() => setIntroOpen(false)} />
+          )}
 
           {data.deal && (
             <div className="rounded-lg border border-border-strong bg-surface p-3">
