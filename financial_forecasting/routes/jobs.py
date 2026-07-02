@@ -2763,17 +2763,16 @@ async def list_contacts(
             ORDER BY (o.stage LIKE 'active%') DESC, o.updated_at DESC NULLS LAST
             LIMIT 1
         ) jo ON true
-        -- company name fuzzy match fallback (only when no direct link)
+        -- company fallback (only when no direct link): EXACT current-company
+        -- match only. Substring matching linked contacts to every deal whose
+        -- account name overlapped their company string — a contact's implied
+        -- deal must come from their current employer, nothing looser.
         LEFT JOIN LATERAL (
             SELECT o.id, o.account_name, o.stage
             FROM bedrock.jobs_opportunity o
             WHERE jo.id IS NULL
               AND o.deleted_at IS NULL
-              AND (
-                lower(o.account_name) = lower(c.current_company)
-                OR lower(o.account_name) LIKE '%' || lower(split_part(c.current_company, '.', 1)) || '%'
-                OR lower(c.current_company) LIKE '%' || lower(o.account_name) || '%'
-              )
+              AND lower(trim(o.account_name)) = lower(trim(c.current_company))
             ORDER BY (o.stage LIKE 'active%') DESC, o.updated_at DESC NULLS LAST
             LIMIT 1
         ) jo2 ON true
@@ -2940,11 +2939,8 @@ async def get_contact(
             AND ('airtable:' || c.airtable_id) = ANY(jo.sf_contact_ids)
         LEFT JOIN bedrock.jobs_opportunity jo2
             ON jo2.deleted_at IS NULL AND jo.id IS NULL
-            AND (
-                lower(jo2.account_name) = lower(c.current_company)
-                OR lower(jo2.account_name) LIKE '%' || lower(split_part(c.current_company, '.', 1)) || '%'
-                OR lower(c.current_company) LIKE '%' || lower(jo2.account_name) || '%'
-            )
+            -- exact current-company match only (see list_contacts note)
+            AND lower(trim(jo2.account_name)) = lower(trim(c.current_company))
         WHERE c.contact_id = $1
         """,
         contact_id,
