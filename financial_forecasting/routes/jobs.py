@@ -3529,8 +3529,11 @@ async def update_contact(
     user=Depends(require_auth),
     conn=Depends(get_db),
 ):
+    # Any live contact is editable — the old `airtable_id IS NOT NULL` guard
+    # dated from the Airtable-only era and silently 404'd edits on every
+    # linkedin/outreach/candidate/manual contact (most of the table).
     existing = await conn.fetchrow(
-        "SELECT contact_id FROM public.contacts WHERE contact_id=$1 AND airtable_id IS NOT NULL",
+        "SELECT contact_id FROM public.contacts WHERE contact_id=$1 AND coalesce(contact_stage,'') <> 'merged'",
         contact_id,
     )
     if not existing:
