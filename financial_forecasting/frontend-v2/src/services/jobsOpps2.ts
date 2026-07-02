@@ -168,11 +168,19 @@ export function useDeleteRole() {
   });
 }
 
+export interface PlacementSfSync {
+  status: "synced" | "needs_info" | "error" | "skipped";
+  message?: string;
+  created_contact?: boolean;
+  created_account?: boolean;
+  created_affiliation?: boolean;
+}
+
 export function useHireRole() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async ({ roleId, oppId: _oppId, ...body }: { roleId: string; oppId?: string } & RoleHireBody) => {
-      const { data } = await api.post<ApiResponse<{ role: Role; employment_record_id: number }>>(
+      const { data } = await api.post<ApiResponse<{ role: Role; employment_record_id: number; sf_sync?: PlacementSfSync }>>(
         `/api/jobs/roles/${roleId}/hire`,
         body,
       );
@@ -182,7 +190,17 @@ export function useHireRole() {
       qc.invalidateQueries({ queryKey: ["jobs", "opp-roles", vars.oppId ?? result.role.opportunity_id] });
       // hire also creates an employment_record → refresh placements + builders
       invalidateOppDependents(qc, [["jobs", "placements"], ["jobs", "builders"]]);
-      toast.success("Builder hired");
+      const sync = result.sf_sync;
+      if (sync?.status === "synced") {
+        const made = [sync.created_contact && "contact", sync.created_account && "account", sync.created_affiliation && "affiliation"].filter(Boolean);
+        toast.success(made.length ? `Builder hired — Salesforce ${made.join(" + ")} created` : "Builder hired — already in Salesforce");
+      } else if (sync?.status === "needs_info") {
+        toast.warning(`Builder hired, but Salesforce needs info: ${sync.message}`);
+      } else if (sync?.status === "error" || sync?.status === "skipped") {
+        toast.warning("Builder hired — Salesforce sync pending (retry from the placement)");
+      } else {
+        toast.success("Builder hired");
+      }
     },
     onError: () => toast.error("Hire failed"),
   });

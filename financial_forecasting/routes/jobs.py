@@ -19,7 +19,9 @@ from pydantic import BaseModel
 
 from auth import require_auth
 from db import get_db
-from dependencies import require_sf_mcp_client
+from dependencies import get_mcp_client, require_sf_mcp_client
+from sf_errors import sf_http_error
+from services.placement_sf import sync_placement_to_sf, record_sync_error
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
@@ -975,6 +977,7 @@ async def hire_into_role(
     body: RoleHire,
     user=Depends(require_auth),
     conn=Depends(get_db),
+    client=Depends(get_mcp_client),
 ):
     """Fill a role: create the employment_record placement and mark the role filled."""
     role = await conn.fetchrow("SELECT * FROM bedrock.jobs_role WHERE id=$1", role_id)
@@ -1012,7 +1015,71 @@ async def hire_into_role(
             """,
             body.user_id, new_id, role_id,
         )
-    return {"success": True, "data": {"role": _role_dict(updated), "employment_record_id": new_id}}
+
+    # Mirror the placement into Salesforce (fellow contact + account +
+    # affiliation) — best-effort so a SF hiccup never blocks the hire; the
+    # failure is recorded and retryable via POST /placements/{id}/sync-sf.
+    sf_sync: dict = {"status": "skipped", "message": "Salesforce not connected — sync from the placement later."}
+    try:
+        if client and "salesforce" in (client.connected_services or []):
+            result = await sync_placement_to_sf(conn, client.salesforce, new_id)
+            sf_sync = {"status": "synced", **result}
+        else:
+            await record_sync_error(conn, new_id, "Salesforce not connected at hire time")
+    except ValueError as ve:
+        await record_sync_error(conn, new_id, str(ve))
+        sf_sync = {"status": "needs_info", "message": str(ve)}
+    except Exception as e:  # noqa: BLE001 — never fail the hire on SF errors
+        logger.warning(f"placement SF sync failed for er {new_id}: {e}")
+        await record_sync_error(conn, new_id, str(e))
+        sf_sync = {"status": "error", "message": str(e)}
+
+    return {"success": True, "data": {"role": _role_dict(updated), "employment_record_id": new_id, "sf_sync": sf_sync}}
+
+
+@router.post("/placements/{employment_record_id}/sync-sf")
+async def sync_placement_sf(
+    employment_record_id: int,
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+    client=Depends(require_sf_mcp_client),
+):
+    """(Re)sync one placement to Salesforce — creates the fellow contact,
+    the employer account, and the affiliation as needed."""
+    try:
+        result = await sync_placement_to_sf(conn, client.salesforce, employment_record_id)
+    except ValueError as ve:
+        await record_sync_error(conn, employment_record_id, str(ve))
+        raise HTTPException(400, str(ve))
+    except HTTPException:
+        raise
+    except Exception as e:
+        await record_sync_error(conn, employment_record_id, str(e))
+        raise sf_http_error(e, "placement sync")
+    return {"success": True, "data": result}
+
+
+@router.get("/placements/sf-sync-status")
+async def placements_sf_sync_status(
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Sync state for every opportunity-linked placement (drives backfill UI)."""
+    rows = await conn.fetch(
+        """SELECT er.id AS employment_record_id, er.role_title, er.company_name, er.start_date,
+                  b.full_name AS builder_name,
+                  s.status, s.error, s.sf_contact_id, s.sf_account_id, s.sf_affiliation_id, s.synced_at
+           FROM public.employment_records er
+           LEFT JOIN bedrock.placement_sf_sync s ON s.employment_record_id = er.id
+           LEFT JOIN LATERAL bedrock.builder_by_id(er.user_id) b ON true
+           WHERE er.opportunity_id IS NOT NULL
+           ORDER BY er.created_at DESC""")
+    return {"success": True, "data": [{
+        **dict(r),
+        "start_date": r["start_date"].isoformat() if r["start_date"] else None,
+        "synced_at": r["synced_at"].isoformat() if r["synced_at"] else None,
+        "status": r["status"] or "pending",
+    } for r in rows]}
 
 
 # ── Builder activity on an opportunity ────────────────────────────────────────
