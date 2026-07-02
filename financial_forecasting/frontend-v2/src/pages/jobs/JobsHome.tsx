@@ -467,7 +467,19 @@ function IntroRequestsZone() {
   const myEmail = me?.email?.toLowerCase();
   const inbox = reqs.filter((r) => (r.requested_by || "").toLowerCase() !== myEmail);
   const sent = reqs.filter((r) => (r.requested_by || "").toLowerCase() === myEmail);
-  if (isLoading || (reqs.length === 0 && !showClosed)) return null;
+  if (isLoading) return null;
+  if (reqs.length === 0 && !showClosed) {
+    // Always visible so the flow is discoverable — a one-line how-to when empty.
+    return (
+      <Section title="Intro requests" count={0}>
+        <div className="rounded-lg border border-border-strong bg-surface px-3 py-3 text-[12px] text-ink-4">
+          None yet. Open any contact and hit <span className="font-medium text-ink-2">Request intro</span> next
+          to their connected staff — the request lands here for that staff member to accept, decline, or mark the intro made.
+          {" "}<Link to="/jobs?view=contacts" className="text-accent hover:underline">Browse contacts →</Link>
+        </div>
+      </Section>
+    );
+  }
   return (
     <Section title="Intro requests" count={reqs.length}
       action={
