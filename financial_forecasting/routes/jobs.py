@@ -2748,22 +2748,35 @@ async def list_contacts(
             jo2.account_name AS deal_account_by_company,
             jo2.stage        AS deal_stage_by_company
         FROM public.contacts c
-        -- direct link via sf_contact_ids (airtable: or pub: ref)
-        LEFT JOIN bedrock.jobs_opportunity jo
-            ON jo.deleted_at IS NULL
-            AND (
-                (c.airtable_id IS NOT NULL AND ('airtable:' || c.airtable_id) = ANY(jo.sf_contact_ids))
-                OR ('pub:' || c.contact_id::text) = ANY(jo.sf_contact_ids)
-            )
-        -- company name fuzzy match fallback
-        LEFT JOIN bedrock.jobs_opportunity jo2
-            ON jo2.deleted_at IS NULL
-            AND jo.id IS NULL  -- only use fallback when no direct link
-            AND (
-                lower(jo2.account_name) = lower(c.current_company)
-                OR lower(jo2.account_name) LIKE '%' || lower(split_part(c.current_company, '.', 1)) || '%'
-                OR lower(c.current_company) LIKE '%' || lower(jo2.account_name) || '%'
-            )
+        -- direct link via sf_contact_ids (airtable: or pub: ref).
+        -- LATERAL + LIMIT 1: a contact tied to N opportunities must still be
+        -- ONE row — pick the best deal (active first, then freshest) instead
+        -- of fanning out (Emily Zhao appeared 8× for 8 deals at her company).
+        LEFT JOIN LATERAL (
+            SELECT o.id, o.account_name, o.stage
+            FROM bedrock.jobs_opportunity o
+            WHERE o.deleted_at IS NULL
+              AND (
+                (c.airtable_id IS NOT NULL AND ('airtable:' || c.airtable_id) = ANY(o.sf_contact_ids))
+                OR ('pub:' || c.contact_id::text) = ANY(o.sf_contact_ids)
+              )
+            ORDER BY (o.stage LIKE 'active%') DESC, o.updated_at DESC NULLS LAST
+            LIMIT 1
+        ) jo ON true
+        -- company name fuzzy match fallback (only when no direct link)
+        LEFT JOIN LATERAL (
+            SELECT o.id, o.account_name, o.stage
+            FROM bedrock.jobs_opportunity o
+            WHERE jo.id IS NULL
+              AND o.deleted_at IS NULL
+              AND (
+                lower(o.account_name) = lower(c.current_company)
+                OR lower(o.account_name) LIKE '%' || lower(split_part(c.current_company, '.', 1)) || '%'
+                OR lower(c.current_company) LIKE '%' || lower(o.account_name) || '%'
+              )
+            ORDER BY (o.stage LIKE 'active%') DESC, o.updated_at DESC NULLS LAST
+            LIMIT 1
+        ) jo2 ON true
         WHERE {where}
         ORDER BY c.contact_stage NULLS LAST, c.full_name
         LIMIT ${i} OFFSET ${i+1}
