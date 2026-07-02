@@ -3505,7 +3505,7 @@ async def my_network(
     rows = await conn.fetch(
         f"""
         SELECT c.contact_id, c.full_name, c.current_title, c.current_company, c.email,
-               c.linkedin_url, c.is_jobs_contact, r.relationship_strength,
+               c.linkedin_url, c.is_jobs_contact, r.relationship_strength, r.connected_date,
                act.n AS activity_count, act.last AS last_activity, act.last_type AS last_channel,
                coalesce(mine.n, 0) AS my_activity_count, mine.last AS my_last_activity,
                coalesce(cc.n, 0) AS co_connections,
@@ -3549,6 +3549,7 @@ async def my_network(
             "contact_id": r["contact_id"], "full_name": r["full_name"], "current_title": r["current_title"],
             "current_company": r["current_company"], "email": r["email"], "linkedin_url": r["linkedin_url"],
             "is_jobs_contact": r["is_jobs_contact"], "relationship_strength": r["relationship_strength"],
+            "connected_date": r["connected_date"].isoformat() if r["connected_date"] else None,
             "activity_count": r["activity_count"] or 0,
             "last_activity": r["last_activity"].isoformat() if r["last_activity"] else None,
             "last_channel": r["last_channel"],

@@ -12,6 +12,7 @@ import { BackLink, EditField, SectionCard, Stat } from "@/components/detail";
 import { JobsComments } from "@/components/jobs/JobsComments";
 import { JobsTasks } from "@/components/jobs/JobsTasks";
 import { PromoteContactDialog } from "@/components/jobs/PromoteContactDialog";
+import { RequestIntroDialog } from "@/components/jobs/RequestIntroDialog";
 import {
   ContactActivityTab,
   ContactOppsTab,
@@ -46,6 +47,7 @@ export function JobsContactDetailPage() {
   const updateContact = useUpdateContact();
   const sfStatus = useContactSfStatus(Number.isNaN(contactId) ? null : contactId);
   const [promoteOpen, setPromoteOpen] = useState(false);
+  const [introOpen, setIntroOpen] = useState(false);
   const patch = async (field: string, val: string | null) => { await updateContact.mutateAsync({ id: contactId, [field]: val }); };
 
   if (isLoading) return <div className="px-7 py-6 text-[13px] text-ink-3">Loading contact…</div>;
@@ -117,6 +119,10 @@ export function JobsContactDetailPage() {
             {connectedStaff.map((s) => (
               <span key={s.staff_user_id} className="rounded-full bg-accent-soft px-2 py-0.5 text-[11px] font-medium text-accent-ink">{s.name}</span>
             ))}
+            <button type="button" onClick={() => setIntroOpen(true)}
+              className="ml-auto rounded-lg border border-accent px-2.5 py-1 text-[11.5px] font-medium text-accent hover:bg-accent-soft">
+              Request intro
+            </button>
           </div>
         )}
       </SectionCard>
@@ -128,6 +134,9 @@ export function JobsContactDetailPage() {
 
       {promoteOpen && (
         <PromoteContactDialog contactId={contactId} contactName={c.full_name ?? "this contact"} onClose={() => setPromoteOpen(false)} />
+      )}
+      {introOpen && (
+        <RequestIntroDialog contactId={contactId} contactName={c.full_name ?? "this contact"} onClose={() => setIntroOpen(false)} />
       )}
     </div>
   );

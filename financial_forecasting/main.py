@@ -73,6 +73,7 @@ from routes.admin_interaction_sync import router as admin_interaction_sync_route
 from routes.jobs import router as jobs_router
 from routes.jobs_tasks import router as jobs_tasks_router
 from routes.jobs_comments import router as jobs_comments_router
+from routes.jobs_intro import router as jobs_intro_router
 from routes.jobs_sf import router as jobs_sf_router
 from routes.entity_comments import router as entity_comments_router
 from auth import get_current_user_dep, require_auth, IS_PRODUCTION, JWT_SECRET_KEY
@@ -164,6 +165,7 @@ app.include_router(admin_interaction_sync_router)
 app.include_router(jobs_router)
 app.include_router(jobs_tasks_router)
 app.include_router(jobs_comments_router)
+app.include_router(jobs_intro_router)
 app.include_router(jobs_sf_router)
 app.include_router(entity_comments_router)
 

@@ -1106,6 +1106,7 @@ export interface NetworkConnection {
   contact_id: number; full_name: string | null; current_title: string | null;
   current_company: string | null; email: string | null; linkedin_url: string | null;
   is_jobs_contact: boolean; relationship_strength: string | null;
+  connected_date: string | null;
   activity_count: number; last_activity: string | null; last_channel: string | null;
   my_activity_count: number; my_last_activity: string | null;
   warm: boolean;      // this staff member has touched their connection
@@ -1133,6 +1134,76 @@ export function useSetConnectionStatus() {
       return data.data;
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ["jobs", "my-network"] }),
+  });
+}
+
+// ── Intro requests (staff→staff asks + Sputnik builder asks surfaced) ────────
+export interface IntroRequest {
+  id: string;
+  source: "staff" | "builder";
+  contact_id: number; contact_name: string | null;
+  contact_company: string | null; contact_title: string | null;
+  connector_staff_id: number; connector_name: string | null; connector_email: string | null;
+  requested_by: string | null; requested_by_name?: string | null;
+  specific_ask: string | null; context: string | null;
+  status: string; response_note: string | null;
+  responded_at: string | null; created_at: string | null;
+}
+export function useIntroRequests(box: "inbox" | "sent" | "all" = "inbox", includeClosed = false) {
+  return useQuery<IntroRequest[]>({
+    queryKey: ["jobs", "intro-requests", box, includeClosed],
+    queryFn: async () => {
+      const { data } = await api.get<ApiResponse<IntroRequest[]>>("/api/jobs/intro-requests", {
+        params: { box, include_closed: includeClosed },
+      });
+      return data.data ?? [];
+    },
+    staleTime: 30_000,
+  });
+}
+export interface ContactConnector {
+  staff_user_id: number; display_name: string | null; email: string;
+  connected_date: string | null; has_pending_request: boolean;
+}
+export function useContactConnectors(contactId: number | null) {
+  return useQuery<ContactConnector[]>({
+    queryKey: ["jobs", "contact-connectors", contactId],
+    queryFn: async () => {
+      const { data } = await api.get<ApiResponse<ContactConnector[]>>(`/api/jobs/contacts/${contactId}/connectors`);
+      return data.data ?? [];
+    },
+    enabled: contactId != null,
+    staleTime: 60_000,
+  });
+}
+export function useCreateIntroRequest() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (body: { contact_id: number; connector_staff_id: number; specific_ask?: string; context?: string }) => {
+      const { data } = await api.post<ApiResponse<{ id: string }>>("/api/jobs/intro-requests", body);
+      return data.data;
+    },
+    onSuccess: (_d, vars) => {
+      qc.invalidateQueries({ queryKey: ["jobs", "intro-requests"] });
+      qc.invalidateQueries({ queryKey: ["jobs", "contact-connectors", vars.contact_id] });
+      toast.success("Intro request sent");
+    },
+    onError: (e: unknown) => {
+      const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      toast.error(typeof detail === "string" ? detail : "Failed to send intro request");
+    },
+  });
+}
+export function useRespondIntroRequest() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (body: { id: string; status: string; response_note?: string; source: "staff" | "builder" }) => {
+      const { id, ...rest } = body;
+      const { data } = await api.patch<ApiResponse<unknown>>(`/api/jobs/intro-requests/${id}`, rest);
+      return data.data;
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["jobs", "intro-requests"] }),
+    onError: () => toast.error("Failed to update intro request"),
   });
 }
 

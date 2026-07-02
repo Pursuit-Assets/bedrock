@@ -21,6 +21,11 @@ import { useCurrentUser } from "@/services/auth";
 import { useJobsAccountNames, STAGE_LABELS, type JobStage } from "@/services/jobs";
 import { CandidatesZone } from "./CandidateReview";
 import { ContactExpandTabs } from "@/components/jobs/jobsEntity";
+import { SortableHeader } from "@/components/ui/SortableHeader";
+import { useSort, compare } from "@/lib/sort";
+import {
+  useIntroRequests, useRespondIntroRequest, type IntroRequest,
+} from "@/services/jobs";
 import { useCandidateOwners, useMyNetwork, useSetConnectionStatus, type NetworkConnection } from "@/services/jobs";
 import {
   useAllJobsTasks, useUpdateTaskById, useCreateTaskForParent, useDeleteTaskById,
@@ -311,8 +316,17 @@ function InterviewsZone() {
 }
 
 // ── My Network (staff LinkedIn connections) ─────────────────────────────────
-// Fixed grid so columns line up: name | company | co-conns | signals | status.
-const NET_GRID = "grid grid-cols-[minmax(0,2.2fr)_minmax(0,1.4fr)_minmax(0,1.1fr)_52px_minmax(0,1.2fr)_120px] items-center gap-2";
+// Fixed grid so columns line up: name | company | last touch | connected | staff | signals | status.
+const NET_GRID = "grid grid-cols-[minmax(0,2.2fr)_minmax(0,1.4fr)_minmax(0,1.1fr)_72px_52px_minmax(0,1.2fr)_120px] items-center gap-2";
+type NetSortKey = "name" | "company" | "touch" | "connected" | "staff" | "status";
+const NET_SORT_VALUE: Record<NetSortKey, (c: NetworkConnection) => unknown> = {
+  name: (c) => c.full_name,
+  company: (c) => c.current_company,
+  touch: (c) => (c.my_activity_count > 0 ? c.my_last_activity : c.last_activity),
+  connected: (c) => c.connected_date,
+  staff: (c) => c.co_connections,
+  status: (c) => c.status,
+};
 const NET_STATUS = [
   { value: "new", label: "New" },
   { value: "will_reach_out", label: "Will reach out" },
@@ -360,6 +374,9 @@ function NetworkRow({ c, expanded, onToggle }: { c: NetworkConnection; expanded:
             </span>
           ) : <span className="text-ink-4">—</span>}
         </div>
+        <div className="truncate text-[11px] tabular-nums text-ink-4" title={c.connected_date ? `Connected ${c.connected_date}` : "Connection date unknown"}>
+          {c.connected_date ? relDay(c.connected_date) : "—"}
+        </div>
         <div className="text-center text-[11.5px] tabular-nums text-ink-4" title="Other staff also connected">
           {c.co_connections > 0 ? `+${c.co_connections}` : "—"}
         </div>
@@ -387,15 +404,107 @@ function NetworkRow({ c, expanded, onToggle }: { c: NetworkConnection; expanded:
   );
 }
 
+// ── Intro requests — asks addressed to me (staff + Sputnik builder), and mine ─
+const ASK_LABELS: Record<string, string> = {
+  hiring_intro: "Hiring intro", industry_advice: "Industry advice",
+  job_referral: "Job referral", mock_interview: "Mock interview",
+};
+const askLabel = (a: string | null) => (a ? ASK_LABELS[a] ?? a.replace(/_/g, " ") : "Intro");
+
+function IntroRequestCard({ r, mine }: { r: IntroRequest; mine: boolean }) {
+  const respond = useRespondIntroRequest();
+  const [note, setNote] = useState("");
+  const act = (status: string) =>
+    respond.mutate({ id: r.id, status, response_note: note.trim() || undefined, source: r.source });
+  const isPending = r.status === "pending";
+  const isAccepted = r.status === "accepted" || r.status === "approved";
+  return (
+    <div className="flex flex-col gap-1.5 border-t border-border-strong px-3 py-2 text-[12.5px]">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+        <Link to={`/jobs/contacts/${r.contact_id}`} className="font-medium text-ink hover:text-accent">{r.contact_name || "—"}</Link>
+        {r.contact_company && <span className="text-[11.5px] text-ink-3">{r.contact_company}</span>}
+        <Tag variant={r.source === "builder" ? "default" : "accent"}>{askLabel(r.specific_ask)}</Tag>
+        <span className="text-[11px] text-ink-4">
+          {mine ? `via ${r.connector_name || r.connector_email || "—"}` : `from ${r.requested_by_name || r.requested_by || "—"}${r.source === "builder" ? " (builder)" : ""}`}
+          {r.created_at ? ` · ${relDay(r.created_at)}` : ""}
+        </span>
+        {!isPending && (
+          <Tag variant={isAccepted ? "green" : r.status === "completed" ? "green" : "default"}>{r.status}</Tag>
+        )}
+      </div>
+      {r.context && <div className="text-[11.5px] text-ink-3">{r.context}</div>}
+      {r.response_note && <div className="text-[11.5px] italic text-ink-4">↳ {r.response_note}</div>}
+      {!mine && isPending && (
+        <div className="flex items-center gap-1.5">
+          <input value={note} onChange={(e) => setNote(e.target.value)} placeholder="Optional note…"
+            className="h-6 w-56 rounded border border-border-strong bg-surface px-1.5 text-[11.5px] outline-none focus:border-accent" />
+          <button type="button" disabled={respond.isPending} onClick={() => act("accepted")}
+            className="rounded border border-green/40 px-2 py-0.5 text-[11px] font-medium text-green hover:bg-green/10">Accept</button>
+          <button type="button" disabled={respond.isPending} onClick={() => act("declined")}
+            className="rounded border border-red/40 px-2 py-0.5 text-[11px] font-medium text-red hover:bg-red/10">Decline</button>
+        </div>
+      )}
+      {!mine && isAccepted && r.source === "staff" && (
+        <div>
+          <button type="button" disabled={respond.isPending} onClick={() => act("completed")}
+            className="rounded border border-border-strong px-2 py-0.5 text-[11px] font-medium text-ink-3 hover:border-accent hover:text-accent">Mark intro made</button>
+        </div>
+      )}
+      {mine && isPending && (
+        <div>
+          <button type="button" disabled={respond.isPending} onClick={() => act("withdrawn")}
+            className="rounded border border-border-strong px-2 py-0.5 text-[11px] text-ink-4 hover:text-red">Withdraw</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function IntroRequestsZone() {
+  const { data: me } = useCurrentUser();
+  const [showClosed, setShowClosed] = useState(false);
+  const { data: reqs = [], isLoading } = useIntroRequests("all", showClosed);
+  const myEmail = me?.email?.toLowerCase();
+  const inbox = reqs.filter((r) => (r.requested_by || "").toLowerCase() !== myEmail);
+  const sent = reqs.filter((r) => (r.requested_by || "").toLowerCase() === myEmail);
+  if (isLoading || (reqs.length === 0 && !showClosed)) return null;
+  return (
+    <Section title="Intro requests" count={reqs.length}
+      action={
+        <label className="flex items-center gap-1 text-[11px] text-ink-4">
+          <input type="checkbox" checked={showClosed} onChange={(e) => setShowClosed(e.target.checked)} className="accent-accent" /> show closed
+        </label>
+      }>
+      <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+        <div className="flex flex-col overflow-hidden rounded-lg border border-border-strong bg-surface">
+          <div className="bg-surface-2/60 px-3 py-1.5 text-[10.5px] font-semibold uppercase tracking-wider text-ink-4">For you {inbox.length ? `(${inbox.length})` : ""}</div>
+          {inbox.length === 0 ? <div className="px-3 py-4 text-center text-[12px] text-ink-4">No requests for you.</div>
+            : inbox.map((r) => <IntroRequestCard key={`${r.source}-${r.id}`} r={r} mine={false} />)}
+        </div>
+        <div className="flex flex-col overflow-hidden rounded-lg border border-border-strong bg-surface">
+          <div className="bg-surface-2/60 px-3 py-1.5 text-[10.5px] font-semibold uppercase tracking-wider text-ink-4">Your requests {sent.length ? `(${sent.length})` : ""}</div>
+          {sent.length === 0 ? <div className="px-3 py-4 text-center text-[12px] text-ink-4">You haven't requested any intros.</div>
+            : sent.map((r) => <IntroRequestCard key={`${r.source}-${r.id}`} r={r} mine={true} />)}
+        </div>
+      </div>
+    </Section>
+  );
+}
+
 function MyNetworkZone() {
   const [q, setQ] = useState("");
   const [showAll, setShowAll] = useState(false);
   const [warmOnly, setWarmOnly] = useState(false);
   const [byCompany, setByCompany] = useState(false);
   const [expandedId, setExpandedId] = useState<number | null>(null);
+  const { sort, toggle: toggleSort } = useSort<NetSortKey>();
   const { data, isLoading } = useMyNetwork(q || undefined);
   let conns = data?.connections ?? [];
   if (warmOnly) conns = conns.filter((c) => c.warm);
+  if (sort.key) {
+    const val = NET_SORT_VALUE[sort.key];
+    conns = [...conns].sort((a, b) => compare(val(a), val(b), sort.direction));
+  }
   const shown = showAll ? conns : conns.slice(0, 25);
   // Group the shown rows by company (largest group first, no-company last).
   const groups = useMemo(() => {
@@ -433,8 +542,14 @@ function MyNetworkZone() {
           <div className="px-3 py-8 text-center text-[12.5px] text-ink-3">{q || warmOnly ? "No connections match the filters." : "No connections."}</div>
         ) : (
           <>
-            <div className={cn(NET_GRID, "bg-surface-2/60 px-3 py-1.5 text-[10.5px] font-semibold uppercase tracking-wider text-ink-4")}>
-              <span>Connection</span><span>Company</span><span>Last touch</span><span className="text-center">Staff</span><span>Signals</span><span>Status</span>
+            <div className={cn(NET_GRID, "bg-surface-2/60 px-3 py-1.5")}>
+              <SortableHeader label="Connection" sortKey="name" sort={sort} onToggle={toggleSort} />
+              <SortableHeader label="Company" sortKey="company" sort={sort} onToggle={toggleSort} />
+              <SortableHeader label="Last touch" sortKey="touch" sort={sort} onToggle={toggleSort} />
+              <SortableHeader label="Connected" sortKey="connected" sort={sort} onToggle={toggleSort} />
+              <SortableHeader label="Staff" sortKey="staff" sort={sort} onToggle={toggleSort} />
+              <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">Signals</span>
+              <SortableHeader label="Status" sortKey="status" sort={sort} onToggle={toggleSort} />
             </div>
             {groups ? groups.map(([company, rows]) => (
               <div key={company}>
@@ -488,6 +603,7 @@ export function JobsHome() {
       </div>
 
       <TasksZone />
+      <IntroRequestsZone />
       <CandidatesZone key={me?.email ?? "anon"} defaultOwner={me?.email} />
       <MyNetworkZone />
       <InterviewsZone />
