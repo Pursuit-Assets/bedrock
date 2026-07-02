@@ -213,6 +213,7 @@ export interface JobContactWithDeal extends JobContact {
   connected_staff_names?: string[];
   recent_activity_count?: number;
   last_activity_at?: string | null;
+  first_activity_at?: string | null;
   responded?: boolean;
   activity_actors?: string[];
   open_tasks?: number;
@@ -372,6 +373,7 @@ export interface JobsAccount {
   open_tasks?: number;
   recent_activity_count?: number;
   last_activity_at?: string | null;
+  first_activity_at?: string | null;
   responded?: boolean;
   /** Jobs-team members (emails) who have touched this account — for the team filter. */
   activity_actors?: string[];

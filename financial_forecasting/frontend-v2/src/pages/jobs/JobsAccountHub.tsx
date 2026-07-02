@@ -82,7 +82,7 @@ function extract(a: JobsAccount, key: ColKey): string | number {
 }
 
 // ── filters + grouping ───────────────────────────────────────────────────────
-type Field = "account" | "status" | "owner" | "has_opps" | "has_contacts" | "last_activity";
+type Field = "account" | "status" | "owner" | "has_opps" | "has_contacts" | "last_activity" | "first_contact_date" | "last_contact_date";
 const FILTERABLE: Record<Field, FieldMeta<JobsAccount>> = {
   account:      { label: "Account",  type: "text",   getValue: (a) => a.account },
   status:       { label: "Status",   type: "select", getValue: (a) => a.account_status },
@@ -91,6 +91,9 @@ const FILTERABLE: Record<Field, FieldMeta<JobsAccount>> = {
   has_contacts: { label: "Has contacts",      type: "select", getValue: (a) => (a.prospect_count > 0 ? "yes" : "no") },
   // Top-of-funnel triage: filter by activity recency (Last 7/30/90 days dropdown).
   last_activity: { label: "Last activity", type: "recency", getValue: (a) => a.last_activity_at ?? "" },
+  // Exact-date windows on the touch history (before/after a calendar date).
+  first_contact_date: { label: "Initial outreach date", type: "date", getValue: (a) => a.first_activity_at ?? "" },
+  last_contact_date: { label: "Last contact date", type: "date", getValue: (a) => a.last_activity_at ?? "" },
 };
 const GROUP_OPTIONS = [
   { value: "", label: "No grouping" },
