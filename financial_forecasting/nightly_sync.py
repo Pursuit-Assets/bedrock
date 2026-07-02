@@ -7,6 +7,8 @@ new counterparties). Exits 0 on success, non-zero on failure.
 Env required: DATABASE_URL, GOOGLE_SERVICE_ACCOUNT_JSON, ANTHROPIC_API_KEY.
 Optional: SYNC_SINCE_DAYS (force a historical backfill window instead of the
 incremental watermark — used for the first multi-year capture, then unset).
+Optional: SYNC_STAFF_EMAILS (comma-separated — restrict the run to these staff,
+for chunked backfills that would blow the task timeout run all-at-once).
 """
 import asyncio
 import logging
@@ -27,10 +29,13 @@ async def main() -> int:
 
     since_days = os.environ.get("SYNC_SINCE_DAYS")
     since_days = int(since_days) if since_days and since_days.isdigit() else None
+    staff_emails = [e.strip().lower() for e in os.environ.get("SYNC_STAFF_EMAILS", "").split(",") if e.strip()] or None
+    if staff_emails:
+        logger.info("restricted to %d staff: %s", len(staff_emails), staff_emails)
 
     pool = await asyncpg.create_pool(db_url, min_size=1, max_size=6, command_timeout=600)
     try:
-        summary = await run_interaction_sync(pool, since_days=since_days)
+        summary = await run_interaction_sync(pool, since_days=since_days, staff_emails=staff_emails)
         logger.info("nightly sync complete: %s", summary)
     finally:
         await pool.close()
