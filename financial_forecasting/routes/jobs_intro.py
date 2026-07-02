@@ -24,8 +24,13 @@ from pydantic import BaseModel
 
 from auth import require_auth
 from db import get_db
+from services.notifications import (
+    enqueue_notification, TYPE_INTRO_REQUEST, TYPE_INTRO_RESPONSE,
+)
 
 logger = logging.getLogger(__name__)
+
+ASK_LABELS = {"hiring_intro": "Hiring intro", "industry_advice": "Industry advice", "job_referral": "Job referral"}
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 
 STAFF_STATUSES = {"pending", "accepted", "declined", "completed", "withdrawn"}
@@ -183,6 +188,31 @@ async def create_intro_request(
         """INSERT INTO bedrock.intro_request (contact_id, connector_staff_id, requested_by_email, specific_ask, context)
            VALUES ($1,$2,$3,$4,$5) RETURNING id""",
         body.contact_id, body.connector_staff_id, email, body.specific_ask, body.context)
+    # Tell the connector (in-app bell + Slack DM) — otherwise the ask just
+    # sits on a page they may never open.
+    try:
+        target = await conn.fetchrow(
+            "SELECT email, display_name FROM bedrock.staff_user_id_map WHERE staff_user_id=$1",
+            body.connector_staff_id)
+        contact = await conn.fetchrow(
+            "SELECT full_name, current_company FROM public.contacts WHERE contact_id=$1", body.contact_id)
+        if target:
+            await enqueue_notification(
+                conn,
+                recipient_email=target["email"],
+                type=TYPE_INTRO_REQUEST,
+                actor_email=email,
+                payload={
+                    "title": "Intro request",
+                    "subtitle": f"{contact['full_name'] if contact else 'a contact'}",
+                    "contact_name": contact["full_name"] if contact else None,
+                    "contact_company": contact["current_company"] if contact else None,
+                    "ask": ASK_LABELS.get(body.specific_ask or "", body.specific_ask),
+                    "context": (body.context or "")[:280] or None,
+                    "target_url": "/jobs",
+                })
+    except Exception:  # noqa: BLE001 — notification failure never blocks the request
+        logger.warning("intro-request notification failed", exc_info=True)
     return {"success": True, "data": {"id": str(r["id"]), "status": "pending"}}
 
 
@@ -248,4 +278,25 @@ async def respond_intro_request(
                updated_at=now()
            WHERE id=$1""",
         rid_uuid, body.status, body.response_note)
+    # Tell the requester how their ask landed (skip self-withdrawals).
+    if is_connector and body.status in ("accepted", "declined", "completed"):
+        try:
+            contact = await conn.fetchrow(
+                """SELECT c.full_name FROM bedrock.intro_request ir
+                   JOIN public.contacts c ON c.contact_id = ir.contact_id WHERE ir.id=$1""", rid_uuid)
+            await enqueue_notification(
+                conn,
+                recipient_email=row["requested_by_email"],
+                type=TYPE_INTRO_RESPONSE,
+                actor_email=email,
+                payload={
+                    "title": "Intro request update",
+                    "subtitle": contact["full_name"] if contact else None,
+                    "contact_name": contact["full_name"] if contact else None,
+                    "status": body.status,
+                    "response_note": (body.response_note or "")[:280] or None,
+                    "target_url": "/jobs",
+                })
+        except Exception:  # noqa: BLE001
+            logger.warning("intro-response notification failed", exc_info=True)
     return {"success": True, "data": {"id": request_id, "status": body.status, "source": "staff"}}
