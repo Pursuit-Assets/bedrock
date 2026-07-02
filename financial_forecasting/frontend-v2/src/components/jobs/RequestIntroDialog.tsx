@@ -8,6 +8,7 @@ import { useState } from "react";
 import { X } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { useCurrentUser } from "@/services/auth";
 import { useContactConnectors, useCreateIntroRequest } from "@/services/jobs";
 
 const ASK_OPTIONS = [
@@ -25,7 +26,10 @@ export function RequestIntroDialog({
   contactName: string;
   onClose: () => void;
 }) {
-  const { data: connectors = [], isLoading } = useContactConnectors(contactId);
+  const { data: me } = useCurrentUser();
+  const { data: allConnectors = [], isLoading } = useContactConnectors(contactId);
+  // You can't ask yourself for an intro — offer only OTHER connected staff.
+  const connectors = allConnectors.filter((s) => s.email?.toLowerCase() !== me?.email?.toLowerCase());
   const create = useCreateIntroRequest();
   const [staffId, setStaffId] = useState<number | null>(null);
   const [ask, setAsk] = useState("hiring_intro");
@@ -59,7 +63,11 @@ export function RequestIntroDialog({
             {isLoading ? (
               <div className="text-[12px] text-ink-4">Loading connections…</div>
             ) : connectors.length === 0 ? (
-              <div className="text-[12px] text-ink-4">No mapped staff are connected to this contact yet.</div>
+              <div className="text-[12px] text-ink-4">
+                {allConnectors.length > 0
+                  ? "You're the only staff member connected to this contact — no one to request an intro from."
+                  : "No mapped staff are connected to this contact yet."}
+              </div>
             ) : (
               <div className="flex flex-col gap-1">
                 {connectors.map((s) => (

@@ -1121,7 +1121,9 @@ export function useMyNetwork(q?: string) {
   return useQuery<MyNetwork>({
     queryKey: ["jobs", "my-network", q ?? ""],
     queryFn: async () => {
-      const { data } = await api.get<ApiResponse<MyNetwork>>("/api/jobs/my-network", { params: q ? { q } : undefined });
+      // limit=2000 (server max) — the default 500 silently hid connections for
+      // anyone with a bigger network ("total 647, loaded 500").
+      const { data } = await api.get<ApiResponse<MyNetwork>>("/api/jobs/my-network", { params: { limit: 2000, ...(q ? { q } : {}) } });
       return data.data;
     },
     staleTime: 60_000,
