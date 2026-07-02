@@ -118,7 +118,7 @@ const ACTIVITY_TYPE_OPTIONS = [
 
 type ActivityType = (typeof ACTIVITY_TYPE_OPTIONS)[number]["value"];
 
-function LogActivityForm({
+export function LogActivityForm({
   contactId,
   onClose,
 }: {
