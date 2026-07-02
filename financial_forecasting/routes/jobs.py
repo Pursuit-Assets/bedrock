@@ -3541,11 +3541,22 @@ async def update_contact(
 
     sets, params = [], []
     i = 1
+    # Key off model_fields_set (like update_opportunity) so an explicit null
+    # CLEARS a field — `is not None` made clearing email/title/linkedin a
+    # silent no-op.
+    fields_set = body.model_fields_set
     for field in ("full_name", "email", "current_title", "current_company",
                   "contact_stage", "linkedin_url"):
+        if field not in fields_set:
+            continue
         val = getattr(body, field, None)
-        if val is not None:
-            sets.append(f"{field} = ${i}"); params.append(val); i += 1
+        # UI clears send "" — store NULL (email '' would collide with the
+        # unique constraint). Never blank a name: skip empty full_name.
+        if isinstance(val, str) and not val.strip():
+            val = None
+        if field == "full_name" and val is None:
+            continue
+        sets.append(f"{field} = ${i}"); params.append(val); i += 1
 
     if not sets:
         row = await conn.fetchrow("SELECT * FROM public.contacts WHERE contact_id=$1", contact_id)
