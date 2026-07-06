@@ -57,6 +57,9 @@ export interface Role {
   payment_schedule: string | null;
   negotiation_notes: string | null;
   jd_url: string | null;
+  // Canonical derived status (server-computed), so every screen agrees.
+  placement_status: "ft_placed" | "trial_active" | "committed_open" | "open_market" | "cancelled";
+  placement_status_label: string;
 }
 
 interface RoleFields {

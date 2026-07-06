@@ -30,6 +30,16 @@ const ROLE_STATUS_LABELS: Record<RoleStatus, string> = {
   cancelled: "Cancelled",
 };
 
+// Derived placement status (server-computed) — richer than the raw open/filled
+// so a trial-active or committed-open seat reads correctly on the row.
+const PLACEMENT_STATUS_STYLES: Record<string, string> = {
+  ft_placed:      "bg-green-100 text-green-800",
+  trial_active:   "bg-indigo-100 text-indigo-800",
+  committed_open: "bg-amber-50 text-amber-700",
+  open_market:    "bg-sky-50 text-sky-700",
+  cancelled:      "bg-stone-100 text-stone-500",
+};
+
 // Employment-type options for the role dropdown (mirrors the placements modal).
 const EMPLOYMENT_TYPE_OPTIONS: { value: string; label: string }[] = [
   { value: "full_time",  label: "Full-Time" },
@@ -502,10 +512,10 @@ function RoleRow({ role, oppId, roles }: { role: Role; oppId: string; roles: Rol
           <span
             className={cn(
               "inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium leading-none",
-              ROLE_STATUS_STYLES[role.status],
+              PLACEMENT_STATUS_STYLES[role.placement_status] ?? ROLE_STATUS_STYLES[role.status],
             )}
           >
-            {ROLE_STATUS_LABELS[role.status]}
+            {role.placement_status_label ?? ROLE_STATUS_LABELS[role.status]}
           </span>
           {role.status === "open" && (
             <button

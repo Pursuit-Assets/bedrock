@@ -558,6 +558,7 @@ export interface PlacementsSummary {
   influenced_ft: number;
   influenced_any: number;
   committed_ft_roles: number;
+  committed_trial_active: number;
   ft_roles_secured: number;
   avg_salary_ft_placed: number | null;
   avg_salary_ft_secured: number | null;

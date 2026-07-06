@@ -86,7 +86,11 @@ export function JobsLeadership() {
             icon={<Trophy size={14} />}
             isLoading={pLoading}
             celebrate={!pLoading && (p?.ft_roles_secured ?? 0) > 0}
-            subLead={pLoading ? undefined : `${p?.ft_builders ?? 0} placed · ${p?.committed_ft_roles ?? 0} committed`}
+            subLead={pLoading ? undefined : [
+              `${p?.ft_builders ?? 0} placed`,
+              `${p?.committed_ft_roles ?? 0} committed`,
+              ...((p?.committed_trial_active ?? 0) > 0 ? [`${p?.committed_trial_active} in trial`] : []),
+            ].join(" · ")}
             sub={pLoading ? undefined : `${pctOfPool(p?.ft_roles_secured ?? 0)}% of ${poolTotal} job-ready`}
             progressPct={pctOfPool(p?.ft_roles_secured ?? 0)}
             progressLabel={`${pctOfPool(p?.ft_roles_secured ?? 0)}%`}
