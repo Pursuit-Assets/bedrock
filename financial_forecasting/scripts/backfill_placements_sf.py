@@ -25,12 +25,26 @@ TOKENS = os.environ.get("SF_TOKENS", "/private/tmp/claude-501/-Users-jacqueliner
 
 
 class RestSF:
-    """Minimal async-compatible shim matching the app's sf interface."""
+    """Minimal async-compatible shim matching the app's sf interface.
+
+    Auth: a tokens file when present (local OAuth), else SalesforceLogin
+    with env creds — the latter only works from allowlisted IPs (Cloud Run),
+    which is how the cloud backfill execution authenticates."""
 
     def __init__(self, tokens_path: str):
-        t = json.load(open(tokens_path))
-        self.inst = t["instance_url"]
-        self.h = {"Authorization": f"Bearer {t['access_token']}", "Content-Type": "application/json"}
+        if os.path.exists(tokens_path):
+            t = json.load(open(tokens_path))
+            inst, sid = t["instance_url"], t["access_token"]
+        else:
+            from simple_salesforce import SalesforceLogin
+            sid, host = SalesforceLogin(
+                username=os.environ["SALESFORCE_USERNAME"],
+                password=os.environ["SALESFORCE_PASSWORD"],
+                security_token=os.environ.get("SALESFORCE_SECURITY_TOKEN", ""),
+                domain=os.environ.get("SALESFORCE_DOMAIN", "login"))
+            inst = f"https://{host}"
+        self.inst = inst
+        self.h = {"Authorization": f"Bearer {sid}", "Content-Type": "application/json"}
 
     async def query(self, soql: str) -> dict:
         r = requests.get(f"{self.inst}/services/data/v59.0/query", params={"q": soql}, headers=self.h, timeout=30)
