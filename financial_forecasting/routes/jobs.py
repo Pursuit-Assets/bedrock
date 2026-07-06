@@ -597,12 +597,22 @@ async def list_staff(
     user=Depends(require_auth),
     conn=Depends(get_db),
 ):
-    """Active Pursuit staff (for owner pickers). Deduped by email."""
+    """Active Pursuit staff (for owner pickers). Deduped by PERSON — several
+    staff have two active org_users rows (a short alias like greg@ and a
+    full-name greg.hogue@), which showed the same name twice. Keep one row per
+    person, valued by the email that actually appears in sent activity (so the
+    owner filter, which matches email_from, still works), else the shorter."""
     rows = await conn.fetch("""
-        SELECT DISTINCT ON (lower(email)) email, display_name
-        FROM public.org_users
-        WHERE is_active = true AND email IS NOT NULL
-        ORDER BY lower(email), display_name
+        WITH staff AS (
+          SELECT o.email, o.display_name,
+                 (SELECT count(*) FROM bedrock.activity a
+                  WHERE a.email_from ILIKE '%'||o.email||'%') AS sent
+          FROM public.org_users o
+          WHERE o.is_active = true AND o.email IS NOT NULL
+        )
+        SELECT DISTINCT ON (lower(display_name)) email, display_name
+        FROM staff
+        ORDER BY lower(display_name), sent DESC, length(email)
     """)
     out = [{"email": r["email"], "name": r["display_name"] or r["email"]} for r in rows]
     if q:
