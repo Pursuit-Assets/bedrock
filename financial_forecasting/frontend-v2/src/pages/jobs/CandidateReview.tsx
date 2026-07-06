@@ -11,7 +11,7 @@ import { Sparkles, Building2, Mail, UserPlus, X, ChevronDown, ChevronRight, Load
 import { Drawer } from "@/components/ui/Drawer";
 import { Tag } from "@/components/ui/Tag";
 import {
-  useCandidates, useCandidateDetail, useEnrichCandidate, useLinkCandidate,
+  useCandidates, useCandidateDetail, useContactSearch, useEnrichCandidate, useLinkCandidate,
   useCandidateSfMatch, useLinkCandidateSf,
   usePromoteCandidate, useDismissCandidate, useJobsAccountNames, useCandidateOwners,
   type JobCandidate,
@@ -61,6 +61,8 @@ function CandidateDrawer({ contactId, onClose }: { contactId: number | null; onC
   const [name, setName] = useState("");
   const [title, setTitle] = useState("");
   const [company, setCompany] = useState("");
+  const [linkQ, setLinkQ] = useState("");
+  const { data: linkResults } = useContactSearch(linkQ.trim().length >= 2 ? linkQ.trim() : "");
 
   // Seed from persisted enrichment (or the contact) the moment detail loads.
   useEffect(() => {
@@ -152,6 +154,32 @@ function CandidateDrawer({ contactId, onClose }: { contactId: number | null; onC
               </div>
             </div>
           )}
+
+          {/* Manual link — for when suggestions miss (e.g. candidate name is
+              just an email address). Search any existing contact and link. */}
+          <div className="rounded-lg border border-border-strong p-3">
+            <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-ink-4">Link to an existing contact</div>
+            <input value={linkQ} onChange={(ev) => setLinkQ(ev.target.value)} placeholder="Search contacts by name, company, email…"
+              className="h-8 w-full rounded border border-border-strong bg-surface px-2 text-[12.5px] text-ink outline-none placeholder:text-ink-4 focus:border-accent" />
+            {linkQ.trim().length >= 2 && (
+              <div className="mt-1.5 flex max-h-44 flex-col gap-1 overflow-auto">
+                {(linkResults ?? []).filter((r) => r.contact_id !== contactId).slice(0, 8).map((r) => (
+                  <div key={r.contact_id} className="flex items-center justify-between gap-2 rounded px-1.5 py-1 hover:bg-surface-2/60">
+                    <div className="min-w-0 truncate text-[12.5px] text-ink">
+                      {r.full_name || r.email}
+                      {r.current_company ? <span className="text-ink-4"> · {r.current_company}</span> : ""}
+                    </div>
+                    <button type="button" disabled={busy}
+                      onClick={() => contactId && link.mutate({ id: contactId, target: r.contact_id }, { onSuccess: onClose })}
+                      className="inline-flex h-6 shrink-0 items-center gap-1 rounded-md border border-accent px-2 text-[11.5px] font-medium text-accent hover:bg-accent-soft disabled:opacity-40">
+                      <Link2 size={11} /> Link
+                    </button>
+                  </div>
+                ))}
+                {(linkResults ?? []).length === 0 && <div className="px-1.5 py-1 text-[12px] text-ink-4">No matches.</div>}
+              </div>
+            )}
+          </div>
 
           {/* Editable fields */}
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">

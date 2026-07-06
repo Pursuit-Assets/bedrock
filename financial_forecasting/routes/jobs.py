@@ -3846,12 +3846,29 @@ async def candidate_detail(
 
     # Resolve duplicate ids to contacts, deduped by (name, company).
     possible_duplicates = []
+    seen = set()
     if dup_ids:
         drows = await conn.fetch(
             "SELECT contact_id, full_name, current_company, current_title FROM public.contacts WHERE contact_id = ANY($1::int[])",
             dup_ids)
-        seen = set()
         for d in drows:
+            k = (d["full_name"], d["current_company"])
+            if k in seen:
+                continue
+            seen.add(k)
+            possible_duplicates.append({"contact_id": d["contact_id"], "full_name": d["full_name"],
+                                        "current_company": d["current_company"], "current_title": d["current_title"]})
+    # Live exact-name probe as well — AI enrichment can be missing or stale
+    # (Alan Joos / Jumi Barnes sat unlinked next to obvious matches). Email-ish
+    # display names can't match here; the drawer's manual link search covers those.
+    nm = (c["full_name"] or "").strip()
+    if nm and "@" not in nm:
+        nrows = await conn.fetch(
+            """SELECT contact_id, full_name, current_company, current_title FROM public.contacts
+               WHERE lower(full_name) = lower($1) AND contact_id <> $2
+                 AND coalesce(contact_stage,'') NOT IN ('merged', 'candidate', 'dismissed')
+               ORDER BY (current_company IS NOT NULL) DESC LIMIT 5""", nm, contact_id)
+        for d in nrows:
             k = (d["full_name"], d["current_company"])
             if k in seen:
                 continue
