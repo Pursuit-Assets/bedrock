@@ -57,7 +57,7 @@ def _first_touch_email_cte() -> str:
       SELECT lower(e) AS counterpart, a.activity_date
       FROM bedrock.activity a,
            unnest(coalesce(a.email_to,'{{}}') || coalesce(a.email_cc,'{{}}')) e
-      WHERE a.source = 'gmail-sync' AND a.deleted_at IS NULL AND ({sender})
+      WHERE a.source = 'gmail-sync' AND a.deleted_at IS NULL AND ({sender}) AND {_not_autoreply('a')}
     ),
     ext AS (
       SELECT counterpart, min(activity_date) AS first_touch
@@ -1737,6 +1737,24 @@ def _engaged_clause(alias: str = "c") -> str:
     )
 
 
+# Subjects/senders that are automated replies or bounces, never real outreach —
+# excluded from outreach counts (OOO auto-replies were inflating the numbers).
+_AUTOREPLY_SUBJECTS = (
+    "out of office", "automatic reply", "auto-reply", "autoreply", "auto reply",
+    "ooo:", "ooo -", "away from", "on vacation", "on leave", "maternity leave",
+    "thank you for your message", "thank you for your email", "thank you for contacting",
+    "undeliverable", "delivery status notification", "mail delivery", "returned mail",
+)
+_AUTOREPLY_SENDERS = ("mailer-daemon", "postmaster", "no-reply", "noreply", "donotreply", "do-not-reply")
+
+
+def _not_autoreply(alias: str) -> str:
+    """SQL predicate: this activity is NOT an automated reply / bounce."""
+    subj = " AND ".join(f"coalesce({alias}.subject,'') NOT ILIKE '%{p}%'" for p in _AUTOREPLY_SUBJECTS)
+    frm = " AND ".join(f"coalesce({alias}.email_from,'') NOT ILIKE '%{p}%'" for p in _AUTOREPLY_SENDERS)
+    return f"({subj} AND {frm})"
+
+
 def _actor_sql(alias: str, owner: Optional[str]) -> str:
     """Actor filter for the outreach trends/detail. With `owner` (a single,
     validated staff email) it scopes to that person; otherwise the whole jobs
@@ -1779,7 +1797,7 @@ async def activity_trends(
           SELECT a.id, a.activity_date, a.participant_public_contact_id AS cid,
                  a.email_to, a.email_cc, a.meeting_attendees, {chan_sql} AS channel
           FROM bedrock.activity a
-          WHERE a.deleted_at IS NULL AND {actor}
+          WHERE a.deleted_at IS NULL AND {actor} AND {_not_autoreply('a')}
         ),
         touch_contact AS (
           SELECT id, activity_date, channel, cid AS contact_id FROM team_act WHERE cid IS NOT NULL
@@ -1887,7 +1905,7 @@ async def activity_trends_detail(
           SELECT a.id, a.activity_date, a.subject, a.participant_public_contact_id AS cid,
                  a.email_to, a.email_cc, a.meeting_attendees, {chan_sql} AS channel
           FROM bedrock.activity a
-          WHERE a.deleted_at IS NULL AND {actor}
+          WHERE a.deleted_at IS NULL AND {actor} AND {_not_autoreply('a')}
             AND date_trunc('{granularity}', a.activity_date) = date_trunc('{granularity}', $1::timestamptz)
         ),
         touch_contact AS (
