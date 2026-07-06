@@ -944,13 +944,22 @@ async def update_role(
         f"UPDATE bedrock.jobs_role SET {', '.join(sets)}, updated_at=now() WHERE id=${i} RETURNING *",
         *params,
     )
-    # Keep a FILLED role's salary in sync with its placement (the org-wide source
-    # of truth that the Avg-Salary metric reads), so the two never diverge.
-    if body.approx_salary is not None and row["employment_record_id"]:
-        await conn.execute(
-            "UPDATE public.employment_records SET payment_amount=$1, updated_at=now() WHERE id=$2",
-            body.approx_salary, row["employment_record_id"],
-        )
+    # Keep a FILLED role's placement record in sync with the role — salary AND
+    # title. Otherwise editing the role title after hiring leaves the placement
+    # (which the Builders view + FT-Roles-Secured drill read) on the old title
+    # (Acture: role "Junior Network Systems Engineer" vs placement stuck on
+    # "IT Helpdesk Technician").
+    if row["employment_record_id"]:
+        er_sets, er_params = [], []
+        if body.approx_salary is not None:
+            er_sets.append(f"payment_amount=${len(er_params)+1}"); er_params.append(body.approx_salary)
+        if body.title is not None:
+            er_sets.append(f"role_title=${len(er_params)+1}"); er_params.append(body.title)
+        if er_sets:
+            er_params.append(row["employment_record_id"])
+            await conn.execute(
+                f"UPDATE public.employment_records SET {', '.join(er_sets)}, updated_at=now() "
+                f"WHERE id=${len(er_params)}", *er_params)
     return {"success": True, "data": _role_dict(row)}
 
 
