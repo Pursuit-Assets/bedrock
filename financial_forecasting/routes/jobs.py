@@ -80,7 +80,7 @@ def _first_touch_meeting_cte() -> str:
       SELECT lower(att->>'email') AS counterpart, a.activity_date
       FROM bedrock.activity a, jsonb_array_elements(a.meeting_attendees) att
       WHERE a.source = 'calendar-sync' AND a.deleted_at IS NULL
-        AND lower(a.logged_by) IN ({team})
+        AND lower(a.logged_by) IN ({team}) AND {_jobs_relevant('a')}
     ),
     ext AS (
       SELECT counterpart, min(activity_date) AS first_touch
