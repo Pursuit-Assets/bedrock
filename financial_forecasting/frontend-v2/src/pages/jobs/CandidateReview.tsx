@@ -14,7 +14,7 @@ import { Tag } from "@/components/ui/Tag";
 import {
   useCandidates, useCandidateDetail, useContactSearch, useEnrichCandidate, useLinkCandidate,
   useCandidateSfMatch, useLinkCandidateSf,
-  usePromoteCandidate, useDismissCandidate, useBulkDismissCandidates, useBulkRestoreCandidates, useSetCandidateAccount, useJobsAccountNames, useCandidateOwners,
+  usePromoteCandidate, useDismissCandidate, useBulkDismissCandidates, useBulkRestoreCandidates, useSetCandidateAccount, useMergeContacts, useJobsAccountNames, useCandidateOwners,
   type JobCandidate,
 } from "@/services/jobs";
 
@@ -64,6 +64,8 @@ function CandidateDrawer({ contactId, onClose }: { contactId: number | null; onC
   const [company, setCompany] = useState("");
   const [linkQ, setLinkQ] = useState("");
   const { data: linkResults } = useContactSearch(linkQ.trim().length >= 2 ? linkQ.trim() : "");
+  const merge = useMergeContacts();
+  const [canonicalId, setCanonicalId] = useState<number | null>(null);
 
   // Seed from persisted enrichment (or the contact) the moment detail loads.
   useEffect(() => {
@@ -72,6 +74,7 @@ function CandidateDrawer({ contactId, onClose }: { contactId: number | null; onC
     setName(data.contact.full_name || e?.full_name || "");
     setTitle(data.contact.current_title || e?.title || "");
     setCompany(data.contact.current_company || e?.company || data.suggested_account?.account_name || "");
+    setCanonicalId((data?.possible_duplicates ?? [])[0]?.contact_id ?? null);
   }, [data?.contact.contact_id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const accountNames = useMemo(() => accounts.map((a) => a.account).sort(), [accounts]);
@@ -79,7 +82,7 @@ function CandidateDrawer({ contactId, onClose }: { contactId: number | null; onC
   const sug = data?.suggested_account;
   const dups = data?.possible_duplicates ?? [];
   const sf = sfMatch.data?.match;
-  const busy = promote.isPending || dismiss.isPending || link.isPending || linkSf.isPending;
+  const busy = promote.isPending || dismiss.isPending || link.isPending || linkSf.isPending || merge.isPending;
 
   return (
     <Drawer open={contactId != null} onClose={onClose}
@@ -134,17 +137,26 @@ function CandidateDrawer({ contactId, onClose }: { contactId: number | null; onC
             </div>
           )}
 
-          {/* One-click duplicate links */}
+          {/* Likely existing contacts — link the candidate into one, or when
+              there are several (they're dupes of each other) merge them all. */}
           {dups.length > 0 && (
             <div className="rounded-lg border border-amber/40 bg-amber-soft/40 p-3">
-              <div className="mb-2 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-amber"><Link2 size={12} /> Likely existing contact</div>
+              <div className="mb-2 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-amber">
+                <Link2 size={12} /> {dups.length > 1 ? `${dups.length} existing contacts with this name` : "Likely existing contact"}
+              </div>
               <div className="flex flex-col gap-1.5">
                 {dups.map((d) => (
                   <div key={d.contact_id} className="flex items-center justify-between gap-2">
-                    <div className="min-w-0 text-[12.5px] text-ink">
-                      {d.full_name}{d.current_company ? <span className="text-ink-4"> · {d.current_company}</span> : ""}
-                      {d.current_title ? <span className="text-ink-4"> · {d.current_title}</span> : ""}
-                    </div>
+                    <label className="flex min-w-0 items-center gap-1.5 text-[12.5px] text-ink">
+                      {dups.length > 1 && (
+                        <input type="radio" name="canonical" checked={canonicalId === d.contact_id}
+                          onChange={() => setCanonicalId(d.contact_id)} className="accent-amber" title="Keep this one" />
+                      )}
+                      <span className="truncate">
+                        {d.full_name}{d.current_company ? <span className="text-ink-4"> · {d.current_company}</span> : ""}
+                        {d.current_title ? <span className="text-ink-4"> · {d.current_title}</span> : ""}
+                      </span>
+                    </label>
                     <button type="button" disabled={busy}
                       onClick={() => contactId && link.mutate({ id: contactId, target: d.contact_id }, { onSuccess: onClose })}
                       className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md bg-amber px-2.5 text-[12px] font-medium text-white disabled:opacity-40">
@@ -153,6 +165,17 @@ function CandidateDrawer({ contactId, onClose }: { contactId: number | null; onC
                   </div>
                 ))}
               </div>
+              {dups.length > 1 && (
+                <button type="button" disabled={busy}
+                  onClick={() => {
+                    const canon = canonicalId ?? dups[0].contact_id;
+                    const losers = [contactId!, ...dups.map((d) => d.contact_id).filter((id) => id !== canon)];
+                    merge.mutate({ canonicalId: canon, loserIds: losers }, { onSuccess: onClose });
+                  }}
+                  className="mt-2 inline-flex h-7 items-center gap-1 rounded-md border border-amber px-2.5 text-[12px] font-medium text-amber hover:bg-amber-soft disabled:opacity-40">
+                  Merge all into the selected contact
+                </button>
+              )}
             </div>
           )}
 
@@ -294,10 +317,17 @@ function CandidateRow({ c, onOpen, selected, onToggleSelect, onLink, onApprove, 
       </button>
       {/* One-click actions (only in the active review view) */}
       {!dismissedView && c.top_dup_id ? (
-        <button type="button" disabled={busy} title="Link to the matching existing contact"
+        <button type="button" disabled={busy}
+          title={`Link to existing contact: ${display}${c.top_dup_company ? ` · ${c.top_dup_company}` : ""}${c.top_dup_title ? ` · ${c.top_dup_title}` : ""}`}
           onClick={(e) => { e.stopPropagation(); onLink(c.top_dup_id!); }}
           className="inline-flex h-6 shrink-0 items-center gap-1 rounded-md bg-amber px-2 text-[11.5px] font-medium text-white disabled:opacity-40">
-          <Link2 size={11} /> Link
+          <Link2 size={11} /> Link → {c.top_dup_company || c.top_dup_title || "existing"}
+        </button>
+      ) : !dismissedView && (c.dup_match_count ?? 0) > 1 ? (
+        <button type="button" onClick={(e) => { e.stopPropagation(); onOpen(); }}
+          title={`${c.dup_match_count} existing contacts named ${display} — open to pick / merge`}
+          className="inline-flex h-6 shrink-0 items-center gap-1 rounded-md border border-amber px-2 text-[11.5px] font-medium text-amber hover:bg-amber-soft">
+          <Link2 size={11} /> {c.dup_match_count} matches
         </button>
       ) : c.account_linked ? (
         <span title={`Account linked${company ? `: ${company}` : ""}`}
