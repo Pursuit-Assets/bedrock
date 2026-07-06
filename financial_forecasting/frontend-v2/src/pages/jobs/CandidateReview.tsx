@@ -14,7 +14,7 @@ import { Tag } from "@/components/ui/Tag";
 import {
   useCandidates, useCandidateDetail, useContactSearch, useEnrichCandidate, useLinkCandidate,
   useCandidateSfMatch, useLinkCandidateSf,
-  usePromoteCandidate, useDismissCandidate, useBulkDismissCandidates, useBulkRestoreCandidates, useJobsAccountNames, useCandidateOwners,
+  usePromoteCandidate, useDismissCandidate, useBulkDismissCandidates, useBulkRestoreCandidates, useSetCandidateAccount, useJobsAccountNames, useCandidateOwners,
   type JobCandidate,
 } from "@/services/jobs";
 
@@ -268,8 +268,10 @@ function Section({ title, count, action, children }: { title: string; count?: nu
   );
 }
 
-function CandidateRow({ c, onOpen, selected, onToggleSelect }: {
+function CandidateRow({ c, onOpen, selected, onToggleSelect, onLink, onApprove, busy, dismissedView }: {
   c: JobCandidate; onOpen: () => void; selected: boolean; onToggleSelect: () => void;
+  onLink: (target: number) => void; onApprove: (company: string) => void;
+  busy: boolean; dismissedView: boolean;
 }) {
   const display = c.ai_name || c.full_name || c.email;
   const company = c.ai_company || c.suggested_account;
@@ -289,10 +291,22 @@ function CandidateRow({ c, onOpen, selected, onToggleSelect }: {
             {c.email} · {c.email_count} email{c.email_count === 1 ? "" : "s"}{c.last_subject ? ` · ${c.last_subject}` : ""}
           </div>
         </div>
-        {(c.dup_count ?? 0) > 0 && <Tag variant="amber">likely match</Tag>}
-        {company && <Tag variant="accent">{company}</Tag>}
-        <ChevronRight size={14} className="shrink-0 text-ink-4" />
       </button>
+      {/* One-click actions (only in the active review view) */}
+      {!dismissedView && c.top_dup_id ? (
+        <button type="button" disabled={busy} title="Link to the matching existing contact"
+          onClick={(e) => { e.stopPropagation(); onLink(c.top_dup_id!); }}
+          className="inline-flex h-6 shrink-0 items-center gap-1 rounded-md bg-amber px-2 text-[11.5px] font-medium text-white disabled:opacity-40">
+          <Link2 size={11} /> Link
+        </button>
+      ) : !dismissedView && company ? (
+        <button type="button" disabled={busy} title={`Link account: ${company} (stays in review to edit + promote)`}
+          onClick={(e) => { e.stopPropagation(); onApprove(company); }}
+          className="inline-flex h-6 shrink-0 items-center gap-1 rounded-md border border-accent px-2 text-[11.5px] font-medium text-accent hover:bg-accent-soft disabled:opacity-40">
+          <Building2 size={11} /> {company.length > 16 ? company.slice(0, 15) + "…" : company}
+        </button>
+      ) : null}
+      <ChevronRight size={14} className="shrink-0 text-ink-4" />
     </div>
   );
 }
@@ -304,6 +318,8 @@ export function CandidatesZone({ defaultOwner }: { defaultOwner?: string } = {})
   const { data: owners = [] } = useCandidateOwners();
   const bulkDismiss = useBulkDismissCandidates();
   const bulkRestore = useBulkRestoreCandidates();
+  const link = useLinkCandidate();
+  const setAccount = useSetCandidateAccount();
   const [openId, setOpenId] = useState<number | null>(null);
   const [showAll, setShowAll] = useState(false);
   const [q, setQ] = useState("");
@@ -411,7 +427,11 @@ export function CandidatesZone({ defaultOwner }: { defaultOwner?: string } = {})
             )}
             {shown.map((c) => (
               <CandidateRow key={c.contact_id} c={c} onOpen={() => setOpenId(c.contact_id)}
-                selected={selected.has(c.contact_id)} onToggleSelect={() => toggle(c.contact_id)} />
+                selected={selected.has(c.contact_id)} onToggleSelect={() => toggle(c.contact_id)}
+                dismissedView={dismissedView}
+                busy={link.isPending || setAccount.isPending}
+                onLink={(target) => link.mutate({ id: c.contact_id, target })}
+                onApprove={(company) => setAccount.mutate({ id: c.contact_id, company })} />
             ))}
             {filtered.length > shown.length && (
               <button type="button" onClick={() => setShowAll(true)}

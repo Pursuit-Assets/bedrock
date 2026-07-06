@@ -1043,6 +1043,7 @@ export interface JobCandidate {
   ai_confidence?: "high" | "medium" | "low" | null;
   is_employer_contact?: boolean | null;
   dup_count?: number;
+  top_dup_id?: number | null;
   enriched?: boolean;
   email_count: number;
   owners?: string[];
@@ -1350,6 +1351,22 @@ export function useBulkDismissCandidates() {
       toast.success(`Dismissed ${d?.dismissed ?? 0}`);
     },
     onError: () => toast.error("Bulk dismiss failed"),
+  });
+}
+
+export function useSetCandidateAccount() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, company }: { id: number; company: string }) => {
+      const { data } = await api.post<ApiResponse<{ matched: boolean }>>(
+        `/api/jobs/candidates/${id}/set-account`, { company });
+      return data.data;
+    },
+    onSuccess: (d) => {
+      qc.invalidateQueries({ queryKey: ["jobs", "candidates"] });
+      toast.success(d?.matched ? "Account linked" : "Company set (no existing account matched)");
+    },
+    onError: () => toast.error("Couldn't link account"),
   });
 }
 

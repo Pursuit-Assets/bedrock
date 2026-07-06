@@ -3760,6 +3760,7 @@ async def list_candidates(
                e.is_employer_contact,
                e.account_suggestion->>'account_name' AS ai_account,
                coalesce(array_length(e.possible_duplicate_ids, 1), 0) AS dup_count,
+               md.top_dup_id AS top_dup_id,
                (e.contact_id IS NOT NULL) AS enriched,
                ec.owners AS owners, ec.channels AS channels, ec.tier AS tier
         FROM public.contacts c
@@ -3769,8 +3770,18 @@ async def list_candidates(
           ON aed.domain = lower(split_part(c.email,'@',2))
         LEFT JOIN bedrock.candidate_enrichment e ON e.contact_id = c.contact_id
         LEFT JOIN bedrock.email_candidate ec ON ec.contact_id = c.contact_id
+        LEFT JOIN LATERAL (
+            -- best one-click merge target: a real contact with the same name
+            -- (exclude self, merged, and other queue rows). Unique only.
+            SELECT (array_agg(d.contact_id))[1] AS top_dup_id
+            FROM public.contacts d
+            WHERE c.full_name IS NOT NULL AND position('@' in c.full_name) = 0
+              AND lower(d.full_name) = lower(c.full_name) AND d.contact_id <> c.contact_id
+              AND coalesce(d.contact_stage,'') NOT IN ('merged','candidate','dismissed')
+            HAVING count(*) = 1
+        ) md ON true
         WHERE {' AND '.join(where)}
-        GROUP BY c.contact_id, aed.sf_account_name, e.full_name, e.company, e.confidence,
+        GROUP BY c.contact_id, aed.sf_account_name, md.top_dup_id, e.full_name, e.company, e.confidence,
                  e.is_employer_contact, e.account_suggestion, e.possible_duplicate_ids, e.contact_id,
                  ec.owners, ec.channels, ec.tier
         ORDER BY (e.contact_id IS NOT NULL) DESC, max(a.activity_date) DESC NULLS LAST, c.email
@@ -3783,6 +3794,7 @@ async def list_candidates(
          "domain": r["domain"],
          # Prefer AI account, then exact-domain map. Best name = stored AI name.
          "suggested_account": r["ai_account"] or r["domain_account"],
+         "top_dup_id": r["top_dup_id"],
          "ai_name": r["ai_name"], "ai_company": r["ai_company"], "ai_confidence": r["ai_confidence"],
          "is_employer_contact": r["is_employer_contact"],
          "dup_count": r["dup_count"], "enriched": r["enriched"],
@@ -3806,7 +3818,8 @@ async def list_candidate_owners(user=Depends(require_auth), conn=Depends(get_db)
         FROM bedrock.email_candidate ec
         JOIN public.contacts c ON c.contact_id = ec.contact_id AND c.contact_stage='candidate'
         CROSS JOIN LATERAL unnest(ec.owners) AS o
-        GROUP BY o ORDER BY n DESC
+        JOIN bedrock.sync_staff ss ON lower(ss.email) = lower(o) AND ss.enabled
+        GROUP BY o ORDER BY o
         """,
     )
     return {"success": True, "data": [{"owner": r["owner"], "count": r["n"]} for r in rows]}
@@ -4177,6 +4190,39 @@ async def promote_candidate(
     return {"success": True, "data": {"contact_id": contact_id, "promoted": True, "company_id": company_id}}
 
 
+class CandidateSetAccount(BaseModel):
+    company: str
+
+
+@router.post("/candidates/{contact_id}/set-account")
+async def set_candidate_account(
+    contact_id: int,
+    body: CandidateSetAccount,
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Attach an account to a candidate WITHOUT promoting it — sets
+    current_company (+ company_id when the name matches an existing account),
+    but keeps it in the review queue so the name/details can still be edited
+    before a deliberate promote."""
+    company = (body.company or "").strip()
+    if not company:
+        raise HTTPException(400, "company required")
+    company_id = await conn.fetchval(
+        "SELECT company_id FROM public.companies WHERE lower(name) = lower($1) LIMIT 1", company)
+    sets = ["current_company = $2", "updated_at = now()"]
+    params = [contact_id, company]
+    if company_id:
+        sets.append(f"company_id = ${len(params)+1}"); params.append(company_id)
+    res = await conn.execute(
+        f"UPDATE public.contacts SET {', '.join(sets)} "
+        f"WHERE contact_id = $1 AND contact_stage = 'candidate'", *params)
+    if res == "UPDATE 0":
+        raise HTTPException(404, "Candidate not found")
+    return {"success": True, "data": {"contact_id": contact_id, "company": company,
+                                      "company_id": company_id, "matched": company_id is not None}}
+
+
 @router.post("/candidates/{contact_id}/dismiss")
 async def dismiss_candidate(
     contact_id: int,
@@ -4236,6 +4282,17 @@ async def bulk_restore_candidates(
         "  AND ('email_review' = ANY(coalesce(tags,'{}')) OR source='email_candidate')", ids)
     n = int(res.split()[-1]) if res and res.split()[-1].isdigit() else 0
     return {"success": True, "data": {"restored": n}}
+
+
+@router.post("/candidates/match-builders")
+async def match_builder_candidates(
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Sweep the queue for candidates who are actually Pursuit builders — save
+    their personal email onto the builder record and drop them from review."""
+    from services.builder_match import sweep_builder_candidates
+    return {"success": True, "data": await sweep_builder_candidates(conn)}
 
 
 # ── Activity logging ─────────────────────────────────────────────────────────
