@@ -21,7 +21,7 @@ from auth import require_auth
 from db import get_db
 from dependencies import get_mcp_client, require_sf_mcp_client
 from sf_errors import sf_http_error
-from services.placement_sf import sync_placement_to_sf, record_sync_error, NotEligible
+from services.placement_sf import sync_placement_to_sf, record_sync_error, NotEligible, AccountAmbiguous
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
@@ -1029,6 +1029,9 @@ async def hire_into_role(
     except NotEligible as ne:
         await record_sync_error(conn, new_id, str(ne), status="skipped")
         sf_sync = {"status": "skipped", "message": str(ne)}
+    except AccountAmbiguous as aa:
+        await record_sync_error(conn, new_id, str(aa), status="needs_choice")
+        sf_sync = {"status": "needs_choice", "message": str(aa), "account_candidates": aa.candidates}
     except ValueError as ve:
         await record_sync_error(conn, new_id, str(ve))
         sf_sync = {"status": "needs_info", "message": str(ve)}
@@ -1040,20 +1043,36 @@ async def hire_into_role(
     return {"success": True, "data": {"role": _role_dict(updated), "employment_record_id": new_id, "sf_sync": sf_sync}}
 
 
+class PlacementSyncChoice(BaseModel):
+    sf_account_id: Optional[str] = None        # link this existing SF account
+    force_create_account: bool = False         # or explicitly create a new one
+
+
 @router.post("/placements/{employment_record_id}/sync-sf")
 async def sync_placement_sf(
     employment_record_id: int,
+    body: Optional[PlacementSyncChoice] = None,
     user=Depends(require_auth),
     conn=Depends(get_db),
     client=Depends(require_sf_mcp_client),
 ):
     """(Re)sync one placement to Salesforce — creates the fellow contact,
-    the employer account, and the affiliation as needed."""
+    the employer account, and the affiliation as needed. When SF holds a
+    similar-but-not-identical account name the response returns
+    status=needs_choice with candidates; retry with sf_account_id (link) or
+    force_create_account=true."""
     try:
-        result = await sync_placement_to_sf(conn, client.salesforce, employment_record_id)
+        result = await sync_placement_to_sf(
+            conn, client.salesforce, employment_record_id,
+            sf_account_id_override=(body.sf_account_id if body else None),
+            force_create_account=(body.force_create_account if body else False))
     except NotEligible as ne:
         await record_sync_error(conn, employment_record_id, str(ne), status="skipped")
         return {"success": True, "data": {"status": "skipped", "reason": str(ne)}}
+    except AccountAmbiguous as aa:
+        await record_sync_error(conn, employment_record_id, str(aa), status="needs_choice")
+        return {"success": True, "data": {"status": "needs_choice", "reason": str(aa),
+                                          "account_candidates": aa.candidates}}
     except ValueError as ve:
         await record_sync_error(conn, employment_record_id, str(ve))
         raise HTTPException(400, str(ve))
@@ -3713,6 +3732,7 @@ async def set_connection_status(
 @router.get("/candidates")
 async def list_candidates(
     owner: Optional[str] = Query(None, description="Filter to candidates whose activity involved this staff email"),
+    status: str = Query("candidate", pattern="^(candidate|dismissed)$"),
     user=Depends(require_auth),
     conn=Depends(get_db),
 ):
@@ -3723,7 +3743,7 @@ async def list_candidates(
     (from bedrock.email_candidate.owners). Owners/channels are returned per row
     so the UI can show + filter by who reached out."""
     params: list = []
-    where = ["c.contact_stage = 'candidate'",
+    where = [f"c.contact_stage = '{status}'",
              "('email_review' = ANY(c.tags) OR c.source = 'email_candidate')"]
     if owner:
         params.append(owner)
@@ -3740,6 +3760,8 @@ async def list_candidates(
                e.is_employer_contact,
                e.account_suggestion->>'account_name' AS ai_account,
                coalesce(array_length(e.possible_duplicate_ids, 1), 0) AS dup_count,
+               md.top_dup_id AS top_dup_id,
+               (c.company_id IS NOT NULL) AS account_linked,
                (e.contact_id IS NOT NULL) AS enriched,
                ec.owners AS owners, ec.channels AS channels, ec.tier AS tier
         FROM public.contacts c
@@ -3749,8 +3771,18 @@ async def list_candidates(
           ON aed.domain = lower(split_part(c.email,'@',2))
         LEFT JOIN bedrock.candidate_enrichment e ON e.contact_id = c.contact_id
         LEFT JOIN bedrock.email_candidate ec ON ec.contact_id = c.contact_id
+        LEFT JOIN LATERAL (
+            -- best one-click merge target: a real contact with the same name
+            -- (exclude self, merged, and other queue rows). Unique only.
+            SELECT (array_agg(d.contact_id))[1] AS top_dup_id
+            FROM public.contacts d
+            WHERE c.full_name IS NOT NULL AND position('@' in c.full_name) = 0
+              AND lower(d.full_name) = lower(c.full_name) AND d.contact_id <> c.contact_id
+              AND coalesce(d.contact_stage,'') NOT IN ('merged','candidate','dismissed')
+            HAVING count(*) = 1
+        ) md ON true
         WHERE {' AND '.join(where)}
-        GROUP BY c.contact_id, aed.sf_account_name, e.full_name, e.company, e.confidence,
+        GROUP BY c.contact_id, c.company_id, aed.sf_account_name, md.top_dup_id, e.full_name, e.company, e.confidence,
                  e.is_employer_contact, e.account_suggestion, e.possible_duplicate_ids, e.contact_id,
                  ec.owners, ec.channels, ec.tier
         ORDER BY (e.contact_id IS NOT NULL) DESC, max(a.activity_date) DESC NULLS LAST, c.email
@@ -3763,6 +3795,8 @@ async def list_candidates(
          "domain": r["domain"],
          # Prefer AI account, then exact-domain map. Best name = stored AI name.
          "suggested_account": r["ai_account"] or r["domain_account"],
+         "top_dup_id": r["top_dup_id"],
+         "account_linked": r["account_linked"],
          "ai_name": r["ai_name"], "ai_company": r["ai_company"], "ai_confidence": r["ai_confidence"],
          "is_employer_contact": r["is_employer_contact"],
          "dup_count": r["dup_count"], "enriched": r["enriched"],
@@ -3786,7 +3820,8 @@ async def list_candidate_owners(user=Depends(require_auth), conn=Depends(get_db)
         FROM bedrock.email_candidate ec
         JOIN public.contacts c ON c.contact_id = ec.contact_id AND c.contact_stage='candidate'
         CROSS JOIN LATERAL unnest(ec.owners) AS o
-        GROUP BY o ORDER BY n DESC
+        JOIN bedrock.sync_staff ss ON lower(ss.email) = lower(o) AND ss.enabled
+        GROUP BY o ORDER BY o
         """,
     )
     return {"success": True, "data": [{"owner": r["owner"], "count": r["n"]} for r in rows]}
@@ -3803,7 +3838,7 @@ async def candidate_detail(
     import json as _json
     from services.candidate_enrich import suggest_account
     c = await conn.fetchrow(
-        "SELECT contact_id, full_name, email, current_company, current_title, linkedin_url "
+        "SELECT contact_id, full_name, email, current_company, current_title, linkedin_url, company_id "
         "FROM public.contacts WHERE contact_id=$1", contact_id)
     if not c:
         raise HTTPException(404, "Candidate not found")
@@ -3822,17 +3857,40 @@ async def candidate_detail(
         if enr["account_suggestion"]:
             suggestion = enr["account_suggestion"] if isinstance(enr["account_suggestion"], dict) else _json.loads(enr["account_suggestion"])
         dup_ids = list(enr["possible_duplicate_ids"] or [])
-    if suggestion is None:
+    if c["company_id"] is not None:
+        suggestion = None            # already linked to an account — don't propose another
+    elif suggestion is None:
         suggestion = await suggest_account(conn, c["email"])
+    # Only ever surface suggestions that link to an EXISTING account — drop any
+    # stale "create a new account" enrichment (no account_key / not in pipeline).
+    if suggestion and not (suggestion.get("account_key") or suggestion.get("sf_account_id") or suggestion.get("in_pipeline")):
+        suggestion = None
 
     # Resolve duplicate ids to contacts, deduped by (name, company).
     possible_duplicates = []
+    seen = set()
     if dup_ids:
         drows = await conn.fetch(
             "SELECT contact_id, full_name, current_company, current_title FROM public.contacts WHERE contact_id = ANY($1::int[])",
             dup_ids)
-        seen = set()
         for d in drows:
+            k = (d["full_name"], d["current_company"])
+            if k in seen:
+                continue
+            seen.add(k)
+            possible_duplicates.append({"contact_id": d["contact_id"], "full_name": d["full_name"],
+                                        "current_company": d["current_company"], "current_title": d["current_title"]})
+    # Live exact-name probe as well — AI enrichment can be missing or stale
+    # (Alan Joos / Jumi Barnes sat unlinked next to obvious matches). Email-ish
+    # display names can't match here; the drawer's manual link search covers those.
+    nm = (c["full_name"] or "").strip()
+    if nm and "@" not in nm:
+        nrows = await conn.fetch(
+            """SELECT contact_id, full_name, current_company, current_title FROM public.contacts
+               WHERE lower(full_name) = lower($1) AND contact_id <> $2
+                 AND coalesce(contact_stage,'') NOT IN ('merged', 'candidate', 'dismissed')
+               ORDER BY (current_company IS NOT NULL) DESC LIMIT 5""", nm, contact_id)
+        for d in nrows:
             k = (d["full_name"], d["current_company"])
             if k in seen:
                 continue
@@ -4140,6 +4198,39 @@ async def promote_candidate(
     return {"success": True, "data": {"contact_id": contact_id, "promoted": True, "company_id": company_id}}
 
 
+class CandidateSetAccount(BaseModel):
+    company: str
+
+
+@router.post("/candidates/{contact_id}/set-account")
+async def set_candidate_account(
+    contact_id: int,
+    body: CandidateSetAccount,
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Attach an account to a candidate WITHOUT promoting it — sets
+    current_company (+ company_id when the name matches an existing account),
+    but keeps it in the review queue so the name/details can still be edited
+    before a deliberate promote."""
+    company = (body.company or "").strip()
+    if not company:
+        raise HTTPException(400, "company required")
+    company_id = await conn.fetchval(
+        "SELECT company_id FROM public.companies WHERE lower(name) = lower($1) LIMIT 1", company)
+    sets = ["current_company = $2", "updated_at = now()"]
+    params = [contact_id, company]
+    if company_id:
+        sets.append(f"company_id = ${len(params)+1}"); params.append(company_id)
+    res = await conn.execute(
+        f"UPDATE public.contacts SET {', '.join(sets)} "
+        f"WHERE contact_id = $1 AND contact_stage = 'candidate'", *params)
+    if res == "UPDATE 0":
+        raise HTTPException(404, "Candidate not found")
+    return {"success": True, "data": {"contact_id": contact_id, "company": company,
+                                      "company_id": company_id, "matched": company_id is not None}}
+
+
 @router.post("/candidates/{contact_id}/dismiss")
 async def dismiss_candidate(
     contact_id: int,
@@ -4155,6 +4246,61 @@ async def dismiss_candidate(
     if res == "UPDATE 0":
         raise HTTPException(404, "Candidate not found")
     return {"success": True, "data": {"contact_id": contact_id, "dismissed": True}}
+
+
+class BulkDismiss(BaseModel):
+    contact_ids: list[int]
+
+
+@router.post("/candidates/bulk-dismiss")
+async def bulk_dismiss_candidates(
+    body: BulkDismiss,
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Dismiss many candidates in one atomic statement (only rows still in the
+    candidate stage are touched)."""
+    ids = [int(i) for i in (body.contact_ids or [])]
+    if not ids:
+        return {"success": True, "data": {"dismissed": 0}}
+    res = await conn.execute(
+        "UPDATE public.contacts SET contact_stage='dismissed', "
+        "tags=array_remove(coalesce(tags,'{}'), 'email_review'), updated_at=now() "
+        "WHERE contact_id = ANY($1::int[]) AND contact_stage='candidate'", ids)
+    n = int(res.split()[-1]) if res and res.split()[-1].isdigit() else 0
+    return {"success": True, "data": {"dismissed": n}}
+
+
+@router.post("/candidates/bulk-restore")
+async def bulk_restore_candidates(
+    body: BulkDismiss,
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Undo dismissal — move rows back into the review queue. Only affects rows
+    currently dismissed that still carry the candidate markers."""
+    ids = [int(i) for i in (body.contact_ids or [])]
+    if not ids:
+        return {"success": True, "data": {"restored": 0}}
+    res = await conn.execute(
+        "UPDATE public.contacts SET contact_stage='candidate', "
+        "tags=(CASE WHEN 'email_review' = ANY(coalesce(tags,'{}')) THEN tags "
+        "      ELSE array_append(coalesce(tags,'{}'), 'email_review') END), updated_at=now() "
+        "WHERE contact_id = ANY($1::int[]) AND contact_stage='dismissed' "
+        "  AND ('email_review' = ANY(coalesce(tags,'{}')) OR source='email_candidate')", ids)
+    n = int(res.split()[-1]) if res and res.split()[-1].isdigit() else 0
+    return {"success": True, "data": {"restored": n}}
+
+
+@router.post("/candidates/match-builders")
+async def match_builder_candidates(
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Sweep the queue for candidates who are actually Pursuit builders — save
+    their personal email onto the builder record and drop them from review."""
+    from services.builder_match import sweep_builder_candidates
+    return {"success": True, "data": await sweep_builder_candidates(conn)}
 
 
 # ── Activity logging ─────────────────────────────────────────────────────────

@@ -8,12 +8,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { Sparkles, Building2, Mail, UserPlus, X, ChevronDown, ChevronRight, Loader2, Check, Link2, RefreshCw } from "lucide-react";
 
+import { cn } from "@/lib/utils";
 import { Drawer } from "@/components/ui/Drawer";
 import { Tag } from "@/components/ui/Tag";
 import {
-  useCandidates, useCandidateDetail, useEnrichCandidate, useLinkCandidate,
+  useCandidates, useCandidateDetail, useContactSearch, useEnrichCandidate, useLinkCandidate,
   useCandidateSfMatch, useLinkCandidateSf,
-  usePromoteCandidate, useDismissCandidate, useJobsAccountNames, useCandidateOwners,
+  usePromoteCandidate, useDismissCandidate, useBulkDismissCandidates, useBulkRestoreCandidates, useSetCandidateAccount, useJobsAccountNames, useCandidateOwners,
   type JobCandidate,
 } from "@/services/jobs";
 
@@ -61,6 +62,8 @@ function CandidateDrawer({ contactId, onClose }: { contactId: number | null; onC
   const [name, setName] = useState("");
   const [title, setTitle] = useState("");
   const [company, setCompany] = useState("");
+  const [linkQ, setLinkQ] = useState("");
+  const { data: linkResults } = useContactSearch(linkQ.trim().length >= 2 ? linkQ.trim() : "");
 
   // Seed from persisted enrichment (or the contact) the moment detail loads.
   useEffect(() => {
@@ -153,6 +156,32 @@ function CandidateDrawer({ contactId, onClose }: { contactId: number | null; onC
             </div>
           )}
 
+          {/* Manual link — for when suggestions miss (e.g. candidate name is
+              just an email address). Search any existing contact and link. */}
+          <div className="rounded-lg border border-border-strong p-3">
+            <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-ink-4">Link to an existing contact</div>
+            <input value={linkQ} onChange={(ev) => setLinkQ(ev.target.value)} placeholder="Search contacts by name, company, email…"
+              className="h-8 w-full rounded border border-border-strong bg-surface px-2 text-[12.5px] text-ink outline-none placeholder:text-ink-4 focus:border-accent" />
+            {linkQ.trim().length >= 2 && (
+              <div className="mt-1.5 flex max-h-44 flex-col gap-1 overflow-auto">
+                {(linkResults ?? []).filter((r) => r.contact_id !== contactId).slice(0, 8).map((r) => (
+                  <div key={r.contact_id} className="flex items-center justify-between gap-2 rounded px-1.5 py-1 hover:bg-surface-2/60">
+                    <div className="min-w-0 truncate text-[12.5px] text-ink">
+                      {r.full_name || r.email}
+                      {r.current_company ? <span className="text-ink-4"> · {r.current_company}</span> : ""}
+                    </div>
+                    <button type="button" disabled={busy}
+                      onClick={() => contactId && link.mutate({ id: contactId, target: r.contact_id }, { onSuccess: onClose })}
+                      className="inline-flex h-6 shrink-0 items-center gap-1 rounded-md border border-accent px-2 text-[11.5px] font-medium text-accent hover:bg-accent-soft disabled:opacity-40">
+                      <Link2 size={11} /> Link
+                    </button>
+                  </div>
+                ))}
+                {(linkResults ?? []).length === 0 && <div className="px-1.5 py-1 text-[12px] text-ink-4">No matches.</div>}
+              </div>
+            )}
+          </div>
+
           {/* Editable fields */}
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
             <Field label="Full name"><input value={name} onChange={(ev) => setName(ev.target.value)} className={inputCls} /></Field>
@@ -239,66 +268,179 @@ function Section({ title, count, action, children }: { title: string; count?: nu
   );
 }
 
-function CandidateRow({ c, onOpen }: { c: JobCandidate; onOpen: () => void }) {
+function CandidateRow({ c, onOpen, selected, onToggleSelect, onLink, onApprove, busy, dismissedView }: {
+  c: JobCandidate; onOpen: () => void; selected: boolean; onToggleSelect: () => void;
+  onLink: (target: number) => void; onApprove: (company: string) => void;
+  busy: boolean; dismissedView: boolean;
+}) {
   const display = c.ai_name || c.full_name || c.email;
   const company = c.ai_company || c.suggested_account;
   return (
-    <button type="button" onClick={onOpen}
-      className="flex w-full items-center gap-2 border-t border-border-strong px-3 py-2 text-left hover:bg-surface-2/40">
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-1.5">
-          <span className="truncate text-[12.5px] text-ink">{display}</span>
-          {c.enriched && <Sparkles size={11} className="shrink-0 text-accent" />}
-          {c.is_employer_contact === false && <span className="shrink-0 text-[10px] text-ink-4">· not employer</span>}
+    <div className={cn("flex w-full items-center gap-2 border-t border-border-strong px-3 py-2 hover:bg-surface-2/40",
+      selected && "bg-accent-soft/40")}>
+      <input type="checkbox" checked={selected} onChange={onToggleSelect} onClick={(e) => e.stopPropagation()}
+        className="shrink-0 accent-accent" aria-label={`Select ${display}`} />
+      <button type="button" onClick={onOpen} className="flex min-w-0 flex-1 items-center gap-2 text-left">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-1.5">
+            <span className="truncate text-[12.5px] text-ink">{display}</span>
+            {c.enriched && <Sparkles size={11} className="shrink-0 text-accent" />}
+            {c.is_employer_contact === false && <span className="shrink-0 text-[10px] text-ink-4">· not employer</span>}
+          </div>
+          <div className="truncate text-[11px] text-ink-4">
+            {c.email} · {c.email_count} email{c.email_count === 1 ? "" : "s"}{c.last_subject ? ` · ${c.last_subject}` : ""}
+          </div>
         </div>
-        <div className="truncate text-[11px] text-ink-4">
-          {c.email} · {c.email_count} email{c.email_count === 1 ? "" : "s"}{c.last_subject ? ` · ${c.last_subject}` : ""}
-        </div>
-      </div>
-      {(c.dup_count ?? 0) > 0 && <Tag variant="amber">likely match</Tag>}
-      {company && <Tag variant="accent">{company}</Tag>}
+      </button>
+      {/* One-click actions (only in the active review view) */}
+      {!dismissedView && c.top_dup_id ? (
+        <button type="button" disabled={busy} title="Link to the matching existing contact"
+          onClick={(e) => { e.stopPropagation(); onLink(c.top_dup_id!); }}
+          className="inline-flex h-6 shrink-0 items-center gap-1 rounded-md bg-amber px-2 text-[11.5px] font-medium text-white disabled:opacity-40">
+          <Link2 size={11} /> Link
+        </button>
+      ) : c.account_linked ? (
+        <span title={`Account linked${company ? `: ${company}` : ""}`}
+          className="inline-flex h-6 shrink-0 items-center gap-1 rounded-md bg-green-soft px-2 text-[11.5px] font-medium text-green">
+          <Check size={11} /> {company && company.length <= 16 ? company : "Linked"}
+        </span>
+      ) : !dismissedView && company ? (
+        <button type="button" disabled={busy} title={`Link account: ${company} (stays in review to edit + promote)`}
+          onClick={(e) => { e.stopPropagation(); onApprove(company); }}
+          className="inline-flex h-6 shrink-0 items-center gap-1 rounded-md border border-accent px-2 text-[11.5px] font-medium text-accent hover:bg-accent-soft disabled:opacity-40">
+          <Building2 size={11} /> {company.length > 16 ? company.slice(0, 15) + "…" : company}
+        </button>
+      ) : null}
       <ChevronRight size={14} className="shrink-0 text-ink-4" />
-    </button>
+    </div>
   );
 }
 
 export function CandidatesZone({ defaultOwner }: { defaultOwner?: string } = {}) {
   const [owner, setOwner] = useState<string>(defaultOwner ?? "");  // "" = everyone
-  const { data: cands = [], isLoading } = useCandidates(owner || undefined);
+  const [view, setView] = useState<"candidate" | "dismissed">("candidate");
+  const { data: cands = [], isLoading } = useCandidates(owner || undefined, view);
   const { data: owners = [] } = useCandidateOwners();
+  const bulkDismiss = useBulkDismissCandidates();
+  const bulkRestore = useBulkRestoreCandidates();
+  const link = useLinkCandidate();
+  const setAccount = useSetCandidateAccount();
   const [openId, setOpenId] = useState<number | null>(null);
   const [showAll, setShowAll] = useState(false);
-  const shown = showAll ? cands : cands.slice(0, 20);
-  const ownerPicker = (
-    <select
-      value={owner}
-      onChange={(e) => { setOwner(e.target.value); setShowAll(false); }}
-      className="rounded border border-border-strong bg-surface px-2 py-1 text-[12px] text-ink"
-    >
-      <option value="">Everyone</option>
-      {owners.map((o) => (
-        <option key={o.owner} value={o.owner}>{ownerLabel(o.owner)} ({o.count})</option>
-      ))}
-    </select>
+  const [q, setQ] = useState("");
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const dismissedView = view === "dismissed";
+
+  // Client-side search across the fields shown on the row.
+  const filtered = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    if (!needle) return cands;
+    return cands.filter((c) => {
+      const hay = [c.ai_name, c.full_name, c.email, c.ai_company, c.suggested_account, c.last_subject]
+        .filter(Boolean).join(" ").toLowerCase();
+      return hay.includes(needle);
+    });
+  }, [cands, q]);
+  const shown = showAll ? filtered : filtered.slice(0, 20);
+
+  const toggle = (id: number) => setSelected((prev) => {
+    const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next;
+  });
+  const shownIds = shown.map((c) => c.contact_id);
+  const allShownSelected = shownIds.length > 0 && shownIds.every((id) => selected.has(id));
+  const toggleAllShown = () => setSelected((prev) => {
+    const next = new Set(prev);
+    if (allShownSelected) shownIds.forEach((id) => next.delete(id));
+    else shownIds.forEach((id) => next.add(id));
+    return next;
+  });
+  const doBulkDismiss = () => {
+    if (selected.size === 0) return;
+    // Global + effectively permanent → confirm before removing for everyone.
+    const ok = window.confirm(
+      `Dismiss ${selected.size} candidate${selected.size === 1 ? "" : "s"} for the whole team? ` +
+      `They leave everyone's review queue. You can restore them from the Dismissed view.`);
+    if (!ok) return;
+    bulkDismiss.mutate([...selected], { onSuccess: () => setSelected(new Set()) });
+  };
+  const doBulkRestore = () => {
+    if (selected.size === 0) return;
+    bulkRestore.mutate([...selected], { onSuccess: () => setSelected(new Set()) });
+  };
+
+  const controls = (
+    <div className="flex items-center gap-2">
+      <div className="flex items-center rounded-md border border-border-strong p-0.5 text-[11.5px]">
+        {(["candidate", "dismissed"] as const).map((v) => (
+          <button key={v} type="button"
+            onClick={() => { setView(v); setSelected(new Set()); setShowAll(false); }}
+            className={cn("rounded px-2 py-0.5 font-medium",
+              view === v ? "bg-accent text-white" : "text-ink-3 hover:text-ink")}>
+            {v === "candidate" ? "Reviewing" : "Dismissed"}
+          </button>
+        ))}
+      </div>
+      <input value={q} onChange={(e) => { setQ(e.target.value); setShowAll(false); }}
+        placeholder="Search candidates…"
+        className="h-7 w-48 rounded-md border border-border-strong bg-surface px-2 text-[12px] text-ink outline-none focus:border-accent" />
+      <select value={owner} onChange={(e) => { setOwner(e.target.value); setShowAll(false); setSelected(new Set()); }}
+        className="rounded border border-border-strong bg-surface px-2 py-1 text-[12px] text-ink">
+        <option value="">Everyone</option>
+        {owners.map((o) => <option key={o.owner} value={o.owner}>{ownerLabel(o.owner)} ({o.count})</option>)}
+      </select>
+    </div>
   );
   return (
-    <Section title="Candidates to review" count={cands.length} action={ownerPicker}>
+    <Section title={dismissedView ? "Dismissed candidates" : "Candidates to review"} count={cands.length} action={controls}>
       <div className="flex flex-col overflow-hidden rounded-lg border border-border-strong bg-surface">
         {isLoading ? (
           <div className="px-3 py-8 text-center text-[12.5px] text-ink-3">Loading…</div>
         ) : cands.length === 0 ? (
           <div className="px-3 py-8 text-center text-[12.5px] text-ink-3">
-            {owner ? `No candidates for ${ownerLabel(owner)}. 🎉` : "Nothing to review. 🎉"}
+            {dismissedView ? "No dismissed candidates."
+              : owner ? `No candidates for ${ownerLabel(owner)}. 🎉` : "Nothing to review. 🎉"}
           </div>
+        ) : filtered.length === 0 ? (
+          <div className="px-3 py-8 text-center text-[12.5px] text-ink-3">No candidates match “{q}”.</div>
         ) : (
           <>
-            <div className="bg-surface-2/60 px-3 py-1.5 text-[11px] text-ink-4">
-              People we emailed{owner ? ` (${ownerLabel(owner)})` : ""}, enriched by AI. Open to confirm the match, then add or dismiss.
-            </div>
-            {shown.map((c) => <CandidateRow key={c.contact_id} c={c} onOpen={() => setOpenId(c.contact_id)} />)}
-            {cands.length > shown.length && (
+            {selected.size > 0 ? (
+              <div className="flex items-center justify-between gap-2 bg-accent-soft/60 px-3 py-1.5 text-[12px]">
+                <label className="flex items-center gap-1.5 text-ink-2">
+                  <input type="checkbox" checked={allShownSelected} onChange={toggleAllShown} className="accent-accent" />
+                  {selected.size} selected
+                </label>
+                {dismissedView ? (
+                  <button type="button" disabled={bulkRestore.isPending} onClick={doBulkRestore}
+                    className="inline-flex items-center gap-1 rounded-md bg-green px-2.5 py-1 text-[12px] font-medium text-white disabled:opacity-40">
+                    <Check size={12} /> Restore {selected.size}
+                  </button>
+                ) : (
+                  <button type="button" disabled={bulkDismiss.isPending} onClick={doBulkDismiss}
+                    className="inline-flex items-center gap-1 rounded-md bg-red px-2.5 py-1 text-[12px] font-medium text-white disabled:opacity-40">
+                    <X size={12} /> Dismiss {selected.size}
+                  </button>
+                )}
+              </div>
+            ) : (
+              <div className="flex items-center gap-2 bg-surface-2/60 px-3 py-1.5 text-[11px] text-ink-4">
+                <input type="checkbox" checked={false} onChange={toggleAllShown} className="accent-accent" aria-label="Select all shown" />
+                {dismissedView
+                  ? "Dismissed candidates — removed from everyone's queue. Select rows to restore."
+                  : `People we emailed${owner ? ` (${ownerLabel(owner)})` : ""}, enriched by AI. Open to confirm, or select rows to dismiss in bulk.`}
+              </div>
+            )}
+            {shown.map((c) => (
+              <CandidateRow key={c.contact_id} c={c} onOpen={() => setOpenId(c.contact_id)}
+                selected={selected.has(c.contact_id)} onToggleSelect={() => toggle(c.contact_id)}
+                dismissedView={dismissedView}
+                busy={link.isPending || setAccount.isPending}
+                onLink={(target) => link.mutate({ id: c.contact_id, target })}
+                onApprove={(company) => setAccount.mutate({ id: c.contact_id, company })} />
+            ))}
+            {filtered.length > shown.length && (
               <button type="button" onClick={() => setShowAll(true)}
-                className="border-t border-border-strong px-3 py-2 text-[12px] text-accent hover:bg-surface-2/50">Show all {cands.length}</button>
+                className="border-t border-border-strong px-3 py-2 text-[12px] text-accent hover:bg-surface-2/50">Show all {filtered.length}</button>
             )}
           </>
         )}

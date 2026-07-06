@@ -153,6 +153,14 @@ async def run_interaction_sync(
                 cand_conn, days_back=(since_days or 7), staff_emails=staff_emails)
             candidates_created = cand_result.get("candidates_created", 0)
             candidate_links = cand_result.get("activity_linked", 0)
+            # Absorb any newly-created candidates who are actually our builders
+            # (save personal email to the builder record + drop from review).
+            try:
+                from services.builder_match import sweep_builder_candidates
+                b = await sweep_builder_candidates(cand_conn)
+                logger.info("builder sweep: %s", b)
+            except Exception as be:
+                logger.error("builder sweep failed: %s", be)
         finally:
             await _release_conn(cand_conn)
         logger.info("candidate pipeline: created %d candidates, linked %d activity rows",

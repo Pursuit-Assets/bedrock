@@ -48,6 +48,37 @@ class NotEligible(Exception):
     """Placement shouldn't go to Salesforce (policy, not an error)."""
 
 
+class AccountAmbiguous(Exception):
+    """SF has close-but-not-exact account name matches — a human should pick
+    (link an existing account) or explicitly confirm creating a new one.
+    `candidates` = [{id, name}] of the near matches."""
+
+    def __init__(self, company: str, candidates):
+        self.company = company
+        self.candidates = candidates
+        names = ", ".join(f"'{c['name']}'" for c in candidates[:4])
+        super().__init__(
+            f"Salesforce has similar account(s) to '{company}': {names}. "
+            "Pick one to link, or confirm creating a new account.")
+
+
+_LEGAL_SUFFIXES = (
+    "inc", "incorporated", "llc", "llp", "ltd", "limited", "corp",
+    "corporation", "co", "company", "pbc", "plc", "gmbh",
+)
+
+
+def _norm_company(name: str) -> str:
+    """Lowercase, strip punctuation and trailing legal suffixes —
+    'Acture Solutions, Inc.' → 'acture solutions'."""
+    import re
+    s = re.sub(r"[^a-z0-9 ]", " ", (name or "").lower())
+    words = [w for w in s.split() if w]
+    while words and words[-1] in _LEGAL_SUFFIXES:
+        words.pop()
+    return " ".join(words)
+
+
 def sync_eligibility(er) -> Optional[str]:
     """Return a skip-reason when a placement should NOT sync to Salesforce.
 
@@ -65,12 +96,17 @@ def sync_eligibility(er) -> Optional[str]:
     return None
 
 
-async def sync_placement_to_sf(conn, sf, employment_record_id: int) -> Dict[str, Any]:
+async def sync_placement_to_sf(
+    conn, sf, employment_record_id: int,
+    sf_account_id_override: Optional[str] = None,
+    force_create_account: bool = False,
+) -> Dict[str, Any]:
     """Ensure SF contact + account + affiliation exist for one placement.
 
-    Raises ValueError with an actionable message when required info is
-    missing (caller surfaces it to the user to fill in), and NotEligible
-    when the paid-work policy excludes the record."""
+    Raises ValueError when required info is missing, NotEligible under the
+    paid-work policy, and AccountAmbiguous when SF has close-but-not-exact
+    account names (resolve by passing sf_account_id_override to link one, or
+    force_create_account=True to create anyway)."""
     er = await conn.fetchrow(
         "SELECT id, user_id, role_title, company_name, employment_type, start_date, "
         "       payment_amount, is_own_venture "
@@ -92,18 +128,38 @@ async def sync_placement_to_sf(conn, sf, employment_record_id: int) -> Dict[str,
     out: Dict[str, Any] = {"employment_record_id": employment_record_id,
                            "created_contact": False, "created_account": False, "created_affiliation": False}
 
-    # ── Account (exact name; SF duplicate rules guard the create) ────────────
+    # ── Account — smartest safe match, never a silent near-duplicate ─────────
+    #   1. caller override (user picked an SF account, or confirmed create)
+    #   2. exact name match
+    #   3. normalized match (case/punctuation/legal suffixes) — auto when unique
+    #   4. close matches exist (shared lead word / prefix) → AccountAmbiguous,
+    #      surfaced as needs_info with the candidates for a human to pick
+    #   5. nothing similar → create
     safe_co = escape_soql_string(company)
-    res = await sf.query(f"SELECT Id, Name FROM Account WHERE Name = '{safe_co}' LIMIT 2")
-    accts = res.get("records", [])
-    if accts:
-        sf_account_id = accts[0]["Id"]
+    if sf_account_id_override:
+        sf_account_id = sf_account_id_override
     else:
-        created = await sf.create_record("Account", {"Name": company})
-        sf_account_id = _rid(created)
+        res = await sf.query(f"SELECT Id, Name FROM Account WHERE Name = '{safe_co}' LIMIT 2")
+        accts = res.get("records", [])
+        sf_account_id = accts[0]["Id"] if accts else None
         if not sf_account_id:
-            raise ValueError(f"Salesforce account create failed: {created}")
-        out["created_account"] = True
+            # candidates sharing the lead word or prefixing each other
+            lead = escape_soql_string(_norm_company(company).split(" ")[0] if _norm_company(company) else company)
+            res = await sf.query(
+                f"SELECT Id, Name FROM Account WHERE Name LIKE '{lead}%' LIMIT 10")
+            cands = [{"id": r["Id"], "name": r["Name"]} for r in res.get("records", [])]
+            norm = _norm_company(company)
+            exact_norm = [c for c in cands if _norm_company(c["name"]) == norm]
+            if len(exact_norm) == 1:
+                sf_account_id = exact_norm[0]["id"]      # e.g. 'Acture Solutions, Inc.'
+            elif cands and not force_create_account:
+                raise AccountAmbiguous(company, cands)   # e.g. SF has 'Acture'
+        if not sf_account_id:
+            created = await sf.create_record("Account", {"Name": company})
+            sf_account_id = _rid(created)
+            if not sf_account_id:
+                raise ValueError(f"Salesforce account create failed: {created}")
+            out["created_account"] = True
     out["sf_account_id"] = sf_account_id
 
     # ── Contact (email first — fellows carry personal emails in SF — then
