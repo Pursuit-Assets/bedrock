@@ -6,7 +6,9 @@ export type NotificationType =
   | "project_task_assigned"
   | "comment_mention"
   | "sf_task_assigned"
-  | "sf_opp_owner_changed";
+  | "sf_opp_owner_changed"
+  | "intro_request"
+  | "intro_response";
 
 export type SlackDeliveryStatus =
   | "pending"
@@ -35,6 +37,14 @@ export interface NotificationPayload {
   comment_id?: string | null;
   sf_task_id?: string | null;
   opp_id?: string | null;
+
+  // Intro request fields (intro_request / intro_response).
+  contact_name?: string | null;
+  contact_company?: string | null;
+  ask?: string | null;
+  context?: string | null;
+  status?: string | null;
+  response_note?: string | null;
 
   // SF Task fields surfaced by the poller.
   what_name?: string | null;

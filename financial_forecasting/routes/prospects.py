@@ -12,6 +12,7 @@ from auth import require_auth
 from dependencies import get_mcp_client, require_sf_mcp_client
 from mcp_client import UnifiedMCPClient
 from security import escape_soql_string
+from sf_errors import sf_http_error
 from services.cache import cache
 
 logger = logging.getLogger(__name__)
@@ -193,6 +194,8 @@ async def prospect_import_write_to_crm(
             "created_contacts": created_contacts,
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.exception("Error in prospect_import_write_to_crm")
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise sf_http_error(e, "prospect import")

@@ -137,9 +137,32 @@ async def run_interaction_sync(
     except Exception as e:
         logger.error("jobs-prospect auto-flag failed: %s", e)
 
+    # Candidate pipeline — for external counterparties in this run's activity:
+    # link to an existing/SF-mirrored contact (via the alias index), else create
+    # a review candidate (owner-attributed, company from domain). This is what
+    # makes new people surface automatically as "link or create" without manual
+    # work. Bounded to the recent window (`since_days` or a 7-day default) so the
+    # nightly stays cheap; the address/alias guards make it idempotent.
+    candidates_created = 0
+    candidate_links = 0
+    try:
+        from services.candidate_pipeline import resolve_and_queue_candidates
+        cand_conn = await _get_conn()
+        try:
+            cand_result = await resolve_and_queue_candidates(
+                cand_conn, days_back=(since_days or 7), staff_emails=staff_emails)
+            candidates_created = cand_result.get("candidates_created", 0)
+            candidate_links = cand_result.get("activity_linked", 0)
+        finally:
+            await _release_conn(cand_conn)
+        logger.info("candidate pipeline: created %d candidates, linked %d activity rows",
+                    candidates_created, candidate_links)
+    except Exception as e:
+        logger.error("candidate pipeline failed: %s", e)
+
     logger.info(
-        "interaction sync complete: %d staff, %d gmail, %d calendar, %d domains auto-mapped, %d jobs prospects linked, %d jobs prospects flagged",
-        len(results), total_gmail, total_cal, domains_mapped, prospects_linked, prospects_flagged,
+        "interaction sync complete: %d staff, %d gmail, %d calendar, %d domains auto-mapped, %d jobs prospects linked, %d jobs prospects flagged, %d candidates created",
+        len(results), total_gmail, total_cal, domains_mapped, prospects_linked, prospects_flagged, candidates_created,
     )
     return {
         "staff_count": len(results),
@@ -148,5 +171,7 @@ async def run_interaction_sync(
         "domains_auto_mapped": domains_mapped,
         "jobs_prospects_linked": prospects_linked,
         "jobs_prospects_flagged": prospects_flagged,
+        "candidates_created": candidates_created,
+        "candidate_activity_linked": candidate_links,
         "by_staff": results,
     }

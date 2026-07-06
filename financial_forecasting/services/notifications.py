@@ -65,12 +65,16 @@ TYPE_PROJECT_TASK_ASSIGNED = "project_task_assigned"
 TYPE_COMMENT_MENTION = "comment_mention"
 TYPE_SF_TASK_ASSIGNED = "sf_task_assigned"
 TYPE_SF_OPP_OWNER_CHANGED = "sf_opp_owner_changed"
+TYPE_INTRO_REQUEST = "intro_request"
+TYPE_INTRO_RESPONSE = "intro_response"
 
 ALL_TYPES = {
     TYPE_PROJECT_TASK_ASSIGNED,
     TYPE_COMMENT_MENTION,
     TYPE_SF_TASK_ASSIGNED,
     TYPE_SF_OPP_OWNER_CHANGED,
+    TYPE_INTRO_REQUEST,
+    TYPE_INTRO_RESPONSE,
 }
 
 
@@ -305,6 +309,27 @@ def _format_slack_message(
             headline = ":handshake: *Opportunity ownership changed*"
             if opp_name:
                 section_lines.append(f"*{opp_name}*")
+    elif type == TYPE_INTRO_REQUEST:
+        headline = f":wave: *{actor}* asked you for an intro"
+        if payload.get("contact_name"):
+            who = payload["contact_name"]
+            if payload.get("contact_company"):
+                who += f" ({payload['contact_company']})"
+            section_lines.append(f"*Contact:* *{who}*")
+        if payload.get("ask"):
+            section_lines.append(f"*Ask:* {payload['ask']}")
+        if payload.get("context"):
+            section_lines.append(f"*Context:* {payload['context']}")
+        section_lines.append("Respond from the Jobs home page in Bedrock.")
+    elif type == TYPE_INTRO_RESPONSE:
+        verb = {"accepted": "accepted", "declined": "declined", "completed": "made"}.get(
+            payload.get("status") or "", "updated")
+        headline = f":handshake: *{actor}* {verb} your intro request" if verb != "made" \
+            else f":handshake: *{actor}* made the intro"
+        if payload.get("contact_name"):
+            section_lines.append(f"*Contact:* *{payload['contact_name']}*")
+        if payload.get("response_note"):
+            section_lines.append(f"*Note:* {payload['response_note']}")
     else:
         headline = payload.get("title") or "Bedrock notification"
         sub = payload.get("subtitle") or ""

@@ -2,10 +2,21 @@ import { useMemo, useState } from "react";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as ReTooltip, ResponsiveContainer,
 } from "recharts";
-import { AlertTriangle, Loader2 } from "lucide-react";
+import { AlertTriangle, Loader2, Mail, Calendar } from "lucide-react";
 
 import { SectionCard } from "@/components/detail";
-import { useActivityTrends, type ActivityTrendBucket, type OutreachChannel } from "@/services/jobs";
+import { Drawer } from "@/components/ui/Drawer";
+import {
+  useActivityTrends, useActivityTrendDetail, useJobsStaff,
+  type ActivityTrendBucket, type OutreachChannel,
+} from "@/services/jobs";
+
+const ownerName = (email: string) => {
+  const lp = email.split("@")[0].replace(/[._]/g, " ");
+  return lp.split(" ").map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
+};
+const fmtDay = (iso: string | null) =>
+  iso ? new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric" }) : "";
 
 const NEW_COLOR = "#4242EA";       // new accounts (activation)
 const EXISTING_COLOR = "#C7C7F5";  // existing accounts
@@ -24,10 +35,17 @@ function fmtPeriod(iso: string, gran: "week" | "month"): string {
 export function ActivityTrends() {
   const [gran, setGran] = useState<"week" | "month">("week");
   const [channel, setChannel] = useState<OutreachChannel>("all");
-  const { data, isLoading, isError, refetch } = useActivityTrends(gran, channel);
+  const [owner, setOwner] = useState<string>("");          // "" = whole jobs team
+  const [openPeriod, setOpenPeriod] = useState<string | null>(null);
+  const { data, isLoading, isError, refetch } = useActivityTrends(gran, channel, owner || undefined);
+  const { data: staff = [] } = useJobsStaff();
 
   const chartData = useMemo(
     () => (data?.buckets ?? []).map((b: ActivityTrendBucket) => ({ ...b, label: fmtPeriod(b.period, gran) })),
+    [data, gran],
+  );
+  const labelToPeriod = useMemo(
+    () => Object.fromEntries((data?.buckets ?? []).map((b) => [fmtPeriod(b.period, gran), b.period])),
     [data, gran],
   );
 
@@ -37,6 +55,11 @@ export function ActivityTrends() {
       storageScope="jobs"
       action={
         <div className="flex items-center gap-2">
+          <select value={owner} onChange={(e) => setOwner(e.target.value)}
+            className="h-7 rounded-md border border-border-strong bg-surface px-2 text-[11.5px] text-ink-2 outline-none focus:border-accent">
+            <option value="">All team</option>
+            {staff.map((s) => <option key={s.email} value={s.email}>{s.name || ownerName(s.email)}</option>)}
+          </select>
           <Toggle value={channel} onChange={(v) => setChannel(v as OutreachChannel)}
                   opts={[["all", "All"], ["email", "Email"], ["meeting", "Meetings"]]} />
           <Toggle value={gran} onChange={(v) => setGran(v as "week" | "month")}
@@ -66,25 +89,66 @@ export function ActivityTrends() {
           ) : null}
 
           <ResponsiveContainer width="100%" height={240}>
-            <BarChart data={chartData} barSize={gran === "week" ? 18 : 30} margin={{ top: 6, right: 8, bottom: 0, left: -18 }}>
+            <BarChart data={chartData} barSize={gran === "week" ? 18 : 30} margin={{ top: 6, right: 8, bottom: 0, left: -18 }}
+              onClick={(s: any) => { const lbl = s?.activeLabel; if (lbl && labelToPeriod[lbl]) setOpenPeriod(labelToPeriod[lbl]); }}>
               <CartesianGrid vertical={false} stroke="var(--color-border)" />
               <XAxis dataKey="label" tick={{ fontSize: 11 }} stroke="var(--color-ink-3)" />
               <YAxis tick={{ fontSize: 11 }} stroke="var(--color-ink-3)" allowDecimals={false} />
-              <ReTooltip contentStyle={{ fontSize: 12, borderRadius: 8, border: "1px solid var(--color-border)" }} />
-              <Bar dataKey="new" name="New accounts" stackId="a" fill={NEW_COLOR} />
-              <Bar dataKey="existing" name="Existing accounts" stackId="a" fill={EXISTING_COLOR} radius={[3, 3, 0, 0]} />
+              <ReTooltip cursor={{ fill: "var(--color-surface-2)" }} contentStyle={{ fontSize: 12, borderRadius: 8, border: "1px solid var(--color-border)" }} />
+              <Bar dataKey="new" name="New accounts" stackId="a" fill={NEW_COLOR} className="cursor-pointer" />
+              <Bar dataKey="existing" name="Existing accounts" stackId="a" fill={EXISTING_COLOR} radius={[3, 3, 0, 0]} className="cursor-pointer" />
             </BarChart>
           </ResponsiveContainer>
+          <p className="-mt-1 text-[10.5px] text-ink-4">Click a bar to see who was reached out to that {gran}.</p>
           <div className="flex flex-wrap items-center gap-4 pl-1">
             <Legend color={NEW_COLOR} label="New accounts (first activated this period)" />
             <Legend color={EXISTING_COLOR} label="Existing accounts" />
           </div>
           <p className="text-[11px] text-ink-4">
-            Account-level outreach by Avni &amp; Damon (email, meetings, manual logs), counted once per account per period.
+            Account-level outreach by {owner ? ownerName(owner) : "the jobs team"} (email, meetings, manual logs), counted once per account per period.
           </p>
         </div>
       )}
+      <OutreachDetailDrawer period={openPeriod} gran={gran} channel={channel} owner={owner} onClose={() => setOpenPeriod(null)} />
     </SectionCard>
+  );
+}
+
+function OutreachDetailDrawer({ period, gran, channel, owner, onClose }: {
+  period: string | null; gran: "week" | "month"; channel: OutreachChannel; owner: string; onClose: () => void;
+}) {
+  const { data, isLoading } = useActivityTrendDetail(period, gran, channel, owner || undefined);
+  return (
+    <Drawer open={period != null} onClose={onClose}
+      title={period ? `Outreach · ${fmtPeriod(period, gran)}` : "Outreach"}
+      subtitle={data ? `${data.total_touches} touches · ${data.total_accounts} accounts${owner ? ` · ${ownerName(owner)}` : ""}` : undefined}
+      width={620}>
+      {isLoading || !data ? (
+        <div className="flex items-center gap-2 p-6 text-[13px] text-ink-3"><Loader2 size={15} className="animate-spin" /> Loading…</div>
+      ) : data.accounts.length === 0 ? (
+        <div className="p-6 text-[13px] text-ink-3">No outreach in this period.</div>
+      ) : (
+        <div className="flex flex-col gap-3 p-4">
+          {data.accounts.map((acc) => (
+            <div key={acc.account} className="overflow-hidden rounded-lg border border-border-strong bg-surface">
+              <div className="flex items-center justify-between bg-surface-2/60 px-3 py-1.5">
+                <span className="text-[12.5px] font-semibold text-ink">{acc.account}</span>
+                <span className="text-[11px] tabular-nums text-ink-4">{acc.touches.length}</span>
+              </div>
+              {acc.touches.map((t) => (
+                <div key={t.activity_id} className="flex items-start gap-2 border-t border-border-strong px-3 py-1.5">
+                  {t.channel === "meeting" ? <Calendar size={12} className="mt-0.5 shrink-0 text-ink-4" /> : <Mail size={12} className="mt-0.5 shrink-0 text-ink-4" />}
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-[12px] text-ink">{t.contact || "—"}{t.subject ? <span className="text-ink-4"> · {t.subject}</span> : ""}</div>
+                  </div>
+                  <span className="shrink-0 text-[10.5px] tabular-nums text-ink-4">{fmtDay(t.date)}</span>
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
+    </Drawer>
   );
 }
 

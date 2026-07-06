@@ -213,6 +213,7 @@ export interface JobContactWithDeal extends JobContact {
   connected_staff_names?: string[];
   recent_activity_count?: number;
   last_activity_at?: string | null;
+  first_activity_at?: string | null;
   responded?: boolean;
   activity_actors?: string[];
   open_tasks?: number;
@@ -372,6 +373,7 @@ export interface JobsAccount {
   open_tasks?: number;
   recent_activity_count?: number;
   last_activity_at?: string | null;
+  first_activity_at?: string | null;
   responded?: boolean;
   /** Jobs-team members (emails) who have touched this account — for the team filter. */
   activity_actors?: string[];
@@ -393,6 +395,20 @@ export function useJobsAccounts(dealType?: string) {
       return data.data;
     },
     staleTime: 60_000,
+  });
+}
+
+export interface JobsAccountName { account_key: string; account: string }
+/** Lightweight account names for dropdowns — avoids the full /accounts payload
+ *  (which nests every prospect, ~38k rows). */
+export function useJobsAccountNames() {
+  return useQuery<JobsAccountName[]>({
+    queryKey: ["jobs", "account-names"],
+    queryFn: async () => {
+      const { data } = await api.get<ApiResponse<JobsAccountName[]>>("/api/jobs/accounts/names");
+      return data.data ?? [];
+    },
+    staleTime: 5 * 60_000,
   });
 }
 
@@ -797,13 +813,32 @@ export interface ActivityTrends {
   coverage_note: string | null;
 }
 
-export function useActivityTrends(granularity: "week" | "month", channel: OutreachChannel) {
+export function useActivityTrends(granularity: "week" | "month", channel: OutreachChannel, owner?: string) {
   return useQuery<ActivityTrends>({
-    queryKey: ["jobs", "activity-trends", granularity, channel],
+    queryKey: ["jobs", "activity-trends", granularity, channel, owner ?? "team"],
     queryFn: async () => {
-      const { data } = await api.get<ApiResponse<ActivityTrends>>(
-        `/api/jobs/activity-trends?granularity=${granularity}&channel=${channel}`,
-      );
+      const p = new URLSearchParams({ granularity, channel });
+      if (owner) p.set("owner", owner);
+      const { data } = await api.get<ApiResponse<ActivityTrends>>(`/api/jobs/activity-trends?${p}`);
+      return data.data;
+    },
+    staleTime: 60_000,
+  });
+}
+
+export interface OutreachTouch { activity_id: string; contact_id: number | null; contact: string | null; subject: string | null; channel: string; date: string | null }
+export interface OutreachAccountDetail { account: string; touches: OutreachTouch[] }
+export interface ActivityTrendDetail { period: string; accounts: OutreachAccountDetail[]; total_touches: number; total_accounts: number }
+
+/** Drill-down for a clicked outreach bar. `period` null = disabled (no fetch). */
+export function useActivityTrendDetail(period: string | null, granularity: "week" | "month", channel: OutreachChannel, owner?: string) {
+  return useQuery<ActivityTrendDetail>({
+    enabled: !!period,
+    queryKey: ["jobs", "activity-trend-detail", period, granularity, channel, owner ?? "team"],
+    queryFn: async () => {
+      const p = new URLSearchParams({ period: period!, granularity, channel });
+      if (owner) p.set("owner", owner);
+      const { data } = await api.get<ApiResponse<ActivityTrendDetail>>(`/api/jobs/activity-trends/detail?${p}`);
       return data.data;
     },
     staleTime: 60_000,
@@ -991,6 +1026,313 @@ export function useUpdateContact() {
       toast.success("Contact updated");
     },
     onError: () => toast.error("Update failed"),
+  });
+}
+
+// ── Email-review candidates (Home page queue) ─────────────────────────────────
+export interface JobCandidate {
+  contact_id: number;
+  full_name: string | null;
+  email: string;
+  current_company: string | null;
+  current_title: string | null;
+  domain?: string | null;
+  suggested_account?: string | null;
+  ai_name?: string | null;
+  ai_company?: string | null;
+  ai_confidence?: "high" | "medium" | "low" | null;
+  is_employer_contact?: boolean | null;
+  dup_count?: number;
+  enriched?: boolean;
+  email_count: number;
+  owners?: string[];
+  channels?: string[];
+  tier?: string | null;
+  last_email: string | null;
+  last_subject: string | null;
+}
+export interface DuplicateContact { contact_id: number; full_name: string | null; current_company: string | null; current_title: string | null }
+
+export interface AccountSuggestion {
+  account_key: string | null;
+  account_name: string | null;
+  sf_account_id: string | null;
+  confidence: "high" | "medium" | "low";
+  in_pipeline: boolean;
+  reason: string;
+}
+export interface CandidateEmail {
+  id: string;
+  subject: string | null;
+  email_from: string | null;
+  email_to: string[] | null;
+  snippet: string | null;
+  body: string | null;
+  type: string | null;
+  source: string | null;
+  activity_date: string | null;
+}
+export interface CandidateDetail {
+  contact: { contact_id: number; full_name: string | null; email: string; current_company: string | null; current_title: string | null; linkedin_url: string | null };
+  enrichment: CandidateEnrichment | null;
+  suggested_account: AccountSuggestion | null;
+  possible_duplicates: DuplicateContact[];
+  emails: CandidateEmail[];
+}
+export interface CandidateEnrichment {
+  full_name?: string | null;
+  title?: string | null;
+  company?: string | null;
+  linkedin_url?: string | null;
+  is_employer_contact?: boolean;
+  confidence?: "high" | "medium" | "low";
+  reasoning?: string;
+  possible_duplicates?: { contact_id: number; full_name: string | null; current_company: string | null; current_title: string | null }[];
+  error?: string;
+}
+
+export function useCandidates(owner?: string) {
+  return useQuery({
+    queryKey: ["jobs", "candidates", owner ?? "all"],
+    queryFn: async (): Promise<JobCandidate[]> => {
+      const { data } = await api.get<ApiResponse<JobCandidate[]>>("/api/jobs/candidates", {
+        params: owner ? { owner } : undefined,
+      });
+      return data.data ?? [];
+    },
+    staleTime: 30_000,
+  });
+}
+
+export interface NetworkConnection {
+  contact_id: number; full_name: string | null; current_title: string | null;
+  current_company: string | null; email: string | null; linkedin_url: string | null;
+  is_jobs_contact: boolean; relationship_strength: string | null;
+  connected_date: string | null;
+  activity_count: number; last_activity: string | null; last_channel: string | null;
+  my_activity_count: number; my_last_activity: string | null;
+  warm: boolean;      // this staff member has touched their connection
+  touched: boolean;   // anyone at Pursuit has activity with them
+  co_connections: number; company_hired_before: boolean; has_open_opp: boolean;
+  status: string; status_reason: string | null;
+}
+export interface MyNetwork { mapped: boolean; total: number; connections: NetworkConnection[]; message?: string }
+export function useMyNetwork(q?: string) {
+  return useQuery<MyNetwork>({
+    queryKey: ["jobs", "my-network", q ?? ""],
+    queryFn: async () => {
+      // limit=2000 (server max) — the default 500 silently hid connections for
+      // anyone with a bigger network ("total 647, loaded 500").
+      const { data } = await api.get<ApiResponse<MyNetwork>>("/api/jobs/my-network", { params: { limit: 2000, ...(q ? { q } : {}) } });
+      return data.data;
+    },
+    staleTime: 60_000,
+  });
+}
+
+export function useSetConnectionStatus() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (body: { contact_id: number; status: string; reason?: string; note?: string }) => {
+      const { data } = await api.patch<ApiResponse<unknown>>("/api/jobs/my-network/status", body);
+      return data.data;
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["jobs", "my-network"] }),
+  });
+}
+
+// ── Intro requests (staff→staff asks + Sputnik builder asks surfaced) ────────
+export interface IntroRequest {
+  id: string;
+  source: "staff" | "builder";
+  contact_id: number; contact_name: string | null;
+  contact_company: string | null; contact_title: string | null;
+  connector_staff_id: number; connector_name: string | null; connector_email: string | null;
+  requested_by: string | null; requested_by_name?: string | null;
+  specific_ask: string | null; context: string | null;
+  status: string; response_note: string | null;
+  responded_at: string | null; created_at: string | null;
+}
+export function useIntroRequests(box: "inbox" | "sent" | "all" = "inbox", includeClosed = false) {
+  return useQuery<IntroRequest[]>({
+    queryKey: ["jobs", "intro-requests", box, includeClosed],
+    queryFn: async () => {
+      const { data } = await api.get<ApiResponse<IntroRequest[]>>("/api/jobs/intro-requests", {
+        params: { box, include_closed: includeClosed },
+      });
+      return data.data ?? [];
+    },
+    staleTime: 30_000,
+  });
+}
+export interface ContactConnector {
+  staff_user_id: number; display_name: string | null; email: string;
+  connected_date: string | null; has_pending_request: boolean;
+}
+export function useContactConnectors(contactId: number | null) {
+  return useQuery<ContactConnector[]>({
+    queryKey: ["jobs", "contact-connectors", contactId],
+    queryFn: async () => {
+      const { data } = await api.get<ApiResponse<ContactConnector[]>>(`/api/jobs/contacts/${contactId}/connectors`);
+      return data.data ?? [];
+    },
+    enabled: contactId != null,
+    staleTime: 60_000,
+  });
+}
+export function useCreateIntroRequest() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (body: { contact_id: number; connector_staff_id: number; specific_ask?: string; context?: string }) => {
+      const { data } = await api.post<ApiResponse<{ id: string }>>("/api/jobs/intro-requests", body);
+      return data.data;
+    },
+    onSuccess: (_d, vars) => {
+      qc.invalidateQueries({ queryKey: ["jobs", "intro-requests"] });
+      qc.invalidateQueries({ queryKey: ["jobs", "contact-connectors", vars.contact_id] });
+      toast.success("Intro request sent");
+    },
+    onError: (e: unknown) => {
+      const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      toast.error(typeof detail === "string" ? detail : "Failed to send intro request");
+    },
+  });
+}
+export function useRespondIntroRequest() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (body: { id: string; status: string; response_note?: string; source: "staff" | "builder" }) => {
+      const { id, ...rest } = body;
+      const { data } = await api.patch<ApiResponse<unknown>>(`/api/jobs/intro-requests/${id}`, rest);
+      return data.data;
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["jobs", "intro-requests"] }),
+    onError: () => toast.error("Failed to update intro request"),
+  });
+}
+
+export interface CandidateOwner { owner: string; count: number }
+export function useCandidateOwners() {
+  return useQuery({
+    queryKey: ["jobs", "candidate-owners"],
+    queryFn: async (): Promise<CandidateOwner[]> => {
+      const { data } = await api.get<ApiResponse<CandidateOwner[]>>("/api/jobs/candidates/owners");
+      return data.data ?? [];
+    },
+    staleTime: 60_000,
+  });
+}
+
+export function useCandidateDetail(contactId: number | null) {
+  return useQuery({
+    queryKey: ["jobs", "candidate", contactId],
+    queryFn: async (): Promise<CandidateDetail> => {
+      const { data } = await api.get<ApiResponse<CandidateDetail>>(`/api/jobs/candidates/${contactId}`);
+      return data.data;
+    },
+    enabled: contactId != null,
+  });
+}
+
+/** Force a fresh AI enrichment pass (persisted). Normally pre-computed in batch. */
+export function useEnrichCandidate() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (contactId: number) => {
+      const { data } = await api.post<ApiResponse<unknown>>(`/api/jobs/candidates/${contactId}/enrich`, {});
+      return data.data;
+    },
+    onSuccess: (_d, contactId) => {
+      qc.invalidateQueries({ queryKey: ["jobs", "candidate", contactId] });
+      qc.invalidateQueries({ queryKey: ["jobs", "candidates"] });
+    },
+  });
+}
+
+export interface SfContactMatch {
+  sf_contact_id: string;
+  name: string | null;
+  title: string | null;
+  account_id: string | null;
+  account_name: string | null;
+}
+
+/** Look this candidate's email up in Salesforce (Email/Home/Work). */
+export function useCandidateSfMatch(contactId: number | null) {
+  return useQuery({
+    queryKey: ["jobs", "candidate-sf", contactId],
+    queryFn: async (): Promise<{ match: SfContactMatch | null; error?: string }> => {
+      const { data } = await api.get<ApiResponse<{ match: SfContactMatch | null; error?: string }>>(`/api/jobs/candidates/${contactId}/sf-match`);
+      return data.data;
+    },
+    enabled: contactId != null,
+    retry: false,
+  });
+}
+
+/** Approve a Salesforce match: import the SF contact to the pipeline + link. */
+export function useLinkCandidateSf() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, match }: { id: number; match: SfContactMatch }) => {
+      const { data } = await api.post<ApiResponse<unknown>>(`/api/jobs/candidates/${id}/link-sf`, {
+        sf_contact_id: match.sf_contact_id, name: match.name, account_name: match.account_name,
+        account_id: match.account_id, title: match.title,
+      });
+      return data.data;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["jobs", "candidates"] });
+      qc.invalidateQueries({ queryKey: ["jobs", "contacts"] });
+      toast.success("Linked to Salesforce contact + added to pipeline");
+    },
+    onError: () => toast.error("Link failed"),
+  });
+}
+
+/** Approve a duplicate match: re-point this candidate's emails onto an existing
+ *  contact and retire the candidate (one-click merge). */
+export function useLinkCandidate() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, target }: { id: number; target: number }) => {
+      const { data } = await api.post<ApiResponse<unknown>>(`/api/jobs/candidates/${id}/link`, { target_contact_id: target });
+      return data.data;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["jobs", "candidates"] });
+      qc.invalidateQueries({ queryKey: ["jobs", "contacts"] });
+      toast.success("Linked to existing contact");
+    },
+    onError: () => toast.error("Link failed"),
+  });
+}
+
+export function usePromoteCandidate() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, ...body }: { id: number; full_name?: string; current_company?: string; current_title?: string; contact_stage?: string }) => {
+      const { data } = await api.post<ApiResponse<unknown>>(`/api/jobs/candidates/${id}/promote`, body);
+      return data.data;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["jobs", "candidates"] });
+      qc.invalidateQueries({ queryKey: ["jobs", "contacts"] });
+      toast.success("Added to pipeline");
+    },
+    onError: () => toast.error("Promote failed"),
+  });
+}
+
+export function useDismissCandidate() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: number) => { await api.post(`/api/jobs/candidates/${id}/dismiss`); },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["jobs", "candidates"] });
+      toast.success("Dismissed");
+    },
+    onError: () => toast.error("Dismiss failed"),
   });
 }
 

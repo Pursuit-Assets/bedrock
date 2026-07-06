@@ -468,7 +468,20 @@ function AddContactModal({
       });
       onClose();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to create contact.");
+      // Backend returns 409 { detail: { error:'duplicate_contact', message, existing:[...] } }
+      // when Salesforce duplicate rules reject the contact — surface the friendly
+      // message + the existing match instead of a raw "status code 500/409".
+      const detail = (err as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail;
+      if (detail && typeof detail === "object" && (detail as { error?: string }).error === "duplicate_contact") {
+        const d = detail as { message?: string; existing?: { name?: string; email?: string; account?: string }[] };
+        const first = d.existing?.[0];
+        setError(
+          (d.message || "This contact already exists in Salesforce.") +
+          (first ? ` Existing: ${first.name ?? ""}${first.email ? ` (${first.email})` : ""}${first.account ? ` · ${first.account}` : ""}.` : ""),
+        );
+      } else {
+        setError(err instanceof Error ? err.message : "Failed to create contact.");
+      }
     }
   };
 

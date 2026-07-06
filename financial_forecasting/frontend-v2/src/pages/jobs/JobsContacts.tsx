@@ -92,7 +92,7 @@ function extract(c: JobContactWithDeal, key: ColKey): string | number {
 }
 
 // ── filters + grouping ─────────────────────────────────────────────────────────
-type Field = "name" | "title" | "company" | "stage" | "has_deal" | "connected" | "last_activity";
+type Field = "name" | "title" | "company" | "stage" | "has_deal" | "connected" | "last_activity" | "first_contact_date" | "last_contact_date";
 const FILTERABLE: Record<Field, FieldMeta<JobContactWithDeal>> = {
   name: { label: "Name", type: "text", getValue: (c) => c.full_name ?? "" },
   title: { label: "Title", type: "text", getValue: (c) => c.current_title ?? "" },
@@ -104,6 +104,9 @@ const FILTERABLE: Record<Field, FieldMeta<JobContactWithDeal>> = {
   connected: { label: "Connected staff", type: "text", getValue: (c) => (c.connected_staff_names ?? []).join(", ") },
   // Top-of-funnel triage: filter by activity recency (Last 7/30/90 days dropdown).
   last_activity: { label: "Last activity", type: "recency", getValue: (c) => c.last_activity_at ?? "" },
+  // Exact-date windows on the touch history (before/after a calendar date).
+  first_contact_date: { label: "Initial outreach date", type: "date", getValue: (c) => c.first_activity_at ?? "" },
+  last_contact_date: { label: "Last contact date", type: "date", getValue: (c) => c.last_activity_at ?? "" },
 };
 const GROUP_OPTIONS = [
   { value: "", label: "No grouping" },
@@ -236,7 +239,17 @@ export function JobsContacts({ initialQuery, initialContactId }: { initialQuery?
   const searchResults = globalSearchResults ?? [];
   const { mutate: addContactToJobs } = useAddContactToJobs();
 
-  const { data: rawData, isLoading, isError, refetch } = useJobsContacts({ limit: 500 });
+  // Server-side search: the table only loads the first 500 pipeline contacts,
+  // so the search box must query the SERVER (all contacts), not just filter
+  // the loaded page — otherwise anyone past row 500 is unfindable. Debounced
+  // so we don't refetch per keystroke; client-side filtering still applies on
+  // top for instant narrowing.
+  const [debouncedQuery, setDebouncedQuery] = useState(initialQuery ?? "");
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedQuery(query.trim()), 300);
+    return () => clearTimeout(t);
+  }, [query]);
+  const { data: rawData, isLoading, isError, refetch } = useJobsContacts({ limit: 500, search: debouncedQuery || undefined });
   const allContacts: JobContactWithDeal[] = useMemo(() => rawData?.data ?? [], [rawData]);
 
   const openContact = useCallback((result: ContactSearchResult) => {

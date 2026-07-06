@@ -25,6 +25,7 @@ from models import (
 )
 from routes.permissions import check_permission
 from security import escape_soql_string
+from sf_errors import sf_http_error
 
 logger = logging.getLogger(__name__)
 
@@ -123,7 +124,7 @@ async def activity_sync_count(
         )
     except Exception as e:
         logger.error(f"Error counting SF activities: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise sf_http_error(e, "activity count")
 
 
 # ---------------------------------------------------------------------------
@@ -310,10 +311,26 @@ async def activity_match_context(
                 if tier2_accounts:
                     match_tier = 2
                     for acct in tier2_accounts:
-                        # Get contacts for this account
+                        # Get contacts for this account. Org accounts link
+                        # people via npe5__Affiliation__c, not Contact.AccountId
+                        # (the Household) — resolve affiliated ids first, then
+                        # OR them in (SOQL forbids semi-join + OR).
+                        safe_acct_id = escape_soql_string(acct["Id"])
+                        contact_where = f"AccountId = '{safe_acct_id}'"
+                        try:
+                            aff = await salesforce.query(
+                                f"SELECT npe5__Contact__c FROM npe5__Affiliation__c "
+                                f"WHERE npe5__Organization__c = '{safe_acct_id}' AND npe5__Contact__c != null"
+                            )
+                            aff_ids = [r["npe5__Contact__c"] for r in aff.get("records", []) if r.get("npe5__Contact__c")]
+                            if aff_ids:
+                                id_list = ", ".join(f"'{i}'" for i in aff_ids[:2000])
+                                contact_where = f"(AccountId = '{safe_acct_id}' OR Id IN ({id_list}))"
+                        except Exception:
+                            pass
                         acct_contacts = await salesforce.query(
                             f"SELECT Id, Name, Email, Title FROM Contact "
-                            f"WHERE AccountId = '{acct['Id']}' LIMIT 20"
+                            f"WHERE {contact_where} LIMIT 20"
                         )
                         for c in acct_contacts.get("records", []):
                             # Rank by name similarity if name provided
@@ -390,9 +407,11 @@ async def activity_match_context(
             },
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Match-context error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise sf_http_error(e, "match lookup")
 
 
 # ---------------------------------------------------------------------------
@@ -534,9 +553,21 @@ async def list_account_activities_full(
         )
         opp_map = {r["Id"]: r["Name"] for r in opp_res.get("records", [])}
 
-        contact_res = await sf.query(
-            f"SELECT Id, Name FROM Contact WHERE AccountId = '{escape_soql_string(account_id)}'"
-        )
+        # NPSP: org accounts link contacts via npe5__Affiliation__c, not
+        # Contact.AccountId (the Household). Resolve affiliated ids first, then
+        # match AccountId OR Id IN (...) — SOQL forbids semi-join + OR.
+        aff_where = f"AccountId = '{escape_soql_string(account_id)}'"
+        try:
+            aff = await sf.query(
+                f"SELECT npe5__Contact__c FROM npe5__Affiliation__c "
+                f"WHERE npe5__Organization__c = '{escape_soql_string(account_id)}' AND npe5__Contact__c != null")
+            aff_ids = [r["npe5__Contact__c"] for r in aff.get("records", []) if r.get("npe5__Contact__c")]
+            if aff_ids:
+                id_list = ", ".join(f"'{i}'" for i in aff_ids[:2000])
+                aff_where = f"(AccountId = '{escape_soql_string(account_id)}' OR Id IN ({id_list}))"
+        except Exception:
+            pass
+        contact_res = await sf.query(f"SELECT Id, Name FROM Contact WHERE {aff_where}")
         contact_map = {r["Id"]: r["Name"] for r in contact_res.get("records", [])}
     except Exception as e:
         logger.warning(f"SF lookup for account {account_id} failed, falling back to account-only: {e}")

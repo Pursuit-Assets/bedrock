@@ -22,6 +22,7 @@ from dependencies import get_mcp_client
 from mcp_client import UnifiedMCPClient
 from models import ApiResponse
 from security import validate_salesforce_id
+from sf_errors import sf_http_error
 from services.crm_parser import parse_crm_message, get_opp_cache
 
 logger = logging.getLogger(__name__)
@@ -535,9 +536,11 @@ async def approve_review(
         item["approved_by"] = user.get("user_id", "unknown")
         return ApiResponse(success=True, data=item)
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed to apply CRM update {item_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise sf_http_error(e, "CRM update")
 
 
 # ---------------------------------------------------------------------------

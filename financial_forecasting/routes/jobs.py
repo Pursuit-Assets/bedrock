@@ -9,6 +9,7 @@
 """
 
 import logging
+import re
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 from uuid import UUID
@@ -18,6 +19,9 @@ from pydantic import BaseModel
 
 from auth import require_auth
 from db import get_db
+from dependencies import get_mcp_client, require_sf_mcp_client
+from sf_errors import sf_http_error
+from services.placement_sf import sync_placement_to_sf, record_sync_error, NotEligible
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
@@ -973,6 +977,7 @@ async def hire_into_role(
     body: RoleHire,
     user=Depends(require_auth),
     conn=Depends(get_db),
+    client=Depends(get_mcp_client),
 ):
     """Fill a role: create the employment_record placement and mark the role filled."""
     role = await conn.fetchrow("SELECT * FROM bedrock.jobs_role WHERE id=$1", role_id)
@@ -1010,7 +1015,78 @@ async def hire_into_role(
             """,
             body.user_id, new_id, role_id,
         )
-    return {"success": True, "data": {"role": _role_dict(updated), "employment_record_id": new_id}}
+
+    # Mirror the placement into Salesforce (fellow contact + account +
+    # affiliation) — best-effort so a SF hiccup never blocks the hire; the
+    # failure is recorded and retryable via POST /placements/{id}/sync-sf.
+    sf_sync: dict = {"status": "skipped", "message": "Salesforce not connected — sync from the placement later."}
+    try:
+        if client and "salesforce" in (client.connected_services or []):
+            result = await sync_placement_to_sf(conn, client.salesforce, new_id)
+            sf_sync = {"status": "synced", **result}
+        else:
+            await record_sync_error(conn, new_id, "Salesforce not connected at hire time")
+    except NotEligible as ne:
+        await record_sync_error(conn, new_id, str(ne), status="skipped")
+        sf_sync = {"status": "skipped", "message": str(ne)}
+    except ValueError as ve:
+        await record_sync_error(conn, new_id, str(ve))
+        sf_sync = {"status": "needs_info", "message": str(ve)}
+    except Exception as e:  # noqa: BLE001 — never fail the hire on SF errors
+        logger.warning(f"placement SF sync failed for er {new_id}: {e}")
+        await record_sync_error(conn, new_id, str(e))
+        sf_sync = {"status": "error", "message": str(e)}
+
+    return {"success": True, "data": {"role": _role_dict(updated), "employment_record_id": new_id, "sf_sync": sf_sync}}
+
+
+@router.post("/placements/{employment_record_id}/sync-sf")
+async def sync_placement_sf(
+    employment_record_id: int,
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+    client=Depends(require_sf_mcp_client),
+):
+    """(Re)sync one placement to Salesforce — creates the fellow contact,
+    the employer account, and the affiliation as needed."""
+    try:
+        result = await sync_placement_to_sf(conn, client.salesforce, employment_record_id)
+    except NotEligible as ne:
+        await record_sync_error(conn, employment_record_id, str(ne), status="skipped")
+        return {"success": True, "data": {"status": "skipped", "reason": str(ne)}}
+    except ValueError as ve:
+        await record_sync_error(conn, employment_record_id, str(ve))
+        raise HTTPException(400, str(ve))
+    except HTTPException:
+        raise
+    except Exception as e:
+        await record_sync_error(conn, employment_record_id, str(e))
+        raise sf_http_error(e, "placement sync")
+    return {"success": True, "data": result}
+
+
+@router.get("/placements/sf-sync-status")
+async def placements_sf_sync_status(
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Sync state for every placement — deal-linked or not; skipped rows
+    carry the paid-work policy reason."""
+    rows = await conn.fetch(
+        """SELECT er.id AS employment_record_id, er.role_title, er.company_name, er.start_date,
+                  er.employment_type, er.payment_amount, (er.opportunity_id IS NOT NULL) AS deal_linked,
+                  b.full_name AS builder_name,
+                  s.status, s.error, s.sf_contact_id, s.sf_account_id, s.sf_affiliation_id, s.synced_at
+           FROM public.employment_records er
+           LEFT JOIN bedrock.placement_sf_sync s ON s.employment_record_id = er.id
+           LEFT JOIN LATERAL bedrock.builder_by_id(er.user_id) b ON true
+           ORDER BY er.created_at DESC""")
+    return {"success": True, "data": [{
+        **dict(r),
+        "start_date": r["start_date"].isoformat() if r["start_date"] else None,
+        "synced_at": r["synced_at"].isoformat() if r["synced_at"] else None,
+        "status": r["status"] or "pending",
+    } for r in rows]}
 
 
 # ── Builder activity on an opportunity ────────────────────────────────────────
@@ -1627,10 +1703,35 @@ def _team_actor(alias: str = "a") -> str:
     return "(" + " OR ".join(conds) + ")"
 
 
+_SAFE_EMAIL = re.compile(r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$")
+
+
+def _engaged_clause(alias: str = "c") -> str:
+    """SQL boolean: this contact is 'engaged' — worth showing in the default
+    pipeline views — vs a cold LinkedIn import we've never touched. Engaged =
+    not a bare linkedin_import, OR has any activity, OR is linked to Salesforce.
+    Keeps default lists ~15k instead of ~47k; pass scope=all to drop it."""
+    return (
+        f"({alias}.source IS DISTINCT FROM 'linkedin_import' "
+        f"OR EXISTS(SELECT 1 FROM bedrock.activity a WHERE a.participant_public_contact_id={alias}.contact_id AND a.deleted_at IS NULL) "
+        f"OR EXISTS(SELECT 1 FROM bedrock.sf_contact_link l WHERE l.public_contact_id={alias}.contact_id))"
+    )
+
+
+def _actor_sql(alias: str, owner: Optional[str]) -> str:
+    """Actor filter for the outreach trends/detail. With `owner` (a single,
+    validated staff email) it scopes to that person; otherwise the whole jobs
+    team. `owner` is regex-validated so it's safe to interpolate into the ILIKE."""
+    if owner and _SAFE_EMAIL.match(owner):
+        return f"({alias}.email_from ILIKE '%{owner}%' OR {alias}.logged_by ILIKE '%{owner}%')"
+    return _team_actor(alias)
+
+
 @router.get("/activity-trends")
 async def activity_trends(
     granularity: str = Query("week", pattern="^(week|month)$"),
     channel: str = Query("all", pattern="^(all|email|meeting)$"),
+    owner: Optional[str] = Query(None, description="Scope to one staff email (else whole jobs team)"),
     user=Depends(require_auth),
     conn=Depends(get_db),
 ):
@@ -1644,7 +1745,7 @@ async def activity_trends(
     `granularity` = week | month; trailing 12 buckets, zero-filled.
     """
     periods = 12
-    actor = _team_actor("a")
+    actor = _actor_sql("a", owner)
     chan_sql = (
         "CASE WHEN a.source='calendar-sync' OR a.type='meeting' THEN 'meeting' "
         "WHEN a.type IN ('email') OR a.source='gmail-sync' THEN 'email' ELSE 'other' END"
@@ -1738,6 +1839,71 @@ async def activity_trends(
             ),
         },
     }
+
+
+@router.get("/activity-trends/detail")
+async def activity_trends_detail(
+    period: str = Query(..., description="Bucket start date (ISO, the bar's period)"),
+    granularity: str = Query("week", pattern="^(week|month)$"),
+    channel: str = Query("all", pattern="^(all|email|meeting)$"),
+    owner: Optional[str] = Query(None),
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Drill-down for one outreach bar: the individual account-touches in that
+    period (account + contact + subject + date + channel), so clicking a bar
+    shows exactly who was reached out to. Mirrors /activity-trends' actor +
+    account-mapping logic, scoped to the single bucket."""
+    try:
+        pstart = date.fromisoformat(period)
+    except ValueError:
+        raise HTTPException(400, "period must be ISO date")
+    actor = _actor_sql("a", owner)
+    chan_sql = (
+        "CASE WHEN a.source='calendar-sync' OR a.type='meeting' THEN 'meeting' "
+        "WHEN a.type IN ('email') OR a.source='gmail-sync' THEN 'email' ELSE 'other' END"
+    )
+    rows = await conn.fetch(f"""
+        WITH team_act AS (
+          SELECT a.id, a.activity_date, a.subject, a.participant_public_contact_id AS cid,
+                 a.email_to, a.email_cc, a.meeting_attendees, {chan_sql} AS channel
+          FROM bedrock.activity a
+          WHERE a.deleted_at IS NULL AND {actor}
+            AND date_trunc('{granularity}', a.activity_date) = date_trunc('{granularity}', $1::timestamptz)
+        ),
+        touch_contact AS (
+          SELECT id, activity_date, subject, channel, cid AS contact_id FROM team_act WHERE cid IS NOT NULL
+          UNION
+          SELECT t.id, t.activity_date, t.subject, t.channel, c.contact_id
+          FROM team_act t, unnest(coalesce(t.email_to,'{{}}') || coalesce(t.email_cc,'{{}}')) e
+          JOIN public.contacts c ON lower(c.email) = lower(e)
+          WHERE t.channel = 'email'
+          UNION
+          SELECT t.id, t.activity_date, t.subject, t.channel, c.contact_id
+          FROM team_act t, jsonb_array_elements(coalesce(t.meeting_attendees, '[]'::jsonb)) att
+          JOIN public.contacts c ON lower(c.email) = lower(att->>'email')
+          WHERE t.channel = 'meeting'
+        )
+        SELECT DISTINCT tc.id, tc.activity_date, tc.subject, tc.channel,
+               c.contact_id, c.full_name, trim(c.current_company) AS account
+        FROM touch_contact tc
+        JOIN public.contacts c ON c.contact_id = tc.contact_id
+        WHERE coalesce(trim(c.current_company),'') <> ''
+          AND ($2 = 'all' OR tc.channel = $2)
+        ORDER BY account, tc.activity_date DESC
+    """, datetime(pstart.year, pstart.month, pstart.day, tzinfo=timezone.utc), channel)
+    # group by account for the drawer
+    accounts: dict = {}
+    for r in rows:
+        g = accounts.setdefault(r["account"], {"account": r["account"], "touches": []})
+        g["touches"].append({
+            "activity_id": str(r["id"]), "contact_id": r["contact_id"],
+            "contact": r["full_name"], "subject": r["subject"], "channel": r["channel"],
+            "date": r["activity_date"].isoformat() if r["activity_date"] else None,
+        })
+    items = sorted(accounts.values(), key=lambda a: -len(a["touches"]))
+    return {"success": True, "data": {"period": period, "accounts": items,
+            "total_touches": sum(len(a["touches"]) for a in items), "total_accounts": len(items)}}
 
 
 @router.get("/this-week-summary")
@@ -1877,6 +2043,7 @@ async def search_all_contacts(
 @router.get("/contacts/by-account")
 async def contacts_by_account(
     deal_type: Optional[str] = Query(None),
+    scope: str = Query("engaged", pattern="^(engaged|all)$"),
     user=Depends(require_auth),
     conn=Depends(get_db),
 ):
@@ -1887,16 +2054,19 @@ async def contacts_by_account(
     ordered by contact_count desc, then name.
 
     `deal_type` narrows to prospects at companies that have a deal of that type.
+    `scope` defaults to engaged (excludes ~32k cold linkedin imports); scope=all
+    includes everything.
     """
     dt = deal_type if deal_type and deal_type != "all" else None
+    eng = "" if scope == "all" else f"AND {_engaged_clause('c')}"
     rows = await conn.fetch(
-        """
+        f"""
         SELECT
-            COALESCE(NULLIF(trim(current_company), ''), '(no company)') AS account,
-            contact_id, full_name, email, current_title, contact_stage, linkedin_url
-        FROM public.contacts
-        WHERE is_jobs_contact = true
-          AND ($1::text IS NULL OR lower(current_company) IN (
+            COALESCE(NULLIF(trim(c.current_company), ''), '(no company)') AS account,
+            c.contact_id, c.full_name, c.email, c.current_title, c.contact_stage, c.linkedin_url
+        FROM public.contacts c
+        WHERE c.is_jobs_contact = true {eng}
+          AND ($1::text IS NULL OR lower(c.current_company) IN (
                 SELECT lower(account_name) FROM bedrock.jobs_opportunity
                 WHERE deleted_at IS NULL AND deal_type = $1 AND account_name IS NOT NULL))
         ORDER BY account, full_name
@@ -1970,9 +2140,37 @@ _ACCOUNT_STATUS_RANK = {
 }
 
 
+@router.get("/accounts/names")
+async def jobs_account_names(
+    scope: str = Query("engaged", pattern="^(engaged|all)$"),
+    user=Depends(require_auth), conn=Depends(get_db),
+):
+    """Lightweight account picker: distinct account key + display name only.
+    Used by dropdowns (home quick-add, candidate company field) so they don't
+    pull the full /accounts payload. Defaults to engaged accounts; scope=all
+    includes cold linkedin-import companies too."""
+    eng = "" if scope == "all" else f"AND {_engaged_clause('c')}"
+    rows = await conn.fetch(
+        f"""
+        SELECT key, (array_agg(name ORDER BY length(name)))[1] AS name FROM (
+          SELECT lower(trim(account_name)) AS key, trim(account_name) AS name
+          FROM bedrock.jobs_opportunity
+          WHERE deleted_at IS NULL AND coalesce(trim(account_name),'') <> ''
+          UNION ALL
+          SELECT lower(trim(c.current_company)) AS key, trim(c.current_company) AS name
+          FROM public.contacts c
+          WHERE c.is_jobs_contact = true AND coalesce(trim(c.current_company),'') <> '' {eng}
+        ) s
+        GROUP BY key ORDER BY name
+        """,
+    )
+    return {"success": True, "data": [{"account_key": r["key"], "account": r["name"]} for r in rows]}
+
+
 @router.get("/accounts")
 async def jobs_accounts(
     deal_type: Optional[str] = Query(None),
+    scope: str = Query("engaged", pattern="^(engaged|all)$"),
     user=Depends(require_auth),
     conn=Depends(get_db),
 ):
@@ -1983,7 +2181,10 @@ async def jobs_accounts(
     `account_name`/`current_company` is the canonical key — SF `account_id` is
     carried through when it's a real Account Id but is too sparse to group on.
     `deal_type` narrows to accounts that have an opportunity of that type.
+    `scope` defaults to engaged (~15k contacts) so the hub doesn't nest ~38k
+    rows; scope=all includes cold linkedin imports.
     """
+    eng = "" if scope == "all" else f"AND {_engaged_clause('c')}"
     opp_rows = await conn.fetch(
         """
         SELECT id, account_id, account_name, stage, deal_type, title,
@@ -1994,12 +2195,12 @@ async def jobs_accounts(
         """,
     )
     prospect_rows = await conn.fetch(
-        """
-        SELECT contact_id, full_name, email, current_title, current_company,
-               contact_stage, linkedin_url, updated_at
-        FROM public.contacts
-        WHERE is_jobs_contact = true AND coalesce(trim(current_company), '') <> ''
-        ORDER BY full_name
+        f"""
+        SELECT c.contact_id, c.full_name, c.email, c.current_title, c.current_company,
+               c.contact_stage, c.linkedin_url, c.updated_at
+        FROM public.contacts c
+        WHERE c.is_jobs_contact = true AND coalesce(trim(c.current_company), '') <> '' {eng}
+        ORDER BY c.full_name
         """,
     )
 
@@ -2088,12 +2289,14 @@ async def jobs_accounts(
     ) + " END"
     acct_act: dict = {}
 
-    def _merge(company, last_act, recent, responded, actors=None):
+    def _merge(company, last_act, recent, responded, actors=None, first_act=None):
         cur = acct_act.setdefault(
-            company, {"recent": 0, "last": None, "responded": False, "actors": set()})
+            company, {"recent": 0, "last": None, "first": None, "responded": False, "actors": set()})
         cur["recent"] += recent or 0
         if last_act and (cur["last"] is None or last_act > cur["last"]):
             cur["last"] = last_act
+        if first_act and (cur["first"] is None or first_act < cur["first"]):
+            cur["first"] = first_act
         cur["responded"] = cur["responded"] or bool(responded)
         if actors:
             cur["actors"].update(a for a in actors if a)
@@ -2101,6 +2304,7 @@ async def jobs_accounts(
     for r in await conn.fetch(f"""
         SELECT lower(trim(c.current_company)) AS company,
                max(a.activity_date) AS last_act,
+               min(a.activity_date) AS first_act,
                count(*) FILTER (WHERE a.activity_date >= now() - interval '90 days') AS recent,
                bool_or(a.type IN ('call','meeting')
                        OR (a.type = 'email' AND NOT ({team_sender}))) AS responded,
@@ -2108,10 +2312,11 @@ async def jobs_accounts(
         FROM bedrock.activity a JOIN public.contacts c ON c.contact_id = a.participant_public_contact_id
         WHERE a.deleted_at IS NULL AND coalesce(trim(c.current_company),'') <> ''
         GROUP BY 1"""):
-        _merge(r["company"], r["last_act"], r["recent"], r["responded"], r["actors"])
+        _merge(r["company"], r["last_act"], r["recent"], r["responded"], r["actors"], r["first_act"])
     for r in await conn.fetch(f"""
         SELECT lower(trim(c.current_company)) AS company,
                max(a.activity_date) AS last_act,
+               min(a.activity_date) AS first_act,
                count(*) FILTER (WHERE a.activity_date >= now() - interval '90 days') AS recent,
                true AS responded,
                array_agg(DISTINCT {actor_case}) AS actors
@@ -2120,7 +2325,7 @@ async def jobs_accounts(
         WHERE a.deleted_at IS NULL AND a.source = 'calendar-sync'
           AND coalesce(trim(c.current_company),'') <> ''
         GROUP BY 1"""):
-        _merge(r["company"], r["last_act"], r["recent"], r["responded"], r["actors"])
+        _merge(r["company"], r["last_act"], r["recent"], r["responded"], r["actors"], r["first_act"])
     # A role created or a hire tagged is real momentum — count it as responded,
     # by account (keyed on normalized account_name = account_key).
     for sql in (
@@ -2225,6 +2430,7 @@ async def jobs_accounts(
         g["open_tasks"] = open_tasks.get(key, 0)
         g["recent_activity_count"] = a["recent"] if a else 0
         g["last_activity_at"] = a["last"].isoformat() if (a and a["last"]) else None
+        g["first_activity_at"] = a["first"].isoformat() if (a and a.get("first")) else None
         g["responded"] = bool(a and a["responded"])
         # Which jobs-team members have touched this account (for the team filter).
         g["activity_actors"] = sorted(a["actors"]) if a else []
@@ -2320,7 +2526,11 @@ async def account_activity(
     account_ids = [r["account_id"] for r in opps if r["account_id"] and str(r["account_id"]).startswith("001")]
     contact_ids = [
         r["contact_id"] for r in await conn.fetch(
-            "SELECT contact_id FROM public.contacts WHERE is_jobs_contact = true AND lower(trim(current_company)) = $1",
+            # Include unconfirmed candidates matching the account so their activity
+            # rolls up immediately, before anyone reviews them.
+            "SELECT contact_id FROM public.contacts "
+            "WHERE (is_jobs_contact = true OR contact_stage = 'candidate') "
+            "AND lower(trim(current_company)) = $1",
             k,
         )
     ]
@@ -2338,6 +2548,11 @@ async def account_activity(
             OR ($2::text[] <> '{}' AND a.account_id = ANY($2::text[]))
             OR ($3::int[] <> '{}' AND a.participant_public_contact_id = ANY($3::int[]))
         )
+        -- Activity should be real mail + calendar only. Exclude Salesforce ToDo
+        -- tasks (sf_type='Task') that were imported as meeting/note — they show up
+        -- as bogus "calendar" entries. SF Tasks logged as emails/calls are kept
+        -- (those are real logged comms); genuine calendar events are sf_type='Event'.
+        AND NOT (a.sf_type = 'Task' AND a.type IN ('meeting', 'note'))
         ORDER BY a.activity_date DESC NULLS LAST
         LIMIT 250
         """,
@@ -2362,7 +2577,8 @@ async def _account_opp_contact_ids(conn, key: str):
         k,
     )
     contacts = await conn.fetch(
-        "SELECT contact_id, full_name FROM public.contacts WHERE is_jobs_contact = true AND lower(trim(current_company)) = $1",
+        "SELECT contact_id, full_name FROM public.contacts "
+        "WHERE (is_jobs_contact = true OR contact_stage = 'candidate') AND lower(trim(current_company)) = $1",
         k,
     )
     return opps, contacts
@@ -2539,22 +2755,34 @@ async def list_contacts(
             jo2.account_name AS deal_account_by_company,
             jo2.stage        AS deal_stage_by_company
         FROM public.contacts c
-        -- direct link via sf_contact_ids (airtable: or pub: ref)
-        LEFT JOIN bedrock.jobs_opportunity jo
-            ON jo.deleted_at IS NULL
-            AND (
-                (c.airtable_id IS NOT NULL AND ('airtable:' || c.airtable_id) = ANY(jo.sf_contact_ids))
-                OR ('pub:' || c.contact_id::text) = ANY(jo.sf_contact_ids)
-            )
-        -- company name fuzzy match fallback
-        LEFT JOIN bedrock.jobs_opportunity jo2
-            ON jo2.deleted_at IS NULL
-            AND jo.id IS NULL  -- only use fallback when no direct link
-            AND (
-                lower(jo2.account_name) = lower(c.current_company)
-                OR lower(jo2.account_name) LIKE '%' || lower(split_part(c.current_company, '.', 1)) || '%'
-                OR lower(c.current_company) LIKE '%' || lower(jo2.account_name) || '%'
-            )
+        -- direct link via sf_contact_ids (airtable: or pub: ref).
+        -- LATERAL + LIMIT 1: a contact tied to N opportunities must still be
+        -- ONE row — pick the best deal (active first, then freshest) instead
+        -- of fanning out (Emily Zhao appeared 8× for 8 deals at her company).
+        LEFT JOIN LATERAL (
+            SELECT o.id, o.account_name, o.stage
+            FROM bedrock.jobs_opportunity o
+            WHERE o.deleted_at IS NULL
+              AND (
+                (c.airtable_id IS NOT NULL AND ('airtable:' || c.airtable_id) = ANY(o.sf_contact_ids))
+                OR ('pub:' || c.contact_id::text) = ANY(o.sf_contact_ids)
+              )
+            ORDER BY (o.stage LIKE 'active%') DESC, o.updated_at DESC NULLS LAST
+            LIMIT 1
+        ) jo ON true
+        -- company fallback (only when no direct link): EXACT current-company
+        -- match only. Substring matching linked contacts to every deal whose
+        -- account name overlapped their company string — a contact's implied
+        -- deal must come from their current employer, nothing looser.
+        LEFT JOIN LATERAL (
+            SELECT o.id, o.account_name, o.stage
+            FROM bedrock.jobs_opportunity o
+            WHERE jo.id IS NULL
+              AND o.deleted_at IS NULL
+              AND lower(trim(o.account_name)) = lower(trim(c.current_company))
+            ORDER BY (o.stage LIKE 'active%') DESC, o.updated_at DESC NULLS LAST
+            LIMIT 1
+        ) jo2 ON true
         WHERE {where}
         ORDER BY c.contact_stage NULLS LAST, c.full_name
         LIMIT ${i} OFFSET ${i+1}
@@ -2598,6 +2826,7 @@ async def list_contacts(
             SELECT a.participant_public_contact_id AS cid,
                    count(*) FILTER (WHERE a.activity_date >= now() - interval '90 days') AS recent,
                    max(a.activity_date) AS last_act,
+                   min(a.activity_date) AS first_act,
                    bool_or(a.type IN ('call','meeting')
                            OR (a.type = 'email' AND NOT ({team_sender}))) AS responded,
                    array_agg(DISTINCT {actor_case}) AS actors
@@ -2608,6 +2837,7 @@ async def list_contacts(
             contact_ids,
         )
         activity_by_contact = {a["cid"]: {"recent": a["recent"], "last": a["last_act"],
+                                          "first": a["first_act"],
                                           "responded": a["responded"],
                                           "actors": sorted(x for x in (a["actors"] or []) if x)} for a in arows}
 
@@ -2637,6 +2867,7 @@ async def list_contacts(
                 "connected_staff_names": staff_by_contact.get(r["contact_id"], []),
                 "recent_activity_count": (activity_by_contact.get(r["contact_id"]) or {}).get("recent", 0),
                 "last_activity_at": (lambda v: v.isoformat() if v else None)((activity_by_contact.get(r["contact_id"]) or {}).get("last")),
+                "first_activity_at": (lambda v: v.isoformat() if v else None)((activity_by_contact.get(r["contact_id"]) or {}).get("first")),
                 "responded": bool((activity_by_contact.get(r["contact_id"]) or {}).get("responded")),
                 "activity_actors": (activity_by_contact.get(r["contact_id"]) or {}).get("actors", []),
                 "open_tasks": tasks_by_contact.get(r["contact_id"], 0),
@@ -2715,11 +2946,8 @@ async def get_contact(
             AND ('airtable:' || c.airtable_id) = ANY(jo.sf_contact_ids)
         LEFT JOIN bedrock.jobs_opportunity jo2
             ON jo2.deleted_at IS NULL AND jo.id IS NULL
-            AND (
-                lower(jo2.account_name) = lower(c.current_company)
-                OR lower(jo2.account_name) LIKE '%' || lower(split_part(c.current_company, '.', 1)) || '%'
-                OR lower(c.current_company) LIKE '%' || lower(jo2.account_name) || '%'
-            )
+            -- exact current-company match only (see list_contacts note)
+            AND lower(trim(jo2.account_name)) = lower(trim(c.current_company))
         WHERE c.contact_id = $1
         """,
         contact_id,
@@ -3308,8 +3536,11 @@ async def update_contact(
     user=Depends(require_auth),
     conn=Depends(get_db),
 ):
+    # Any live contact is editable — the old `airtable_id IS NOT NULL` guard
+    # dated from the Airtable-only era and silently 404'd edits on every
+    # linkedin/outreach/candidate/manual contact (most of the table).
     existing = await conn.fetchrow(
-        "SELECT contact_id FROM public.contacts WHERE contact_id=$1 AND airtable_id IS NOT NULL",
+        "SELECT contact_id FROM public.contacts WHERE contact_id=$1 AND coalesce(contact_stage,'') <> 'merged'",
         contact_id,
     )
     if not existing:
@@ -3317,11 +3548,22 @@ async def update_contact(
 
     sets, params = [], []
     i = 1
+    # Key off model_fields_set (like update_opportunity) so an explicit null
+    # CLEARS a field — `is not None` made clearing email/title/linkedin a
+    # silent no-op.
+    fields_set = body.model_fields_set
     for field in ("full_name", "email", "current_title", "current_company",
                   "contact_stage", "linkedin_url"):
+        if field not in fields_set:
+            continue
         val = getattr(body, field, None)
-        if val is not None:
-            sets.append(f"{field} = ${i}"); params.append(val); i += 1
+        # UI clears send "" — store NULL (email '' would collide with the
+        # unique constraint). Never blank a name: skip empty full_name.
+        if isinstance(val, str) and not val.strip():
+            val = None
+        if field == "full_name" and val is None:
+            continue
+        sets.append(f"{field} = ${i}"); params.append(val); i += 1
 
     if not sets:
         row = await conn.fetchrow("SELECT * FROM public.contacts WHERE contact_id=$1", contact_id)
@@ -3334,6 +3576,585 @@ async def update_contact(
     )
     row = await conn.fetchrow("SELECT * FROM public.contacts WHERE contact_id=$1", contact_id)
     return {"success": True, "data": dict(row)}
+
+
+# ── My Network (staff LinkedIn connections) ───────────────────────────────────
+@router.get("/my-network")
+async def my_network(
+    q: Optional[str] = Query(None, description="Search name/company/title"),
+    limit: int = Query(500, le=2000),
+    staff_email: Optional[str] = Query(None, description="Admin override; else the caller"),
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """The logged-in staff member's LinkedIn connections (from
+    staff_contact_relationships), joined to contacts + company, with flags for
+    whether we've had activity with them (warm) and whether they're already a
+    jobs prospect. Drives the "My Network" home zone. Sputnik staff ids are
+    mapped to emails via bedrock.staff_user_id_map."""
+    email = (staff_email or (user.get("email") if isinstance(user, dict) else getattr(user, "email", None)) or "").lower()
+    sid = await conn.fetchval("SELECT staff_user_id FROM bedrock.staff_user_id_map WHERE lower(email)=$1", email)
+    if sid is None:
+        return {"success": True, "data": {"mapped": False, "connections": [], "total": 0,
+                "message": "No LinkedIn connections mapped for this account yet."}}
+    params: list = [sid]
+    where = "r.staff_user_id = $1 AND coalesce(c.contact_stage,'') <> 'merged'"
+    if q:
+        params.append(f"%{q}%")
+        where += f" AND (c.full_name ILIKE ${len(params)} OR c.current_company ILIKE ${len(params)} OR c.current_title ILIKE ${len(params)})"
+    total = await conn.fetchval(
+        f"SELECT count(*) FROM public.staff_contact_relationships r JOIN public.contacts c ON c.contact_id=r.contact_id WHERE {where}", *params)
+    params.append(f"%{email}%"); p_email = len(params)   # staff-specific activity match
+    params.append(sid);          p_sid = len(params)       # connection_status join
+    params.append(limit);        p_lim = len(params)
+    rows = await conn.fetch(
+        f"""
+        SELECT c.contact_id, c.full_name, c.current_title, c.current_company, c.email,
+               c.linkedin_url, c.is_jobs_contact, r.relationship_strength, r.connected_date,
+               act.n AS activity_count, act.last AS last_activity, act.last_type AS last_channel,
+               coalesce(mine.n, 0) AS my_activity_count, mine.last AS my_last_activity,
+               coalesce(cc.n, 0) AS co_connections,
+               (hire.hired IS NOT NULL) AS company_hired_before,
+               (opp.has_open IS NOT NULL) AS has_open_opp,
+               cs.status AS status, cs.reason AS status_reason
+        FROM public.staff_contact_relationships r
+        JOIN public.contacts c ON c.contact_id = r.contact_id
+        LEFT JOIN LATERAL (
+            SELECT count(*) n, max(activity_date) last,
+                   (array_agg(type ORDER BY activity_date DESC))[1] AS last_type
+            FROM bedrock.activity a
+            WHERE a.participant_public_contact_id = c.contact_id AND a.deleted_at IS NULL
+        ) act ON true
+        LEFT JOIN LATERAL (
+            SELECT count(*) n, max(activity_date) last FROM bedrock.activity a
+            WHERE a.participant_public_contact_id = c.contact_id AND a.deleted_at IS NULL
+              AND (a.email_from ILIKE ${p_email} OR a.logged_by ILIKE ${p_email})
+        ) mine ON true
+        LEFT JOIN LATERAL (
+            SELECT count(*) - 1 AS n FROM public.staff_contact_relationships r2
+            WHERE r2.contact_id = c.contact_id
+        ) cc ON true
+        LEFT JOIN LATERAL (
+            SELECT 1 AS hired FROM public.employment_records e
+            WHERE c.current_company IS NOT NULL AND lower(e.company_name) = lower(c.current_company) LIMIT 1
+        ) hire ON true
+        LEFT JOIN LATERAL (
+            SELECT 1 AS has_open FROM bedrock.jobs_opportunity o
+            WHERE o.deleted_at IS NULL AND o.stage LIKE 'active%'
+              AND lower(trim(o.account_name)) = lower(trim(c.current_company)) LIMIT 1
+        ) opp ON true
+        LEFT JOIN bedrock.connection_status cs ON cs.contact_id = c.contact_id AND cs.staff_user_id = ${p_sid}
+        WHERE {where}
+        ORDER BY (mine.n > 0) DESC, (act.n > 0) DESC, coalesce(mine.last, act.last) DESC NULLS LAST, c.full_name
+        LIMIT ${p_lim}
+        """, *params)
+    return {"success": True, "data": {
+        "mapped": True, "total": total,
+        "connections": [{
+            "contact_id": r["contact_id"], "full_name": r["full_name"], "current_title": r["current_title"],
+            "current_company": r["current_company"], "email": r["email"], "linkedin_url": r["linkedin_url"],
+            "is_jobs_contact": r["is_jobs_contact"], "relationship_strength": r["relationship_strength"],
+            "connected_date": r["connected_date"].isoformat() if r["connected_date"] else None,
+            "activity_count": r["activity_count"] or 0,
+            "last_activity": r["last_activity"].isoformat() if r["last_activity"] else None,
+            "last_channel": r["last_channel"],
+            "my_activity_count": r["my_activity_count"] or 0,
+            "my_last_activity": r["my_last_activity"].isoformat() if r["my_last_activity"] else None,
+            # "warm" = THIS staff member has been in touch with their connection
+            "warm": (r["my_activity_count"] or 0) > 0,
+            # "touched" = anyone at Pursuit has activity with them
+            "touched": (r["activity_count"] or 0) > 0,
+            "co_connections": r["co_connections"] or 0,
+            "company_hired_before": r["company_hired_before"],
+            "has_open_opp": r["has_open_opp"],
+            "status": r["status"] or "new",
+            "status_reason": r["status_reason"],
+        } for r in rows]}}
+
+
+class ConnectionStatusUpdate(BaseModel):
+    contact_id: int
+    status: str            # new | will_reach_out | declined
+    reason: Optional[str] = None
+    note: Optional[str] = None
+
+
+@router.patch("/my-network/status")
+async def set_connection_status(
+    body: ConnectionStatusUpdate,
+    staff_email: Optional[str] = Query(None),
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Set a staff member's disposition toward one of their connections
+    (new | will_reach_out | declined, with optional reason/note). Stored per
+    (staff, contact) in bedrock.connection_status."""
+    if body.status not in ("new", "will_reach_out", "declined"):
+        raise HTTPException(400, "invalid status")
+    email = (staff_email or (user.get("email") if isinstance(user, dict) else getattr(user, "email", None)) or "").lower()
+    sid = await conn.fetchval("SELECT staff_user_id FROM bedrock.staff_user_id_map WHERE lower(email)=$1", email)
+    if sid is None:
+        raise HTTPException(400, "No connection mapping for this account")
+    await conn.execute(
+        """INSERT INTO bedrock.connection_status (staff_user_id, contact_id, status, reason, note, updated_by, updated_at)
+           VALUES ($1,$2,$3,$4,$5,$6,now())
+           ON CONFLICT (staff_user_id, contact_id) DO UPDATE
+             SET status=$3, reason=$4, note=$5, updated_by=$6, updated_at=now()""",
+        sid, body.contact_id, body.status, body.reason, body.note, email)
+    return {"success": True, "data": {"contact_id": body.contact_id, "status": body.status}}
+
+
+# ── Candidate review queue ────────────────────────────────────────────────────
+# Email recipients we auto-created but couldn't confidently identify (personal
+# domains / no full name) land as 'candidate' contacts tagged 'email_review'.
+# Avni/Damon review them on the Home page: fill name/company then promote into
+# the pipeline, or dismiss. Promote flips is_jobs_contact=true + drops the tag.
+
+@router.get("/candidates")
+async def list_candidates(
+    owner: Optional[str] = Query(None, description="Filter to candidates whose activity involved this staff email"),
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Pending review candidates, newest-emailed first. Includes the email
+    domain + an exact-domain account suggestion (cheap, set-based) so the list
+    can show a linkage chip; the detail endpoint adds fuzzy matching + AI.
+    `owner` filters to candidates a given staff member corresponded with
+    (from bedrock.email_candidate.owners). Owners/channels are returned per row
+    so the UI can show + filter by who reached out."""
+    params: list = []
+    where = ["c.contact_stage = 'candidate'",
+             "('email_review' = ANY(c.tags) OR c.source = 'email_candidate')"]
+    if owner:
+        params.append(owner)
+        where.append(f"${len(params)} = ANY(ec.owners)")
+    rows = await conn.fetch(
+        f"""
+        SELECT c.contact_id, c.full_name, c.email, c.current_company, c.current_title,
+               lower(split_part(c.email,'@',2)) AS domain,
+               count(a.id) AS email_count,
+               max(a.activity_date) AS last_email,
+               (array_agg(a.subject ORDER BY a.activity_date DESC))[1] AS last_subject,
+               aed.sf_account_name AS domain_account,
+               e.full_name AS ai_name, e.company AS ai_company, e.confidence AS ai_confidence,
+               e.is_employer_contact,
+               e.account_suggestion->>'account_name' AS ai_account,
+               coalesce(array_length(e.possible_duplicate_ids, 1), 0) AS dup_count,
+               (e.contact_id IS NOT NULL) AS enriched,
+               ec.owners AS owners, ec.channels AS channels, ec.tier AS tier
+        FROM public.contacts c
+        LEFT JOIN bedrock.activity a
+          ON a.participant_public_contact_id = c.contact_id AND a.deleted_at IS NULL
+        LEFT JOIN bedrock.account_email_domain aed
+          ON aed.domain = lower(split_part(c.email,'@',2))
+        LEFT JOIN bedrock.candidate_enrichment e ON e.contact_id = c.contact_id
+        LEFT JOIN bedrock.email_candidate ec ON ec.contact_id = c.contact_id
+        WHERE {' AND '.join(where)}
+        GROUP BY c.contact_id, aed.sf_account_name, e.full_name, e.company, e.confidence,
+                 e.is_employer_contact, e.account_suggestion, e.possible_duplicate_ids, e.contact_id,
+                 ec.owners, ec.channels, ec.tier
+        ORDER BY (e.contact_id IS NOT NULL) DESC, max(a.activity_date) DESC NULLS LAST, c.email
+        """,
+        *params,
+    )
+    return {"success": True, "data": [
+        {"contact_id": r["contact_id"], "full_name": r["full_name"], "email": r["email"],
+         "current_company": r["current_company"], "current_title": r["current_title"],
+         "domain": r["domain"],
+         # Prefer AI account, then exact-domain map. Best name = stored AI name.
+         "suggested_account": r["ai_account"] or r["domain_account"],
+         "ai_name": r["ai_name"], "ai_company": r["ai_company"], "ai_confidence": r["ai_confidence"],
+         "is_employer_contact": r["is_employer_contact"],
+         "dup_count": r["dup_count"], "enriched": r["enriched"],
+         "email_count": r["email_count"],
+         "owners": list(r["owners"]) if r["owners"] else [],
+         "channels": list(r["channels"]) if r["channels"] else [],
+         "tier": r["tier"],
+         "last_email": r["last_email"].isoformat() if r["last_email"] else None,
+         "last_subject": r["last_subject"]}
+        for r in rows
+    ]}
+
+
+@router.get("/candidates/owners")
+async def list_candidate_owners(user=Depends(require_auth), conn=Depends(get_db)):
+    """Distinct staff owners across review candidates, with counts — drives the
+    person filter dropdown on the candidates zone."""
+    rows = await conn.fetch(
+        """
+        SELECT o AS owner, count(*) AS n
+        FROM bedrock.email_candidate ec
+        JOIN public.contacts c ON c.contact_id = ec.contact_id AND c.contact_stage='candidate'
+        CROSS JOIN LATERAL unnest(ec.owners) AS o
+        GROUP BY o ORDER BY n DESC
+        """,
+    )
+    return {"success": True, "data": [{"owner": r["owner"], "count": r["n"]} for r in rows]}
+
+
+@router.get("/candidates/{contact_id}")
+async def candidate_detail(
+    contact_id: int,
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Full candidate: stored AI enrichment (instant — no live call), the best
+    account linkage suggestion, resolved duplicate contacts, and the emails."""
+    import json as _json
+    from services.candidate_enrich import suggest_account
+    c = await conn.fetchrow(
+        "SELECT contact_id, full_name, email, current_company, current_title, linkedin_url "
+        "FROM public.contacts WHERE contact_id=$1", contact_id)
+    if not c:
+        raise HTTPException(404, "Candidate not found")
+    enr = await conn.fetchrow("SELECT * FROM bedrock.candidate_enrichment WHERE contact_id=$1", contact_id)
+
+    enrichment = None
+    suggestion = None
+    dup_ids: list[int] = []
+    if enr:
+        enrichment = {
+            "full_name": enr["full_name"], "title": enr["title"], "company": enr["company"],
+            "linkedin_url": enr["linkedin_url"], "is_employer_contact": enr["is_employer_contact"],
+            "confidence": enr["confidence"], "reasoning": enr["reasoning"],
+            "enriched_at": enr["enriched_at"].isoformat() if enr["enriched_at"] else None,
+        }
+        if enr["account_suggestion"]:
+            suggestion = enr["account_suggestion"] if isinstance(enr["account_suggestion"], dict) else _json.loads(enr["account_suggestion"])
+        dup_ids = list(enr["possible_duplicate_ids"] or [])
+    if suggestion is None:
+        suggestion = await suggest_account(conn, c["email"])
+
+    # Resolve duplicate ids to contacts, deduped by (name, company).
+    possible_duplicates = []
+    if dup_ids:
+        drows = await conn.fetch(
+            "SELECT contact_id, full_name, current_company, current_title FROM public.contacts WHERE contact_id = ANY($1::int[])",
+            dup_ids)
+        seen = set()
+        for d in drows:
+            k = (d["full_name"], d["current_company"])
+            if k in seen:
+                continue
+            seen.add(k)
+            possible_duplicates.append({"contact_id": d["contact_id"], "full_name": d["full_name"],
+                                        "current_company": d["current_company"], "current_title": d["current_title"]})
+
+    emails = await conn.fetch(
+        """
+        SELECT a.id, a.subject, a.email_from, a.email_to, a.email_snippet,
+               left(a.email_body_text, 4000) AS body, a.type, a.source, a.activity_date
+        FROM bedrock.activity a
+        WHERE a.participant_public_contact_id = $1 AND a.deleted_at IS NULL
+        ORDER BY a.activity_date DESC LIMIT 50
+        """, contact_id)
+    return {"success": True, "data": {
+        "contact": {"contact_id": c["contact_id"], "full_name": c["full_name"], "email": c["email"],
+                    "current_company": c["current_company"], "current_title": c["current_title"],
+                    "linkedin_url": c["linkedin_url"]},
+        "enrichment": enrichment,
+        "suggested_account": suggestion,
+        "possible_duplicates": possible_duplicates,
+        "emails": [
+            {"id": str(e["id"]), "subject": e["subject"], "email_from": e["email_from"],
+             "email_to": list(e["email_to"]) if e["email_to"] else None,
+             "snippet": e["email_snippet"], "body": e["body"], "type": e["type"], "source": e["source"],
+             "activity_date": e["activity_date"].isoformat() if e["activity_date"] else None}
+            for e in emails
+        ],
+    }}
+
+
+@router.post("/candidates/{contact_id}/enrich")
+async def enrich_candidate_endpoint(
+    contact_id: int,
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Re-run AI enrichment for one candidate and PERSIST it (manual refresh).
+    Normally enrichment is pre-computed in batch; this forces a fresh pass."""
+    from services.candidate_enrich import enrich_and_store
+    c = await conn.fetchrow("SELECT contact_id FROM public.contacts WHERE contact_id=$1", contact_id)
+    if not c:
+        raise HTTPException(404, "Candidate not found")
+    result = await enrich_and_store(conn, contact_id)
+    return {"success": True, "data": result}
+
+
+class CandidateLink(BaseModel):
+    target_contact_id: int
+
+
+@router.post("/candidates/{contact_id}/link")
+async def link_candidate(
+    contact_id: int,
+    body: CandidateLink,
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Approve a duplicate match: re-point this candidate's emails onto the
+    existing contact and retire the candidate. One-click merge."""
+    target = await conn.fetchrow(
+        "SELECT contact_id FROM public.contacts WHERE contact_id=$1", body.target_contact_id)
+    if not target:
+        raise HTTPException(404, "Target contact not found")
+    async with conn.transaction():
+        await conn.execute(
+            "UPDATE bedrock.activity SET participant_public_contact_id=$1 "
+            "WHERE participant_public_contact_id=$2", body.target_contact_id, contact_id)
+        await conn.execute(
+            "UPDATE public.contacts SET contact_stage='merged', "
+            "tags=array_remove(coalesce(tags,'{}'), 'email_review'), updated_at=now() "
+            "WHERE contact_id=$1", contact_id)
+        await conn.execute("DELETE FROM bedrock.candidate_enrichment WHERE contact_id=$1", contact_id)
+        await conn.execute(
+            "UPDATE public.contacts SET is_jobs_contact=true WHERE contact_id=$1", body.target_contact_id)
+    return {"success": True, "data": {"linked_to": body.target_contact_id}}
+
+
+# ── Salesforce matching (MECE: search DB + SF by email; SF hit → link + pipeline)
+
+async def _upsert_sf_contact(conn, sf: dict, source_email: str, company: str | None,
+                             employer_account_id: str | None = None) -> int:
+    """Ensure the SF-matched contact exists in public.contacts (jobs pipeline)
+    and return its contact_id. `company` is the resolved EMPLOYER (from the
+    primary affiliation), never the NPSP Household. Reuses an existing
+    link/email row when present; else inserts a new pipeline contact + SF link."""
+    sf_id = sf.get("sf_contact_id")
+    pid = await conn.fetchval(
+        "SELECT public_contact_id FROM bedrock.sf_contact_link WHERE sf_contact_id=$1", sf_id)
+    if not pid:
+        pid = await conn.fetchval("SELECT contact_id FROM public.contacts WHERE lower(email)=lower($1) LIMIT 1", source_email)
+    if not pid:
+        pid = await conn.fetchval(
+            """INSERT INTO public.contacts
+               (full_name, email, current_company, current_title, dedup_key, source, contact_stage, is_jobs_contact, created_at, updated_at)
+               VALUES ($1,$2,$3,$4,$5,'salesforce','lead',true,now(),now()) RETURNING contact_id""",
+            sf.get("name"), source_email, company, sf.get("title"), f"sf:{sf_id}")
+    else:
+        # backfill company on the existing record if we have one and it's blank
+        if company:
+            await conn.execute(
+                "UPDATE public.contacts SET current_company=coalesce(nullif(current_company,''),$2) WHERE contact_id=$1",
+                pid, company)
+    await conn.execute("UPDATE public.contacts SET is_jobs_contact=true WHERE contact_id=$1", pid)
+    if sf_id:
+        await conn.execute(
+            """INSERT INTO bedrock.sf_contact_link (sf_contact_id, public_contact_id, confidence, matched_by, sf_account_id)
+               VALUES ($1,$2,'email','candidate_resolve',$3)
+               ON CONFLICT DO NOTHING""", sf_id, pid, employer_account_id)
+    return pid
+
+
+async def _link_candidate(conn, candidate_id: int, target_pid: int) -> None:
+    """Re-point a candidate's emails onto an existing contact + retire it."""
+    await conn.execute(
+        "UPDATE bedrock.activity SET participant_public_contact_id=$1 WHERE participant_public_contact_id=$2",
+        target_pid, candidate_id)
+    await conn.execute(
+        "UPDATE public.contacts SET contact_stage='merged', is_jobs_contact=false, "
+        "tags=array_remove(coalesce(tags,'{}'),'email_review'), updated_at=now() WHERE contact_id=$1", candidate_id)
+    await conn.execute("DELETE FROM bedrock.candidate_enrichment WHERE contact_id=$1", candidate_id)
+
+
+@router.post("/candidates/resolve-sf")
+async def resolve_candidates_sf(
+    user=Depends(require_auth),
+    client=Depends(require_sf_mcp_client),
+    conn=Depends(get_db),
+):
+    """MECE batch: for every candidate, look the email up in Salesforce
+    (Email / HomeEmail / WorkEmail). A match is definitive → import the SF
+    contact into the pipeline, re-point the candidate's emails onto it, retire
+    the candidate. Unmatched candidates stay for human review."""
+    from services.candidate_enrich import (
+        sf_contact_match_soql, index_sf_matches, sf_affiliation_employer_soql, resolve_employer_company)
+    cands = await conn.fetch(
+        "SELECT contact_id, email FROM public.contacts WHERE contact_stage='candidate' AND 'email_review'=ANY(tags)")
+    emails = [c["email"] for c in cands if c["email"]]
+    matched_index: dict = {}
+    for i in range(0, len(emails), 150):   # batch SOQL: contacts by email
+        try:
+            res = await client.salesforce.query(sf_contact_match_soql(emails[i:i + 150]))
+            matched_index.update(index_sf_matches(res.get("records", [])))
+        except Exception as e:
+            logger.warning("resolve-sf contact batch failed: %s", e)
+    # Employer per matched contact, from the primary affiliation (not Household).
+    sf_ids = list({m["sf_contact_id"] for m in matched_index.values() if m.get("sf_contact_id")})
+    employer_by_contact: dict = {}
+    for i in range(0, len(sf_ids), 150):
+        try:
+            res = await client.salesforce.query(sf_affiliation_employer_soql(sf_ids[i:i + 150]))
+            for r in res.get("records", []):
+                employer_by_contact[r.get("npe5__Contact__c")] = r.get("Account_ForFellowsOnly__c")
+        except Exception as e:
+            logger.warning("resolve-sf affiliation batch failed: %s", e)
+    linked = 0
+    async with conn.transaction():
+        for c in cands:
+            sf = matched_index.get((c["email"] or "").lower().strip())
+            if not sf:
+                continue
+            emp_acct = employer_by_contact.get(sf["sf_contact_id"])
+            company = await resolve_employer_company(conn, emp_acct) or sf.get("company")
+            pid = await _upsert_sf_contact(conn, sf, c["email"], company, emp_acct)
+            if pid and pid != c["contact_id"]:
+                await _link_candidate(conn, c["contact_id"], pid)
+                linked += 1
+    return {"success": True, "data": {"candidates": len(cands), "salesforce_linked": linked,
+                                      "remaining": len(cands) - linked}}
+
+
+@router.get("/candidates/{contact_id}/sf-match")
+async def candidate_sf_match(
+    contact_id: int,
+    user=Depends(require_auth),
+    client=Depends(require_sf_mcp_client),
+    conn=Depends(get_db),
+):
+    """Salesforce contact matching this candidate's email, with the resolved
+    EMPLOYER (primary affiliation → jobs company) — for the drawer."""
+    from services.candidate_enrich import (
+        sf_contact_match_soql, index_sf_matches, sf_affiliation_employer_soql, resolve_employer_company)
+    c = await conn.fetchrow("SELECT email FROM public.contacts WHERE contact_id=$1", contact_id)
+    if not c:
+        raise HTTPException(404, "Candidate not found")
+    try:
+        res = await client.salesforce.query(sf_contact_match_soql([c["email"]]))
+    except Exception as e:
+        return {"success": True, "data": {"match": None, "error": str(e)[:120]}}
+    match = index_sf_matches(res.get("records", [])).get((c["email"] or "").lower().strip())
+    if match and match.get("sf_contact_id"):
+        try:
+            aff = await client.salesforce.query(sf_affiliation_employer_soql([match["sf_contact_id"]]))
+            recs = aff.get("records", [])
+            emp_acct = recs[0].get("Account_ForFellowsOnly__c") if recs else None
+            company = await resolve_employer_company(conn, emp_acct) or match.get("company")
+            match["employer_account_id"] = emp_acct
+            match["account_name"] = company
+        except Exception as e:
+            logger.warning("sf-match affiliation lookup failed: %s", e)
+            match["account_name"] = match.get("company")
+    return {"success": True, "data": {"match": match}}
+
+
+class CandidateLinkSf(BaseModel):
+    sf_contact_id: str
+    name: Optional[str] = None
+    account_name: Optional[str] = None
+    account_id: Optional[str] = None
+    title: Optional[str] = None
+
+
+@router.post("/candidates/{contact_id}/link-sf")
+async def link_candidate_sf(
+    contact_id: int,
+    body: CandidateLinkSf,
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Approve a Salesforce match: import the SF contact into the pipeline and
+    re-point this candidate's emails onto it."""
+    c = await conn.fetchrow("SELECT email FROM public.contacts WHERE contact_id=$1", contact_id)
+    if not c:
+        raise HTTPException(404, "Candidate not found")
+    async with conn.transaction():
+        # body.account_name is the resolved EMPLOYER company (from sf-match).
+        pid = await _upsert_sf_contact(conn,
+            {"sf_contact_id": body.sf_contact_id, "name": body.name, "title": body.title},
+            c["email"], body.account_name, body.account_id)
+        if pid != contact_id:
+            await _link_candidate(conn, contact_id, pid)
+    return {"success": True, "data": {"linked_to": pid}}
+
+
+async def _resolve_or_create_company(conn, name: str, email: Optional[str] = None) -> Optional[int]:
+    """Resolve a free-typed company name to a public.companies id, creating the row
+    if it's new. Matches case-insensitively on name; on create, sets the domain from
+    a non-freemail email so future activity auto-links. Returns company_id (or None
+    if name is blank). Requires INSERT on public.companies."""
+    nm = (name or "").strip()
+    if not nm:
+        return None
+    existing = await conn.fetchval("SELECT company_id FROM public.companies WHERE lower(name) = lower($1) LIMIT 1", nm)
+    if existing:
+        return existing
+    FREEMAIL = {"gmail.com","yahoo.com","hotmail.com","outlook.com","icloud.com","aol.com","me.com",
+                "msn.com","live.com","proton.me","protonmail.com"}
+    dom = None
+    if email and "@" in email:
+        d = email.split("@", 1)[1].lower().strip()
+        if d and d not in FREEMAIL:
+            dom = d
+    try:
+        return await conn.fetchval(
+            "INSERT INTO public.companies (name, domain, source, created_at, updated_at) "
+            "VALUES ($1, $2, 'candidate_promote', now(), now()) RETURNING company_id", nm, dom)
+    except Exception as e:  # unique-name race or domain collision — fall back to lookup
+        logger.warning("company create fell back to lookup for %r: %s", nm, e)
+        return await conn.fetchval("SELECT company_id FROM public.companies WHERE lower(name)=lower($1) LIMIT 1", nm)
+
+
+class CandidatePromote(BaseModel):
+    full_name: Optional[str] = None
+    current_company: Optional[str] = None
+    current_title: Optional[str] = None
+    contact_stage: str = "lead"
+
+
+@router.post("/candidates/{contact_id}/promote")
+async def promote_candidate(
+    contact_id: int,
+    body: CandidatePromote,
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Promote a candidate into the pipeline: set the filled-in fields, flip
+    is_jobs_contact=true, and drop the 'email_review' tag so it leaves the queue."""
+    async with conn.transaction():
+        # Link to an EXISTING account only (match by name). Account *creation* is
+        # intentionally not done here — a dedicated create-account flow (with a
+        # domain prompt etc.) will own that. A new/unmatched name is kept as text.
+        company_id = None
+        if body.current_company:
+            company_id = await conn.fetchval(
+                "SELECT company_id FROM public.companies WHERE lower(name) = lower($1) LIMIT 1",
+                body.current_company.strip())
+        sets = ["is_jobs_contact = true",
+                "contact_stage = $2",
+                "tags = array_remove(coalesce(tags,'{}'), 'email_review')",
+                "updated_at = now()"]
+        params = [contact_id, body.contact_stage]
+        i = 3
+        for field in ("full_name", "current_company", "current_title"):
+            val = getattr(body, field)
+            if val:
+                sets.append(f"{field} = ${i}"); params.append(val); i += 1
+        if company_id:
+            sets.append(f"company_id = ${i}"); params.append(company_id); i += 1
+        res = await conn.execute(
+            f"UPDATE public.contacts SET {', '.join(sets)} "
+            f"WHERE contact_id = $1 AND contact_stage = 'candidate'", *params)
+        if res == "UPDATE 0":
+            raise HTTPException(404, "Candidate not found")
+    return {"success": True, "data": {"contact_id": contact_id, "promoted": True, "company_id": company_id}}
+
+
+@router.post("/candidates/{contact_id}/dismiss")
+async def dismiss_candidate(
+    contact_id: int,
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Dismiss a candidate: move it out of the queue (public.contacts has no
+    soft-delete) by clearing the stage + email_review tag. Activity stays linked."""
+    res = await conn.execute(
+        "UPDATE public.contacts SET contact_stage='dismissed', "
+        "tags=array_remove(coalesce(tags,'{}'), 'email_review'), updated_at=now() "
+        "WHERE contact_id=$1 AND contact_stage='candidate'", contact_id)
+    if res == "UPDATE 0":
+        raise HTTPException(404, "Candidate not found")
+    return {"success": True, "data": {"contact_id": contact_id, "dismissed": True}}
 
 
 # ── Activity logging ─────────────────────────────────────────────────────────

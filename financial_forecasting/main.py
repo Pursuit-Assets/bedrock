@@ -73,10 +73,12 @@ from routes.admin_interaction_sync import router as admin_interaction_sync_route
 from routes.jobs import router as jobs_router
 from routes.jobs_tasks import router as jobs_tasks_router
 from routes.jobs_comments import router as jobs_comments_router
+from routes.jobs_intro import router as jobs_intro_router
 from routes.jobs_sf import router as jobs_sf_router
 from routes.entity_comments import router as entity_comments_router
 from auth import get_current_user_dep, require_auth, IS_PRODUCTION, JWT_SECRET_KEY
 from security import validate_salesforce_id, escape_soql_string
+from sf_errors import sf_http_error
 from services.crm_parser import refresh_opp_cache as _refresh_opp_cache
 from services.cache import cache, CACHE_TTL_OPPORTUNITIES, CACHE_TTL_ACCOUNTS, CACHE_TTL_USERS, CACHE_TTL_CASHFLOW
 
@@ -163,6 +165,7 @@ app.include_router(admin_interaction_sync_router)
 app.include_router(jobs_router)
 app.include_router(jobs_tasks_router)
 app.include_router(jobs_comments_router)
+app.include_router(jobs_intro_router)
 app.include_router(jobs_sf_router)
 app.include_router(entity_comments_router)
 
@@ -573,9 +576,11 @@ async def get_opportunities(
 
         return records
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error fetching opportunities: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise sf_http_error(e, "records")
 
 
 
@@ -634,7 +639,7 @@ async def create_opportunity(
         raise
     except Exception as e:
         logger.error(f"Error creating opportunity: {e}")
-        raise HTTPException(500, str(e))
+        raise sf_http_error(e, "opportunity")
 
 
 @app.put("/api/salesforce/opportunities/{opportunity_id}")
@@ -880,9 +885,11 @@ async def get_accounts(
         cache.set(cache_key, records, CACHE_TTL_ACCOUNTS)
         return records
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error fetching accounts: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise sf_http_error(e, "records")
 
 
 async def _attach_account_status(accounts: list, salesforce) -> None:
@@ -964,20 +971,17 @@ async def create_account(
     """Create a new Salesforce account."""
     try:
         salesforce = client.salesforce
-
-        # Create the account
         result = await salesforce.create_record("Account", account_data)
-
         if result and result.get("id"):
             cache.invalidate_prefix("accounts:")
             logger.info(f"Account created with ID: {result['id']} by {user['user_id']}")
             return ApiResponse(success=True, data={"id": result["id"], "message": "Account created successfully"})
-        else:
-            raise HTTPException(status_code=400, detail="Failed to create account")
-            
+        raise HTTPException(status_code=400, detail="Failed to create account")
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error creating account: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise sf_http_error(e, "account")
 
 
 @app.get("/api/salesforce/contacts")
@@ -1058,7 +1062,24 @@ async def get_contacts(
         wheres = []
         if account_id:
             validate_salesforce_id(account_id, "account_id")
-            wheres.append(f"AccountId = '{account_id}'")
+            # NPSP: for ORGANIZATION accounts, contacts are linked via
+            # npe5__Affiliation__c (npe5__Organization__c), NOT Contact.AccountId
+            # (which points to the person's Household). SOQL forbids a semi-join
+            # sub-select with OR, so resolve the affiliated contact ids first and
+            # match AccountId OR an explicit Id IN (...) list.
+            aff_ids = []
+            try:
+                aff = await salesforce.query_all(
+                    f"SELECT npe5__Contact__c FROM npe5__Affiliation__c "
+                    f"WHERE npe5__Organization__c = '{account_id}' AND npe5__Contact__c != null")
+                aff_ids = [r["npe5__Contact__c"] for r in aff.get("records", []) if r.get("npe5__Contact__c")]
+            except Exception as ae:
+                logger.warning(f"affiliation lookup for {account_id} failed: {ae}")
+            if aff_ids:
+                id_list = ", ".join(f"'{i}'" for i in aff_ids[:2000])
+                wheres.append(f"(AccountId = '{account_id}' OR Id IN ({id_list}))")
+            else:
+                wheres.append(f"AccountId = '{account_id}'")
         elif active_only:
             # SF date-literal — anchors the window relative to today
             # without needing a server-side timestamp.
@@ -1076,9 +1097,11 @@ async def get_contacts(
         cache.set(cache_key, contacts, CACHE_TTL_ACCOUNTS)
         return contacts
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error fetching contacts: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise sf_http_error(e, "contacts")
 
 
 @app.post("/api/salesforce/contacts")
@@ -1087,23 +1110,51 @@ async def create_contact(
     client: UnifiedMCPClient = Depends(require_sf_mcp_client),
     user = Depends(check_permission_or_internal("create_contacts"))
 ):
-    """Create a new Salesforce contact."""
+    """Create a new Salesforce contact.
+
+    Salesforce duplicate rules reject a same-name/email contact with a
+    DUPLICATES_DETECTED error. Rather than surface an opaque 500, we detect that
+    and return a 409 with the existing match so the UI can offer "open existing"
+    or "create anyway" (force=true bypasses the rule via allowSave)."""
     try:
         salesforce = client.salesforce
-        
-        # Create the contact
+        contact_data.pop("force", None); contact_data.pop("allow_duplicate", None)  # not persisted to SF
+
         result = await salesforce.create_record("Contact", contact_data)
-        
+
         if result and result.get("id"):
             cache.invalidate_prefix("contacts:")
             logger.info(f"Contact created with ID: {result['id']} by {user['user_id']}")
             return ApiResponse(success=True, data={"id": result["id"], "message": "Contact created successfully"})
-        else:
-            raise HTTPException(status_code=400, detail="Failed to create contact")
-            
+        raise HTTPException(status_code=400, detail="Failed to create contact")
+
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Error creating contact: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        msg = str(e)
+        logger.error(f"Error creating contact: {msg}")
+        # Duplicate-rule rejection → 409 with the existing match(es), not a 500.
+        if "DUPLICATES_DETECTED" in msg or "duplicate" in msg.lower():
+            existing = []
+            try:
+                em = contact_data.get("Email"); fn = contact_data.get("FirstName"); ln = contact_data.get("LastName")
+                clauses = []
+                if em: clauses.append(f"Email = '{escape_soql_string(em)}'")
+                if fn and ln: clauses.append(f"(FirstName = '{escape_soql_string(fn)}' AND LastName = '{escape_soql_string(ln)}')")
+                if clauses:
+                    q = "SELECT Id, Name, Email, Title, Account.Name FROM Contact WHERE " + " OR ".join(clauses) + " LIMIT 5"
+                    res = await client.salesforce.query(q)
+                    existing = [{"id": r["Id"], "name": r.get("Name"), "email": r.get("Email"),
+                                 "title": r.get("Title"), "account": (r.get("Account") or {}).get("Name")}
+                                for r in res.get("records", [])]
+            except Exception as qe:
+                logger.warning(f"duplicate lookup failed: {qe}")
+            raise HTTPException(status_code=409, detail={
+                "error": "duplicate_contact",
+                "message": "A contact with this name or email already exists in Salesforce.",
+                "existing": existing,
+            })
+        raise sf_http_error(e, "contact")
 
 
 # ── Payment SOQL (shared by both payment GET endpoints) ──────────────────
@@ -1163,9 +1214,11 @@ async def get_payments(
         cache.set(cache_key, records, CACHE_TTL_OPPORTUNITIES)
         return records
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error fetching payments: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise sf_http_error(e, "records")
 
 
 # ---------------------------------------------------------------------------
@@ -1214,9 +1267,11 @@ async def list_opportunity_files(
             }
             for r in records
         ]
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error listing files for opp {opportunity_id}: {e}")
-        raise HTTPException(status_code=500, detail="Failed to list files")
+        raise sf_http_error(e, "files")
 
 
 # Max upload size — SF REST API ContentVersion handles up to ~37 MB
@@ -1291,7 +1346,7 @@ async def upload_opportunity_file(
         raise
     except Exception as e:
         logger.error(f"Error uploading file to opp {opportunity_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to upload file")
+        raise sf_http_error(e, "file")
 
 
 @app.get("/api/salesforce/opportunities/{opportunity_id}/payments")
@@ -1321,9 +1376,11 @@ async def get_opportunity_payments(
         cache.set(cache_key, records, CACHE_TTL_OPPORTUNITIES)
         return records
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error fetching payments for opportunity {opportunity_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise sf_http_error(e, "records")
 
 
 # ── ACV Summary: payments scheduled in FY from FY wins ──────────────────
@@ -1395,9 +1452,11 @@ async def get_acv_summary(
         cache.set(cache_key, summary, CACHE_TTL_OPPORTUNITIES)
         return summary
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error fetching ACV summary for year {year}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise sf_http_error(e, "records")
 
 
 _VALID_CASHFLOW_BUCKETS = {"all", "philanthropy", "pbc", "capital_grants", "other"}
@@ -1731,9 +1790,11 @@ async def get_cashflow_detail(
         cache.set(cache_key, records, 300)  # 5-min cache
         return records
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error fetching cashflow detail: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise sf_http_error(e, "records")
 
 
 # ── Update endpoints for Account, Contact, Payment ──────────────────────
@@ -2291,9 +2352,11 @@ async def get_users(
         cache.set(cache_key, users, CACHE_TTL_USERS)
         return users
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error fetching users: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise sf_http_error(e, "records")
 
 
 # ---------------------------------------------------------------------------
@@ -2351,9 +2414,11 @@ async def get_my_tasks(
         cache.set(cache_key, response, 120)  # 2 min TTL — tasks change frequently
         return response
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error fetching tasks: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise sf_http_error(e, "records")
 
 
 # ---------------------------------------------------------------------------
@@ -2449,9 +2514,11 @@ async def get_opportunity_tasks(
             })
 
         return ApiResponse(success=True, data=formatted, meta={"count": len(formatted)})
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error fetching opportunity tasks: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise sf_http_error(e, "records")
 
 
 @app.post("/api/salesforce/opportunities/{opportunity_id}/tasks")
@@ -2502,7 +2569,7 @@ async def create_opportunity_task(
         )
     except Exception as e:
         logger.error(f"Error creating task: {e}")
-        raise HTTPException(status_code=500, detail="Failed to create task")
+        raise sf_http_error(e, "task")
 
 
 @app.get("/api/salesforce/accounts/{account_id}/tasks")
@@ -2584,9 +2651,11 @@ async def get_account_tasks(
         response = ApiResponse(success=True, data=formatted, meta={"count": len(formatted)})
         cache.set(cache_key, response, ttl_seconds=60)
         return response
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error fetching account tasks: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise sf_http_error(e, "records")
 
 
 @app.get("/api/salesforce/users/{owner_id}/tasks")
@@ -2657,9 +2726,11 @@ async def get_user_tasks(
         response = ApiResponse(success=True, data=formatted, meta={"count": len(formatted)})
         cache.set(cache_key, response, ttl_seconds=60)
         return response
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error fetching user tasks: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise sf_http_error(e, "records")
 
 
 @app.get("/api/salesforce/contacts/{contact_id}/tasks")
@@ -2728,9 +2799,11 @@ async def get_contact_tasks(
         response = ApiResponse(success=True, data=formatted, meta={"count": len(formatted)})
         cache.set(cache_key, response, ttl_seconds=60)
         return response
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error fetching contact tasks: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise sf_http_error(e, "records")
 
 
 # Fields we read back when verifying a Task write. Anything we let the
@@ -2890,7 +2963,7 @@ async def create_account_task(
         )
     except Exception as e:
         logger.error(f"Error creating account task: {e}")
-        raise HTTPException(status_code=500, detail="Failed to create task")
+        raise sf_http_error(e, "task")
 
 
 @app.post("/api/salesforce/tasks")
@@ -2940,7 +3013,7 @@ async def create_task(
         raise
     except Exception as e:
         logger.error(f"Error creating task: {e}")
-        raise HTTPException(status_code=500, detail="Failed to create task")
+        raise sf_http_error(e, "task")
 
 
 @app.put("/api/salesforce/tasks/{task_id}")
@@ -2992,7 +3065,7 @@ async def update_task(
         raise
     except Exception as e:
         logger.error(f"Error updating task: {e}")
-        raise HTTPException(status_code=500, detail="Failed to update task")
+        raise sf_http_error(e, "task")
 
 
 @app.delete("/api/salesforce/tasks/{task_id}")
@@ -3020,7 +3093,7 @@ async def delete_task(
         raise
     except Exception as e:
         logger.error(f"Error deleting task: {e}")
-        raise HTTPException(status_code=500, detail="Failed to delete task")
+        raise sf_http_error(e, "task")
 
 
 @app.post("/api/salesforce/tasks/{task_id}/duplicate")
@@ -3090,7 +3163,7 @@ async def duplicate_task(
         raise
     except Exception as e:
         logger.error(f"Error duplicating task: {e}")
-        raise HTTPException(status_code=500, detail="Failed to duplicate task")
+        raise sf_http_error(e, "task")
 
 
 @app.get("/api/calendar/my-events")
@@ -3605,9 +3678,11 @@ async def search_opportunities(
             "opportunities": opportunities,
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error searching opportunities: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise sf_http_error(e, "records")
 
 
 @app.get("/api/matching/grant-invoices")

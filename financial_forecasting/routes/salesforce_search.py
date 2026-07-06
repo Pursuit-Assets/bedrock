@@ -13,6 +13,7 @@ from auth import require_auth_or_internal
 from dependencies import get_mcp_client, require_sf_mcp_client
 from mcp_client import UnifiedMCPClient
 from security import escape_soql_string, escape_sosl_string
+from sf_errors import sf_http_error
 
 logger = logging.getLogger(__name__)
 
@@ -74,9 +75,11 @@ async def search_all(
         salesforce = client.salesforce
         result = await salesforce.search(sosl)
         return _group_sosl_results(result)
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error("SOSL search failed for q=%s: %s", q, e)
-        raise HTTPException(status_code=500, detail=f"Search failed: {e}")
+        raise sf_http_error(e, "search")
 
 
 @router.get("/contacts/search")
@@ -99,9 +102,11 @@ async def search_contacts(
         salesforce = client.salesforce
         result = await salesforce.query(soql)
         return result.get("records", [])
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error("Contact search failed for q=%s: %s", q, e)
-        raise HTTPException(status_code=500, detail=f"Contact search failed: {e}")
+        raise sf_http_error(e, "contact search")
 
 
 @router.get("/accounts/search")
@@ -123,9 +128,11 @@ async def search_accounts(
         salesforce = client.salesforce
         result = await salesforce.query(soql)
         return result.get("records", [])
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error("Account search failed for q=%s: %s", q, e)
-        raise HTTPException(status_code=500, detail=f"Account search failed: {e}")
+        raise sf_http_error(e, "account search")
 
 
 @router.get("/opportunities/search")
@@ -154,6 +161,8 @@ async def search_opportunities(
         salesforce = client.salesforce
         result = await salesforce.query(soql)
         return result.get("records", [])
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error("Opportunity search failed for q=%s: %s", q, e)
-        raise HTTPException(status_code=500, detail=f"Opportunity search failed: {e}")
+        raise sf_http_error(e, "opportunity search")

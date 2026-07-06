@@ -14,6 +14,7 @@ from mcp_client import UnifiedMCPClient
 from models import OpportunityStage, ApiResponse
 from routes.permissions import check_permission
 from security import validate_salesforce_id, escape_soql_string
+from sf_errors import sf_http_error
 from services.cache import cache
 
 logger = logging.getLogger(__name__)
@@ -95,9 +96,11 @@ async def get_awaiting_invoices(
             },
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.exception("Error in get_awaiting_invoices")
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise sf_http_error(e, "invoices")
 
 
 # ---------------------------------------------------------------------------
@@ -173,7 +176,7 @@ async def create_sage_invoice(
         raise
     except Exception as e:
         logger.exception("Error in create_sage_invoice")
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise sf_http_error(e, "invoice")
 
 
 # ---------------------------------------------------------------------------

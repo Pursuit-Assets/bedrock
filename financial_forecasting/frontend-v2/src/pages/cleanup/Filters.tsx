@@ -27,7 +27,40 @@ export type Operator =
   | "lt"
   | "before"
   | "after"
+  | "between"
+  | "in_range"
   | "within";
+
+/** Standard relative windows for date fields ("in_range" op). */
+export const DATE_PRESETS: { value: string; label: string }[] = [
+  { value: "last_7d", label: "Last 7 days" },
+  { value: "last_14d", label: "Last 14 days" },
+  { value: "last_30d", label: "Last 30 days" },
+  { value: "last_90d", label: "Last 90 days" },
+  { value: "this_month", label: "This month" },
+  { value: "last_month", label: "Last month" },
+  { value: "this_quarter", label: "This quarter" },
+  { value: "ytd", label: "Year to date" },
+];
+
+/** [startMs, endMs) window for a DATE_PRESETS value. */
+function presetWindow(preset: string): [number, number] | null {
+  const now = new Date();
+  const day = 86_400_000;
+  const today0 = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  switch (preset) {
+    case "last_7d": return [today0 - 7 * day, today0 + day];
+    case "last_14d": return [today0 - 14 * day, today0 + day];
+    case "last_30d": return [today0 - 30 * day, today0 + day];
+    case "last_90d": return [today0 - 90 * day, today0 + day];
+    case "this_month": return [new Date(now.getFullYear(), now.getMonth(), 1).getTime(), today0 + day];
+    case "last_month": return [new Date(now.getFullYear(), now.getMonth() - 1, 1).getTime(),
+                               new Date(now.getFullYear(), now.getMonth(), 1).getTime()];
+    case "this_quarter": return [new Date(now.getFullYear(), Math.floor(now.getMonth() / 3) * 3, 1).getTime(), today0 + day];
+    case "ytd": return [new Date(now.getFullYear(), 0, 1).getTime(), today0 + day];
+    default: return null;
+  }
+}
 
 export interface FieldMeta<T> {
   label: string;
@@ -66,6 +99,8 @@ export const OPS_BY_TYPE: Record<FieldType, { value: Operator; label: string }[]
     { value: "is_empty", label: "is empty" },
   ],
   date: [
+    { value: "in_range", label: "is in" },
+    { value: "between", label: "between" },
     { value: "before", label: "before" },
     { value: "after", label: "after" },
     { value: "equals", label: "is" },
@@ -125,8 +160,20 @@ export function ruleApplies<T, F extends string>(
   if (meta.type === "date") {
     if (v == null || first === "") return false;
     const ms = new Date(String(v)).getTime();
+    if (!Number.isFinite(ms)) return false;
+    if (r.op === "in_range") {
+      const win = presetWindow(first);
+      return win != null && ms >= win[0] && ms < win[1];
+    }
+    if (r.op === "between") {
+      const start = new Date(first).getTime();
+      // inclusive of the end date: compare against end-of-day
+      const end = new Date(r.values[1] ?? "").getTime() + 86_400_000;
+      if (!Number.isFinite(start) || !Number.isFinite(end)) return false;
+      return ms >= start && ms < end;
+    }
     const target = new Date(first).getTime();
-    if (!Number.isFinite(ms) || !Number.isFinite(target)) return false;
+    if (!Number.isFinite(target)) return false;
     if (r.op === "before") return ms < target;
     if (r.op === "after") return ms > target;
     if (r.op === "equals") return String(v).slice(0, 10) === first;
@@ -155,6 +202,11 @@ export function describeRule<T, F extends string>(
   if (!meta) return "(unknown filter)";
   if (r.op === "is_empty") return `${meta.label} is empty`;
   if (r.op === "is_not_empty") return `${meta.label} has any value`;
+  if (r.op === "in_range") {
+    const p = DATE_PRESETS.find((x) => x.value === r.values[0]);
+    return `${meta.label}: ${p?.label ?? r.values[0] ?? ""}`;
+  }
+  if (r.op === "between") return `${meta.label} between ${r.values[0] ?? ""} and ${r.values[1] ?? ""}`;
   const opLabel =
     OPS_BY_TYPE[meta.type].find((o) => o.value === r.op)?.label ?? r.op;
   // Empty-string values come from the "(empty)" sentinel in the
@@ -226,6 +278,7 @@ export function AddFilterButton<F extends string>({
   const ops = OPS_BY_TYPE[meta.type];
   const [op, setOp] = useState<Operator>(ops[0].value);
   const [singleValue, setSingleValue] = useState("");
+  const [secondValue, setSecondValue] = useState("");   // "between" end date
   const [multiValues, setMultiValues] = useState<string[]>([]);
   const [pickerQ, setPickerQ] = useState("");
 
@@ -260,6 +313,7 @@ export function AddFilterButton<F extends string>({
     setField(fieldKeys[0]);
     setOp(OPS_BY_TYPE[filterable[fieldKeys[0]].type][0].value);
     setSingleValue("");
+    setSecondValue("");
     setMultiValues([]);
     setPickerQ("");
   };
@@ -277,6 +331,11 @@ export function AddFilterButton<F extends string>({
     } else if (isMultiSelect) {
       if (multiValues.length === 0) return;
       onAdd({ id: newId(), field, op, values: multiValues });
+    } else if (op === "between") {
+      if (!singleValue || !secondValue) return;
+      // normalize so start <= end regardless of input order
+      const [a, b] = [singleValue, secondValue].sort();
+      onAdd({ id: newId(), field, op, values: [a, b] });
     } else {
       if (!singleValue) return;
       onAdd({ id: newId(), field, op, values: [singleValue] });
@@ -419,6 +478,33 @@ export function AddFilterButton<F extends string>({
                           </option>
                         ))}
                       </select>
+                    ) : meta.type === "date" && op === "in_range" ? (
+                      <select
+                        value={singleValue}
+                        onChange={(e) => setSingleValue(e.target.value)}
+                        className="h-8 w-full rounded border border-border-strong bg-surface px-2 text-[12.5px] text-ink outline-none focus:border-accent"
+                      >
+                        <option value="">—</option>
+                        {DATE_PRESETS.map((o) => (
+                          <option key={o.value} value={o.value}>{o.label}</option>
+                        ))}
+                      </select>
+                    ) : meta.type === "date" && op === "between" ? (
+                      <div className="flex items-center gap-1.5">
+                        <input
+                          type="date"
+                          value={singleValue}
+                          onChange={(e) => setSingleValue(e.target.value)}
+                          className="h-8 w-full rounded border border-border-strong bg-surface px-2 text-[12.5px] text-ink outline-none focus:border-accent"
+                        />
+                        <span className="text-[11px] text-ink-4">and</span>
+                        <input
+                          type="date"
+                          value={secondValue}
+                          onChange={(e) => setSecondValue(e.target.value)}
+                          className="h-8 w-full rounded border border-border-strong bg-surface px-2 text-[12.5px] text-ink outline-none focus:border-accent"
+                        />
+                      </div>
                     ) : meta.type === "date" ? (
                       <input
                         type="date"

@@ -29,7 +29,10 @@ export function JobsPage() {
   // Deep-link support (e.g. from global search):
   //   ?view=contacts&q=<text>           — seed the find-any search
   //   ?view=contacts&contact=<id>       — open that contact's detail drawer
-  const paramView = searchParams.get("view") as View | null;
+  // The tab LABELED "Opportunities" has internal id "team" — accept the label
+  // as a deep-link alias so ?view=opportunities doesn't silently land on Home.
+  const rawView = searchParams.get("view");
+  const paramView = (rawView === "opportunities" ? "team" : rawView) as View | null;
   const initialView: View = paramView && VALID_VIEWS.has(paramView) ? paramView : "home";
   const initialQuery = searchParams.get("q") ?? undefined;
   const contactParam = searchParams.get("contact");

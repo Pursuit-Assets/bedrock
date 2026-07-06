@@ -3,15 +3,16 @@
  * panels, and the detail pages — so opportunities, contacts, owners, and the
  * contact tab-set all render and link the same way everywhere.
  */
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { Briefcase, ExternalLink, Linkedin } from "lucide-react";
+import { Briefcase, ExternalLink, Linkedin, Plus } from "lucide-react";
 
 import { withReferrer } from "@/components/detail";
 import { JobsActivityList } from "@/components/jobs/JobsActivityList";
 import { JobsComments } from "@/components/jobs/JobsComments";
 import { JobsTasks } from "@/components/jobs/JobsTasks";
-import { initials } from "@/components/jobs/ProspectAccountExpandPanel";
+import { initials, LogActivityForm } from "@/components/jobs/ProspectAccountExpandPanel";
+import { RequestIntroDialog } from "@/components/jobs/RequestIntroDialog";
 import { RowExpandPanel } from "@/components/RowExpandPanel";
 import { InlineSelect, InlineText } from "@/components/ui/InlineEdit";
 import { cn } from "@/lib/utils";
@@ -214,26 +215,56 @@ export function ContactOppsTab({ contactId }: { contactId: number }) {
   return <OppsTab opps={opps} />;
 }
 
-/** Contact's Activity tab — reads activity off the contact detail query. */
+/** Contact's Activity tab — reads activity off the contact detail query, and
+ * lets the user log a manual touch (call / text / LinkedIn) inline. */
 export function ContactActivityTab({ contactId }: { contactId: number }) {
   const { data, isLoading } = useContactDetail(contactId);
+  const [logging, setLogging] = useState(false);
   if (isLoading) return <div className="px-4 py-6 text-[12.5px] text-ink-3">Loading…</div>;
-  return <JobsActivityList entries={data?.activity ?? []} emptyMessage="No emails, meetings, or logged touches for this contact yet." />;
+  return (
+    <div className="flex flex-col">
+      <div className="flex justify-end px-3 pt-2">
+        {logging ? null : (
+          <button type="button" onClick={() => setLogging(true)}
+            className="inline-flex items-center gap-1 rounded border border-border-strong px-2 py-0.5 text-[11px] font-medium text-ink-3 hover:border-accent hover:text-accent">
+            <Plus size={11} /> Log activity
+          </button>
+        )}
+      </div>
+      {logging && <div className="px-3 pt-2"><LogActivityForm contactId={contactId} onClose={() => setLogging(false)} /></div>}
+      <JobsActivityList entries={data?.activity ?? []} emptyMessage="No emails, meetings, or logged touches for this contact yet." />
+    </div>
+  );
 }
 
-/** The full contact expand panel — Activity · Opportunities · Tasks · Comments. */
+/** The full contact expand panel — Activity · Opportunities · Tasks · Comments,
+ * plus the contact-level actions (open detail, request intro) so the row a
+ * user is already working in covers the whole workflow. */
 export function ContactExpandTabs({ contactId }: { contactId: number }) {
   const { data } = useContactOpportunities(contactId);
+  const [introOpen, setIntroOpen] = useState(false);
   const id = String(contactId);
   return (
-    <RowExpandPanel
-      tabs={[
-        { id: "activity", label: "Activity", render: () => <ContactActivityTab contactId={contactId} /> },
-        { id: "opps", label: "Opportunities", count: data?.length ?? null, render: () => <ContactOppsTab contactId={contactId} /> },
-        { id: "tasks", label: "Tasks", render: () => <div className="p-3"><JobsTasks parentType="prospect" parentId={id} /></div> },
-        { id: "comments", label: "Comments", render: () => <div className="p-3"><JobsComments parentType="prospect" parentId={id} /></div> },
-      ]}
-    />
+    <div className="relative">
+      <div className="absolute right-3 top-1.5 z-10 flex items-center gap-2">
+        <button type="button" onClick={() => setIntroOpen(true)}
+          className="rounded border border-border-strong px-2 py-0.5 text-[11px] font-medium text-ink-3 hover:border-accent hover:text-accent">
+          Request intro
+        </button>
+        <Link to={jobsContactPath(contactId)} state={jobsRef} className="rounded border border-border-strong px-2 py-0.5 text-[11px] font-medium text-ink-3 hover:border-accent hover:text-accent">
+          Open ↗
+        </Link>
+      </div>
+      <RowExpandPanel
+        tabs={[
+          { id: "activity", label: "Activity", render: () => <ContactActivityTab contactId={contactId} /> },
+          { id: "opps", label: "Opportunities", count: data?.length ?? null, render: () => <ContactOppsTab contactId={contactId} /> },
+          { id: "tasks", label: "Tasks", render: () => <div className="p-3"><JobsTasks parentType="prospect" parentId={id} /></div> },
+          { id: "comments", label: "Comments", render: () => <div className="p-3"><JobsComments parentType="prospect" parentId={id} /></div> },
+        ]}
+      />
+      {introOpen && <RequestIntroDialog contactId={contactId} contactName="this contact" onClose={() => setIntroOpen(false)} />}
+    </div>
   );
 }
 

@@ -14,6 +14,7 @@ from mcp_client import UnifiedMCPClient
 from models import OpportunityStage
 from routes.permissions import check_permission
 from security import validate_salesforce_id, escape_soql_string
+from sf_errors import sf_http_error
 from services.awards_service import ensure_for_opp as ensure_award_for_opp
 from services.cache import cache, CACHE_TTL_STAGE_HISTORY
 
@@ -83,7 +84,7 @@ async def get_prior_stages(
         result = await salesforce.query_all(query)
     except Exception as e:
         logger.warning("prior-stages query failed: %s", e)
-        raise HTTPException(status_code=500, detail="Stage history query failed")
+        raise sf_http_error(e, "stage history")
 
     rows = result.get("records", [])
     # Take the *last* (most recent) history row per opp; its OldValue is
@@ -147,7 +148,7 @@ async def get_opp_stage_history(
         return formatted
     except Exception as e:
         logger.warning(f"per-opp stage history failed for %s: %s", opportunity_id, e)
-        raise HTTPException(status_code=500, detail="stage history unavailable")
+        raise sf_http_error(e, "stage history")
 
 
 @router.get("/api/salesforce/opportunities/stage-history")
@@ -194,7 +195,7 @@ async def get_stage_history(
 
     except Exception as e:
         logger.warning(f"OpportunityFieldHistory query failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise sf_http_error(e, "stage history")
 
 
 # ---------------------------------------------------------------------------
@@ -284,7 +285,7 @@ async def get_ownership_history(
 
     except Exception as e:
         logger.warning(f"OpportunityFieldHistory ownership query failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise sf_http_error(e, "ownership history")
 
 
 # ---------------------------------------------------------------------------
@@ -334,7 +335,8 @@ async def bulk_update_opportunities(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.exception("Error in bulk_update_opportunities")
+        raise sf_http_error(e, "opportunity update")
 
 
 # ---------------------------------------------------------------------------
@@ -427,7 +429,7 @@ async def validate_stage_change(
         raise
     except Exception as e:
         logger.exception("Error in validate_stage_change")
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise sf_http_error(e, "stage validation")
 
 
 # ---------------------------------------------------------------------------
@@ -505,7 +507,7 @@ async def update_opportunity_stage(
         raise
     except Exception as e:
         logger.exception("Error in update_opportunity_stage")
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise sf_http_error(e, "opportunity stage update")
 
 
 # ---------------------------------------------------------------------------

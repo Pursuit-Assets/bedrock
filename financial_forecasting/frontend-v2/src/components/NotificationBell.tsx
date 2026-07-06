@@ -268,6 +268,17 @@ function NotificationRow({
       headline = "Opportunity ownership changed";
       if (oppName) details.push({ label: "", value: oppName });
     }
+  } else if (n.type === "intro_request") {
+    headline = `${actor} asked you for an intro`;
+    const who = [p.contact_name, p.contact_company ? `(${p.contact_company})` : ""].filter(Boolean).join(" ");
+    if (who) details.push({ label: "Contact", value: who, bold: true });
+    if (p.ask) details.push({ label: "Ask", value: p.ask });
+    if (p.context) details.push({ label: "Context", value: p.context });
+  } else if (n.type === "intro_response") {
+    const verb = p.status === "accepted" ? "accepted" : p.status === "declined" ? "declined" : p.status === "completed" ? "made" : "updated";
+    headline = verb === "made" ? `${actor} made the intro` : `${actor} ${verb} your intro request`;
+    if (p.contact_name) details.push({ label: "Contact", value: p.contact_name, bold: true });
+    if (p.response_note) details.push({ label: "Note", value: p.response_note });
   } else {
     headline = p.title || prettyType(n.type);
     if (p.subtitle) details.push({ label: "", value: p.subtitle });
@@ -344,6 +355,10 @@ function typeIcon(t: NotificationType): string {
       return "🔔";
     case "sf_opp_owner_changed":
       return "🤝";
+    case "intro_request":
+      return "👋";
+    case "intro_response":
+      return "🤝";
   }
 }
 
@@ -357,6 +372,10 @@ function prettyType(t: NotificationType): string {
       return "New Salesforce task";
     case "sf_opp_owner_changed":
       return "Opportunity owner change";
+    case "intro_request":
+      return "Intro request";
+    case "intro_response":
+      return "Intro request update";
   }
 }
 

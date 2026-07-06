@@ -472,7 +472,7 @@ function RoleRow({ role, oppId, roles }: { role: Role; oppId: string; roles: Rol
       <div className="flex items-start justify-between gap-2">
         <div className="flex min-w-0 flex-col gap-0.5">
           <div className="flex items-center gap-1.5">
-            <span className="truncate text-[13px] font-medium text-ink">{role.title}</span>
+            <span className="truncate text-[13px] font-medium text-ink">{role.title || "Untitled role"}</span>
             {role.commitment === "open_market" ? (
               <span className="inline-flex items-center rounded-full bg-stone-100 px-1.5 py-0.5 text-[9.5px] font-semibold uppercase tracking-wide leading-none text-stone-500">Open-market</span>
             ) : null}

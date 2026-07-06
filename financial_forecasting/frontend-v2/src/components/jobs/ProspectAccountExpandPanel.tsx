@@ -30,6 +30,7 @@ import { format, formatDistanceToNow } from "date-fns";
 
 import { JobsComments } from "@/components/jobs/JobsComments";
 import { JobsTasks } from "@/components/jobs/JobsTasks";
+import { RequestIntroDialog } from "@/components/jobs/RequestIntroDialog";
 import { RowExpandPanel } from "@/components/RowExpandPanel";
 import { InlineSelect, InlineText } from "@/components/ui/InlineEdit";
 import { cn } from "@/lib/utils";
@@ -118,7 +119,7 @@ const ACTIVITY_TYPE_OPTIONS = [
 
 type ActivityType = (typeof ACTIVITY_TYPE_OPTIONS)[number]["value"];
 
-function LogActivityForm({
+export function LogActivityForm({
   contactId,
   onClose,
 }: {
@@ -243,6 +244,7 @@ export function ContactDetail({ contactId }: { contactId: number }) {
   const { mutateAsync: updateContact } = useUpdateContact();
   const { mutate: deleteActivity } = useDeleteActivity();
   const [showLogForm, setShowLogForm] = useState(false);
+  const [introOpen, setIntroOpen] = useState(false);
   const [expandedActivityId, setExpandedActivityId] = useState<string | null>(null);
 
   if (isLoading) {
@@ -322,12 +324,20 @@ export function ContactDetail({ contactId }: { contactId: number }) {
             </div>
           </div>
 
+          <button type="button" onClick={() => setIntroOpen(true)}
+            className="self-start rounded-lg border border-accent px-2.5 py-1 text-[11.5px] font-medium text-accent hover:bg-accent-soft">
+            Request intro
+          </button>
+          {introOpen && (
+            <RequestIntroDialog contactId={contactId} contactName={data.full_name ?? "this contact"} onClose={() => setIntroOpen(false)} />
+          )}
+
           {data.deal && (
             <div className="rounded-lg border border-border-strong bg-surface p-3">
               <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-ink-4">Linked Deal</div>
               <div className="mb-1.5 flex items-center gap-1.5 text-[12px] font-medium text-ink-2">
                 <Building2 size={11} className="flex-shrink-0 text-ink-4" />
-                {data.deal.account_name}
+                {data.deal.account_name || "—"}
               </div>
               {dealStageStyle && (
                 <span className={cn("inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium leading-4", dealStageStyle)}>
