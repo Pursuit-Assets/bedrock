@@ -1542,7 +1542,7 @@ interface NewDealForm {
   companyName: string;
   stage: JobStage;
   dealType: DealType | "";
-  roleTitle: string;
+  name: string;          // freeform opportunity name (opp = the ongoing conversation, not one role)
   owner: string;
   expectedSalary: string;
   notes: string;
@@ -1552,7 +1552,7 @@ const DEFAULT_NEW_DEAL_FORM: NewDealForm = {
   companyName: "",
   stage: "lead_submitted",
   dealType: "",
-  roleTitle: "",
+  name: "",
   owner: "",
   expectedSalary: "",
   notes: "",
@@ -1579,7 +1579,7 @@ function NewDealModal({ onClose }: { onClose: () => void }) {
       account_name: form.companyName.trim(),
       stage: form.stage,
       deal_type: form.dealType || null,
-      title: form.roleTitle.trim() || undefined,
+      title: form.name.trim() || undefined,
       owner_email: form.owner.trim() || undefined,
       salary_expected: salary != null && !isNaN(salary) ? salary : undefined,
       description: form.notes.trim() || undefined,
@@ -1657,12 +1657,13 @@ function NewDealModal({ onClose }: { onClose: () => void }) {
             </div>
 
             <div className="flex flex-col gap-1">
-              <label className="text-[11px] font-semibold uppercase tracking-wider text-ink-4">Role Title</label>
+              <label className="text-[11px] font-semibold uppercase tracking-wider text-ink-4">Opportunity Name</label>
               <input
                 type="text"
-                value={form.roleTitle}
-                onChange={(e) => set("roleTitle", e.target.value)}
-                placeholder="Software Engineer"
+                value={form.name}
+                onChange={(e) => set("name", e.target.value)}
+                placeholder="e.g. Spring 2026 hiring conversation"
+                title="Name the opportunity freely — it can hold several roles. Add roles once it's confirmed."
                 className="w-full rounded-md border border-border-strong bg-surface px-3 py-2 text-[13px] text-ink placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40"
               />
             </div>
