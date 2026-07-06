@@ -1091,12 +1091,12 @@ export interface CandidateEnrichment {
   error?: string;
 }
 
-export function useCandidates(owner?: string) {
+export function useCandidates(owner?: string, status: "candidate" | "dismissed" = "candidate") {
   return useQuery({
-    queryKey: ["jobs", "candidates", owner ?? "all"],
+    queryKey: ["jobs", "candidates", owner ?? "all", status],
     queryFn: async (): Promise<JobCandidate[]> => {
       const { data } = await api.get<ApiResponse<JobCandidate[]>>("/api/jobs/candidates", {
-        params: owner ? { owner } : undefined,
+        params: { ...(owner ? { owner } : {}), status },
       });
       return data.data ?? [];
     },
@@ -1350,6 +1350,23 @@ export function useBulkDismissCandidates() {
       toast.success(`Dismissed ${d?.dismissed ?? 0}`);
     },
     onError: () => toast.error("Bulk dismiss failed"),
+  });
+}
+
+export function useBulkRestoreCandidates() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (contactIds: number[]) => {
+      const { data } = await api.post<ApiResponse<{ restored: number }>>(
+        "/api/jobs/candidates/bulk-restore", { contact_ids: contactIds });
+      return data.data;
+    },
+    onSuccess: (d) => {
+      qc.invalidateQueries({ queryKey: ["jobs", "candidates"] });
+      qc.invalidateQueries({ queryKey: ["jobs", "candidate-owners"] });
+      toast.success(`Restored ${d?.restored ?? 0}`);
+    },
+    onError: () => toast.error("Restore failed"),
   });
 }
 

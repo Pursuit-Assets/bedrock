@@ -14,7 +14,7 @@ import { Tag } from "@/components/ui/Tag";
 import {
   useCandidates, useCandidateDetail, useContactSearch, useEnrichCandidate, useLinkCandidate,
   useCandidateSfMatch, useLinkCandidateSf,
-  usePromoteCandidate, useDismissCandidate, useBulkDismissCandidates, useJobsAccountNames, useCandidateOwners,
+  usePromoteCandidate, useDismissCandidate, useBulkDismissCandidates, useBulkRestoreCandidates, useJobsAccountNames, useCandidateOwners,
   type JobCandidate,
 } from "@/services/jobs";
 
@@ -299,13 +299,16 @@ function CandidateRow({ c, onOpen, selected, onToggleSelect }: {
 
 export function CandidatesZone({ defaultOwner }: { defaultOwner?: string } = {}) {
   const [owner, setOwner] = useState<string>(defaultOwner ?? "");  // "" = everyone
-  const { data: cands = [], isLoading } = useCandidates(owner || undefined);
+  const [view, setView] = useState<"candidate" | "dismissed">("candidate");
+  const { data: cands = [], isLoading } = useCandidates(owner || undefined, view);
   const { data: owners = [] } = useCandidateOwners();
   const bulkDismiss = useBulkDismissCandidates();
+  const bulkRestore = useBulkRestoreCandidates();
   const [openId, setOpenId] = useState<number | null>(null);
   const [showAll, setShowAll] = useState(false);
   const [q, setQ] = useState("");
   const [selected, setSelected] = useState<Set<number>>(new Set());
+  const dismissedView = view === "dismissed";
 
   // Client-side search across the fields shown on the row.
   const filtered = useMemo(() => {
@@ -332,11 +335,30 @@ export function CandidatesZone({ defaultOwner }: { defaultOwner?: string } = {})
   });
   const doBulkDismiss = () => {
     if (selected.size === 0) return;
+    // Global + effectively permanent → confirm before removing for everyone.
+    const ok = window.confirm(
+      `Dismiss ${selected.size} candidate${selected.size === 1 ? "" : "s"} for the whole team? ` +
+      `They leave everyone's review queue. You can restore them from the Dismissed view.`);
+    if (!ok) return;
     bulkDismiss.mutate([...selected], { onSuccess: () => setSelected(new Set()) });
+  };
+  const doBulkRestore = () => {
+    if (selected.size === 0) return;
+    bulkRestore.mutate([...selected], { onSuccess: () => setSelected(new Set()) });
   };
 
   const controls = (
     <div className="flex items-center gap-2">
+      <div className="flex items-center rounded-md border border-border-strong p-0.5 text-[11.5px]">
+        {(["candidate", "dismissed"] as const).map((v) => (
+          <button key={v} type="button"
+            onClick={() => { setView(v); setSelected(new Set()); setShowAll(false); }}
+            className={cn("rounded px-2 py-0.5 font-medium",
+              view === v ? "bg-accent text-white" : "text-ink-3 hover:text-ink")}>
+            {v === "candidate" ? "Reviewing" : "Dismissed"}
+          </button>
+        ))}
+      </div>
       <input value={q} onChange={(e) => { setQ(e.target.value); setShowAll(false); }}
         placeholder="Search candidates…"
         className="h-7 w-48 rounded-md border border-border-strong bg-surface px-2 text-[12px] text-ink outline-none focus:border-accent" />
@@ -348,13 +370,14 @@ export function CandidatesZone({ defaultOwner }: { defaultOwner?: string } = {})
     </div>
   );
   return (
-    <Section title="Candidates to review" count={cands.length} action={controls}>
+    <Section title={dismissedView ? "Dismissed candidates" : "Candidates to review"} count={cands.length} action={controls}>
       <div className="flex flex-col overflow-hidden rounded-lg border border-border-strong bg-surface">
         {isLoading ? (
           <div className="px-3 py-8 text-center text-[12.5px] text-ink-3">Loading…</div>
         ) : cands.length === 0 ? (
           <div className="px-3 py-8 text-center text-[12.5px] text-ink-3">
-            {owner ? `No candidates for ${ownerLabel(owner)}. 🎉` : "Nothing to review. 🎉"}
+            {dismissedView ? "No dismissed candidates."
+              : owner ? `No candidates for ${ownerLabel(owner)}. 🎉` : "Nothing to review. 🎉"}
           </div>
         ) : filtered.length === 0 ? (
           <div className="px-3 py-8 text-center text-[12.5px] text-ink-3">No candidates match “{q}”.</div>
@@ -366,15 +389,24 @@ export function CandidatesZone({ defaultOwner }: { defaultOwner?: string } = {})
                   <input type="checkbox" checked={allShownSelected} onChange={toggleAllShown} className="accent-accent" />
                   {selected.size} selected
                 </label>
-                <button type="button" disabled={bulkDismiss.isPending} onClick={doBulkDismiss}
-                  className="inline-flex items-center gap-1 rounded-md bg-red px-2.5 py-1 text-[12px] font-medium text-white disabled:opacity-40">
-                  <X size={12} /> Dismiss {selected.size}
-                </button>
+                {dismissedView ? (
+                  <button type="button" disabled={bulkRestore.isPending} onClick={doBulkRestore}
+                    className="inline-flex items-center gap-1 rounded-md bg-green px-2.5 py-1 text-[12px] font-medium text-white disabled:opacity-40">
+                    <Check size={12} /> Restore {selected.size}
+                  </button>
+                ) : (
+                  <button type="button" disabled={bulkDismiss.isPending} onClick={doBulkDismiss}
+                    className="inline-flex items-center gap-1 rounded-md bg-red px-2.5 py-1 text-[12px] font-medium text-white disabled:opacity-40">
+                    <X size={12} /> Dismiss {selected.size}
+                  </button>
+                )}
               </div>
             ) : (
               <div className="flex items-center gap-2 bg-surface-2/60 px-3 py-1.5 text-[11px] text-ink-4">
                 <input type="checkbox" checked={false} onChange={toggleAllShown} className="accent-accent" aria-label="Select all shown" />
-                People we emailed{owner ? ` (${ownerLabel(owner)})` : ""}, enriched by AI. Open to confirm, or select rows to dismiss in bulk.
+                {dismissedView
+                  ? "Dismissed candidates — removed from everyone's queue. Select rows to restore."
+                  : `People we emailed${owner ? ` (${ownerLabel(owner)})` : ""}, enriched by AI. Open to confirm, or select rows to dismiss in bulk.`}
               </div>
             )}
             {shown.map((c) => (

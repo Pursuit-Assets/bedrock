@@ -3732,6 +3732,7 @@ async def set_connection_status(
 @router.get("/candidates")
 async def list_candidates(
     owner: Optional[str] = Query(None, description="Filter to candidates whose activity involved this staff email"),
+    status: str = Query("candidate", pattern="^(candidate|dismissed)$"),
     user=Depends(require_auth),
     conn=Depends(get_db),
 ):
@@ -3742,7 +3743,7 @@ async def list_candidates(
     (from bedrock.email_candidate.owners). Owners/channels are returned per row
     so the UI can show + filter by who reached out."""
     params: list = []
-    where = ["c.contact_stage = 'candidate'",
+    where = [f"c.contact_stage = '{status}'",
              "('email_review' = ANY(c.tags) OR c.source = 'email_candidate')"]
     if owner:
         params.append(owner)
@@ -4214,6 +4215,27 @@ async def bulk_dismiss_candidates(
         "WHERE contact_id = ANY($1::int[]) AND contact_stage='candidate'", ids)
     n = int(res.split()[-1]) if res and res.split()[-1].isdigit() else 0
     return {"success": True, "data": {"dismissed": n}}
+
+
+@router.post("/candidates/bulk-restore")
+async def bulk_restore_candidates(
+    body: BulkDismiss,
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Undo dismissal — move rows back into the review queue. Only affects rows
+    currently dismissed that still carry the candidate markers."""
+    ids = [int(i) for i in (body.contact_ids or [])]
+    if not ids:
+        return {"success": True, "data": {"restored": 0}}
+    res = await conn.execute(
+        "UPDATE public.contacts SET contact_stage='candidate', "
+        "tags=(CASE WHEN 'email_review' = ANY(coalesce(tags,'{}')) THEN tags "
+        "      ELSE array_append(coalesce(tags,'{}'), 'email_review') END), updated_at=now() "
+        "WHERE contact_id = ANY($1::int[]) AND contact_stage='dismissed' "
+        "  AND ('email_review' = ANY(coalesce(tags,'{}')) OR source='email_candidate')", ids)
+    n = int(res.split()[-1]) if res and res.split()[-1].isdigit() else 0
+    return {"success": True, "data": {"restored": n}}
 
 
 # ── Activity logging ─────────────────────────────────────────────────────────
