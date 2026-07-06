@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 # Mirror of routes.jobs.JOBS_TEAM_EMAILS — redefined locally so this service
 # stays free of any route import. Keep in sync with routes/jobs.py.
-JOBS_TEAM_EMAILS = ["avni@pursuit.org", "damon.kornhauser@pursuit.org"]
+JOBS_TEAM_EMAILS = ["avni@pursuit.org", "damon.kornhauser@pursuit.org", "devika@pursuit.org"]
 
 
 async def relink_jobs_prospect_activity(conn, days_back: Optional[int] = None) -> dict[str, Any]:

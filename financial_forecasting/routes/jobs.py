@@ -40,7 +40,10 @@ VALID_DEAL_TYPES = {"ft", "pt_contract", "capstone", "volunteer", "workshop", "p
 # across the whole team (3 emails to the same person in a week = 1; emailing
 # someone the team already reached before = 0). Synced gmail/calendar only —
 # manual deal-logs have no counterpart email to dedupe on.
-JOBS_TEAM_EMAILS = ["avni@pursuit.org", "damon.kornhauser@pursuit.org"]
+# Core jobs team — default scope for outreach/activation metrics. Per the
+# 2026-07-06 review ("remove everyone except Damon, Avni, Devika"); other
+# staff remain reachable via the per-person owner filter (staff drill).
+JOBS_TEAM_EMAILS = ["avni@pursuit.org", "damon.kornhauser@pursuit.org", "devika@pursuit.org"]
 
 _FT_EXTERNAL = """
         WHERE counterpart NOT LIKE '%@pursuit.org' AND counterpart NOT LIKE '%@pursuit.com'
