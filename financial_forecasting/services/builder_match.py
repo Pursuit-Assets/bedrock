@@ -47,18 +47,55 @@ async def absorb_if_builder(conn, contact_id: int) -> Optional[Dict[str, Any]]:
             "email": c["email"], "email_result": email_result}
 
 
+async def absorb_if_known_contact(conn, contact_id: int):
+    """If the candidate's name UNIQUELY matches an existing Salesforce-linked
+    contact (i.e. a curated SF record — fellows/alumni/known people, per the
+    review: "anyone who was in Salesforce"), merge the candidate into it rather
+    than leaving it in review. Gated on sf_contact_link so we never auto-merge
+    into a random LinkedIn-import namesake; unique match only. Returns a summary
+    when linked, else None."""
+    c = await conn.fetchrow(
+        "SELECT contact_id, full_name, email FROM public.contacts WHERE contact_id=$1", contact_id)
+    if not c:
+        return None
+    name = (c["full_name"] or "").strip()
+    if not name or "@" in name or len(name.split()) < 2:
+        return None
+    rows = await conn.fetch(
+        """SELECT d.contact_id FROM public.contacts d
+           JOIN bedrock.sf_contact_link l ON l.public_contact_id = d.contact_id
+           WHERE lower(d.full_name) = lower($1) AND d.contact_id <> $2
+             AND coalesce(d.contact_stage,'') NOT IN ('merged','candidate','dismissed')""",
+        name, contact_id)
+    canon_ids = sorted({r["contact_id"] for r in rows})
+    if len(canon_ids) != 1:
+        return None  # 0 or ambiguous → leave in queue
+    canonical = canon_ids[0]
+    await conn.execute("SELECT bedrock.merge_contacts($1, $2, $3)",
+                       canonical, contact_id, "auto-link: exact name match to Salesforce contact")
+    logger.info("auto-linked candidate %s (%s) → SF contact %s", contact_id, c["email"], canonical)
+    return {"contact_id": contact_id, "linked_to": canonical}
+
+
 async def sweep_builder_candidates(conn) -> Dict[str, Any]:
-    """Run absorb_if_builder over the whole current review queue (nightly +
-    one-off backfill). Returns counts."""
+    """Absorb known people out of the review queue (nightly + one-off backfill):
+    builders (users roster) get their personal email saved + dismissed;
+    Salesforce-linked fellows/alumni get the candidate merged into them.
+    Everyone else stays for human review. Returns counts."""
     ids = [r["contact_id"] for r in await conn.fetch(
         "SELECT contact_id FROM public.contacts WHERE contact_stage='candidate' "
         "AND ('email_review' = ANY(coalesce(tags,'{}')) OR source='email_candidate')")]
-    absorbed, saved = 0, 0
+    builders, sf_linked, saved = 0, 0, 0
     for cid in ids:
         res = await absorb_if_builder(conn, cid)
         if res:
-            absorbed += 1
+            builders += 1
             if res["email_result"] == "saved":
                 saved += 1
-    logger.info("builder sweep: %d absorbed of %d candidates, %d emails saved", absorbed, len(ids), saved)
-    return {"scanned": len(ids), "absorbed": absorbed, "emails_saved": saved}
+            continue
+        if await absorb_if_known_contact(conn, cid):
+            sf_linked += 1
+    logger.info("known-people sweep: %d builders absorbed (%d emails saved), %d merged into SF contacts, of %d",
+                builders, saved, sf_linked, len(ids))
+    return {"scanned": len(ids), "builders_absorbed": builders, "emails_saved": saved,
+            "sf_contacts_linked": sf_linked}
