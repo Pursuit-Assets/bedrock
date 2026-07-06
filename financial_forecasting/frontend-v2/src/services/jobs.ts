@@ -1044,6 +1044,9 @@ export interface JobCandidate {
   is_employer_contact?: boolean | null;
   dup_count?: number;
   top_dup_id?: number | null;
+  top_dup_company?: string | null;
+  top_dup_title?: string | null;
+  dup_match_count?: number;
   account_linked?: boolean;
   enriched?: boolean;
   email_count: number;
@@ -1352,6 +1355,23 @@ export function useBulkDismissCandidates() {
       toast.success(`Dismissed ${d?.dismissed ?? 0}`);
     },
     onError: () => toast.error("Bulk dismiss failed"),
+  });
+}
+
+export function useMergeContacts() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ canonicalId, loserIds }: { canonicalId: number; loserIds: number[] }) => {
+      const { data } = await api.post<ApiResponse<{ merged: number }>>(
+        "/api/jobs/contacts/merge", { canonical_id: canonicalId, loser_ids: loserIds });
+      return data.data;
+    },
+    onSuccess: (d) => {
+      qc.invalidateQueries({ queryKey: ["jobs", "candidates"] });
+      qc.invalidateQueries({ queryKey: ["jobs", "contacts"] });
+      toast.success(`Merged ${d?.merged ?? 0} duplicate${(d?.merged ?? 0) === 1 ? "" : "s"}`);
+    },
+    onError: () => toast.error("Merge failed"),
   });
 }
 

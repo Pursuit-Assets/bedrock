@@ -3548,6 +3548,30 @@ class ContactUpdate(BaseModel):
     linkedin_url:    Optional[str] = None
 
 
+class ContactsMerge(BaseModel):
+    canonical_id: int
+    loser_ids: list[int]
+
+
+@router.post("/contacts/merge")
+async def merge_contacts(
+    body: ContactsMerge,
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Merge duplicate contacts into a canonical one — repoints activity,
+    aliases, SF links, statuses, tasks/comments, relationships, and candidate
+    rows via the SECURITY DEFINER bedrock.merge_contacts, then marks losers
+    merged (audited). Returns how many were merged."""
+    losers = [int(i) for i in body.loser_ids if int(i) != body.canonical_id]
+    if not losers:
+        return {"success": True, "data": {"merged": 0, "canonical_id": body.canonical_id}}
+    for lid in losers:
+        await conn.execute("SELECT bedrock.merge_contacts($1, $2, $3)",
+                           body.canonical_id, lid, "in-app duplicate merge")
+    return {"success": True, "data": {"merged": len(losers), "canonical_id": body.canonical_id}}
+
+
 @router.patch("/contacts/{contact_id}")
 async def update_contact(
     contact_id: int,
@@ -3774,15 +3798,17 @@ async def list_candidates(
         LEFT JOIN LATERAL (
             -- best one-click merge target: a real contact with the same name
             -- (exclude self, merged, and other queue rows). Unique only.
-            SELECT (array_agg(d.contact_id))[1] AS top_dup_id
+            SELECT (array_agg(d.contact_id ORDER BY d.contact_id))[1] AS top_dup_id,
+                   (array_agg(d.current_company ORDER BY d.contact_id))[1] AS top_dup_company,
+                   (array_agg(d.current_title ORDER BY d.contact_id))[1] AS top_dup_title,
+                   count(*) AS dup_n
             FROM public.contacts d
             WHERE c.full_name IS NOT NULL AND position('@' in c.full_name) = 0
               AND lower(d.full_name) = lower(c.full_name) AND d.contact_id <> c.contact_id
               AND coalesce(d.contact_stage,'') NOT IN ('merged','candidate','dismissed')
-            HAVING count(*) = 1
         ) md ON true
         WHERE {' AND '.join(where)}
-        GROUP BY c.contact_id, c.company_id, aed.sf_account_name, md.top_dup_id, e.full_name, e.company, e.confidence,
+        GROUP BY c.contact_id, c.company_id, aed.sf_account_name, md.top_dup_id, md.top_dup_company, md.top_dup_title, md.dup_n, e.full_name, e.company, e.confidence,
                  e.is_employer_contact, e.account_suggestion, e.possible_duplicate_ids, e.contact_id,
                  ec.owners, ec.channels, ec.tier
         ORDER BY (e.contact_id IS NOT NULL) DESC, max(a.activity_date) DESC NULLS LAST, c.email
@@ -3795,7 +3821,9 @@ async def list_candidates(
          "domain": r["domain"],
          # Prefer AI account, then exact-domain map. Best name = stored AI name.
          "suggested_account": r["ai_account"] or r["domain_account"],
-         "top_dup_id": r["top_dup_id"],
+         "top_dup_id": r["top_dup_id"] if r["dup_n"] == 1 else None,
+         "top_dup_company": r["top_dup_company"], "top_dup_title": r["top_dup_title"],
+         "dup_match_count": r["dup_n"],
          "account_linked": r["account_linked"],
          "ai_name": r["ai_name"], "ai_company": r["ai_company"], "ai_confidence": r["ai_confidence"],
          "is_employer_contact": r["is_employer_contact"],
