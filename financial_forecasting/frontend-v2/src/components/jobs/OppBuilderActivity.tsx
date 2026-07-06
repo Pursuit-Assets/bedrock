@@ -7,6 +7,7 @@ import {
   useOppBuilderActivity,
   useCreateBuilderActivity,
   useUpdateBuilderActivity,
+  useOppRoles,
   APP_STAGE_OPTIONS,
   type AppStage,
 } from "@/services/jobsOpps2";
@@ -59,16 +60,20 @@ function LogBuilderForm({ oppId }: { oppId: string }) {
   const [search, setSearch] = useState("");
   const [pickerOpen, setPickerOpen] = useState(false);
   const [builder, setBuilder] = useState<{ user_id: number; name: string } | null>(null);
-  const [roleTitle, setRoleTitle] = useState("");
+  const [roleId, setRoleId] = useState("");      // selected jobs_role (builders attach to a role)
+  const [roleTitle, setRoleTitle] = useState(""); // free-text fallback when no roles exist yet
   const [stage, setStage] = useState<AppStage>("applied");
 
   const buildersQ = useBuilders(search || undefined);
   const builders = buildersQ.data ?? [];
+  const rolesQ = useOppRoles(oppId);
+  const roles = (rolesQ.data ?? []).filter((r) => r.status !== "cancelled");
   const create = useCreateBuilderActivity(oppId);
 
   function reset() {
     setBuilder(null);
     setSearch("");
+    setRoleId("");
     setRoleTitle("");
     setStage("applied");
     setOpen(false);
@@ -77,11 +82,15 @@ function LogBuilderForm({ oppId }: { oppId: string }) {
   function submit(e: React.FormEvent) {
     e.preventDefault();
     if (!builder) return;
+    // Builders attach to a specific role when the opp has them; the role's title
+    // is denormalized onto the application for display.
+    const picked = roles.find((r) => r.id === roleId);
     create.mutate(
       {
         user_id: builder.user_id,
         builder_name: builder.name,
-        role_title: roleTitle.trim() || undefined,
+        jobs_role_id: roleId || undefined,
+        role_title: picked ? picked.title : (roleTitle.trim() || undefined),
         stage,
       },
       { onSuccess: () => reset() },
@@ -153,14 +162,29 @@ function LogBuilderForm({ oppId }: { oppId: string }) {
 
       <div className="grid grid-cols-2 gap-2">
         <label className="flex flex-col gap-0.5">
-          <span className="text-[10px] font-medium text-ink-4">Role title</span>
-          <input
-            type="text"
-            value={roleTitle}
-            onChange={(e) => setRoleTitle(e.target.value)}
-            placeholder="Software Engineer"
-            className="w-full rounded border border-border-strong bg-surface px-2 py-1 text-[11.5px] text-ink-2 placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40"
-          />
+          <span className="text-[10px] font-medium text-ink-4">Role</span>
+          {roles.length > 0 ? (
+            <select
+              value={roleId}
+              onChange={(e) => setRoleId(e.target.value)}
+              className="w-full rounded border border-border-strong bg-surface px-2 py-1 text-[11.5px] text-ink-2 focus:outline-none focus:ring-1 focus:ring-accent/40"
+            >
+              <option value="">Pick a role…</option>
+              {roles.map((r) => (
+                <option key={r.id} value={r.id}>
+                  {r.title}{r.placement_status_label ? ` — ${r.placement_status_label}` : ""}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <input
+              type="text"
+              value={roleTitle}
+              onChange={(e) => setRoleTitle(e.target.value)}
+              placeholder="Add a role above, or type one"
+              className="w-full rounded border border-border-strong bg-surface px-2 py-1 text-[11.5px] text-ink-2 placeholder:text-ink-4 focus:outline-none focus:ring-1 focus:ring-accent/40"
+            />
+          )}
         </label>
         <label className="flex flex-col gap-0.5">
           <span className="text-[10px] font-medium text-ink-4">Status</span>
