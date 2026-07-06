@@ -60,6 +60,9 @@ export interface Role {
   // Canonical derived status (server-computed), so every screen agrees.
   placement_status: "ft_placed" | "trial_active" | "committed_open" | "open_market" | "cancelled";
   placement_status_label: string;
+  // Pathfinder publishing: is this role shown to builders, and the linked posting.
+  pathfinder_visible: boolean;
+  job_posting_id: number | null;
 }
 
 interface RoleFields {
@@ -78,6 +81,7 @@ interface RoleFields {
   payment_schedule: string | null;
   negotiation_notes: string | null;
   jd_url: string | null;
+  pathfinder_visible: boolean;
 }
 
 export type RoleCreateBody = { title: string } & Partial<RoleFields>;

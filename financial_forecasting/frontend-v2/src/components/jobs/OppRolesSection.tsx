@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Plus, X, Check, Trash2, UserPlus } from "lucide-react";
+import { Plus, X, Check, Trash2, UserPlus, Eye, EyeOff } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { format } from "date-fns";
 import { useBuilders, type Builder } from "@/services/jobs";
@@ -517,6 +517,21 @@ function RoleRow({ role, oppId, roles }: { role: Role; oppId: string; roles: Rol
           >
             {role.placement_status_label ?? ROLE_STATUS_LABELS[role.status]}
           </span>
+          <button
+            type="button"
+            onClick={() => updateRole.mutate({ roleId: role.id, oppId, pathfinder_visible: !role.pathfinder_visible })}
+            disabled={updateRole.isPending}
+            title={role.pathfinder_visible ? "Visible to builders in Pathfinder — click to hide" : "Publish this role to builders in Pathfinder"}
+            className={cn(
+              "flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10.5px] font-medium transition-colors disabled:opacity-50",
+              role.pathfinder_visible
+                ? "border-accent/40 bg-accent/10 text-accent"
+                : "border-border-strong bg-surface text-ink-3 hover:border-accent hover:text-accent",
+            )}
+          >
+            {role.pathfinder_visible ? <Eye size={11} /> : <EyeOff size={11} />}
+            Pathfinder
+          </button>
           {role.status === "open" && (
             <button
               type="button"

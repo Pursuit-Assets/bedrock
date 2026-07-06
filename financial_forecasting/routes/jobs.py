@@ -872,6 +872,7 @@ class RoleCreate(BaseModel):
     payment_schedule:    Optional[str] = None
     negotiation_notes:   Optional[str] = None
     jd_url:              Optional[str] = None
+    pathfinder_visible:  Optional[bool] = None   # publish to the builder-facing Pathfinder feed
 
 
 class RoleUpdate(BaseModel):
@@ -892,6 +893,7 @@ class RoleUpdate(BaseModel):
     payment_schedule:    Optional[str] = None
     negotiation_notes:   Optional[str] = None
     jd_url:              Optional[str] = None
+    pathfinder_visible:  Optional[bool] = None   # publish to the builder-facing Pathfinder feed
 
 
 @router.get("/opportunities/{opp_id}/roles")
@@ -961,6 +963,15 @@ async def create_opp_role(
         body.commitment, body.is_trial, converts_to, body.pay_rate, body.rate_period, body.end_date,
         body.pay_cadence, body.benefits, body.payment_schedule, body.negotiation_notes, body.jd_url,
     )
+    # Publish straight to Pathfinder if the role was created visible.
+    if getattr(body, "pathfinder_visible", None):
+        try:
+            await conn.execute(
+                "UPDATE bedrock.jobs_role SET pathfinder_visible=true WHERE id=$1", row["id"])
+            await conn.execute("SELECT bedrock.sync_role_to_pathfinder($1)", row["id"])
+            row = await conn.fetchrow("SELECT * FROM bedrock.jobs_role WHERE id=$1", row["id"])
+        except Exception as e:
+            logger.warning("pathfinder sync failed for new role %s: %s", row["id"], e)
     return {"success": True, "data": _role_dict(row)}
 
 
@@ -989,6 +1000,7 @@ async def update_role(
         "title", "approx_salary", "employment_type", "start_date", "status", "notes",
         "commitment", "is_trial", "pay_rate", "rate_period", "end_date",
         "pay_cadence", "benefits", "payment_schedule", "negotiation_notes", "jd_url",
+        "pathfinder_visible",
     ):
         val = getattr(body, field, None)
         if val is not None:
@@ -1022,6 +1034,16 @@ async def update_role(
             await conn.execute(
                 f"UPDATE public.employment_records SET {', '.join(er_sets)}, updated_at=now() "
                 f"WHERE id=${len(er_params)}", *er_params)
+
+    # Publish/refresh to Pathfinder when visibility was toggled, or when a role
+    # already linked to a posting had its source fields (title/salary/url/notes)
+    # edited. Idempotent + RLS-safe via the SECURITY DEFINER function.
+    if body.pathfinder_visible is not None or row["job_posting_id"] is not None:
+        try:
+            await conn.execute("SELECT bedrock.sync_role_to_pathfinder($1)", role_id)
+            row = await conn.fetchrow("SELECT * FROM bedrock.jobs_role WHERE id=$1", role_id)
+        except Exception as e:
+            logger.warning("pathfinder sync failed for role %s: %s", role_id, e)
     return {"success": True, "data": _role_dict(row)}
 
 
