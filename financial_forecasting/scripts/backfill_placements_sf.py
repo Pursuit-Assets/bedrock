@@ -19,7 +19,7 @@ sys.path.insert(0, HERE)
 load_dotenv(os.path.join(HERE, ".env"))
 
 import asyncpg  # noqa: E402
-from services.placement_sf import sync_placement_to_sf, record_sync_error  # noqa: E402
+from services.placement_sf import sync_placement_to_sf, record_sync_error, NotEligible  # noqa: E402
 
 TOKENS = os.environ.get("SF_TOKENS", "/private/tmp/claude-501/-Users-jacquelinereverand/8141f3c4-1b15-4acb-97d5-130954da8a1d/scratchpad/sf_tokens.json")
 
@@ -49,7 +49,7 @@ async def main():
     sf = RestSF(TOKENS)
     conn = await asyncpg.connect(os.environ["DATABASE_URL"], statement_cache_size=0)
     ers = await conn.fetch(
-        "SELECT id FROM public.employment_records WHERE opportunity_id IS NOT NULL ORDER BY id")
+        "SELECT id FROM public.employment_records ORDER BY id")
     ok = err = 0
     for er in ers:
         try:
@@ -57,6 +57,9 @@ async def main():
             made = [k.replace("created_", "") for k in ("created_contact", "created_account", "created_affiliation") if res[k]]
             print(f"  er {er['id']}: synced" + (f" (created {', '.join(made)})" if made else " (all existed)"))
             ok += 1
+        except NotEligible as ne:
+            await record_sync_error(conn, er["id"], str(ne), status="skipped")
+            print(f"  er {er['id']}: skipped — {ne}")
         except Exception as e:
             await record_sync_error(conn, er["id"], str(e))
             print(f"  er {er['id']}: ERROR — {e}")

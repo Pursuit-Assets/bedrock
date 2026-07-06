@@ -21,7 +21,7 @@ from auth import require_auth
 from db import get_db
 from dependencies import get_mcp_client, require_sf_mcp_client
 from sf_errors import sf_http_error
-from services.placement_sf import sync_placement_to_sf, record_sync_error
+from services.placement_sf import sync_placement_to_sf, record_sync_error, NotEligible
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
@@ -1026,6 +1026,9 @@ async def hire_into_role(
             sf_sync = {"status": "synced", **result}
         else:
             await record_sync_error(conn, new_id, "Salesforce not connected at hire time")
+    except NotEligible as ne:
+        await record_sync_error(conn, new_id, str(ne), status="skipped")
+        sf_sync = {"status": "skipped", "message": str(ne)}
     except ValueError as ve:
         await record_sync_error(conn, new_id, str(ve))
         sf_sync = {"status": "needs_info", "message": str(ve)}
@@ -1048,6 +1051,9 @@ async def sync_placement_sf(
     the employer account, and the affiliation as needed."""
     try:
         result = await sync_placement_to_sf(conn, client.salesforce, employment_record_id)
+    except NotEligible as ne:
+        await record_sync_error(conn, employment_record_id, str(ne), status="skipped")
+        return {"success": True, "data": {"status": "skipped", "reason": str(ne)}}
     except ValueError as ve:
         await record_sync_error(conn, employment_record_id, str(ve))
         raise HTTPException(400, str(ve))
@@ -1064,15 +1070,16 @@ async def placements_sf_sync_status(
     user=Depends(require_auth),
     conn=Depends(get_db),
 ):
-    """Sync state for every opportunity-linked placement (drives backfill UI)."""
+    """Sync state for every placement — deal-linked or not; skipped rows
+    carry the paid-work policy reason."""
     rows = await conn.fetch(
         """SELECT er.id AS employment_record_id, er.role_title, er.company_name, er.start_date,
+                  er.employment_type, er.payment_amount, (er.opportunity_id IS NOT NULL) AS deal_linked,
                   b.full_name AS builder_name,
                   s.status, s.error, s.sf_contact_id, s.sf_account_id, s.sf_affiliation_id, s.synced_at
            FROM public.employment_records er
            LEFT JOIN bedrock.placement_sf_sync s ON s.employment_record_id = er.id
            LEFT JOIN LATERAL bedrock.builder_by_id(er.user_id) b ON true
-           WHERE er.opportunity_id IS NOT NULL
            ORDER BY er.created_at DESC""")
     return {"success": True, "data": [{
         **dict(r),

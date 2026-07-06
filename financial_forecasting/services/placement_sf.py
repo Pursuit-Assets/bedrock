@@ -44,16 +44,42 @@ async def _fellow_record_type_id(sf) -> Optional[str]:
     return _fellow_rt_id
 
 
+class NotEligible(Exception):
+    """Placement shouldn't go to Salesforce (policy, not an error)."""
+
+
+def sync_eligibility(er) -> Optional[str]:
+    """Return a skip-reason when a placement should NOT sync to Salesforce.
+
+    Policy (agreed 2026-07-06): only PAID employment creates an SF
+    affiliation — full-time roles, or anything with a payment amount.
+    Capstones/volunteer/pro-bono work and a fellow's own venture stay out of
+    the org-wide CRM (an affiliation there reads as employment). Applies the
+    same regardless of whether the record is linked to a jobs deal.
+    """
+    if er["is_own_venture"]:
+        return "own venture — not an employer relationship"
+    paid = (er["payment_amount"] or 0) > 0
+    if er["employment_type"] != "full_time" and not paid:
+        return f"unpaid {er['employment_type'] or 'engagement'} — only paid work syncs"
+    return None
+
+
 async def sync_placement_to_sf(conn, sf, employment_record_id: int) -> Dict[str, Any]:
     """Ensure SF contact + account + affiliation exist for one placement.
 
     Raises ValueError with an actionable message when required info is
-    missing (caller surfaces it to the user to fill in)."""
+    missing (caller surfaces it to the user to fill in), and NotEligible
+    when the paid-work policy excludes the record."""
     er = await conn.fetchrow(
-        "SELECT id, user_id, role_title, company_name, employment_type, start_date "
+        "SELECT id, user_id, role_title, company_name, employment_type, start_date, "
+        "       payment_amount, is_own_venture "
         "FROM public.employment_records WHERE id=$1", employment_record_id)
     if not er:
         raise ValueError("Placement not found")
+    skip = sync_eligibility(er)
+    if skip:
+        raise NotEligible(skip)
     company = (er["company_name"] or "").strip()
     if not company or company.upper() == "TBD":
         raise ValueError("This placement has no employer name — set the company before syncing to Salesforce.")
@@ -150,9 +176,11 @@ async def sync_placement_to_sf(conn, sf, employment_record_id: int) -> Dict[str,
     return out
 
 
-async def record_sync_error(conn, employment_record_id: int, error: str) -> None:
+async def record_sync_error(conn, employment_record_id: int, error: str, status: str = "error") -> None:
+    """Record a non-synced outcome — status 'error' (retryable failure) or
+    'skipped' (paid-work policy exclusion, shown but not retried)."""
     await conn.execute(
         """INSERT INTO bedrock.placement_sf_sync (employment_record_id, status, error, updated_at)
-           VALUES ($1,'error',$2,now())
-           ON CONFLICT (employment_record_id) DO UPDATE SET status='error', error=$2, updated_at=now()""",
-        employment_record_id, error[:2000])
+           VALUES ($1,$3,$2,now())
+           ON CONFLICT (employment_record_id) DO UPDATE SET status=$3, error=$2, updated_at=now()""",
+        employment_record_id, error[:2000], status)
