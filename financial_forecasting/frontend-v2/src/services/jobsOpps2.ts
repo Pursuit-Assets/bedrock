@@ -132,7 +132,16 @@ export function useCreateRole() {
       invalidateOppDependents(qc);
       toast.success("Role added");
     },
-    onError: () => toast.error("Failed to add role"),
+    onError: (e: unknown) => {
+      const resp = (e as { response?: { status?: number; data?: { detail?: { message?: string } | string } } })?.response;
+      // 409 = the rapid-duplicate guard; show its actionable message.
+      if (resp?.status === 409) {
+        const d = resp.data?.detail;
+        toast.error(typeof d === "object" && d?.message ? d.message : "That role was just added — set seats instead of re-adding.");
+      } else {
+        toast.error("Failed to add role");
+      }
+    },
   });
 }
 

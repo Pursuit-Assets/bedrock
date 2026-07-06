@@ -812,6 +812,7 @@ def _role_dict(r) -> dict:
 
 class RoleCreate(BaseModel):
     title:               str
+    allow_duplicate:     bool = False   # bypass the rapid-duplicate guard
     approx_salary:       Optional[int] = None
     employment_type:     Optional[str] = None
     start_date:          Optional[date] = None
@@ -881,6 +882,23 @@ async def create_opp_role(
     )
     if not opp:
         raise HTTPException(404, "Opportunity not found")
+
+    # Guard against accidental duplicate roles (the Citizens Bank ×5 case: an
+    # identical open role re-added seconds apart). Block an exact-title open
+    # role created on this opp in the last 5 min unless explicitly forced.
+    if body.title and not getattr(body, "allow_duplicate", False):
+        dup = await conn.fetchval(
+            """SELECT 1 FROM bedrock.jobs_role
+               WHERE opportunity_id=$1 AND status='open'
+                 AND lower(trim(title)) = lower(trim($2))
+                 AND created_at > now() - interval '5 minutes' LIMIT 1""",
+            opp_id, body.title)
+        if dup:
+            raise HTTPException(409, {
+                "error": "duplicate_role",
+                "message": f"An open '{body.title}' role was just added to this opportunity. "
+                           "For multiple seats, set the role's number of seats instead of adding it again.",
+            })
 
     converts_to = UUID(body.converts_to_role_id) if body.converts_to_role_id else None
     row = await conn.fetchrow(
