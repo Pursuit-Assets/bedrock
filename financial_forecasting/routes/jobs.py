@@ -21,7 +21,7 @@ from auth import require_auth
 from db import get_db
 from dependencies import get_mcp_client, require_sf_mcp_client
 from sf_errors import sf_http_error
-from services.placement_sf import sync_placement_to_sf, record_sync_error, NotEligible
+from services.placement_sf import sync_placement_to_sf, record_sync_error, NotEligible, AccountAmbiguous
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
@@ -1029,6 +1029,9 @@ async def hire_into_role(
     except NotEligible as ne:
         await record_sync_error(conn, new_id, str(ne), status="skipped")
         sf_sync = {"status": "skipped", "message": str(ne)}
+    except AccountAmbiguous as aa:
+        await record_sync_error(conn, new_id, str(aa), status="needs_choice")
+        sf_sync = {"status": "needs_choice", "message": str(aa), "account_candidates": aa.candidates}
     except ValueError as ve:
         await record_sync_error(conn, new_id, str(ve))
         sf_sync = {"status": "needs_info", "message": str(ve)}
@@ -1040,20 +1043,36 @@ async def hire_into_role(
     return {"success": True, "data": {"role": _role_dict(updated), "employment_record_id": new_id, "sf_sync": sf_sync}}
 
 
+class PlacementSyncChoice(BaseModel):
+    sf_account_id: Optional[str] = None        # link this existing SF account
+    force_create_account: bool = False         # or explicitly create a new one
+
+
 @router.post("/placements/{employment_record_id}/sync-sf")
 async def sync_placement_sf(
     employment_record_id: int,
+    body: Optional[PlacementSyncChoice] = None,
     user=Depends(require_auth),
     conn=Depends(get_db),
     client=Depends(require_sf_mcp_client),
 ):
     """(Re)sync one placement to Salesforce — creates the fellow contact,
-    the employer account, and the affiliation as needed."""
+    the employer account, and the affiliation as needed. When SF holds a
+    similar-but-not-identical account name the response returns
+    status=needs_choice with candidates; retry with sf_account_id (link) or
+    force_create_account=true."""
     try:
-        result = await sync_placement_to_sf(conn, client.salesforce, employment_record_id)
+        result = await sync_placement_to_sf(
+            conn, client.salesforce, employment_record_id,
+            sf_account_id_override=(body.sf_account_id if body else None),
+            force_create_account=(body.force_create_account if body else False))
     except NotEligible as ne:
         await record_sync_error(conn, employment_record_id, str(ne), status="skipped")
         return {"success": True, "data": {"status": "skipped", "reason": str(ne)}}
+    except AccountAmbiguous as aa:
+        await record_sync_error(conn, employment_record_id, str(aa), status="needs_choice")
+        return {"success": True, "data": {"status": "needs_choice", "reason": str(aa),
+                                          "account_candidates": aa.candidates}}
     except ValueError as ve:
         await record_sync_error(conn, employment_record_id, str(ve))
         raise HTTPException(400, str(ve))
