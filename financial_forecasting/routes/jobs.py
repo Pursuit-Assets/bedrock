@@ -4193,6 +4193,29 @@ async def dismiss_candidate(
     return {"success": True, "data": {"contact_id": contact_id, "dismissed": True}}
 
 
+class BulkDismiss(BaseModel):
+    contact_ids: list[int]
+
+
+@router.post("/candidates/bulk-dismiss")
+async def bulk_dismiss_candidates(
+    body: BulkDismiss,
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Dismiss many candidates in one atomic statement (only rows still in the
+    candidate stage are touched)."""
+    ids = [int(i) for i in (body.contact_ids or [])]
+    if not ids:
+        return {"success": True, "data": {"dismissed": 0}}
+    res = await conn.execute(
+        "UPDATE public.contacts SET contact_stage='dismissed', "
+        "tags=array_remove(coalesce(tags,'{}'), 'email_review'), updated_at=now() "
+        "WHERE contact_id = ANY($1::int[]) AND contact_stage='candidate'", ids)
+    n = int(res.split()[-1]) if res and res.split()[-1].isdigit() else 0
+    return {"success": True, "data": {"dismissed": n}}
+
+
 # ── Activity logging ─────────────────────────────────────────────────────────
 
 class ActivityCreate(BaseModel):

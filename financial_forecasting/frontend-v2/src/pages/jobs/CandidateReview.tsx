@@ -8,12 +8,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { Sparkles, Building2, Mail, UserPlus, X, ChevronDown, ChevronRight, Loader2, Check, Link2, RefreshCw } from "lucide-react";
 
+import { cn } from "@/lib/utils";
 import { Drawer } from "@/components/ui/Drawer";
 import { Tag } from "@/components/ui/Tag";
 import {
   useCandidates, useCandidateDetail, useContactSearch, useEnrichCandidate, useLinkCandidate,
   useCandidateSfMatch, useLinkCandidateSf,
-  usePromoteCandidate, useDismissCandidate, useJobsAccountNames, useCandidateOwners,
+  usePromoteCandidate, useDismissCandidate, useBulkDismissCandidates, useJobsAccountNames, useCandidateOwners,
   type JobCandidate,
 } from "@/services/jobs";
 
@@ -267,26 +268,32 @@ function Section({ title, count, action, children }: { title: string; count?: nu
   );
 }
 
-function CandidateRow({ c, onOpen }: { c: JobCandidate; onOpen: () => void }) {
+function CandidateRow({ c, onOpen, selected, onToggleSelect }: {
+  c: JobCandidate; onOpen: () => void; selected: boolean; onToggleSelect: () => void;
+}) {
   const display = c.ai_name || c.full_name || c.email;
   const company = c.ai_company || c.suggested_account;
   return (
-    <button type="button" onClick={onOpen}
-      className="flex w-full items-center gap-2 border-t border-border-strong px-3 py-2 text-left hover:bg-surface-2/40">
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-1.5">
-          <span className="truncate text-[12.5px] text-ink">{display}</span>
-          {c.enriched && <Sparkles size={11} className="shrink-0 text-accent" />}
-          {c.is_employer_contact === false && <span className="shrink-0 text-[10px] text-ink-4">· not employer</span>}
+    <div className={cn("flex w-full items-center gap-2 border-t border-border-strong px-3 py-2 hover:bg-surface-2/40",
+      selected && "bg-accent-soft/40")}>
+      <input type="checkbox" checked={selected} onChange={onToggleSelect} onClick={(e) => e.stopPropagation()}
+        className="shrink-0 accent-accent" aria-label={`Select ${display}`} />
+      <button type="button" onClick={onOpen} className="flex min-w-0 flex-1 items-center gap-2 text-left">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-1.5">
+            <span className="truncate text-[12.5px] text-ink">{display}</span>
+            {c.enriched && <Sparkles size={11} className="shrink-0 text-accent" />}
+            {c.is_employer_contact === false && <span className="shrink-0 text-[10px] text-ink-4">· not employer</span>}
+          </div>
+          <div className="truncate text-[11px] text-ink-4">
+            {c.email} · {c.email_count} email{c.email_count === 1 ? "" : "s"}{c.last_subject ? ` · ${c.last_subject}` : ""}
+          </div>
         </div>
-        <div className="truncate text-[11px] text-ink-4">
-          {c.email} · {c.email_count} email{c.email_count === 1 ? "" : "s"}{c.last_subject ? ` · ${c.last_subject}` : ""}
-        </div>
-      </div>
-      {(c.dup_count ?? 0) > 0 && <Tag variant="amber">likely match</Tag>}
-      {company && <Tag variant="accent">{company}</Tag>}
-      <ChevronRight size={14} className="shrink-0 text-ink-4" />
-    </button>
+        {(c.dup_count ?? 0) > 0 && <Tag variant="amber">likely match</Tag>}
+        {company && <Tag variant="accent">{company}</Tag>}
+        <ChevronRight size={14} className="shrink-0 text-ink-4" />
+      </button>
+    </div>
   );
 }
 
@@ -294,23 +301,54 @@ export function CandidatesZone({ defaultOwner }: { defaultOwner?: string } = {})
   const [owner, setOwner] = useState<string>(defaultOwner ?? "");  // "" = everyone
   const { data: cands = [], isLoading } = useCandidates(owner || undefined);
   const { data: owners = [] } = useCandidateOwners();
+  const bulkDismiss = useBulkDismissCandidates();
   const [openId, setOpenId] = useState<number | null>(null);
   const [showAll, setShowAll] = useState(false);
-  const shown = showAll ? cands : cands.slice(0, 20);
-  const ownerPicker = (
-    <select
-      value={owner}
-      onChange={(e) => { setOwner(e.target.value); setShowAll(false); }}
-      className="rounded border border-border-strong bg-surface px-2 py-1 text-[12px] text-ink"
-    >
-      <option value="">Everyone</option>
-      {owners.map((o) => (
-        <option key={o.owner} value={o.owner}>{ownerLabel(o.owner)} ({o.count})</option>
-      ))}
-    </select>
+  const [q, setQ] = useState("");
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+
+  // Client-side search across the fields shown on the row.
+  const filtered = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    if (!needle) return cands;
+    return cands.filter((c) => {
+      const hay = [c.ai_name, c.full_name, c.email, c.ai_company, c.suggested_account, c.last_subject]
+        .filter(Boolean).join(" ").toLowerCase();
+      return hay.includes(needle);
+    });
+  }, [cands, q]);
+  const shown = showAll ? filtered : filtered.slice(0, 20);
+
+  const toggle = (id: number) => setSelected((prev) => {
+    const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next;
+  });
+  const shownIds = shown.map((c) => c.contact_id);
+  const allShownSelected = shownIds.length > 0 && shownIds.every((id) => selected.has(id));
+  const toggleAllShown = () => setSelected((prev) => {
+    const next = new Set(prev);
+    if (allShownSelected) shownIds.forEach((id) => next.delete(id));
+    else shownIds.forEach((id) => next.add(id));
+    return next;
+  });
+  const doBulkDismiss = () => {
+    if (selected.size === 0) return;
+    bulkDismiss.mutate([...selected], { onSuccess: () => setSelected(new Set()) });
+  };
+
+  const controls = (
+    <div className="flex items-center gap-2">
+      <input value={q} onChange={(e) => { setQ(e.target.value); setShowAll(false); }}
+        placeholder="Search candidates…"
+        className="h-7 w-48 rounded-md border border-border-strong bg-surface px-2 text-[12px] text-ink outline-none focus:border-accent" />
+      <select value={owner} onChange={(e) => { setOwner(e.target.value); setShowAll(false); setSelected(new Set()); }}
+        className="rounded border border-border-strong bg-surface px-2 py-1 text-[12px] text-ink">
+        <option value="">Everyone</option>
+        {owners.map((o) => <option key={o.owner} value={o.owner}>{ownerLabel(o.owner)} ({o.count})</option>)}
+      </select>
+    </div>
   );
   return (
-    <Section title="Candidates to review" count={cands.length} action={ownerPicker}>
+    <Section title="Candidates to review" count={cands.length} action={controls}>
       <div className="flex flex-col overflow-hidden rounded-lg border border-border-strong bg-surface">
         {isLoading ? (
           <div className="px-3 py-8 text-center text-[12.5px] text-ink-3">Loading…</div>
@@ -318,15 +356,34 @@ export function CandidatesZone({ defaultOwner }: { defaultOwner?: string } = {})
           <div className="px-3 py-8 text-center text-[12.5px] text-ink-3">
             {owner ? `No candidates for ${ownerLabel(owner)}. 🎉` : "Nothing to review. 🎉"}
           </div>
+        ) : filtered.length === 0 ? (
+          <div className="px-3 py-8 text-center text-[12.5px] text-ink-3">No candidates match “{q}”.</div>
         ) : (
           <>
-            <div className="bg-surface-2/60 px-3 py-1.5 text-[11px] text-ink-4">
-              People we emailed{owner ? ` (${ownerLabel(owner)})` : ""}, enriched by AI. Open to confirm the match, then add or dismiss.
-            </div>
-            {shown.map((c) => <CandidateRow key={c.contact_id} c={c} onOpen={() => setOpenId(c.contact_id)} />)}
-            {cands.length > shown.length && (
+            {selected.size > 0 ? (
+              <div className="flex items-center justify-between gap-2 bg-accent-soft/60 px-3 py-1.5 text-[12px]">
+                <label className="flex items-center gap-1.5 text-ink-2">
+                  <input type="checkbox" checked={allShownSelected} onChange={toggleAllShown} className="accent-accent" />
+                  {selected.size} selected
+                </label>
+                <button type="button" disabled={bulkDismiss.isPending} onClick={doBulkDismiss}
+                  className="inline-flex items-center gap-1 rounded-md bg-red px-2.5 py-1 text-[12px] font-medium text-white disabled:opacity-40">
+                  <X size={12} /> Dismiss {selected.size}
+                </button>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2 bg-surface-2/60 px-3 py-1.5 text-[11px] text-ink-4">
+                <input type="checkbox" checked={false} onChange={toggleAllShown} className="accent-accent" aria-label="Select all shown" />
+                People we emailed{owner ? ` (${ownerLabel(owner)})` : ""}, enriched by AI. Open to confirm, or select rows to dismiss in bulk.
+              </div>
+            )}
+            {shown.map((c) => (
+              <CandidateRow key={c.contact_id} c={c} onOpen={() => setOpenId(c.contact_id)}
+                selected={selected.has(c.contact_id)} onToggleSelect={() => toggle(c.contact_id)} />
+            ))}
+            {filtered.length > shown.length && (
               <button type="button" onClick={() => setShowAll(true)}
-                className="border-t border-border-strong px-3 py-2 text-[12px] text-accent hover:bg-surface-2/50">Show all {cands.length}</button>
+                className="border-t border-border-strong px-3 py-2 text-[12px] text-accent hover:bg-surface-2/50">Show all {filtered.length}</button>
             )}
           </>
         )}

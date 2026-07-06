@@ -1336,6 +1336,23 @@ export function useDismissCandidate() {
   });
 }
 
+export function useBulkDismissCandidates() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (contactIds: number[]) => {
+      const { data } = await api.post<ApiResponse<{ dismissed: number }>>(
+        "/api/jobs/candidates/bulk-dismiss", { contact_ids: contactIds });
+      return data.data;
+    },
+    onSuccess: (d) => {
+      qc.invalidateQueries({ queryKey: ["jobs", "candidates"] });
+      qc.invalidateQueries({ queryKey: ["jobs", "candidate-owners"] });
+      toast.success(`Dismissed ${d?.dismissed ?? 0}`);
+    },
+    onError: () => toast.error("Bulk dismiss failed"),
+  });
+}
+
 export interface ActivityCreateBody {
   jobs_opportunity_id: string;
   type: "call" | "text" | "linkedin";
