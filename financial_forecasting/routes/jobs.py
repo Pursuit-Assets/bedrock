@@ -3785,6 +3785,9 @@ async def list_candidates(
                e.account_suggestion->>'account_name' AS ai_account,
                coalesce(array_length(e.possible_duplicate_ids, 1), 0) AS dup_count,
                md.top_dup_id AS top_dup_id,
+               md.top_dup_company AS top_dup_company,
+               md.top_dup_title AS top_dup_title,
+               md.dup_n AS dup_n,
                (c.company_id IS NOT NULL) AS account_linked,
                (e.contact_id IS NOT NULL) AS enriched,
                ec.owners AS owners, ec.channels AS channels, ec.tier AS tier
