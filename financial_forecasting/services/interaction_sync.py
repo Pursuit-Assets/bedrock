@@ -168,9 +168,28 @@ async def run_interaction_sync(
     except Exception as e:
         logger.error("candidate pipeline failed: %s", e)
 
+    # Jobs-relevance classification — label newly-synced staff email/meeting rows
+    # (jobs | not_jobs | unclear) so outreach metrics count only jobs-related
+    # activity, for any staff member. Idempotent: only classifies rows with a NULL
+    # verdict, so it picks up exactly this run's new activity. Runs last, after
+    # counterpart linking, so calendar rows can borrow attendee history.
+    activity_classified = 0
+    try:
+        from services.activity_classifier import classify_new_activity
+        cls_conn = await _get_conn()
+        try:
+            cls_result = await classify_new_activity(cls_conn)
+            activity_classified = cls_result.get("classified", 0)
+            logger.info("jobs-relevance: classified %d new activity rows %s",
+                        activity_classified, cls_result.get("counts", {}))
+        finally:
+            await _release_conn(cls_conn)
+    except Exception as e:
+        logger.error("jobs-relevance classification failed: %s", e)
+
     logger.info(
-        "interaction sync complete: %d staff, %d gmail, %d calendar, %d domains auto-mapped, %d jobs prospects linked, %d jobs prospects flagged, %d candidates created",
-        len(results), total_gmail, total_cal, domains_mapped, prospects_linked, prospects_flagged, candidates_created,
+        "interaction sync complete: %d staff, %d gmail, %d calendar, %d domains auto-mapped, %d jobs prospects linked, %d jobs prospects flagged, %d candidates created, %d activity classified",
+        len(results), total_gmail, total_cal, domains_mapped, prospects_linked, prospects_flagged, candidates_created, activity_classified,
     )
     return {
         "staff_count": len(results),
@@ -181,5 +200,6 @@ async def run_interaction_sync(
         "jobs_prospects_flagged": prospects_flagged,
         "candidates_created": candidates_created,
         "candidate_activity_linked": candidate_links,
+        "activity_classified": activity_classified,
         "by_staff": results,
     }

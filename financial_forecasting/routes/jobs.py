@@ -60,7 +60,8 @@ def _first_touch_email_cte() -> str:
       SELECT lower(e) AS counterpart, a.activity_date
       FROM bedrock.activity a,
            unnest(coalesce(a.email_to,'{{}}') || coalesce(a.email_cc,'{{}}')) e
-      WHERE a.source = 'gmail-sync' AND a.deleted_at IS NULL AND ({sender}) AND {_not_autoreply('a')}
+      WHERE a.source = 'gmail-sync' AND a.deleted_at IS NULL AND ({sender})
+        AND {_not_autoreply('a')} AND {_jobs_relevant('a')}
     ),
     ext AS (
       SELECT counterpart, min(activity_date) AS first_touch
@@ -1795,6 +1796,14 @@ def _not_autoreply(alias: str) -> str:
     return f"({subj} AND {frm})"
 
 
+def _jobs_relevant(alias: str) -> str:
+    """SQL predicate: this activity counts as jobs outreach. Synced email/meeting
+    rows are gated by the content classifier (jobs_relevance='jobs'); manually
+    logged touches (call/text/linkedin/note entered in the jobs tool) are
+    deliberate jobs outreach and always count. See services/activity_classifier.py."""
+    return f"({alias}.jobs_relevance = 'jobs' OR {alias}.type NOT IN ('email','meeting'))"
+
+
 def _actor_sql(alias: str, owner: Optional[str]) -> str:
     """Actor filter for the outreach trends/detail. With `owner` (a single,
     validated staff email) it scopes to that person; otherwise the whole jobs
@@ -1837,7 +1846,7 @@ async def activity_trends(
           SELECT a.id, a.activity_date, a.participant_public_contact_id AS cid,
                  a.email_to, a.email_cc, a.meeting_attendees, {chan_sql} AS channel
           FROM bedrock.activity a
-          WHERE a.deleted_at IS NULL AND {actor} AND {_not_autoreply('a')}
+          WHERE a.deleted_at IS NULL AND {actor} AND {_not_autoreply('a')} AND {_jobs_relevant('a')}
         ),
         touch_contact AS (
           SELECT id, activity_date, channel, cid AS contact_id FROM team_act WHERE cid IS NOT NULL
@@ -1945,7 +1954,7 @@ async def activity_trends_detail(
           SELECT a.id, a.activity_date, a.subject, a.participant_public_contact_id AS cid,
                  a.email_to, a.email_cc, a.meeting_attendees, {chan_sql} AS channel
           FROM bedrock.activity a
-          WHERE a.deleted_at IS NULL AND {actor} AND {_not_autoreply('a')}
+          WHERE a.deleted_at IS NULL AND {actor} AND {_not_autoreply('a')} AND {_jobs_relevant('a')}
             AND date_trunc('{granularity}', a.activity_date) = date_trunc('{granularity}', $1::timestamptz)
         ),
         touch_contact AS (

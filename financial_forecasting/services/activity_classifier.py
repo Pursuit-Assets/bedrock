@@ -1,0 +1,238 @@
+"""Classify staff activity (email + calendar) as jobs-related, so outreach
+metrics count only employer-placement work — for ANY staff member, not just the
+core jobs team.
+
+Design (validated on a 160-item review set, see JOBS_REVIEW_PLAN.md):
+  * Judge by INTENT / value-exchange, NOT the counterpart's org type — a company,
+    college, funder, or personal LinkedIn contact can all be a potential employer.
+  * A curated staff-function map (bedrock.staff_function) is a SOFT prior used only
+    to break ties on vague first-touch intros; explicit content always overrides.
+  * Calendar invites are content-thin, so they borrow context from recent activity
+    with the same attendees.
+  * "AI Jobs Institute" / AIJI / JACX is Pursuit's own building — contains "jobs"
+    but is real-estate/ops, so it's guarded out.
+
+Verdict (jobs | not_jobs | unclear) + reason + confidence is stored on the row;
+the outreach metric filters jobs_relevance='jobs'. Runs in the nightly sync over
+newly-synced rows, and once as a backfill.
+"""
+from __future__ import annotations
+import asyncio, json, logging, os, re
+from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
+
+MODEL = "claude-haiku-4-5-20251001"
+INTERNAL = ("pursuit.org", "pursuit.com")
+_MAX_CONCURRENCY = 8
+
+SYSTEM = """You classify staff activity at Pursuit, a nonprofit that trains adults \
+("builders"/"fellows") in software/AI and then helps get them HIRED.
+
+Label "jobs" when the PURPOSE of this activity is getting Pursuit builders hired — REGARDLESS \
+of who the other party is. A company, a college, a foundation, or a personal LinkedIn \
+connection can ALL be a potential employer. Do NOT exclude anyone by their organization type.
+
+Judge by INTENT / the value exchange, not identity:
+JOBS — Pursuit is:
+- offering/introducing its builders/fellows as talent or candidates to be hired
+- probing the other side's hiring needs (open roles, headcount, "are you hiring", team growth)
+- coordinating interviews, assessments, trials, offers, start dates, placement logistics
+- making a first-touch intro whose evident aim is exploring whether they'd hire builders
+
+NOT jobs — the purpose is something else:
+- money TO Pursuit: grants, gifts, sponsorship, donations, investment, funding the program (fundraising/development)
+- the program itself: curriculum, cohorts, students, mentorship, build days, admissions/info sessions
+- "Bond" (Pursuit's income-share financing / repayment / collections)
+- "AI Jobs Institute" / AIJI / JACX — this is Pursuit's OWN building/facility (real estate, lease, line of credit, site visits, space planning, construction vendors). It contains the word "jobs" but is NOT about placing builders — NOT jobs.
+- Pursuit hiring its OWN staff/employees: any interview, recruiting, or offer for a role AT Pursuit. Builder-placement interviews name the EMPLOYER (e.g. "Acture Interview: Brandon Jackson"); Pursuit's own hiring reads like "Pursuit Interview, <role title>, <candidate>" or "New <role> Candidate". If PURSUIT is the hiring party, it is NOT jobs.
+- INTERNAL coordination among Pursuit staff (pipeline reviews, debriefs, prep, team syncs) — even if it's about jobs or a named employer
+- ops / finance / HR / events / galas / newsletters / OOO / auto-replies
+
+The SAME organization can appear for jobs AND fundraising AND program — judge THIS message's purpose.
+Staff often WON'T say "jobs" — infer intent from what they are asking for or offering.
+
+A "sender function" is given as a SOFT prior, used ONLY to break ties on vague first-touch/intro
+messages (a development officer's vague "let's connect" leans fundraising; the employment team's
+leans hiring). Explicit content ALWAYS overrides it: a fundraiser doing clear hiring outreach is
+"jobs"; the employment team asking for a grant is "not_jobs".
+
+For CALENDAR meetings the invite is often just a title — use the "Recent activity with these
+attendees" block to infer the meeting's purpose when the invite itself is thin.
+
+Return ONLY JSON: {"label":"jobs"|"not_jobs"|"unclear","confidence":0.0-1.0,"reason":"<=14 words"}
+Use "unclear" only when neither content nor the prior resolves it (bare title / generic intro, no cues)."""
+
+_TIER_PRIOR = {
+    "jobs": "Employer-partnerships / jobs team — primary role is placing builders. On a vague or first-touch intro with no clear ask, lean JOBS.",
+    "pbd":  "Program & development (PBD) — primary role is fundraising / partnerships / program, NOT jobs. On a vague or first-touch intro with no clear ask, lean NOT-jobs.",
+    "both": "Leadership / cross-functional — does BOTH jobs and non-jobs work. Give NO lean; decide purely from the message content.",
+}
+_NO_PRIOR = "not characterized — give NO lean; decide purely from content"
+
+
+def _strip_html(s: Optional[str]) -> str:
+    return re.sub(r"<[^>]+>", " ", s or "").replace("&nbsp;", " ").strip()
+
+
+async def _load_function_map(conn) -> dict[str, str]:
+    """email(lower) -> tier prior text. Falls back to empty if table absent."""
+    try:
+        rows = await conn.fetch("SELECT lower(email) email, tier FROM bedrock.staff_function")
+        return {r["email"]: r["tier"] for r in rows}
+    except Exception as e:
+        logger.warning("staff_function map unavailable (%s); classifying without prior", e)
+        return {}
+
+
+def _prior_for(email_field: Optional[str], fmap: dict[str, str]) -> str:
+    """Match any known staff email that appears in the from/attendee field."""
+    hay = (email_field or "").lower()
+    for email, tier in fmap.items():
+        if email and email in hay:
+            return _TIER_PRIOR.get(tier, _NO_PRIOR)
+    return _NO_PRIOR
+
+
+async def _meeting_history(conn, activity_id, ext_domains: list[str]) -> str:
+    """Recent activity with the same external attendees — context for thin invites."""
+    if not ext_domains:
+        return "No external attendees (internal-only meeting)."
+    like = " OR ".join(
+        f"(email_from ILIKE '%'||${i+2}||'%' OR email_to::text ILIKE '%'||${i+2}||'%' "
+        f"OR meeting_attendees::text ILIKE '%'||${i+2}||'%')"
+        for i in range(len(ext_domains)))
+    rows = await conn.fetch(
+        f"""SELECT type, subject, activity_date::date d FROM bedrock.activity
+            WHERE deleted_at IS NULL AND id <> $1 AND coalesce(subject,'') <> '' AND ({like})
+            ORDER BY activity_date DESC LIMIT 8""",
+        activity_id, *ext_domains)
+    if not rows:
+        return "No prior activity found with these attendees."
+    lines = "\n  ".join(f"{r['d']} [{r['type']}] {(r['subject'] or '')[:70]}" for r in rows)
+    return "Recent activity with these attendees (use to infer purpose when the invite is thin):\n  " + lines
+
+
+async def _build_prompt(conn, row, fmap: dict[str, str]) -> str:
+    """Assemble the user prompt for one activity row."""
+    if row["type"] == "email":
+        to = row["email_to"] or []
+        ext_to = sorted({(t or "").split("@")[-1].lower() for t in to
+                         if t and not any(t.lower().endswith(d) for d in INTERNAL)})
+        who = (f"Recipients include external domains: {', '.join(ext_to)}" if ext_to
+               else "INTERNAL EMAIL — all recipients are Pursuit staff" if to
+               else "Recipients unknown")
+        body = _strip_html(row["email_body_text"] or row["email_snippet"] or "")
+        return (f"[EMAIL]\nSender function: {_prior_for(row['email_from'], fmap)}\n"
+                f"From: {row['email_from']}\n{who}\nSubject: {row['subject']}\n\n{body[:3500]}")
+    # meeting
+    att = row["meeting_attendees"]
+    if isinstance(att, str):
+        try: att = json.loads(att)
+        except Exception: att = []
+    ext = sorted({(a.get("email") or "").split("@")[-1].lower() for a in (att or [])
+                  if a.get("email") and not any(a["email"].lower().endswith(d) for d in INTERNAL)})
+    host_prior = _prior_for(json.dumps(att) if att else "", fmap)
+    descr = _strip_html(row["description"])
+    hist = await _meeting_history(conn, row["id"], ext)
+    ctx = f"External attendee domains: {', '.join(ext) if ext else 'none (internal-only meeting)'}"
+    return (f"[CALENDAR MEETING]\nHost function: {host_prior}\nSubject: {row['subject']}\n{ctx}\n\n"
+            f"{descr[:1200]}\n\n{hist}")
+
+
+async def _noop():
+    return None
+
+
+def _call_model(client, prompt: str) -> dict[str, Any]:
+    """Sync Anthropic call — run under asyncio.to_thread."""
+    resp = client.messages.create(
+        model=MODEL, max_tokens=150, system=SYSTEM,
+        messages=[{"role": "user", "content": prompt[:6000]}])
+    txt = resp.content[0].text
+    m = re.search(r"\{.*\}", txt, re.S)
+    if not m:
+        return {"label": "unclear", "confidence": 0.0, "reason": "unparseable model output"}
+    out = json.loads(m.group(0))
+    if out.get("label") not in ("jobs", "not_jobs", "unclear"):
+        out = {"label": "unclear", "confidence": 0.0, "reason": "invalid label"}
+    return out
+
+
+async def classify_new_activity(conn, limit: Optional[int] = None,
+                                reclassify: bool = False) -> dict[str, Any]:
+    """Classify staff-authored email + meeting rows lacking a verdict (or all, if
+    reclassify=True). Writes jobs_relevance{,_reason,_confidence,_model,_at}.
+    Returns counts. Safe to run repeatedly (idempotent on jobs_relevance IS NULL)."""
+    key = os.getenv("ANTHROPIC_API_KEY")
+    if not key:
+        logger.error("ANTHROPIC_API_KEY not set — skipping jobs-relevance classification")
+        return {"error": "no_api_key", "classified": 0}
+    try:
+        import anthropic
+    except ImportError:
+        logger.error("anthropic SDK not installed — skipping classification")
+        return {"error": "no_sdk", "classified": 0}
+    client = anthropic.Anthropic(api_key=key)
+    fmap = await _load_function_map(conn)
+
+    where_new = "" if reclassify else "AND a.jobs_relevance IS NULL"
+    lim = f"LIMIT {int(limit)}" if limit else ""
+    rows = await conn.fetch(f"""
+        SELECT a.id, a.type, a.subject, a.email_from, a.email_to, a.email_snippet,
+               a.email_body_text, coalesce(a.description,'') AS description, a.meeting_attendees
+        FROM bedrock.activity a
+        WHERE a.deleted_at IS NULL AND a.type IN ('email','meeting') {where_new}
+          AND (
+            (a.type='email' AND EXISTS (SELECT 1 FROM public.org_users o
+                 WHERE o.is_active AND a.email_from ILIKE '%'||o.email||'%'))
+            OR
+            (a.type='meeting' AND a.meeting_attendees IS NOT NULL AND EXISTS (
+                 SELECT 1 FROM public.org_users o
+                 WHERE o.is_active AND a.meeting_attendees::text ILIKE '%'||o.email||'%'))
+          )
+        ORDER BY a.activity_date DESC {lim}""")
+    if not rows:
+        return {"classified": 0, "counts": {}}
+
+    sem = asyncio.Semaphore(_MAX_CONCURRENCY)
+    counts = {"jobs": 0, "not_jobs": 0, "unclear": 0}
+
+    async def _model(prompt):
+        async with sem:
+            return await asyncio.to_thread(_call_model, client, prompt)
+
+    # A single asyncpg connection can't run concurrent operations, so DB work
+    # (prompt-building reads + result writes) stays serial; only the model calls
+    # — the slow part — run concurrently, per chunk.
+    CHUNK = 100
+    for i in range(0, len(rows), CHUNK):
+        chunk = rows[i:i + CHUNK]
+        prompts = []
+        for row in chunk:                       # serial DB reads (meeting history)
+            try:
+                prompts.append(await _build_prompt(conn, row, fmap))
+            except Exception as e:
+                logger.warning("prompt build failed for %s: %s", row["id"], e)
+                prompts.append(None)
+        verdicts = await asyncio.gather(         # concurrent model calls, no DB
+            *[_model(p) if p else _noop() for p in prompts], return_exceptions=True)
+        for row, out in zip(chunk, verdicts):    # serial DB writes
+            if not isinstance(out, dict):
+                if isinstance(out, Exception):
+                    logger.warning("classify call failed for %s: %s", row["id"], out)
+                continue
+            label = out["label"]
+            await conn.execute(
+                """UPDATE bedrock.activity
+                   SET jobs_relevance=$2, jobs_relevance_reason=$3, jobs_relevance_confidence=$4,
+                       jobs_relevance_model=$5, jobs_relevance_at=now()
+                   WHERE id=$1""",
+                row["id"], label, (out.get("reason") or "")[:300],
+                float(out.get("confidence") or 0.0), MODEL)
+            counts[label] = counts.get(label, 0) + 1
+        logger.info("jobs-relevance: %d/%d classified", min(i + CHUNK, len(rows)), len(rows))
+
+    total = sum(counts.values())
+    logger.info("jobs-relevance classification done: %d rows -> %s", total, counts)
+    return {"classified": total, "counts": counts}
