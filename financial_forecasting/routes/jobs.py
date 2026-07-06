@@ -545,6 +545,21 @@ async def get_placements(
     secured_salaries = placed_salaries + committed_salaries
     avg_salary_ft_secured = round(sum(secured_salaries) / len(secured_salaries)) if secured_salaries else None
 
+    # Builders currently in a committed, active paid trial (someone IS in the trial;
+    # its FT conversion is a separate role that stays open until they convert). This
+    # is the "Committed: trial active" status — surfaced so a trial like Fowler/Ethan
+    # is neither counted as FT-placed nor invisible (fixes the Home vs Accounts gap).
+    trial_rows = await conn.fetch("""
+        SELECT DISTINCT r.filled_by_user_id AS uid FROM bedrock.jobs_role r
+        JOIN bedrock.jobs_opportunity o ON o.id = r.opportunity_id
+        WHERE o.deleted_at IS NULL AND r.commitment = 'committed' AND r.is_trial = true
+          AND r.filled_by_user_id IS NOT NULL AND r.status <> 'cancelled'
+    """)
+    trial_uids = {r["uid"] for r in trial_rows}
+    if seg_uids is not None:
+        trial_uids &= seg_uids
+    committed_trial_active = len(trial_uids)
+
     # Builders currently interviewing (job_applications), optionally segment-scoped.
     iv_rows = await conn.fetch("""
         SELECT DISTINCT ja.builder_id FROM public.job_applications ja
@@ -583,6 +598,7 @@ async def get_placements(
             "influenced_ft":  infl_ft,
             "influenced_any": infl_any,
             "committed_ft_roles": committed_ft_roles,
+            "committed_trial_active": committed_trial_active,
             "ft_roles_secured": ft_builders + committed_ft_roles,
             "avg_salary_ft_placed": avg_salary_ft_placed,
             "avg_salary_ft_secured": avg_salary_ft_secured,
@@ -804,10 +820,27 @@ VALID_COMMITMENTS = {"committed", "open_market"}
 VALID_RATE_PERIODS = {"annual", "monthly", "weekly", "daily", "hourly"}
 
 
+def _placement_status_py(r) -> str:
+    """Python mirror of _placement_status_sql — same derivation, for serialized rows."""
+    if r.get("status") == "cancelled":
+        return "cancelled"
+    filled = r.get("filled_by_user_id") is not None
+    if filled and not bool(r.get("is_trial")):
+        return "ft_placed"
+    if filled and r.get("is_trial"):
+        return "trial_active"
+    if r.get("commitment") == "committed":
+        return "committed_open"
+    return "open_market"
+
+
 def _role_dict(r) -> dict:
     """Serialize a bedrock.jobs_role row for the API."""
     d = dict(r)
     d["id"] = str(d["id"])
+    _st = _placement_status_py(d)
+    d["placement_status"] = _st
+    d["placement_status_label"] = PLACEMENT_STATUS_LABELS.get(_st, _st)
     if d.get("opportunity_id") is not None:
         d["opportunity_id"] = str(d["opportunity_id"])
     if d.get("converts_to_role_id") is not None:
@@ -1802,6 +1835,31 @@ def _jobs_relevant(alias: str) -> str:
     logged touches (call/text/linkedin/note entered in the jobs tool) are
     deliberate jobs outreach and always count. See services/activity_classifier.py."""
     return f"({alias}.jobs_relevance = 'jobs' OR {alias}.type NOT IN ('email','meeting'))"
+
+
+# Canonical placement-status derivation for a jobs_role, so every screen (Home,
+# Accounts, drills) agrees. Stakeholder vocabulary (JOBS_REVIEW_PLAN.md #9):
+#   ft_placed       — a builder is placed full-time (the FT seat is filled)
+#   trial_active    — a committed trial with a builder currently in it (converts to a
+#                     separate FT role, so the FT number never walks back — e.g. Fowler)
+#   committed_open  — signed hiring commitment, seat still open (incl. open trial reqs)
+#   open_market     — CVs welcome, no hiring commitment yet
+#   cancelled       — role cancelled
+def _placement_status_sql(a: str = "r") -> str:
+    return f"""CASE
+        WHEN {a}.status = 'cancelled' THEN 'cancelled'
+        WHEN {a}.filled_by_user_id IS NOT NULL AND coalesce({a}.is_trial,false) = false THEN 'ft_placed'
+        WHEN {a}.filled_by_user_id IS NOT NULL AND {a}.is_trial THEN 'trial_active'
+        WHEN {a}.commitment = 'committed' THEN 'committed_open'
+        ELSE 'open_market' END"""
+
+PLACEMENT_STATUS_LABELS = {
+    "ft_placed": "Full-time placed",
+    "trial_active": "Committed: trial active",
+    "committed_open": "Committed: no placement",
+    "open_market": "Open market",
+    "cancelled": "Cancelled",
+}
 
 
 def _actor_sql(alias: str, owner: Optional[str]) -> str:
