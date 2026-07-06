@@ -299,6 +299,11 @@ function CandidateRow({ c, onOpen, selected, onToggleSelect, onLink, onApprove, 
           className="inline-flex h-6 shrink-0 items-center gap-1 rounded-md bg-amber px-2 text-[11.5px] font-medium text-white disabled:opacity-40">
           <Link2 size={11} /> Link
         </button>
+      ) : c.account_linked ? (
+        <span title={`Account linked${company ? `: ${company}` : ""}`}
+          className="inline-flex h-6 shrink-0 items-center gap-1 rounded-md bg-green-soft px-2 text-[11.5px] font-medium text-green">
+          <Check size={11} /> {company && company.length <= 16 ? company : "Linked"}
+        </span>
       ) : !dismissedView && company ? (
         <button type="button" disabled={busy} title={`Link account: ${company} (stays in review to edit + promote)`}
           onClick={(e) => { e.stopPropagation(); onApprove(company); }}

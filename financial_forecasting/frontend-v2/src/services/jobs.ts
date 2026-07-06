@@ -1044,6 +1044,7 @@ export interface JobCandidate {
   is_employer_contact?: boolean | null;
   dup_count?: number;
   top_dup_id?: number | null;
+  account_linked?: boolean;
   enriched?: boolean;
   email_count: number;
   owners?: string[];

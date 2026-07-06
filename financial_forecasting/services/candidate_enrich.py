@@ -49,26 +49,33 @@ async def suggest_account(conn, email: str) -> Optional[dict]:
                 "in_pipeline": bool(exists),
                 "reason": f"Email domain {domain} maps to {row['sf_account_name']} in Salesforce"}
 
-    # 2) Domain-root fuzzy match against existing jobs account names
-    root = domain.split(".")[0]
+    # 2) Domain-root match against EXISTING jobs account names, using an
+    #    alphanumeric-only PREFIX comparison. Prefix (not substring) so
+    #    'anthropic' matches 'Anthropic' / 'Anthropic PBC' but NOT
+    #    'Philanthropic Foundation'. Alnum-only so account names can't smuggle
+    #    SQL LIKE wildcards ('_' / '%'). FORWARD-only: the account name must
+    #    START WITH the full domain root — the high-precision signal. (The
+    #    reverse, domain-root starts-with a short account name, coincidentally
+    #    matched noise like 'reallyweird…' → 'Real', so it's excluded.)
+    import re
+    root = re.sub(r"[^a-z0-9]", "", domain.split(".")[0].lower())
     if len(root) >= 4:
         cand = await conn.fetchrow(
             """SELECT account_name FROM (
                  SELECT DISTINCT account_name FROM bedrock.jobs_opportunity WHERE deleted_at IS NULL AND coalesce(trim(account_name),'')<>''
                  UNION SELECT DISTINCT current_company FROM public.contacts WHERE is_jobs_contact=true AND coalesce(trim(current_company),'')<>''
                ) a
-               WHERE lower(replace(account_name,' ','')) LIKE '%'||$1||'%' OR $1 LIKE '%'||lower(replace(account_name,' ',''))||'%'
-               ORDER BY length(account_name) LIMIT 1""", root)
+               WHERE regexp_replace(lower(account_name), '[^a-z0-9]', '', 'g') LIKE $1 || '%'
+               ORDER BY length(regexp_replace(lower(account_name), '[^a-z0-9]', '', 'g')) ASC LIMIT 1""", root)
         if cand:
             key = cand["account_name"].strip().lower()
             return {"account_key": key, "account_name": cand["account_name"].strip(),
                     "sf_account_id": None, "confidence": "medium", "in_pipeline": True,
-                    "reason": f"Domain root '{root}' resembles existing account '{cand['account_name'].strip()}'"}
+                    "reason": f"Domain '{domain}' matches existing account '{cand['account_name'].strip()}'"}
 
-    # 3) No match — propose a new account named after the domain
-    return {"account_key": None, "account_name": root.capitalize(), "sf_account_id": None,
-            "confidence": "low", "in_pipeline": False,
-            "reason": f"No existing account for {domain}; suggest creating one"}
+    # 3) No EXISTING account matches — suggest nothing. We only ever link to
+    #    accounts that already exist; account creation is out of scope here.
+    return None
 
 
 # ── AI enrichment (Claude Haiku) ──────────────────────────────────────────────

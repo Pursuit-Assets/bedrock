@@ -3761,6 +3761,7 @@ async def list_candidates(
                e.account_suggestion->>'account_name' AS ai_account,
                coalesce(array_length(e.possible_duplicate_ids, 1), 0) AS dup_count,
                md.top_dup_id AS top_dup_id,
+               (c.company_id IS NOT NULL) AS account_linked,
                (e.contact_id IS NOT NULL) AS enriched,
                ec.owners AS owners, ec.channels AS channels, ec.tier AS tier
         FROM public.contacts c
@@ -3781,7 +3782,7 @@ async def list_candidates(
             HAVING count(*) = 1
         ) md ON true
         WHERE {' AND '.join(where)}
-        GROUP BY c.contact_id, aed.sf_account_name, md.top_dup_id, e.full_name, e.company, e.confidence,
+        GROUP BY c.contact_id, c.company_id, aed.sf_account_name, md.top_dup_id, e.full_name, e.company, e.confidence,
                  e.is_employer_contact, e.account_suggestion, e.possible_duplicate_ids, e.contact_id,
                  ec.owners, ec.channels, ec.tier
         ORDER BY (e.contact_id IS NOT NULL) DESC, max(a.activity_date) DESC NULLS LAST, c.email
@@ -3795,6 +3796,7 @@ async def list_candidates(
          # Prefer AI account, then exact-domain map. Best name = stored AI name.
          "suggested_account": r["ai_account"] or r["domain_account"],
          "top_dup_id": r["top_dup_id"],
+         "account_linked": r["account_linked"],
          "ai_name": r["ai_name"], "ai_company": r["ai_company"], "ai_confidence": r["ai_confidence"],
          "is_employer_contact": r["is_employer_contact"],
          "dup_count": r["dup_count"], "enriched": r["enriched"],
@@ -3836,7 +3838,7 @@ async def candidate_detail(
     import json as _json
     from services.candidate_enrich import suggest_account
     c = await conn.fetchrow(
-        "SELECT contact_id, full_name, email, current_company, current_title, linkedin_url "
+        "SELECT contact_id, full_name, email, current_company, current_title, linkedin_url, company_id "
         "FROM public.contacts WHERE contact_id=$1", contact_id)
     if not c:
         raise HTTPException(404, "Candidate not found")
@@ -3855,8 +3857,14 @@ async def candidate_detail(
         if enr["account_suggestion"]:
             suggestion = enr["account_suggestion"] if isinstance(enr["account_suggestion"], dict) else _json.loads(enr["account_suggestion"])
         dup_ids = list(enr["possible_duplicate_ids"] or [])
-    if suggestion is None:
+    if c["company_id"] is not None:
+        suggestion = None            # already linked to an account — don't propose another
+    elif suggestion is None:
         suggestion = await suggest_account(conn, c["email"])
+    # Only ever surface suggestions that link to an EXISTING account — drop any
+    # stale "create a new account" enrichment (no account_key / not in pipeline).
+    if suggestion and not (suggestion.get("account_key") or suggestion.get("sf_account_id") or suggestion.get("in_pipeline")):
+        suggestion = None
 
     # Resolve duplicate ids to contacts, deduped by (name, company).
     possible_duplicates = []
