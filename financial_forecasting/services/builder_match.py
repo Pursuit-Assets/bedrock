@@ -77,11 +77,33 @@ async def absorb_if_known_contact(conn, contact_id: int):
     return {"contact_id": contact_id, "linked_to": canonical}
 
 
+async def absorb_builders_by_email(conn) -> int:
+    """Dismiss review candidates whose EMAIL is a registered builder/fellow email
+    (primary or backup). Catches the common case a name-match misses: a candidate
+    row that's email-only (no full_name), e.g. a fellow emailing from a personal
+    address we already have on their record. Set-based; returns count dismissed."""
+    try:
+        result = await conn.execute("""
+            UPDATE public.contacts SET contact_stage='dismissed',
+                   tags=array_remove(coalesce(tags,'{}'), 'email_review'), updated_at=now()
+            WHERE contact_stage='candidate'
+              AND ('email_review' = ANY(coalesce(tags,'{}')) OR source='email_candidate')
+              AND lower(email) IN (SELECT bedrock.builder_emails())
+        """)
+        return int(result.split()[-1]) if result.startswith("UPDATE") else 0
+    except Exception as e:
+        logger.warning("absorb_builders_by_email failed: %s", e)
+        return 0
+
+
 async def sweep_builder_candidates(conn) -> Dict[str, Any]:
     """Absorb known people out of the review queue (nightly + one-off backfill):
     builders (users roster) get their personal email saved + dismissed;
     Salesforce-linked fellows/alumni get the candidate merged into them.
     Everyone else stays for human review. Returns counts."""
+    # Fast set-based pass first: dismiss anyone whose email is a registered
+    # builder email (catches name-less, email-only candidate rows).
+    by_email = await absorb_builders_by_email(conn)
     ids = [r["contact_id"] for r in await conn.fetch(
         "SELECT contact_id FROM public.contacts WHERE contact_stage='candidate' "
         "AND ('email_review' = ANY(coalesce(tags,'{}')) OR source='email_candidate')")]
@@ -95,7 +117,7 @@ async def sweep_builder_candidates(conn) -> Dict[str, Any]:
             continue
         if await absorb_if_known_contact(conn, cid):
             sf_linked += 1
-    logger.info("known-people sweep: %d builders absorbed (%d emails saved), %d merged into SF contacts, of %d",
-                builders, saved, sf_linked, len(ids))
-    return {"scanned": len(ids), "builders_absorbed": builders, "emails_saved": saved,
-            "sf_contacts_linked": sf_linked}
+    logger.info("known-people sweep: %d by-email, %d builders absorbed (%d emails saved), %d merged into SF contacts, of %d",
+                by_email, builders, saved, sf_linked, len(ids))
+    return {"scanned": len(ids), "builders_by_email": by_email, "builders_absorbed": builders,
+            "emails_saved": saved, "sf_contacts_linked": sf_linked}
