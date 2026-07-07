@@ -710,6 +710,7 @@ async def create_opp_placement(
     body: PlacementCreate,
     user=Depends(require_auth),
     conn=Depends(get_db),
+    client=Depends(get_mcp_client),
 ):
     """Create a new secured-job placement under this opportunity (jobs-team influenced)."""
     opp = await conn.fetchrow(
@@ -745,22 +746,43 @@ async def create_opp_placement(
                     updated_at=now()
                 WHERE id=$5
             """, opp_id, role, body.employment_type, body.salary, existing["id"])
-            return {"success": True, "data": {"id": str(existing["id"]), "merged": True}}
-
-        new_id = await conn.fetchval("""
-            INSERT INTO public.employment_records
-                (user_id, role_title, company_name, employment_type, engagement_stage,
-                 payment_amount, source, opportunity_id, influenced, notes)
-            VALUES ($1,$2,$3,$4,'completed',$5,'staff_created',$6,true,$7)
-            RETURNING id
-        """, body.builder_user_id, role, opp["account_name"], body.employment_type,
-            body.salary, opp_id, notes)
+            rec_id, merged = existing["id"], True
+        else:
+            rec_id = await conn.fetchval("""
+                INSERT INTO public.employment_records
+                    (user_id, role_title, company_name, employment_type, engagement_stage,
+                     payment_amount, source, opportunity_id, influenced, notes)
+                VALUES ($1,$2,$3,$4,'completed',$5,'staff_created',$6,true,$7)
+                RETURNING id
+            """, body.builder_user_id, role, opp["account_name"], body.employment_type,
+                body.salary, opp_id, notes)
+            merged = False
     else:
         # No platform user — store as a name-only record (user_id required, use 0 sentinel won't work
         # if FK; instead reject). Most placements should link a real builder.
         raise HTTPException(400, "builder_user_id required to create a placement (name-only not supported)")
 
-    return {"success": True, "data": {"id": str(new_id)}}
+    # Mirror to Salesforce like the hire path — previously this endpoint never
+    # synced, so placements made here silently never reached SF (and never
+    # showed in sf-sync-status). Best-effort; failures are recorded + retryable.
+    sf_sync: dict = {"status": "skipped", "message": "Salesforce not connected — sync from the placement later."}
+    try:
+        if client and "salesforce" in (client.connected_services or []):
+            result = await sync_placement_to_sf(conn, client.salesforce, rec_id)
+            sf_sync = {"status": "synced", **result}
+        else:
+            await record_sync_error(conn, rec_id, "Salesforce not connected at placement create time")
+    except NotEligible as ne:
+        await record_sync_error(conn, rec_id, str(ne), status="skipped")
+        sf_sync = {"status": "skipped", "message": str(ne)}
+    except AccountAmbiguous as aa:
+        await record_sync_error(conn, rec_id, str(aa), status="needs_choice")
+        sf_sync = {"status": "needs_choice", "message": str(aa)}
+    except Exception as e:
+        await record_sync_error(conn, rec_id, str(e)[:200])
+        sf_sync = {"status": "error", "message": str(e)[:200]}
+
+    return {"success": True, "data": {"id": str(rec_id), "merged": merged, "sf_sync": sf_sync}}
 
 
 @router.post("/opportunities/{opp_id}/placements/{placement_id}/link")
@@ -1057,6 +1079,17 @@ async def delete_role(
     conn=Depends(get_db),
 ):
     """Hard-delete a role (jobs-team owned, low volume)."""
+    # If this role was published to Pathfinder, unpublish its posting first —
+    # otherwise the builder-facing job_postings row is orphaned (still shared,
+    # pointing at a deleted role). bedrock_user can't write public.job_postings
+    # directly, so go through the SECURITY DEFINER sync fn.
+    posting = await conn.fetchval("SELECT job_posting_id FROM bedrock.jobs_role WHERE id=$1", role_id)
+    if posting is not None:
+        await conn.execute("UPDATE bedrock.jobs_role SET pathfinder_visible=false WHERE id=$1", role_id)
+        try:
+            await conn.execute("SELECT bedrock.sync_role_to_pathfinder($1)", role_id)
+        except Exception as e:
+            logger.warning("pathfinder unpublish on delete failed for %s: %s", role_id, e)
     result = await conn.execute("DELETE FROM bedrock.jobs_role WHERE id=$1", role_id)
     if result == "DELETE 0":
         raise HTTPException(404, "Role not found")
@@ -1114,6 +1147,14 @@ async def hire_into_role(
             """,
             body.user_id, new_id, role_id,
         )
+
+    # A filled role must stop advertising in Pathfinder (the sync fn now
+    # force-unpublishes when status is filled/cancelled).
+    if updated["job_posting_id"]:
+        try:
+            await conn.execute("SELECT bedrock.sync_role_to_pathfinder($1)", role_id)
+        except Exception as e:
+            logger.warning("pathfinder unpublish on hire failed for %s: %s", role_id, e)
 
     # Mirror the placement into Salesforce (fellow contact + account +
     # affiliation) — best-effort so a SF hiccup never blocks the hire; the

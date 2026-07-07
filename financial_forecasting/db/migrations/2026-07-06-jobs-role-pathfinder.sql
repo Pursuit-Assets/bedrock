@@ -24,15 +24,20 @@ CREATE OR REPLACE FUNCTION bedrock.sync_role_to_pathfinder(p_role_id uuid)
 RETURNS TABLE(action text, posting_id int)
 LANGUAGE plpgsql SECURITY DEFINER AS $$
 DECLARE
-  r record; v_staff int; v_pid int; v_range text;
+  r record; v_staff int; v_pid int; v_range text; should_share boolean;
 BEGIN
-  SELECT rr.id, rr.title, rr.jd_url, rr.notes, rr.approx_salary,
+  SELECT rr.id, rr.title, rr.jd_url, rr.notes, rr.approx_salary, rr.status,
          rr.pathfinder_visible, rr.job_posting_id, o.account_name, o.owner_email
     INTO r
     FROM bedrock.jobs_role rr
     JOIN bedrock.jobs_opportunity o ON o.id = rr.opportunity_id
     WHERE rr.id = p_role_id;
   IF NOT FOUND THEN RETURN QUERY SELECT 'not_found'::text, NULL::int; RETURN; END IF;
+
+  -- A role is shown to builders only while it's OPEN and toggled visible. A
+  -- filled or cancelled role must never keep advertising — this makes hire and
+  -- cancel unpublish it even though pathfinder_visible is still true.
+  should_share := r.pathfinder_visible AND coalesce(r.status, 'open') = 'open';
 
   SELECT staff_user_id INTO v_staff FROM bedrock.staff_user_id_map
     WHERE lower(email) = lower(r.owner_email);
@@ -45,7 +50,7 @@ BEGIN
                   THEN '$' || round(r.approx_salary / 1000.0) || 'k' END;
 
   IF r.job_posting_id IS NOT NULL THEN
-    IF r.pathfinder_visible THEN
+    IF should_share THEN
       UPDATE public.job_postings SET
         company_name = coalesce(r.account_name, '—'),
         job_title    = coalesce(r.title, 'Role'),
@@ -62,7 +67,7 @@ BEGIN
       RETURN QUERY SELECT 'unpublished'::text, r.job_posting_id; RETURN;
     END IF;
   ELSE
-    IF NOT r.pathfinder_visible THEN RETURN QUERY SELECT 'noop'::text, NULL::int; RETURN; END IF;
+    IF NOT should_share THEN RETURN QUERY SELECT 'noop'::text, NULL::int; RETURN; END IF;
     INSERT INTO public.job_postings
       (staff_user_id, company_name, job_title, job_url, source, status,
        description, salary_range, salary_min, salary_max, is_shared, shared_date, is_migrated)
