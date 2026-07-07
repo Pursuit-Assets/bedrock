@@ -8,7 +8,7 @@ import { SectionCard } from "@/components/detail";
 import { Drawer } from "@/components/ui/Drawer";
 import {
   useActivityTrends, useActivityTrendDetail, useJobsStaff,
-  type ActivityTrendBucket, type OutreachChannel,
+  type ActivityTrendBucket, type OutreachChannel, type OutreachScope,
 } from "@/services/jobs";
 
 const ownerName = (email: string) => {
@@ -35,9 +35,10 @@ function fmtPeriod(iso: string, gran: "week" | "month"): string {
 export function ActivityTrends() {
   const [gran, setGran] = useState<"week" | "month">("week");
   const [channel, setChannel] = useState<OutreachChannel>("all");
-  const [owner, setOwner] = useState<string>("");          // "" = whole jobs team
+  const [owner, setOwner] = useState<string>("");          // "" = whole scope
+  const [scope, setScope] = useState<OutreachScope>("team"); // team = Avni/Damon/Devika; staff = everyone else
   const [openPeriod, setOpenPeriod] = useState<string | null>(null);
-  const { data, isLoading, isError, refetch } = useActivityTrends(gran, channel, owner || undefined);
+  const { data, isLoading, isError, refetch } = useActivityTrends(gran, channel, owner || undefined, scope);
   const { data: staff = [] } = useJobsStaff();
 
   const chartData = useMemo(
@@ -55,9 +56,11 @@ export function ActivityTrends() {
       storageScope="jobs"
       action={
         <div className="flex items-center gap-2">
+          <Toggle value={scope} onChange={(v) => { setScope(v as OutreachScope); setOwner(""); }}
+                  opts={[["team", "Core team"], ["staff", "Staff"]]} />
           <select value={owner} onChange={(e) => setOwner(e.target.value)}
             className="h-7 rounded-md border border-border-strong bg-surface px-2 text-[11.5px] text-ink-2 outline-none focus:border-accent">
-            <option value="">All team</option>
+            <option value="">{scope === "staff" ? "All staff" : "All team"}</option>
             {staff.map((s) => <option key={s.email} value={s.email}>{s.name || ownerName(s.email)}</option>)}
           </select>
           <Toggle value={channel} onChange={(v) => setChannel(v as OutreachChannel)}
@@ -105,19 +108,19 @@ export function ActivityTrends() {
             <Legend color={EXISTING_COLOR} label="Existing accounts" />
           </div>
           <p className="text-[11px] text-ink-4">
-            Account-level outreach by {owner ? ownerName(owner) : "the jobs team"} (email, meetings, manual logs), counted once per account per period.
+            Jobs-related outreach by {owner ? ownerName(owner) : (scope === "staff" ? "the wider staff" : "the core jobs team")} (email, meetings, manual logs), counted once per account per period.
           </p>
         </div>
       )}
-      <OutreachDetailDrawer period={openPeriod} gran={gran} channel={channel} owner={owner} onClose={() => setOpenPeriod(null)} />
+      <OutreachDetailDrawer period={openPeriod} gran={gran} channel={channel} owner={owner} scope={scope} onClose={() => setOpenPeriod(null)} />
     </SectionCard>
   );
 }
 
-function OutreachDetailDrawer({ period, gran, channel, owner, onClose }: {
-  period: string | null; gran: "week" | "month"; channel: OutreachChannel; owner: string; onClose: () => void;
+function OutreachDetailDrawer({ period, gran, channel, owner, scope, onClose }: {
+  period: string | null; gran: "week" | "month"; channel: OutreachChannel; owner: string; scope: OutreachScope; onClose: () => void;
 }) {
-  const { data, isLoading } = useActivityTrendDetail(period, gran, channel, owner || undefined);
+  const { data, isLoading } = useActivityTrendDetail(period, gran, channel, owner || undefined, scope);
   return (
     <Drawer open={period != null} onClose={onClose}
       title={period ? `Outreach · ${fmtPeriod(period, gran)}` : "Outreach"}

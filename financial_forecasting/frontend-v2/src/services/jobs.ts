@@ -816,11 +816,13 @@ export interface ActivityTrends {
   coverage_note: string | null;
 }
 
-export function useActivityTrends(granularity: "week" | "month", channel: OutreachChannel, owner?: string) {
+export type OutreachScope = "team" | "staff";
+
+export function useActivityTrends(granularity: "week" | "month", channel: OutreachChannel, owner?: string, scope: OutreachScope = "team") {
   return useQuery<ActivityTrends>({
-    queryKey: ["jobs", "activity-trends", granularity, channel, owner ?? "team"],
+    queryKey: ["jobs", "activity-trends", granularity, channel, owner ?? scope],
     queryFn: async () => {
-      const p = new URLSearchParams({ granularity, channel });
+      const p = new URLSearchParams({ granularity, channel, scope });
       if (owner) p.set("owner", owner);
       const { data } = await api.get<ApiResponse<ActivityTrends>>(`/api/jobs/activity-trends?${p}`);
       return data.data;
@@ -834,12 +836,12 @@ export interface OutreachAccountDetail { account: string; touches: OutreachTouch
 export interface ActivityTrendDetail { period: string; accounts: OutreachAccountDetail[]; total_touches: number; total_accounts: number }
 
 /** Drill-down for a clicked outreach bar. `period` null = disabled (no fetch). */
-export function useActivityTrendDetail(period: string | null, granularity: "week" | "month", channel: OutreachChannel, owner?: string) {
+export function useActivityTrendDetail(period: string | null, granularity: "week" | "month", channel: OutreachChannel, owner?: string, scope: OutreachScope = "team") {
   return useQuery<ActivityTrendDetail>({
     enabled: !!period,
-    queryKey: ["jobs", "activity-trend-detail", period, granularity, channel, owner ?? "team"],
+    queryKey: ["jobs", "activity-trend-detail", period, granularity, channel, owner ?? scope],
     queryFn: async () => {
-      const p = new URLSearchParams({ period: period!, granularity, channel });
+      const p = new URLSearchParams({ period: period!, granularity, channel, scope });
       if (owner) p.set("owner", owner);
       const { data } = await api.get<ApiResponse<ActivityTrendDetail>>(`/api/jobs/activity-trends/detail?${p}`);
       return data.data;

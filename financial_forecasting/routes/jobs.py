@@ -1931,20 +1931,33 @@ PLACEMENT_STATUS_LABELS = {
 }
 
 
-def _actor_sql(alias: str, owner: Optional[str]) -> str:
+def _staff_actor(alias: str = "a") -> str:
+    """SQL: authored by an active staff member OUTSIDE the core jobs team — the
+    'staff mobilization' scope. Paired with _jobs_relevant, this surfaces jobs
+    outreach the wider staff do on top of their day jobs (kept out of the core
+    Outreach & Activation number, which stays Avni/Damon/Devika)."""
+    excl = ",".join(f"'{e.lower()}'" for e in JOBS_TEAM_EMAILS)
+    return (f"(EXISTS (SELECT 1 FROM public.org_users o WHERE o.is_active "
+            f"AND lower(o.email) NOT IN ({excl}) AND o.email IS NOT NULL "
+            f"AND ({alias}.email_from ILIKE '%'||o.email||'%' OR {alias}.logged_by ILIKE '%'||o.email||'%')))")
+
+
+def _actor_sql(alias: str, owner: Optional[str], scope: str = "team") -> str:
     """Actor filter for the outreach trends/detail. With `owner` (a single,
-    validated staff email) it scopes to that person; otherwise the whole jobs
-    team. `owner` is regex-validated so it's safe to interpolate into the ILIKE."""
+    validated staff email) it scopes to that person; else `scope` picks the core
+    jobs team ('team', default) or the wider staff ('staff'). `owner` is
+    regex-validated so it's safe to interpolate into the ILIKE."""
     if owner and _SAFE_EMAIL.match(owner):
         return f"({alias}.email_from ILIKE '%{owner}%' OR {alias}.logged_by ILIKE '%{owner}%')"
-    return _team_actor(alias)
+    return _staff_actor(alias) if scope == "staff" else _team_actor(alias)
 
 
 @router.get("/activity-trends")
 async def activity_trends(
     granularity: str = Query("week", pattern="^(week|month)$"),
     channel: str = Query("all", pattern="^(all|email|meeting)$"),
-    owner: Optional[str] = Query(None, description="Scope to one staff email (else whole jobs team)"),
+    owner: Optional[str] = Query(None, description="Scope to one staff email (else the scope)"),
+    scope: str = Query("team", pattern="^(team|staff)$", description="team = Avni/Damon/Devika; staff = everyone else's jobs outreach"),
     user=Depends(require_auth),
     conn=Depends(get_db),
 ):
@@ -1958,7 +1971,7 @@ async def activity_trends(
     `granularity` = week | month; trailing 12 buckets, zero-filled.
     """
     periods = 12
-    actor = _actor_sql("a", owner)
+    actor = _actor_sql("a", owner, scope)
     chan_sql = (
         "CASE WHEN a.source='calendar-sync' OR a.type='meeting' THEN 'meeting' "
         "WHEN a.type IN ('email') OR a.source='gmail-sync' THEN 'email' ELSE 'other' END"
@@ -2060,6 +2073,7 @@ async def activity_trends_detail(
     granularity: str = Query("week", pattern="^(week|month)$"),
     channel: str = Query("all", pattern="^(all|email|meeting)$"),
     owner: Optional[str] = Query(None),
+    scope: str = Query("team", pattern="^(team|staff)$"),
     user=Depends(require_auth),
     conn=Depends(get_db),
 ):
@@ -2071,7 +2085,7 @@ async def activity_trends_detail(
         pstart = date.fromisoformat(period)
     except ValueError:
         raise HTTPException(400, "period must be ISO date")
-    actor = _actor_sql("a", owner)
+    actor = _actor_sql("a", owner, scope)
     chan_sql = (
         "CASE WHEN a.source='calendar-sync' OR a.type='meeting' THEN 'meeting' "
         "WHEN a.type IN ('email') OR a.source='gmail-sync' THEN 'email' ELSE 'other' END"
