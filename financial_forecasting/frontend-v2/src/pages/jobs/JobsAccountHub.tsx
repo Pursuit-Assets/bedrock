@@ -174,6 +174,8 @@ export function JobsAccountHub({ initialQuery }: { initialQuery?: string } = {})
   const [rules, setRules] = useState<FilterRule<Field>[]>([]);
   const [dealType, setDealType] = useState("all");
   const [scope, setScope] = useState<"engaged" | "all">("engaged"); // engaged hides ~32k cold contacts; All shows every jobs account (e.g. impact.com)
+  const [showAll, setShowAll] = useState(false); // window big lists (2.8k+ engaged accounts) so the table renders instantly
+  const RENDER_CAP = 200;
   const [groupBy, setGroupBy] = useSessionState<string>("jobs-accounts:groupBy", "");
   const [collapsedGroups, setCollapsedGroups] = useSessionState<string[]>("jobs-accounts:groupCollapsed", EMPTY);
   // Persisted so returning from a contact/opportunity detail page restores the
@@ -339,7 +341,15 @@ export function JobsAccountHub({ initialQuery }: { initialQuery?: string } = {})
                 </tr>
               ) : renderRow(item.a))
             ) : (
-              filtered.map(renderRow)
+              <>
+                {(showAll ? filtered : filtered.slice(0, RENDER_CAP)).map(renderRow)}
+                {!showAll && filtered.length > RENDER_CAP && (
+                  <tr><td colSpan={visibleCols.length} className="px-6 py-3 text-center text-[12.5px] text-ink-3">
+                    Showing {RENDER_CAP} of {filtered.length} — search or filter to narrow, or{" "}
+                    <button type="button" className="text-accent underline underline-offset-2" onClick={() => setShowAll(true)}>show all</button>.
+                  </td></tr>
+                )}
+              </>
             )}
           </tbody>
         </table>
