@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 
 FELLOW_RECORD_TYPES = ("Pursuit Fellow", "Pursuit Core Fellow", "Pursuit Advance Fellow", "Alumni")
 _fellow_rt_id: Optional[str] = None
+_fellow_aff_rt_id: Optional[str] = None
 
 
 def _rid(res) -> Optional[str]:
@@ -42,6 +43,21 @@ async def _fellow_record_type_id(sf) -> Optional[str]:
     recs = res.get("records", [])
     _fellow_rt_id = recs[0]["Id"] if recs else None
     return _fellow_rt_id
+
+
+async def _fellow_affiliation_record_type_id(sf) -> Optional[str]:
+    """RecordType for the affiliation itself — jobs placements must be a
+    'Fellow Affiliation', not the default 'Standard Affiliation' (which drops
+    most of the fellow-specific fields). Resolved at runtime (id varies by org)."""
+    global _fellow_aff_rt_id
+    if _fellow_aff_rt_id:
+        return _fellow_aff_rt_id
+    res = await sf.query(
+        "SELECT Id FROM RecordType WHERE SobjectType='npe5__Affiliation__c' "
+        "AND DeveloperName='Fellow_Affiliation' LIMIT 1")
+    recs = res.get("records", [])
+    _fellow_aff_rt_id = recs[0]["Id"] if recs else None
+    return _fellow_aff_rt_id
 
 
 class NotEligible(Exception):
@@ -207,6 +223,11 @@ async def sync_placement_to_sf(
             "npe5__Organization__c": sf_account_id,
             "npe5__Status__c": "Current",
         }
+        # Jobs placements are Fellow Affiliations — the Standard Affiliation default
+        # drops most of the fellow-specific fields (Michelle's contract upload gap).
+        aff_rt = await _fellow_affiliation_record_type_id(sf)
+        if aff_rt:
+            aff["RecordTypeId"] = aff_rt
         if er["role_title"] and er["role_title"].upper() != "TBD":
             aff["npe5__Role__c"] = er["role_title"]
         if er["start_date"]:
