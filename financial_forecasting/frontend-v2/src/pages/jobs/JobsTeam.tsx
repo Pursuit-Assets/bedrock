@@ -1596,7 +1596,7 @@ function NewDealModal({ onClose }: { onClose: () => void }) {
       <div className="w-full max-w-md rounded-xl border border-border-strong bg-surface shadow-xl">
         {/* Header */}
         <div className="flex items-center justify-between border-b border-border-strong px-5 py-4">
-          <h2 className="text-[15px] font-semibold text-ink">New Deal</h2>
+          <h2 className="text-[15px] font-semibold text-ink">New Opportunity</h2>
           <button
             type="button"
             onClick={onClose}
@@ -1726,7 +1726,7 @@ function NewDealModal({ onClose }: { onClose: () => void }) {
               ) : (
                 <Plus size={13} />
               )}
-              {createOpportunity.isPending ? "Creating…" : "Create Deal"}
+              {createOpportunity.isPending ? "Creating…" : "Create Opportunity"}
             </button>
           </div>
         </form>
@@ -2319,7 +2319,7 @@ export function JobsTeam() {
             onClick={() => setShowNewDeal(true)}
             className="inline-flex h-7 items-center gap-1.5 rounded border border-ink bg-ink px-3 text-[12.5px] font-medium text-surface hover:opacity-90"
           >
-            <Plus size={13} /> New Deal
+            <Plus size={13} /> New Opportunity
           </button>
         </div>
       </Toolbar>

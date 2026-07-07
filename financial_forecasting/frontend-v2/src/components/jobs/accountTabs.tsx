@@ -111,7 +111,7 @@ function AccountOppsTab({ account }: { account: JobsAccount }) {
         <table className="w-full table-fixed text-[12px]">
           <colgroup><col /><col style={{ width: "17%" }} /><col style={{ width: "16%" }} /><col style={{ width: "13%" }} /><col style={{ width: "12%" }} /><col style={{ width: "8%" }} /><col style={{ width: 56 }} /></colgroup>
           <thead className="bg-surface-2 text-[10.5px] uppercase tracking-wider text-ink-3"><tr>
-            <th className="px-2 py-1.5 text-left font-semibold">Role</th><th className="px-2 py-1.5 text-left font-semibold">Stage</th>
+            <th className="px-2 py-1.5 text-left font-semibold">Opportunity</th><th className="px-2 py-1.5 text-left font-semibold">Stage</th>
             <th className="px-2 py-1.5 text-left font-semibold">Owner</th><th className="px-2 py-1.5 text-left font-semibold">Deal type</th>
             <th className="px-2 py-1.5 text-left font-semibold">Likelihood</th><th className="px-2 py-1.5 text-left font-semibold"># Roles</th><th className="px-2 py-1.5" />
           </tr></thead>
@@ -137,7 +137,7 @@ function AccountOppsTab({ account }: { account: JobsAccount }) {
             {/* add row at the bottom — collapsed trigger until you click it (tasks-style) */}
             {adding ? (
               <tr className="border-t border-border-strong bg-surface-2/40">
-                <td className="px-2 py-1.5"><input autoFocus value={role} onChange={(e) => setRole(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") submit(); if (e.key === "Escape") setAdding(false); }} placeholder="Role title (TBD ok) *" className="w-full border-0 bg-transparent text-[12.5px] text-ink outline-none placeholder:text-ink-4" /></td>
+                <td className="px-2 py-1.5"><input autoFocus value={role} onChange={(e) => setRole(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") submit(); if (e.key === "Escape") setAdding(false); }} placeholder="Opportunity name *" className="w-full border-0 bg-transparent text-[12.5px] text-ink outline-none placeholder:text-ink-4" /></td>
                 <td className="px-2 py-1.5"><select value={stage} onChange={(e) => setStage(e.target.value as JobStage)} className="h-6 w-full rounded border border-border-strong bg-surface px-1 text-[11.5px] outline-none focus:border-accent">{OPP_STAGE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}</select></td>
                 <td className="px-2 py-1.5"><select value={owner} onChange={(e) => setOwner(e.target.value)} className={cn("h-6 w-full rounded border bg-surface px-1 text-[11.5px] outline-none focus:border-accent", owner ? "border-border-strong" : "border-amber-300")}><option value="">Owner *</option>{staff.map((s) => <option key={s.email} value={s.email}>{s.name}</option>)}</select></td>
                 <td className="px-2 py-1.5"><select value={dealType} onChange={(e) => setDealType(e.target.value as DealType | "")} className={cn("h-6 w-full rounded border bg-surface px-1 text-[11.5px] outline-none focus:border-accent", dealType ? "border-border-strong" : "border-amber-300")}><option value="">Type *</option>{DEAL_TYPE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}</select></td>
