@@ -227,26 +227,31 @@ async def sync_placement_to_sf(
         f"SELECT Id FROM npe5__Affiliation__c WHERE npe5__Contact__c = '{sf_contact_id}' "
         f"AND npe5__Organization__c = '{sf_account_id}' LIMIT 1")
     recs = res.get("records", [])
+    aff_rt = await _fellow_affiliation_record_type_id(sf)
+    # Fellow-affiliation fields the rest of the app reads to resolve a fellow's
+    # employer: WITHOUT Account_ForFellowsOnly__c + npe5__Primary__c the record is
+    # invisible to /accounts/with-fellows and candidate/builder employer lookups
+    # (candidate_enrich, sf_contact_matcher) — the real "missing data" gap.
+    fellow_fields = {
+        "npe5__Status__c": "Current",
+        "Account_ForFellowsOnly__c": sf_account_id,
+        "npe5__Primary__c": True,
+        "Temporary_vs_Permanent__c": _temp_or_permanent(er),
+    }
+    if aff_rt:
+        fellow_fields["RecordTypeId"] = aff_rt
+    if er["role_title"] and er["role_title"].upper() != "TBD":
+        fellow_fields["npe5__Role__c"] = er["role_title"]
+    if er["start_date"]:
+        fellow_fields["npe5__StartDate__c"] = er["start_date"].isoformat()
+
     if recs:
+        # An affiliation already links this pair — heal it into a complete Fellow
+        # affiliation (older ones were Standard / missing the fellow fields).
         sf_affiliation_id = recs[0]["Id"]
+        await sf.update_record("npe5__Affiliation__c", sf_affiliation_id, fellow_fields)
     else:
-        aff = {
-            "npe5__Contact__c": sf_contact_id,
-            "npe5__Organization__c": sf_account_id,
-            "npe5__Status__c": "Current",
-        }
-        # Jobs placements are Fellow Affiliations — the Standard Affiliation default
-        # drops most of the fellow-specific fields (Michelle's contract upload gap).
-        aff_rt = await _fellow_affiliation_record_type_id(sf)
-        if aff_rt:
-            aff["RecordTypeId"] = aff_rt
-            # Fellow Affiliations require Temporary vs Permanent: internships/
-            # apprenticeships/trials are temporary, other roles permanent.
-            aff["Temporary_vs_Permanent__c"] = _temp_or_permanent(er)
-        if er["role_title"] and er["role_title"].upper() != "TBD":
-            aff["npe5__Role__c"] = er["role_title"]
-        if er["start_date"]:
-            aff["npe5__StartDate__c"] = er["start_date"].isoformat()
+        aff = {"npe5__Contact__c": sf_contact_id, "npe5__Organization__c": sf_account_id, **fellow_fields}
         created = await sf.create_record("npe5__Affiliation__c", aff)
         sf_affiliation_id = _rid(created)
         if not sf_affiliation_id:
