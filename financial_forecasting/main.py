@@ -19,6 +19,7 @@ import logging
 
 from fastapi import FastAPI, File, Form, HTTPException, Depends, BackgroundTasks, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 from pydantic import BaseModel, validator
 import uvicorn
@@ -130,6 +131,11 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization", "X-Api-Key", "X-Internal-Key", "Cookie"],
 )
+
+# Compress large JSON responses (the jobs account/contacts lists are hundreds of
+# KB of repetitive keys — gzip cuts them ~10x over the wire). SSE streams stay
+# uncompressed (they're chunked and below the min size per event).
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 # Routers
 app.include_router(projects_router)

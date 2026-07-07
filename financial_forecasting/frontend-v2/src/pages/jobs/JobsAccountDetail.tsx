@@ -12,6 +12,7 @@ import { BackLink, SectionCard } from "@/components/detail";
 import { Tag } from "@/components/ui/Tag";
 import { accountStatusVariant } from "@/lib/accountStatus";
 import {
+  useAccountProspects,
   useJobsAccounts,
   useJobsStaff,
   useUpdateJobsAccount,
@@ -49,6 +50,7 @@ export function JobsAccountDetailPage() {
 
   const { data: accounts = [], isLoading, isError, refetch } = useJobsAccounts();
   const account = useMemo(() => accounts.find((a) => a.account_key === key), [accounts, key]);
+  const { data: prospects = [] } = useAccountProspects(account?.account_key ?? null);
 
   const { data: staff = [] } = useJobsStaff();
   const updateAccount = useUpdateJobsAccount();
@@ -116,7 +118,7 @@ export function JobsAccountDetailPage() {
       </SectionCard>
 
       <SectionCard title={`Contacts (${account.prospect_count})`} storageScope="jobs-account" defaultOpen>
-        <ContactsLinkTab contacts={account.prospects} />
+        <ContactsLinkTab contacts={prospects} />
       </SectionCard>
 
       <SectionCard title="Tasks" storageScope="jobs-account">

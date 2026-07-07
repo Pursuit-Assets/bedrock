@@ -367,7 +367,8 @@ export interface JobsAccount {
   owner_email: string | null;
   account_status: JobsAccountStatus;
   opportunities: JobsAccountOpp[];
-  prospects: JobsAccountProspect[];
+  /** Prospects are NOT nested in the list payload (~38k rows) — fetch them
+   *  lazily per account via useAccountProspects. Only the count ships here. */
   opp_count: number;
   prospect_count: number;
   last_activity: string | null;
@@ -478,6 +479,21 @@ export const useAccountTasks    = (key: string | null) => accountRollup<AccountT
 export const useAccountComments = (key: string | null) => accountRollup<AccountComment[]>("comments", key);
 export const useAccountBuilders = (key: string | null) => accountRollup<{ rows: AccountBuilderRow[]; summary: Record<string, number> }>("builders", key);
 export const useAccountRoles    = (key: string | null) => accountRollup<AccountRole[]>("roles", key);
+/** Prospects at one account — loaded lazily on row-expand so /accounts stays
+ *  lean. `scope` mirrors the account list's engaged/all toggle so the drill-in
+ *  matches the row's prospect_count. */
+export function useAccountProspects(key: string | null, scope: "engaged" | "all" = "engaged") {
+  return useQuery<JobsAccountProspect[]>({
+    queryKey: ["jobs", "account-rollup", "prospects", key, scope],
+    queryFn: async () => {
+      const { data } = await api.get<ApiResponse<JobsAccountProspect[]>>(
+        `/api/jobs/account-prospects?key=${encodeURIComponent(key ?? "")}&scope=${scope}`);
+      return data.data;
+    },
+    enabled: Boolean(key),
+    staleTime: 30_000,
+  });
+}
 
 export interface JobsStaff { email: string; name: string }
 

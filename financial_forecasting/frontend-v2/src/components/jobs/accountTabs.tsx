@@ -29,6 +29,7 @@ import {
   useAccountActivity,
   useAccountBuilders,
   useAccountComments,
+  useAccountProspects,
   useAccountRoles,
   useAccountTasks,
   useAddContactToJobs,
@@ -166,9 +167,10 @@ function AccountOppsTab({ account }: { account: JobsAccount }) {
 }
 
 // ── Contacts — add/search ABOVE the list ─────────────────────────────────────────────
-function AccountContactsTab({ account }: { account: JobsAccount }) {
+function AccountContactsTab({ account, scope = "engaged" }: { account: JobsAccount; scope?: "engaged" | "all" }) {
   const [mode, setMode] = useState<null | "existing" | "new">(null);
   const [search, setSearch] = useState("");
+  const { data: prospects = [] } = useAccountProspects(account.account_key, scope);
   const { data: results = [] } = useContactSearch(search);
   const addToJobs = useAddContactToJobs();
   const createContact = useCreateContact();
@@ -217,14 +219,15 @@ function AccountContactsTab({ account }: { account: JobsAccount }) {
           </div>
         )}
       </div>
-      <ContactsLinkTab contacts={account.prospects} />
+      <ContactsLinkTab contacts={prospects} />
     </div>
   );
 }
 
 // ── Activity ─────────────────────────────────────────────────────────────────────────
-function AccountActivityTab({ account }: { account: JobsAccount }) {
+function AccountActivityTab({ account, scope = "engaged" }: { account: JobsAccount; scope?: "engaged" | "all" }) {
   const { data, isLoading } = useAccountActivity(account.account_key);
+  const { data: prospects = [] } = useAccountProspects(account.account_key, scope);
   const log = useLogActivity();
   const [open, setOpen] = useState(false);
   const [type, setType] = useState<"call" | "text" | "linkedin">("call");
@@ -251,7 +254,7 @@ function AccountActivityTab({ account }: { account: JobsAccount }) {
           <select value={target} onChange={(e) => setTarget(e.target.value)} className={cn(inputCls, "max-w-[220px]")}>
             <option value="">Tag to…</option>
             {account.opportunities.map((o) => <option key={o.id} value={`opp:${o.id}`}>Opp · {oppRoleLabel(o)}</option>)}
-            {account.prospects.map((c) => <option key={c.contact_id} value={`contact:${c.contact_id}`}>Contact · {c.full_name}</option>)}
+            {prospects.map((c) => <option key={c.contact_id} value={`contact:${c.contact_id}`}>Contact · {c.full_name}</option>)}
           </select>
           <input value={note} onChange={(e) => setNote(e.target.value)} placeholder="Note" className={cn(inputCls, "min-w-[200px] flex-1")} />
           <button type="button" disabled={!target || !note.trim() || log.isPending} onClick={submit} className="h-7 rounded bg-accent px-3 text-[12px] font-medium text-white hover:opacity-90 disabled:opacity-50">Log</button>
@@ -455,16 +458,16 @@ function AccountBuildersTab({ account }: { account: JobsAccount }) {
   );
 }
 
-export function AccountExpandTabs({ account }: { account: JobsAccount }) {
+export function AccountExpandTabs({ account, scope = "engaged" }: { account: JobsAccount; scope?: "engaged" | "all" }) {
   const key = account.account_key;
   const tabs = useMemo(() => [
     { id: "comments", label: "Comments", render: () => <AccountCommentsTab accountKey={key} /> },
     { id: "tasks", label: "Tasks", render: () => <AccountTasksTab accountKey={key} /> },
     { id: "opps", label: "Opportunities", count: account.opp_count, render: () => <AccountOppsTab account={account} /> },
-    { id: "contacts", label: "Contacts", count: account.prospect_count, render: () => <AccountContactsTab account={account} /> },
-    { id: "activity", label: "Activity", render: () => <AccountActivityTab account={account} /> },
+    { id: "contacts", label: "Contacts", count: account.prospect_count, render: () => <AccountContactsTab account={account} scope={scope} /> },
+    { id: "activity", label: "Activity", render: () => <AccountActivityTab account={account} scope={scope} /> },
     { id: "builders", label: "Builders", render: () => <AccountBuildersTab account={account} /> },
     { id: "roles", label: "Roles", render: () => <AccountRolesTab account={account} /> },
-  ], [account, key]);
+  ], [account, key, scope]);
   return <RowExpandPanel tabs={tabs} />;
 }

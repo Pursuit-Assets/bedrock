@@ -118,10 +118,11 @@ const EMPTY: string[] = [];
 
 // ── row ──────────────────────────────────────────────────────────────────────
 function AccountRow({
-  account, expanded, onToggle, visibleCols, staff, onSaveOwner,
+  account, expanded, onToggle, visibleCols, staff, onSaveOwner, scope,
 }: {
   account: JobsAccount; expanded: boolean; onToggle: () => void; visibleCols: ColKey[];
   staff: JobsStaff[]; onSaveOwner: (account: string, email: string) => Promise<void>;
+  scope: "engaged" | "all";
 }) {
   const cells: Record<ColKey, React.ReactNode> = {
     account: (
@@ -163,7 +164,7 @@ function AccountRow({
         ))}
       </tr>
       {expanded && (
-        <tr className="bg-surface-2/30"><td colSpan={visibleCols.length} className="p-0"><AccountExpandTabs account={account} /></td></tr>
+        <tr className="bg-surface-2/30"><td colSpan={visibleCols.length} className="p-0"><AccountExpandTabs account={account} scope={scope} /></td></tr>
       )}
     </Fragment>
   );
@@ -235,8 +236,10 @@ export function JobsAccountHub({ initialQuery }: { initialQuery?: string } = {})
     const f = accounts.filter((a) => {
       for (const r of rules) if (!ruleApplies(a, r, FILTERABLE)) return false;
       if (!q) return true;
+      // Prospects aren't in the list payload anymore (loaded lazily on expand),
+      // so account search matches the company name + its opportunity titles.
+      // People search lives on the Contacts page.
       return a.account.toLowerCase().includes(q)
-        || a.prospects.some((p) => (p.full_name ?? "").toLowerCase().includes(q) || (p.email ?? "").toLowerCase().includes(q))
         || a.opportunities.some((o) => (o.title ?? "").toLowerCase().includes(q));
     });
     return sort.key == null ? f : sortBy(f, sort, (a, k) => extract(a, k));
@@ -268,7 +271,7 @@ export function JobsAccountHub({ initialQuery }: { initialQuery?: string } = {})
   const visibleWeight = visibleCols.reduce((s, k) => s + COL_WEIGHT[k], 0);
 
   const renderRow = (a: JobsAccount) => (
-    <AccountRow key={a.account} account={a} expanded={expanded.has(a.account)} onToggle={() => toggleRow(a.account)} visibleCols={visibleCols} staff={staff} onSaveOwner={saveOwner} />
+    <AccountRow key={a.account} account={a} expanded={expanded.has(a.account)} onToggle={() => toggleRow(a.account)} visibleCols={visibleCols} staff={staff} onSaveOwner={saveOwner} scope={scope} />
   );
 
   return (

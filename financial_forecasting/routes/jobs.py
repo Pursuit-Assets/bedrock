@@ -8,6 +8,7 @@
   GET    /api/jobs/opportunities/pipeline     — grouped stage counts for pipeline view
 """
 
+import asyncio
 import logging
 import re
 from datetime import date, datetime, timedelta, timezone
@@ -18,7 +19,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from auth import require_auth
-from db import get_db
+from db import get_db, get_pool
 from dependencies import get_mcp_client, require_sf_mcp_client
 from sf_errors import sf_http_error
 from services.placement_sf import sync_placement_to_sf, record_sync_error, NotEligible, AccountAmbiguous
@@ -2412,7 +2413,6 @@ async def jobs_accounts(
     deal_type: Optional[str] = Query(None),
     scope: str = Query("engaged", pattern="^(engaged|all)$"),
     user=Depends(require_auth),
-    conn=Depends(get_db),
 ):
     """Account-level hub: every company with an opportunity OR a jobs prospect,
     keyed by normalized company name, with its opportunities and prospects nested
@@ -2425,23 +2425,122 @@ async def jobs_accounts(
     rows; scope=all includes cold linkedin imports.
     """
     eng = "" if scope == "all" else f"AND {_engaged_clause('c')}"
-    opp_rows = await conn.fetch(
-        """
-        SELECT id, account_id, account_name, stage, deal_type, title,
-               owner_email, priority, num_roles, likelihood, updated_at
-        FROM bedrock.jobs_opportunity
-        WHERE deleted_at IS NULL AND coalesce(trim(account_name), '') <> ''
-        ORDER BY updated_at DESC NULLS LAST
-        """,
-    )
-    prospect_rows = await conn.fetch(
-        f"""
-        SELECT c.contact_id, c.full_name, c.email, c.current_title, c.current_company,
-               c.contact_stage, c.linkedin_url, c.updated_at
-        FROM public.contacts c
-        WHERE c.is_jobs_contact = true AND coalesce(trim(c.current_company), '') <> '' {eng}
-        ORDER BY c.full_name
-        """,
+
+    # Every input below is an independent read. Run sequentially on one
+    # connection they cost ~2.6s; gather them across the pool so wall-time ≈ the
+    # single slowest query (~0.8s). (Was 3s+ end-to-end for the whole endpoint.)
+    team_sender = " OR ".join(f"a.email_from ILIKE '%{e}%'" for e in JOBS_TEAM_EMAILS)
+    # SQL expr → the jobs-team member who authored a row (NULL if none), so we can
+    # aggregate the distinct set of team members who've touched each account.
+    actor_case = "CASE " + " ".join(
+        f"WHEN a.email_from ILIKE '%{e}%' OR a.logged_by ILIKE '%{e}%' THEN '{e}'"
+        for e in JOBS_TEAM_EMAILS
+    ) + " END"
+    pool = get_pool()
+    (
+        opp_rows, prospect_rows, ja_rows, task_rows,
+        act1_rows, act2_rows, role_resp_rows, er_resp_rows,
+        hires_rows, name_sf_rows,
+    ) = await asyncio.gather(
+        pool.fetch(
+            """
+            SELECT id, account_id, account_name, stage, deal_type, title,
+                   owner_email, priority, num_roles, likelihood, updated_at
+            FROM bedrock.jobs_opportunity
+            WHERE deleted_at IS NULL AND coalesce(trim(account_name), '') <> ''
+            ORDER BY updated_at DESC NULLS LAST
+            """),
+        # Prospects are ~38k rows across ~21k companies — nesting them all into the
+        # account list produced a 2.5MB (16MB on scope=all) payload and a 3s+ render.
+        # The list only needs a COUNT per account; the actual prospect rows load
+        # lazily when a row is expanded (GET /account-prospects). So aggregate here.
+        pool.fetch(
+            f"""
+            SELECT lower(trim(c.current_company)) AS key,
+                   min(c.current_company)          AS display,
+                   count(*)                        AS n,
+                   max(c.updated_at)               AS last_updated
+            FROM public.contacts c
+            WHERE c.is_jobs_contact = true AND coalesce(trim(c.current_company), '') <> '' {eng}
+            GROUP BY 1
+            """),
+        # Persistent account record (owner, manual status override, SF link).
+        pool.fetch("SELECT account_key, owner_email, status_override, sf_account_id FROM bedrock.jobs_account"),
+        # Open account-level tasks per account_key.
+        pool.fetch(
+            "SELECT parent_id, count(*) AS n FROM bedrock.jobs_account_task "
+            "WHERE parent_type='account' AND deleted_at IS NULL AND status <> 'Completed' "
+            "GROUP BY parent_id"),
+        # Per-account activity for warmth: recent volume (90d), recency (last
+        # touch), whether the account has RESPONDED (a meeting/call, or an inbound
+        # email — not just our outbound), and which team members touched it.
+        pool.fetch(
+            f"""
+            SELECT lower(trim(c.current_company)) AS company,
+                   max(a.activity_date) AS last_act,
+                   min(a.activity_date) AS first_act,
+                   count(*) FILTER (WHERE a.activity_date >= now() - interval '90 days') AS recent,
+                   bool_or(a.type IN ('call','meeting')
+                           OR (a.type = 'email' AND NOT ({team_sender}))) AS responded,
+                   array_agg(DISTINCT {actor_case}) AS actors
+            FROM bedrock.activity a JOIN public.contacts c ON c.contact_id = a.participant_public_contact_id
+            WHERE a.deleted_at IS NULL AND coalesce(trim(c.current_company),'') <> ''
+            GROUP BY 1"""),
+        # Meeting attendees (calendar rows have no participant link) so
+        # meetings/manual aren't undercounted.
+        pool.fetch(
+            f"""
+            SELECT lower(trim(c.current_company)) AS company,
+                   max(a.activity_date) AS last_act,
+                   min(a.activity_date) AS first_act,
+                   count(*) FILTER (WHERE a.activity_date >= now() - interval '90 days') AS recent,
+                   true AS responded,
+                   array_agg(DISTINCT {actor_case}) AS actors
+            FROM bedrock.activity a, jsonb_array_elements(coalesce(a.meeting_attendees, '[]'::jsonb)) att
+            JOIN public.contacts c ON lower(c.email) = lower(att->>'email')
+            WHERE a.deleted_at IS NULL AND a.source = 'calendar-sync'
+              AND coalesce(trim(c.current_company),'') <> ''
+            GROUP BY 1"""),
+        # A role created or a hire tagged is real momentum — count it as responded.
+        pool.fetch(
+            """SELECT lower(trim(o.account_name)) AS company, max(r.created_at) AS last_act,
+                  count(*) FILTER (WHERE r.created_at >= now() - interval '90 days') AS recent, true AS responded
+           FROM bedrock.jobs_role r JOIN bedrock.jobs_opportunity o ON o.id = r.opportunity_id
+           WHERE o.deleted_at IS NULL AND coalesce(trim(o.account_name),'') <> '' GROUP BY 1"""),
+        pool.fetch(
+            """SELECT lower(trim(o.account_name)) AS company, max(er.created_at) AS last_act,
+                  count(*) FILTER (WHERE er.created_at >= now() - interval '90 days') AS recent, true AS responded
+           FROM public.employment_records er JOIN bedrock.jobs_opportunity o ON o.id = er.opportunity_id
+           WHERE o.deleted_at IS NULL AND coalesce(trim(o.account_name),'') <> '' GROUP BY 1"""),
+        # Builders hired per account (distinct builders with an employment_record
+        # at the company), via the jobs opp OR the record's own company_name.
+        # Own-venture records aren't "hires" at an external account.
+        pool.fetch(
+            """
+            SELECT company, count(DISTINCT user_id) AS n FROM (
+                SELECT er.user_id, lower(trim(o.account_name)) AS company
+                FROM public.employment_records er
+                JOIN bedrock.jobs_opportunity o ON o.id = er.opportunity_id
+                WHERE o.deleted_at IS NULL AND coalesce(trim(o.account_name),'') <> ''
+                  AND coalesce(er.is_own_venture, false) = false
+                UNION
+                SELECT er.user_id, lower(trim(er.company_name)) AS company
+                FROM public.employment_records er
+                WHERE coalesce(trim(er.company_name),'') <> ''
+                  AND coalesce(er.is_own_venture, false) = false
+            ) s GROUP BY company
+            """),
+        # Every Salesforce account id that maps to each account (by company name →
+        # public.companies → sf_account_company_map), so SF fellow counts attach to
+        # more than just the directly-SF-linked accounts.
+        pool.fetch(
+            """
+            SELECT lower(trim(co.name)) AS key, array_agg(DISTINCT m.sf_account_id) AS ids
+            FROM public.companies co
+            JOIN bedrock.sf_account_company_map m ON m.public_company_id = co.company_id
+            WHERE coalesce(trim(co.name), '') <> '' AND m.sf_account_id IS NOT NULL
+            GROUP BY 1
+            """),
     )
 
     accounts: dict = {}
@@ -2454,7 +2553,6 @@ async def jobs_accounts(
                 "account_id": None,
                 "owner_email": None,
                 "opportunities": [],
-                "prospects": [],
                 "_last": None,
             },
         )
@@ -2489,44 +2587,15 @@ async def jobs_accounts(
             "updated_at": r["updated_at"].isoformat() if r["updated_at"] else None,
         })
 
+    prospect_counts: dict = {}
     for r in prospect_rows:
-        key = r["current_company"].strip().lower()
-        g = bucket(key, r["current_company"].strip())
-        touch(g, r["updated_at"])
-        g["prospects"].append({
-            "contact_id":    r["contact_id"],
-            "full_name":     r["full_name"],
-            "email":         r["email"],
-            "current_title": r["current_title"],
-            "contact_stage": r["contact_stage"],
-            "linkedin_url":  r["linkedin_url"],
-        })
+        key = r["key"]
+        g = bucket(key, (r["display"] or "").strip())
+        touch(g, r["last_updated"])
+        prospect_counts[key] = r["n"]
 
-    # Persistent account record (owner, optional manual status override,
-    # explicit Salesforce link).
-    ja_rows = await conn.fetch(
-        "SELECT account_key, owner_email, status_override, sf_account_id FROM bedrock.jobs_account",
-    )
     ja = {r["account_key"]: r for r in ja_rows}
-
-    # Open account-level tasks per account_key.
-    open_tasks = {r["parent_id"]: r["n"] for r in await conn.fetch(
-        "SELECT parent_id, count(*) AS n FROM bedrock.jobs_account_task "
-        "WHERE parent_type='account' AND deleted_at IS NULL AND status <> 'Completed' "
-        "GROUP BY parent_id")}
-
-    # Per-account activity for warmth: recent volume (90d), recency (last touch),
-    # and whether the account has RESPONDED (two-way: a meeting, a call, or an
-    # inbound email from them — not just our outbound). Two passes merged:
-    # participant-linked (emails/calls) + meeting attendees (calendar, which has
-    # no participant link), so meetings/manual aren't undercounted.
-    team_sender = " OR ".join(f"a.email_from ILIKE '%{e}%'" for e in JOBS_TEAM_EMAILS)
-    # SQL expr → the jobs-team member who authored a row (NULL if none), so we can
-    # aggregate the distinct set of team members who've touched each account.
-    actor_case = "CASE " + " ".join(
-        f"WHEN a.email_from ILIKE '%{e}%' OR a.logged_by ILIKE '%{e}%' THEN '{e}'"
-        for e in JOBS_TEAM_EMAILS
-    ) + " END"
+    open_tasks = {r["parent_id"]: r["n"] for r in task_rows}
     acct_act: dict = {}
 
     def _merge(company, last_act, recent, responded, actors=None, first_act=None):
@@ -2541,87 +2610,27 @@ async def jobs_accounts(
         if actors:
             cur["actors"].update(a for a in actors if a)
 
-    for r in await conn.fetch(f"""
-        SELECT lower(trim(c.current_company)) AS company,
-               max(a.activity_date) AS last_act,
-               min(a.activity_date) AS first_act,
-               count(*) FILTER (WHERE a.activity_date >= now() - interval '90 days') AS recent,
-               bool_or(a.type IN ('call','meeting')
-                       OR (a.type = 'email' AND NOT ({team_sender}))) AS responded,
-               array_agg(DISTINCT {actor_case}) AS actors
-        FROM bedrock.activity a JOIN public.contacts c ON c.contact_id = a.participant_public_contact_id
-        WHERE a.deleted_at IS NULL AND coalesce(trim(c.current_company),'') <> ''
-        GROUP BY 1"""):
+    for r in act1_rows:
         _merge(r["company"], r["last_act"], r["recent"], r["responded"], r["actors"], r["first_act"])
-    for r in await conn.fetch(f"""
-        SELECT lower(trim(c.current_company)) AS company,
-               max(a.activity_date) AS last_act,
-               min(a.activity_date) AS first_act,
-               count(*) FILTER (WHERE a.activity_date >= now() - interval '90 days') AS recent,
-               true AS responded,
-               array_agg(DISTINCT {actor_case}) AS actors
-        FROM bedrock.activity a, jsonb_array_elements(coalesce(a.meeting_attendees, '[]'::jsonb)) att
-        JOIN public.contacts c ON lower(c.email) = lower(att->>'email')
-        WHERE a.deleted_at IS NULL AND a.source = 'calendar-sync'
-          AND coalesce(trim(c.current_company),'') <> ''
-        GROUP BY 1"""):
+    for r in act2_rows:
         _merge(r["company"], r["last_act"], r["recent"], r["responded"], r["actors"], r["first_act"])
-    # A role created or a hire tagged is real momentum — count it as responded,
-    # by account (keyed on normalized account_name = account_key).
-    for sql in (
-        """SELECT lower(trim(o.account_name)) AS company, max(r.created_at) AS last_act,
-                  count(*) FILTER (WHERE r.created_at >= now() - interval '90 days') AS recent, true AS responded
-           FROM bedrock.jobs_role r JOIN bedrock.jobs_opportunity o ON o.id = r.opportunity_id
-           WHERE o.deleted_at IS NULL AND coalesce(trim(o.account_name),'') <> '' GROUP BY 1""",
-        """SELECT lower(trim(o.account_name)) AS company, max(er.created_at) AS last_act,
-                  count(*) FILTER (WHERE er.created_at >= now() - interval '90 days') AS recent, true AS responded
-           FROM public.employment_records er JOIN bedrock.jobs_opportunity o ON o.id = er.opportunity_id
-           WHERE o.deleted_at IS NULL AND coalesce(trim(o.account_name),'') <> '' GROUP BY 1""",
-    ):
-        for r in await conn.fetch(sql):
-            _merge(r["company"], r["last_act"], r["recent"], r["responded"])
+    # A role created or a hire tagged is real momentum — count it as responded.
+    for r in role_resp_rows:
+        _merge(r["company"], r["last_act"], r["recent"], r["responded"])
+    for r in er_resp_rows:
+        _merge(r["company"], r["last_act"], r["recent"], r["responded"])
 
     # Builders hired per account (distinct builders with an employment_record at
     # the company), linked via the jobs opp OR the record's own company_name.
     # Own-venture records aren't "hires" at an external account. Keyed on the
     # normalized account name = account_key. (SF "fellows hired" is merged
     # separately — historical Pursuit placements live only in Salesforce.)
-    hires_by_account: dict[str, int] = {
-        r["company"]: r["n"] for r in await conn.fetch(
-            """
-            SELECT company, count(DISTINCT user_id) AS n FROM (
-                SELECT er.user_id, lower(trim(o.account_name)) AS company
-                FROM public.employment_records er
-                JOIN bedrock.jobs_opportunity o ON o.id = er.opportunity_id
-                WHERE o.deleted_at IS NULL AND coalesce(trim(o.account_name),'') <> ''
-                  AND coalesce(er.is_own_venture, false) = false
-                UNION
-                SELECT er.user_id, lower(trim(er.company_name)) AS company
-                FROM public.employment_records er
-                WHERE coalesce(trim(er.company_name),'') <> ''
-                  AND coalesce(er.is_own_venture, false) = false
-            ) s GROUP BY company
-            """,
-        )
-    }
+    hires_by_account: dict[str, int] = {r["company"]: r["n"] for r in hires_rows}
 
-    # Resolve every Salesforce account id that maps to each account (by company
-    # name → public.companies → sf_account_company_map). Most jobs accounts have
-    # no direct SF id on their opps, so without this bridge the SF "fellows
-    # hired" counts (keyed by sf_account_id) would only attach to ~15% of
-    # accounts. One name can map to several SF accounts (e.g. a company with
-    # multiple SF records) — return all so fellow counts can be summed.
+    # One company name can map to several SF accounts — keep them all so fellow
+    # counts (keyed by sf_account_id) can be summed across every match.
     name_sf_ids: dict[str, list[str]] = {
-        r["key"]: [x for x in (r["ids"] or []) if x]
-        for r in await conn.fetch(
-            """
-            SELECT lower(trim(co.name)) AS key, array_agg(DISTINCT m.sf_account_id) AS ids
-            FROM public.companies co
-            JOIN bedrock.sf_account_company_map m ON m.public_company_id = co.company_id
-            WHERE coalesce(trim(co.name), '') <> '' AND m.sf_account_id IS NOT NULL
-            GROUP BY 1
-            """,
-        )
+        r["key"]: [x for x in (r["ids"] or []) if x] for r in name_sf_rows
     }
 
     dt = deal_type if deal_type and deal_type != "all" else None
@@ -2665,7 +2674,7 @@ async def jobs_accounts(
         g["account_key"] = key
         g["account_status"] = status
         g["opp_count"] = len(opps)
-        g["prospect_count"] = len(g["prospects"])
+        g["prospect_count"] = prospect_counts.get(key, 0)
         g["last_activity"] = last.isoformat() if last else None
         g["open_tasks"] = open_tasks.get(key, 0)
         g["recent_activity_count"] = a["recent"] if a else 0
@@ -2748,6 +2757,31 @@ async def update_jobs_account(
         body.notes or None,
     )
     return {"success": True}
+
+
+@router.get("/account-prospects")
+async def account_prospects(
+    key: str = Query(...),
+    scope: str = Query("engaged", pattern="^(engaged|all)$"),
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Prospects (jobs contacts) at one account, keyed by normalized company name.
+    Split out of GET /accounts so the account list doesn't ship ~38k prospect
+    rows — these load lazily when an account row is expanded. `scope` mirrors the
+    list's engaged/all toggle so the drill-in matches the row's prospect_count."""
+    eng = "" if scope == "all" else f"AND {_engaged_clause('c')}"
+    rows = await conn.fetch(
+        f"""
+        SELECT c.contact_id, c.full_name, c.email, c.current_title,
+               c.contact_stage, c.linkedin_url
+        FROM public.contacts c
+        WHERE c.is_jobs_contact = true AND lower(trim(c.current_company)) = $1 {eng}
+        ORDER BY c.full_name
+        """,
+        key.strip().lower(),
+    )
+    return {"success": True, "data": [dict(r) for r in rows]}
 
 
 @router.get("/account-activity")
