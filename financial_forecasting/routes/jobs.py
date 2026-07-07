@@ -1778,13 +1778,14 @@ async def get_contacts_summary(user=Depends(require_auth), conn=Depends(get_db))
     # Engaged = distinct jobs prospects we've actually had activity with (manual
     # or synced gmail/calendar), linked via participant_public_contact_id by the
     # jobs-activity-link pass. Grows as the nightly scrape lands new touches.
-    engaged = await conn.fetchval("""
+    engaged = await conn.fetchval(f"""
         SELECT count(DISTINCT ct.contact_id)
         FROM public.contacts ct
         WHERE ct.is_jobs_contact = true
           AND EXISTS (
             SELECT 1 FROM bedrock.activity a
             WHERE a.participant_public_contact_id = ct.contact_id AND a.deleted_at IS NULL
+              AND {_jobs_relevant('a')}
           )
     """)
 
@@ -1954,7 +1955,7 @@ def _actor_sql(alias: str, owner: Optional[str], scope: str = "team") -> str:
 
 @router.get("/activity-trends")
 async def activity_trends(
-    granularity: str = Query("week", pattern="^(week|month)$"),
+    granularity: str = Query("week", pattern="^(day|week|month)$"),
     channel: str = Query("all", pattern="^(all|email|meeting)$"),
     owner: Optional[str] = Query(None, description="Scope to one staff email (else the scope)"),
     scope: str = Query("team", pattern="^(team|staff)$", description="team = Avni/Damon/Devika; staff = everyone else's jobs outreach"),
@@ -1970,7 +1971,7 @@ async def activity_trends(
     touches count; new-vs-existing is by the account's first-ever team touch.
     `granularity` = week | month; trailing 12 buckets, zero-filled.
     """
-    periods = 12
+    periods = 14 if granularity == "day" else 12
     actor = _actor_sql("a", owner, scope)
     chan_sql = (
         "CASE WHEN a.source='calendar-sync' OR a.type='meeting' THEN 'meeting' "
@@ -2025,7 +2026,9 @@ async def activity_trends(
     base = await conn.fetchval(f"SELECT date_trunc('{granularity}', now())")
     buckets = []
     for i in range(periods - 1, -1, -1):
-        if granularity == "week":
+        if granularity == "day":
+            start = base - timedelta(days=i)
+        elif granularity == "week":
             start = base - timedelta(weeks=i)
         else:
             y, m = base.year, base.month - i
@@ -2070,7 +2073,7 @@ async def activity_trends(
 @router.get("/activity-trends/detail")
 async def activity_trends_detail(
     period: str = Query(..., description="Bucket start date (ISO, the bar's period)"),
-    granularity: str = Query("week", pattern="^(week|month)$"),
+    granularity: str = Query("week", pattern="^(day|week|month)$"),
     channel: str = Query("all", pattern="^(all|email|meeting)$"),
     owner: Optional[str] = Query(None),
     scope: str = Query("team", pattern="^(team|staff)$"),

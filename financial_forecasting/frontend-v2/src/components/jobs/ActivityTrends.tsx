@@ -21,10 +21,11 @@ const fmtDay = (iso: string | null) =>
 const NEW_COLOR = "#4242EA";       // new accounts (activation)
 const EXISTING_COLOR = "#C7C7F5";  // existing accounts
 
-function fmtPeriod(iso: string, gran: "week" | "month"): string {
+function fmtPeriod(iso: string, gran: "day" | "week" | "month"): string {
   const [y, m, d] = iso.split("-").map(Number);
   const month = new Date(y, m - 1, d).toLocaleString("en-US", { month: "short" });
-  return gran === "week" ? `${month} ${d}` : `${month} ${String(y).slice(2)}`;
+  if (gran === "month") return `${month} ${String(y).slice(2)}`;
+  return `${month} ${d}`;  // day + week both show "Jul 6"
 }
 
 /**
@@ -33,7 +34,7 @@ function fmtPeriod(iso: string, gran: "week" | "month"): string {
  * Toggle the channel (all / email / meeting) and the bucket size (week/month).
  */
 export function ActivityTrends() {
-  const [gran, setGran] = useState<"week" | "month">("week");
+  const [gran, setGran] = useState<"day" | "week" | "month">("week");
   const [channel, setChannel] = useState<OutreachChannel>("all");
   const [owner, setOwner] = useState<string>("");          // "" = whole scope
   const [scope, setScope] = useState<OutreachScope>("team"); // team = Avni/Damon/Devika; staff = everyone else
@@ -65,8 +66,8 @@ export function ActivityTrends() {
           </select>
           <Toggle value={channel} onChange={(v) => setChannel(v as OutreachChannel)}
                   opts={[["all", "All"], ["email", "Email"], ["meeting", "Meetings"]]} />
-          <Toggle value={gran} onChange={(v) => setGran(v as "week" | "month")}
-                  opts={[["week", "Weekly"], ["month", "Monthly"]]} />
+          <Toggle value={gran} onChange={(v) => setGran(v as "day" | "week" | "month")}
+                  opts={[["day", "Daily"], ["week", "Weekly"], ["month", "Monthly"]]} />
         </div>
       }
     >
@@ -118,7 +119,7 @@ export function ActivityTrends() {
 }
 
 function OutreachDetailDrawer({ period, gran, channel, owner, scope, onClose }: {
-  period: string | null; gran: "week" | "month"; channel: OutreachChannel; owner: string; scope: OutreachScope; onClose: () => void;
+  period: string | null; gran: "day" | "week" | "month"; channel: OutreachChannel; owner: string; scope: OutreachScope; onClose: () => void;
 }) {
   const { data, isLoading } = useActivityTrendDetail(period, gran, channel, owner || undefined, scope);
   return (

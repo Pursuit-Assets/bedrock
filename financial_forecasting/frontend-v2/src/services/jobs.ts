@@ -809,7 +809,7 @@ export interface ActivityTrendBucket {
 }
 export type OutreachChannel = "all" | "email" | "meeting";
 export interface ActivityTrends {
-  granularity: "week" | "month";
+  granularity: "day" | "week" | "month";
   channel: OutreachChannel;
   buckets: ActivityTrendBucket[];
   totals: { new: number; existing: number; touches: number };
@@ -818,7 +818,7 @@ export interface ActivityTrends {
 
 export type OutreachScope = "team" | "staff";
 
-export function useActivityTrends(granularity: "week" | "month", channel: OutreachChannel, owner?: string, scope: OutreachScope = "team") {
+export function useActivityTrends(granularity: "day" | "week" | "month", channel: OutreachChannel, owner?: string, scope: OutreachScope = "team") {
   return useQuery<ActivityTrends>({
     queryKey: ["jobs", "activity-trends", granularity, channel, owner ?? scope],
     queryFn: async () => {
@@ -836,7 +836,7 @@ export interface OutreachAccountDetail { account: string; touches: OutreachTouch
 export interface ActivityTrendDetail { period: string; accounts: OutreachAccountDetail[]; total_touches: number; total_accounts: number }
 
 /** Drill-down for a clicked outreach bar. `period` null = disabled (no fetch). */
-export function useActivityTrendDetail(period: string | null, granularity: "week" | "month", channel: OutreachChannel, owner?: string, scope: OutreachScope = "team") {
+export function useActivityTrendDetail(period: string | null, granularity: "day" | "week" | "month", channel: OutreachChannel, owner?: string, scope: OutreachScope = "team") {
   return useQuery<ActivityTrendDetail>({
     enabled: !!period,
     queryKey: ["jobs", "activity-trend-detail", period, granularity, channel, owner ?? scope],
