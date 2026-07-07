@@ -289,35 +289,44 @@ async def metric_drilldown(
         return company_cols, [dict(r) for r in rows], "company"
 
     async def placements(where: str):
-        # Drill for the "FT Roles Secured" headline = the exact two things it
-        # counts: (1) FT-PLACED builders (full_time employment_records) and
-        # (2) COMMITTED FT roles still open. Deliberately excludes PT/contract
-        # placements and open-market roles so the drill totals match the card.
-        rows = await conn.fetch(
+        # Drill for the "FT Roles Secured" headline. Flat table, one row per role:
+        # Company | Builder | Status | Role. Three kinds —
+        #   (1) FT-placed  → builder filled the full-time seat
+        #   (2) trial active → builder is in a committed trial (converts to a separate
+        #        open FT req, so it never inflates the FT number; Fowler/Ethan)
+        #   (3) committed open req → seat locked in, no builder placed yet (Builder = —)
+        # The headline count = (1)+(3); trials are shown here but not counted.
+        out = []
+        # (1) FT-placed builders (full_time employment_records)
+        placed = await conn.fetch(
             "SELECT * FROM bedrock.secured_jobs() "
             f"WHERE payment_amount > 0 AND employment_type = 'full_time' AND {where} ORDER BY builder"
         )
-        groups: dict = {}
-        for r in rows:
-            uid = r["user_id"]
-            g = groups.setdefault(uid, {"builder": r["builder"], "children": []})
-            g["children"].append({
-                "role_title": r["role_title"] or "—",
-                "company_name": r["company_name"] or "—",
-                "salary": f"${int(r['payment_amount']):,}" if r["payment_amount"] else "—",
-                "influence": ("Influenced" if r["influenced"] is True
-                              else "Self-sourced" if r["influenced"] is False else "Unclassified"),
-                "source": r["source"],
-            })
-        out = []
-        for g in sorted(groups.values(), key=lambda x: (x["builder"] or "")):
+        for r in placed:
             out.append({
-                "name": g["builder"],
-                "status": "FT placed",
-                "detail": f"{len(g['children'])} FT placement" + ("s" if len(g["children"]) != 1 else ""),
-                "_children": g["children"],
+                "company": r["company_name"] or "—",
+                "builder": r["builder"] or "—",
+                "status": "Full-time placed",
+                "role": r["role_title"] or "—",
             })
-        # (2) committed FT roles still open — same filter as the headline count.
+        # (2) committed active trials — builder in a trial (converts to the open FT req below)
+        trials = await conn.fetch("""
+            SELECT o.account_name, r.title, s.builder
+            FROM bedrock.jobs_role r
+            JOIN bedrock.jobs_opportunity o ON o.id = r.opportunity_id
+            LEFT JOIN bedrock.secured_jobs() s ON s.id = r.employment_record_id
+            WHERE o.deleted_at IS NULL AND r.commitment = 'committed' AND r.is_trial = true
+              AND r.filled_by_user_id IS NOT NULL AND r.status <> 'cancelled'
+            ORDER BY o.account_name
+        """)
+        for tr in trials:
+            out.append({
+                "company": tr["account_name"] or "—",
+                "builder": tr["builder"] or "—",
+                "status": "Committed: trial active",
+                "role": tr["title"] or "Trial",
+            })
+        # (3) committed FT roles still open — no builder placed yet
         committed = await conn.fetch("""
             SELECT o.account_name, r.title
             FROM bedrock.jobs_role r
@@ -329,24 +338,18 @@ async def metric_drilldown(
         """)
         for cr in committed:
             out.append({
-                "name": cr["account_name"] or "—",
-                "status": "Committed (open req)",
-                "detail": cr["title"] or "FT role",
-                "_children": [],
+                "company": cr["account_name"] or "—",
+                "builder": "—",
+                "status": "Committed – open req",
+                "role": cr["title"] or "FT role",
             })
         cols = [
-            {"key": "name", "label": "Builder / Company"},
-            {"key": "status", "label": "Status"},
-            {"key": "detail", "label": "Detail"},
+            {"key": "company", "label": "Company"},
+            {"key": "builder", "label": "Builder"},
+            {"key": "status",  "label": "Status"},
+            {"key": "role",    "label": "Role"},
         ]
-        child_cols = [
-            {"key": "company_name", "label": "Company"},
-            {"key": "role_title", "label": "Role"},
-            {"key": "salary", "label": "Pay"},
-            {"key": "influence", "label": "Influence"},
-            {"key": "source", "label": "Source"},
-        ]
-        return {"columns": cols, "child_columns": child_cols}, out, "placement"
+        return cols, out, "placement"
 
     async def salaries(_where: str):
         # Flat, EDITABLE breakdown of everything feeding Avg FT Salary: each FT
