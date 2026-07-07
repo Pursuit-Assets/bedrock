@@ -34,6 +34,18 @@ def _rid(res) -> Optional[str]:
     return None
 
 
+def _temp_or_permanent(er) -> str:
+    """Fellow Affiliation's required Temporary_vs_Permanent__c: internships,
+    apprenticeships, trials, and contract/freelance are Temporary; everything
+    else (full-time, direct hires) is Permanent."""
+    et = (er["employment_type"] or "").lower()
+    title = (er["role_title"] or "").lower()
+    if (et in ("internship", "apprenticeship", "contract", "freelance", "temporary", "part_time")
+            or any(k in title for k in ("intern", "apprentice", "trial"))):
+        return "Temporary"
+    return "Permanent"
+
+
 async def _fellow_record_type_id(sf) -> Optional[str]:
     global _fellow_rt_id
     if _fellow_rt_id:
@@ -228,6 +240,9 @@ async def sync_placement_to_sf(
         aff_rt = await _fellow_affiliation_record_type_id(sf)
         if aff_rt:
             aff["RecordTypeId"] = aff_rt
+            # Fellow Affiliations require Temporary vs Permanent: internships/
+            # apprenticeships/trials are temporary, other roles permanent.
+            aff["Temporary_vs_Permanent__c"] = _temp_or_permanent(er)
         if er["role_title"] and er["role_title"].upper() != "TBD":
             aff["npe5__Role__c"] = er["role_title"]
         if er["start_date"]:
