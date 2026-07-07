@@ -260,9 +260,10 @@ function InterviewCard({ opp }: { opp: InterviewPipelineOpp }) {
       {opp.roles.length > 0 && (
         <div className="mb-2 flex flex-wrap gap-1">
           {opp.roles.map((r) => (
-            <span key={r.id} className="inline-flex items-center gap-1 rounded border border-border-strong px-1.5 py-0.5 text-[11px] text-ink-2">
+            <span key={r.id} className="inline-flex items-center gap-1 rounded border border-border-strong px-1.5 py-0.5 text-[11px] text-ink-2" title={r.placement_status_label}>
               <Briefcase size={10} className="text-ink-4" />{r.title ?? "Role"}
-              {r.status === "filled" && <span className="text-green">✓</span>}
+              {r.placement_status === "ft_placed" && <span className="text-green">✓</span>}
+              {r.placement_status === "trial_active" && <span className="font-medium text-indigo-600">· trial</span>}
             </span>
           ))}
         </div>

@@ -298,6 +298,10 @@ export interface InterviewPipelineRole {
   employment_type: string | null;
   approx_salary: number | null;
   filled_by_user_id: number | null;
+  commitment: Commitment | null;
+  is_trial: boolean | null;
+  placement_status: "ft_placed" | "trial_active" | "committed_open" | "open_market" | "cancelled";
+  placement_status_label: string;
 }
 
 export interface InterviewPipelineOpp {

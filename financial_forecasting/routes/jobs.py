@@ -1305,7 +1305,7 @@ async def interview_pipeline(
     roles = await conn.fetch(
         """
         SELECT r.id, r.opportunity_id, r.title, r.status, r.employment_type,
-               r.approx_salary, r.filled_by_user_id,
+               r.approx_salary, r.filled_by_user_id, r.commitment, r.is_trial,
                o.account_name, o.stage AS opp_stage, o.owner_email
         FROM bedrock.jobs_role r
         JOIN bedrock.jobs_opportunity o ON o.id = r.opportunity_id
@@ -1342,10 +1342,13 @@ async def interview_pipeline(
 
     for r in roles:
         g = _opp(r["opportunity_id"], r["account_name"], r["opp_stage"], r["owner_email"])
+        st = _placement_status_py(dict(r))
         g["roles"].append({
             "id": str(r["id"]), "title": r["title"], "status": r["status"],
             "employment_type": r["employment_type"], "approx_salary": r["approx_salary"],
             "filled_by_user_id": r["filled_by_user_id"],
+            "commitment": r["commitment"], "is_trial": r["is_trial"],
+            "placement_status": st, "placement_status_label": PLACEMENT_STATUS_LABELS.get(st, st),
         })
         if r["status"] == "open":
             g["summary"]["open_roles"] += 1
