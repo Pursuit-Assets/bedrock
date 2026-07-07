@@ -49,6 +49,14 @@ NOT jobs — the purpose is something else:
 - INTERNAL coordination among Pursuit staff (pipeline reviews, debriefs, prep, team syncs) — even if it's about jobs or a named employer
 - ops / finance / HR / events / galas / newsletters / OOO / auto-replies
 
+Jobs outreach is directed at the EMPLOYER (the hiring company). Activity directed at the
+BUILDER themselves is NOT jobs outreach:
+- coaching, interview prep, resume review WITH the builder, 1:1s, check-ins, or progress chats
+  with a Pursuit builder/fellow (our learner) about their own job search is internal support, NOT jobs.
+- NOTE: fellows/builders also have @pursuit.org email addresses, so a meeting/1:1 with a builder
+  can look "internal" — that's fine, it's still not employer outreach. If the counterpart is the
+  builder (a person we train), not a company that might hire, it is NOT jobs.
+
 The SAME organization can appear for jobs AND fundraising AND program — judge THIS message's purpose.
 Staff often WON'T say "jobs" — infer intent from what they are asking for or offering.
 
@@ -85,6 +93,17 @@ async def _load_function_map(conn) -> dict[str, str]:
         return {}
 
 
+async def _load_builder_emails(conn) -> set[str]:
+    """Lowercased builder/fellow emails (primary + backup). Used to detect when a
+    counterpart is one of our learners (coaching, not employer outreach)."""
+    try:
+        rows = await conn.fetch("SELECT bedrock.builder_emails() AS e")
+        return {r["e"].lower() for r in rows if r["e"]}
+    except Exception as e:
+        logger.warning("builder_emails() unavailable (%s); skipping builder-counterpart detection", e)
+        return set()
+
+
 def _prior_for(email_field: Optional[str], fmap: dict[str, str]) -> str:
     """Match any known staff email that appears in the from/attendee field."""
     hay = (email_field or "").lower()
@@ -113,30 +132,47 @@ async def _meeting_history(conn, activity_id, ext_domains: list[str]) -> str:
     return "Recent activity with these attendees (use to infer purpose when the invite is thin):\n  " + lines
 
 
-async def _build_prompt(conn, row, fmap: dict[str, str]) -> str:
+def _builder_note(counterpart_emails, bset: set[str]) -> str:
+    """If any counterpart is a known Pursuit builder/fellow, flag it — the activity
+    is likely coaching/support with the learner, not employer outreach."""
+    if not bset:
+        return ""
+    hits = sorted({e for e in counterpart_emails if e and e.lower() in bset})
+    if not hits:
+        return ""
+    return ("\nNOTE: counterpart is a Pursuit BUILDER/FELLOW (our learner): "
+            + ", ".join(hits)
+            + " — this is coaching/support WITH the builder, not employer outreach. Lean NOT jobs "
+              "unless an actual employer is also involved.")
+
+
+async def _build_prompt(conn, row, fmap: dict[str, str], bset: set[str]) -> str:
     """Assemble the user prompt for one activity row."""
     if row["type"] == "email":
-        to = row["email_to"] or []
-        ext_to = sorted({(t or "").split("@")[-1].lower() for t in to
-                         if t and not any(t.lower().endswith(d) for d in INTERNAL)})
+        to = [t for t in (row["email_to"] or []) if t]
+        ext_to = sorted({t.split("@")[-1].lower() for t in to
+                         if not any(t.lower().endswith(d) for d in INTERNAL)})
         who = (f"Recipients include external domains: {', '.join(ext_to)}" if ext_to
                else "INTERNAL EMAIL — all recipients are Pursuit staff" if to
                else "Recipients unknown")
         body = _strip_html(row["email_body_text"] or row["email_snippet"] or "")
+        blurb = _builder_note(to, bset)
         return (f"[EMAIL]\nSender function: {_prior_for(row['email_from'], fmap)}\n"
-                f"From: {row['email_from']}\n{who}\nSubject: {row['subject']}\n\n{body[:3500]}")
+                f"From: {row['email_from']}\n{who}{blurb}\nSubject: {row['subject']}\n\n{body[:3500]}")
     # meeting
     att = row["meeting_attendees"]
     if isinstance(att, str):
         try: att = json.loads(att)
         except Exception: att = []
-    ext = sorted({(a.get("email") or "").split("@")[-1].lower() for a in (att or [])
-                  if a.get("email") and not any(a["email"].lower().endswith(d) for d in INTERNAL)})
+    emails = [(a.get("email") or "") for a in (att or []) if a.get("email")]
+    ext = sorted({e.split("@")[-1].lower() for e in emails
+                  if not any(e.lower().endswith(d) for d in INTERNAL)})
     host_prior = _prior_for(json.dumps(att) if att else "", fmap)
     descr = _strip_html(row["description"])
     hist = await _meeting_history(conn, row["id"], ext)
     ctx = f"External attendee domains: {', '.join(ext) if ext else 'none (internal-only meeting)'}"
-    return (f"[CALENDAR MEETING]\nHost function: {host_prior}\nSubject: {row['subject']}\n{ctx}\n\n"
+    blurb = _builder_note(emails, bset)
+    return (f"[CALENDAR MEETING]\nHost function: {host_prior}\nSubject: {row['subject']}\n{ctx}{blurb}\n\n"
             f"{descr[:1200]}\n\n{hist}")
 
 
@@ -175,6 +211,7 @@ async def classify_new_activity(conn, limit: Optional[int] = None,
         return {"error": "no_sdk", "classified": 0}
     client = anthropic.Anthropic(api_key=key)
     fmap = await _load_function_map(conn)
+    bset = await _load_builder_emails(conn)
 
     where_new = "" if reclassify else "AND a.jobs_relevance IS NULL"
     lim = f"LIMIT {int(limit)}" if limit else ""
@@ -211,7 +248,7 @@ async def classify_new_activity(conn, limit: Optional[int] = None,
         prompts = []
         for row in chunk:                       # serial DB reads (meeting history)
             try:
-                prompts.append(await _build_prompt(conn, row, fmap))
+                prompts.append(await _build_prompt(conn, row, fmap, bset))
             except Exception as e:
                 logger.warning("prompt build failed for %s: %s", row["id"], e)
                 prompts.append(None)
