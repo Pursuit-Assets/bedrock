@@ -11,6 +11,9 @@ import {
   type ActivityTrendBucket, type OutreachChannel, type OutreachScope,
 } from "@/services/jobs";
 
+// Core jobs team — excluded from the "Other staff" scope's owner picker.
+const CORE_TEAM = new Set(["avni@pursuit.org", "damon.kornhauser@pursuit.org", "devika@pursuit.org"]);
+
 const ownerName = (email: string) => {
   const lp = email.split("@")[0].replace(/[._]/g, " ");
   return lp.split(" ").map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
@@ -58,11 +61,13 @@ export function ActivityTrends() {
       action={
         <div className="flex items-center gap-2">
           <Toggle value={scope} onChange={(v) => { setScope(v as OutreachScope); setOwner(""); }}
-                  opts={[["team", "Core team"], ["staff", "Staff"]]} />
+                  opts={[["team", "Core team"], ["staff", "Other staff"]]} />
           <select value={owner} onChange={(e) => setOwner(e.target.value)}
             className="h-7 rounded-md border border-border-strong bg-surface px-2 text-[11.5px] text-ink-2 outline-none focus:border-accent">
-            <option value="">{scope === "staff" ? "All staff" : "All team"}</option>
-            {staff.map((s) => <option key={s.email} value={s.email}>{s.name || ownerName(s.email)}</option>)}
+            <option value="">{scope === "staff" ? "All other staff" : "All team"}</option>
+            {staff
+              .filter((s) => scope !== "staff" || !CORE_TEAM.has(s.email.toLowerCase()))
+              .map((s) => <option key={s.email} value={s.email}>{s.name || ownerName(s.email)}</option>)}
           </select>
           <Toggle value={channel} onChange={(v) => setChannel(v as OutreachChannel)}
                   opts={[["all", "All"], ["email", "Email"], ["meeting", "Meetings"]]} />

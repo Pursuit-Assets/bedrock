@@ -628,11 +628,20 @@ async def list_staff(
                  (SELECT count(*) FROM bedrock.activity a
                   WHERE a.email_from ILIKE '%'||o.email||'%') AS sent
           FROM public.org_users o
-          WHERE o.is_active = true AND o.email IS NOT NULL
+          WHERE o.is_active = true
+            -- real Pursuit people only: drop bots/system accounts (bug-fix-agent@
+            -- pursuit-factory.local 'Brainiac', systems@ 'Systems Admin')
+            AND o.email LIKE '%@pursuit.org'
+            AND o.email NOT IN ('systems@pursuit.org')
+        ),
+        deduped AS (
+          SELECT DISTINCT ON (lower(display_name)) email, display_name, sent
+          FROM staff
+          ORDER BY lower(display_name), sent DESC, length(email)
         )
-        SELECT DISTINCT ON (lower(display_name)) email, display_name
-        FROM staff
-        ORDER BY lower(display_name), sent DESC, length(email)
+        -- an owner picker only needs people who actually do outreach; this also
+        -- drops never-active / departed rows that linger with is_active=true.
+        SELECT email, display_name FROM deduped WHERE sent > 0 ORDER BY lower(display_name)
     """)
     out = [{"email": r["email"], "name": r["display_name"] or r["email"]} for r in rows]
     if q:
@@ -1824,7 +1833,7 @@ async def get_contacts_summary(user=Depends(require_auth), conn=Depends(get_db))
 
     # Account-level leads: distinct companies in the jobs pipeline (jobs contacts'
     # company ∪ opportunity accounts), and how many have ANY activity (engaged).
-    acct = await conn.fetchrow("""
+    acct = await conn.fetchrow(f"""
         WITH companies AS (
             SELECT DISTINCT lower(trim(current_company)) AS company
             FROM public.contacts WHERE is_jobs_contact=true AND coalesce(trim(current_company),'')<>''
@@ -1836,6 +1845,7 @@ async def get_contacts_summary(user=Depends(require_auth), conn=Depends(get_db))
             SELECT DISTINCT lower(trim(c.current_company)) AS company
             FROM bedrock.activity a JOIN public.contacts c ON c.contact_id = a.participant_public_contact_id
             WHERE a.deleted_at IS NULL AND coalesce(trim(c.current_company),'')<>''
+              AND {_jobs_relevant('a')}
         )
         SELECT (SELECT count(*) FROM companies) AS total,
                (SELECT count(*) FROM companies WHERE company IN (SELECT company FROM engaged)) AS engaged
@@ -4486,7 +4496,12 @@ async def dismiss_candidate(
         "tags=array_remove(coalesce(tags,'{}'), 'email_review'), updated_at=now() "
         "WHERE contact_id=$1 AND contact_stage='candidate'", contact_id)
     if res == "UPDATE 0":
-        raise HTTPException(404, "Candidate not found")
+        # Idempotent: only 404 if the contact truly doesn't exist. If it's already
+        # dismissed/promoted (e.g. absorbed by the builder sweep), treat as success
+        # so the UI's dismiss click never errors on an already-handled row.
+        exists = await conn.fetchval("SELECT 1 FROM public.contacts WHERE contact_id=$1", contact_id)
+        if not exists:
+            raise HTTPException(404, "Candidate not found")
     return {"success": True, "data": {"contact_id": contact_id, "dismissed": True}}
 
 
