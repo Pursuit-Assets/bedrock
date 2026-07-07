@@ -173,6 +173,7 @@ export function JobsAccountHub({ initialQuery }: { initialQuery?: string } = {})
   const [query, setQuery] = useState(initialQuery ?? "");
   const [rules, setRules] = useState<FilterRule<Field>[]>([]);
   const [dealType, setDealType] = useState("all");
+  const [scope, setScope] = useState<"engaged" | "all">("engaged"); // engaged hides ~32k cold contacts; All shows every jobs account (e.g. impact.com)
   const [groupBy, setGroupBy] = useSessionState<string>("jobs-accounts:groupBy", "");
   const [collapsedGroups, setCollapsedGroups] = useSessionState<string[]>("jobs-accounts:groupCollapsed", EMPTY);
   // Persisted so returning from a contact/opportunity detail page restores the
@@ -188,7 +189,7 @@ export function JobsAccountHub({ initialQuery }: { initialQuery?: string } = {})
   const { visible: visibleCols, toggle: toggleCol, replaceAll: replaceVisibleCols } =
     useColumnVisibility<ColKey>("bedrock-v2:vis:jobs-accounts", COLUMN_ORDER, DEFAULT_VISIBLE);
 
-  const { data: rawAccounts = [], isLoading, isError, refetch } = useJobsAccounts(dealType);
+  const { data: rawAccounts = [], isLoading, isError, refetch } = useJobsAccounts(dealType, scope);
   // Historical Pursuit fellows hired, from Salesforce (Affiliation object),
   // keyed by SF account id. Merged in client-side so /accounts stays SF-free
   // and the page still renders if SF is unavailable. When the affiliation
@@ -278,6 +279,10 @@ export function JobsAccountHub({ initialQuery }: { initialQuery?: string } = {})
         </select>
         <select value={groupBy} onChange={(e) => { setGroupBy(e.target.value); setCollapsedGroups([]); }} title="Group rows by a field" className="h-7 rounded border border-border-strong bg-surface px-2 text-[12.5px] text-ink-2 outline-none focus:border-accent">
           {GROUP_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+        </select>
+        <select value={scope} onChange={(e) => setScope(e.target.value as "engaged" | "all")} title="Engaged hides cold, untouched contacts; All shows every jobs account" className="h-7 rounded border border-border-strong bg-surface px-2 text-[12.5px] text-ink-2 outline-none focus:border-accent">
+          <option value="engaged">Engaged</option>
+          <option value="all">All accounts</option>
         </select>
         <span className="font-mono text-[12px] text-ink-4">{isLoading ? "…" : `${filtered.length} acct · ${totals.opps} opp · ${totals.contacts} contact`}</span>
         <div className="ml-auto flex items-center gap-2">

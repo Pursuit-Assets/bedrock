@@ -386,11 +386,12 @@ export interface JobsAccount {
   sf_account_ids?: string[];
 }
 
-export function useJobsAccounts(dealType?: string) {
+export function useJobsAccounts(dealType?: string, scope: "engaged" | "all" = "engaged") {
   const params = new URLSearchParams();
   if (dealType && dealType !== "all") params.set("deal_type", dealType);
+  params.set("scope", scope);
   return useQuery<JobsAccount[]>({
-    queryKey: ["jobs", "accounts", dealType ?? "all"],
+    queryKey: ["jobs", "accounts", dealType ?? "all", scope],
     placeholderData: keepPreviousData,
     queryFn: async () => {
       const { data } = await api.get<ApiResponse<JobsAccount[]>>(`/api/jobs/accounts?${params}`);
