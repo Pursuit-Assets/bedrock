@@ -27,3 +27,12 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_activity_logged_by_trgm  ON bedrock.
 CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_jobs_opp_account_name_lower ON bedrock.jobs_opportunity (lower(trim(account_name))) WHERE deleted_at IS NULL;
 -- Open-task subqueries
 CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_jobs_task_parent ON bedrock.jobs_task (parent_type, parent_id) WHERE deleted_at IS NULL;
+
+-- CRITICAL: functional/expression indexes (lower(email), lower(full_name),
+-- lower(trim(account_name))) are ignored by the planner until stats exist for
+-- the expression. Without this ANALYZE, /activity-trends kept a 788×52k
+-- nested-loop seq-scan of contacts (~23s → 0.4s after). Run after the
+-- CONCURRENTLY builds complete.
+ANALYZE public.contacts;
+ANALYZE bedrock.activity;
+ANALYZE bedrock.jobs_opportunity;
