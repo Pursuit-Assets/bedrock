@@ -4,6 +4,7 @@ import {
   LayoutDashboard,
   Building2,
   Briefcase,
+  UserSearch,
   GitBranch,
   Trophy,
   FolderOpen,
@@ -62,6 +63,7 @@ const NAV_GROUPS = [
     label: "Jobs",
     items: [
       { to: "/jobs", label: "Jobs", icon: Briefcase },
+      { to: "/jobs/candidates", label: "Candidates", icon: UserSearch },
     ],
   },
 ] as const;

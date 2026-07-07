@@ -19,14 +19,13 @@ import { cn } from "@/lib/utils";
 import { useActiveUsers } from "@/services/projects";
 import { useCurrentUser } from "@/services/auth";
 import { useJobsAccountNames, STAGE_LABELS, type JobStage } from "@/services/jobs";
-import { CandidatesZone } from "./CandidateReview";
 import { ContactExpandTabs } from "@/components/jobs/jobsEntity";
 import { SortableHeader } from "@/components/ui/SortableHeader";
 import { useSort, compare } from "@/lib/sort";
 import {
   useIntroRequests, useRespondIntroRequest, type IntroRequest,
 } from "@/services/jobs";
-import { useCandidateOwners, useMyNetwork, useSetConnectionStatus, type NetworkConnection } from "@/services/jobs";
+import { useMyNetwork, useSetConnectionStatus, type NetworkConnection } from "@/services/jobs";
 import {
   useAllJobsTasks, useUpdateTaskById, useCreateTaskForParent, useDeleteTaskById,
   type JobsTaskEnriched,
@@ -592,8 +591,6 @@ export function JobsHome() {
   const overdue = tasks.filter((t) => dueBucket(t.deadline) === "overdue").length;
   const dueToday = tasks.filter((t) => dueBucket(t.deadline) === "today").length;
   const interviewing = pipeline.reduce((n, o) => n + o.summary.interview, 0);
-  const { data: candOwners = [] } = useCandidateOwners();
-  const myCandidates = candOwners.find((o) => o.owner?.toLowerCase() === me?.email?.toLowerCase())?.count ?? 0;
 
   const greeting = (() => {
     const h = new Date().getHours();
@@ -611,13 +608,11 @@ export function JobsHome() {
           {overdue > 0 && <span className="font-semibold text-red">· {overdue} overdue</span>}
           {dueToday > 0 && <span className="font-semibold text-amber">· {dueToday} due today</span>}
           {interviewing > 0 && <span className="font-semibold text-green">· {interviewing} interviewing</span>}
-          {myCandidates > 0 && <span className="font-semibold text-accent">· {myCandidates} contact{myCandidates === 1 ? "" : "s"} need details</span>}
         </span>
       </div>
 
       <TasksZone />
       <IntroRequestsZone />
-      <CandidatesZone key={me?.email ?? "anon"} defaultOwner={me?.email} />
       <MyNetworkZone />
       <InterviewsZone />
     </div>
