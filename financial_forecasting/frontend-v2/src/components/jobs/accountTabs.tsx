@@ -29,6 +29,7 @@ import {
   useAccountActivity,
   useAccountBuilders,
   useAccountComments,
+  useAccountRoles,
   useAccountTasks,
   useAddContactToJobs,
   useBuilders,
@@ -48,7 +49,7 @@ import {
   type JobsAccount,
 } from "@/services/jobs";
 import {
-  useCreateBuilderActivity, useOppRoles, useUpdateBuilderActivity,
+  useCreateBuilderActivity, useUpdateBuilderActivity,
   type AppStage,
 } from "@/services/jobsOpps2";
 
@@ -359,41 +360,26 @@ const APP_STAGE_BADGE: Record<string, string> = {
   accepted: "bg-green-soft text-green", rejected: "bg-red-soft text-red", withdrawn: "bg-stone-100 text-stone-500",
 };
 
-/** Add-builder form, mounted with a chosen opp so the per-opp create hook is
- *  valid. Lets you optionally pin the builder to a specific committed role and
- *  pick the starting stage before searching/selecting the builder. */
-function AddBuilderForm({ oppId, onDone }: { oppId: string; onDone: () => void }) {
+/** Add-builder form — the builder attaches to a specific ROLE (which fixes the
+ *  opp; builders link to roles, not opportunities). Just pick a stage + builder. */
+function AddBuilderForm({ oppId, roleId, roleTitle, onDone }: { oppId: string; roleId: string; roleTitle?: string | null; onDone: () => void }) {
   const [search, setSearch] = useState("");
-  const [roleId, setRoleId] = useState("");
   const [stage, setStage] = useState<AppStage>("applied");
   const { data: builders = [] } = useBuilders(search || undefined);
-  const { data: roles = [] } = useOppRoles(oppId);
   const create = useCreateBuilderActivity(oppId);
-  const openRoles = roles.filter((r) => r.status !== "cancelled");
   return (
     <div className="mt-1 flex flex-col gap-1.5">
-      <div className="flex flex-wrap items-center gap-2">
-        {openRoles.length > 0 && (
-          <select value={roleId} onChange={(e) => setRoleId(e.target.value)} className={cn(inputCls, "max-w-[220px] bg-surface")}>
-            <option value="">No specific role</option>
-            {openRoles.map((r) => <option key={r.id} value={r.id}>{r.title}{r.status === "filled" ? " (filled)" : ""}</option>)}
-          </select>
-        )}
-        <select value={stage} onChange={(e) => setStage(e.target.value as AppStage)} className={cn(inputCls, "max-w-[150px] bg-surface")}>
-          {APP_STAGE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-        </select>
-      </div>
+      <select value={stage} onChange={(e) => setStage(e.target.value as AppStage)} className={cn(inputCls, "max-w-[150px] bg-surface")}>
+        {APP_STAGE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+      </select>
       <input autoFocus value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search builders…" className={cn(inputCls, "w-full")} />
       {search.trim().length >= 2 && (
         <div className="flex flex-col gap-0.5">
-          {builders.slice(0, 6).map((b) => {
-            const role = openRoles.find((r) => r.id === roleId);
-            return (
-              <button key={b.user_id} type="button" onClick={() => create.mutate({ user_id: b.user_id, builder_name: b.name, stage, jobs_role_id: roleId || undefined, role_title: role?.title }, { onSuccess: onDone })} className="flex items-center justify-between rounded px-2 py-1 text-left text-[12px] hover:bg-surface-2">
-                <span className="truncate text-ink">{b.name}</span><span className="text-[10px] text-ink-4">{b.cohort}</span>
-              </button>
-            );
-          })}
+          {builders.slice(0, 6).map((b) => (
+            <button key={b.user_id} type="button" onClick={() => create.mutate({ user_id: b.user_id, builder_name: b.name, stage, jobs_role_id: roleId, role_title: roleTitle ?? undefined }, { onSuccess: onDone })} className="flex items-center justify-between rounded px-2 py-1 text-left text-[12px] hover:bg-surface-2">
+              <span className="truncate text-ink">{b.name}</span><span className="text-[10px] text-ink-4">{b.cohort}</span>
+            </button>
+          ))}
           {builders.length === 0 && <span className="px-2 text-[11px] text-ink-4">No matches.</span>}
         </div>
       )}
@@ -404,25 +390,30 @@ function AddBuilderForm({ oppId, onDone }: { oppId: string; onDone: () => void }
 function AccountBuildersTab({ account }: { account: JobsAccount }) {
   const key = account.account_key;
   const { data, isLoading } = useAccountBuilders(key);
+  const { data: accountRoles = [] } = useAccountRoles(key);
   const updateStage = useUpdateBuilderActivity("");   // PATCH by appId; invalidates ['jobs'] → refetches rollup
-  const [oppId, setOppId] = useState("");
+  const [roleId, setRoleId] = useState("");
+  const activeRoles = accountRoles.filter((r) => r.status !== "cancelled");
+  const selRole = activeRoles.find((r) => r.id === roleId);
   const rows = data?.rows ?? [];
   const s = data?.summary ?? {};
   return (
     <div className="flex flex-col gap-3 p-3">
-      {/* add on top */}
+      {/* add on top — pick the ROLE the builder is applying to */}
       {account.opportunities.length === 0 ? (
-        <div className="rounded-md border border-border-strong bg-surface-2/40 px-3 py-2 text-[11.5px] text-ink-4">Add an opportunity first — builders apply to one.</div>
+        <div className="rounded-md border border-border-strong bg-surface-2/40 px-3 py-2 text-[11.5px] text-ink-4">Add an opportunity first — builders apply to a role on one.</div>
+      ) : activeRoles.length === 0 ? (
+        <div className="rounded-md border border-border-strong bg-surface-2/40 px-3 py-2 text-[11.5px] text-ink-4">Add a role first — builders link to a specific role (see the Roles tab).</div>
       ) : (
         <div className="flex flex-col gap-1 rounded-md border border-border-strong bg-surface-2/40 px-3 py-2">
           <div className="flex items-center gap-2">
             <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-4">Add builder</span>
-            <select value={oppId} onChange={(e) => setOppId(e.target.value)} className={cn(inputCls, "max-w-[240px] bg-surface")}>
-              <option value="">Pick opportunity…</option>
-              {account.opportunities.map((o) => <option key={o.id} value={o.id}>{oppRoleLabel(o)}</option>)}
+            <select value={roleId} onChange={(e) => setRoleId(e.target.value)} className={cn(inputCls, "max-w-[280px] bg-surface")}>
+              <option value="">Pick a role…</option>
+              {activeRoles.map((r) => <option key={r.id} value={r.id}>{r.title}{r.opp_title ? ` — ${r.opp_title}` : ""}{r.filled_by_user_id ? " (filled)" : ""}</option>)}
             </select>
           </div>
-          {oppId && <AddBuilderForm oppId={oppId} onDone={() => setOppId("")} />}
+          {selRole && <AddBuilderForm oppId={selRole.opportunity_id} roleId={selRole.id} roleTitle={selRole.title} onDone={() => setRoleId("")} />}
         </div>
       )}
       {!isLoading && rows.length > 0 && (
