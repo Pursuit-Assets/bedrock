@@ -9,7 +9,7 @@
  */
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { CheckSquare, ExternalLink, Linkedin, Plus, Search, UserSearch, X } from "lucide-react";
+import { CheckSquare, ExternalLink, Linkedin, Plus, Search, X } from "lucide-react";
 
 import { ContactDetail, initials } from "@/components/jobs/ProspectAccountExpandPanel";
 import { ContactExpandTabs, jobsContactPath, warmthTier, warmthRank } from "@/components/jobs/jobsEntity";
@@ -29,7 +29,7 @@ import {
 } from "@/pages/cleanup/Filters";
 import { cn } from "@/lib/utils";
 import {
-  useJobsContacts, useUpdateContact, useAddContactToJobs, useContactSearch,
+  useJobsContacts, useUpdateContact, useAddContactToJobs,
   useContactDetail, useCreateContact, STAGE_LABELS,
   type JobStage, type JobContactWithDeal, type ContactSearchResult, type ContactCreateBody,
 } from "@/services/jobs";
@@ -228,15 +228,8 @@ export function JobsContacts({ initialQuery, initialContactId }: { initialQuery?
   const { visible: visibleCols, toggle: toggleCol, replaceAll: replaceVisibleCols } =
     useColumnVisibility<ColKey>("bedrock-v2:vis:jobs-contacts", COLUMN_ORDER, DEFAULT_VISIBLE);
 
-  // Find-any-contact search.
-  const [globalSearch, setGlobalSearch] = useState(initialQuery ?? "");
   const [previewContact, setPreviewContact] = useState<ContactSearchResult | null>(null);
-  const [showDropdown, setShowDropdown] = useState(Boolean(initialQuery));
-  const blurTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [addedToJobsIds, setAddedToJobsIds] = useState<Set<number>>(new Set());
   const [bannerAddedToJobs, setBannerAddedToJobs] = useState(false);
-  const { data: globalSearchResults } = useContactSearch(globalSearch);
-  const searchResults = globalSearchResults ?? [];
   const { mutate: addContactToJobs } = useAddContactToJobs();
 
   // Server-side search: the table only loads the first 500 pipeline contacts,
@@ -315,32 +308,6 @@ export function JobsContacts({ initialQuery, initialContactId }: { initialQuery?
   return (
     <div className="flex flex-col gap-3 px-5 py-4">
       {showNewContact && <NewContactModal onClose={() => setShowNewContact(false)} />}
-
-      {/* Find any contact */}
-      <div className="relative">
-        <div className="relative">
-          <UserSearch size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-ink-3" />
-          <input value={globalSearch} onChange={(e) => { setGlobalSearch(e.target.value); setShowDropdown(true); }} onFocus={() => setShowDropdown(true)} onBlur={() => { blurTimerRef.current = setTimeout(() => setShowDropdown(false), 150); }} placeholder="Find any contact across SF, LinkedIn, or Jobs pipeline…" className="w-full rounded-xl border-2 border-border-strong bg-surface py-2.5 pl-10 pr-4 text-[14px] placeholder:text-ink-4 focus:border-accent focus:outline-none" />
-          {globalSearch && <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => { setGlobalSearch(""); setShowDropdown(false); }} className="absolute right-3 top-1/2 -translate-y-1/2 text-ink-4 hover:text-ink"><X size={14} /></button>}
-        </div>
-        {showDropdown && globalSearch.trim().length >= 1 && searchResults.length > 0 && (
-          <div className="absolute left-0 right-0 top-full z-30 mt-1 overflow-hidden rounded-xl border border-border-strong bg-surface shadow-lg">
-            {searchResults.slice(0, 10).map((result) => {
-              const isJobs = !!result.airtable_id, isSF = result.in_sf, isLinkedIn = result.source === "linkedin_import";
-              return (
-                <div key={result.contact_id} className="flex w-full items-center gap-3 border-b border-border-strong px-4 py-2.5 last:border-0 hover:bg-surface-2">
-                  <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => { openContact(result); setGlobalSearch(""); setShowDropdown(false); }} className="flex min-w-0 flex-1 items-center gap-3 text-left">
-                    <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-accent-soft text-[11px] font-bold text-accent-ink">{initials(result.full_name)}</div>
-                    <div className="min-w-0 flex-1"><div className="truncate text-[13px] font-semibold text-ink">{result.full_name || "—"}</div>{(result.current_title || result.current_company) && <div className="truncate text-[11px] text-ink-3">{[result.current_title, result.current_company].filter(Boolean).join(" @ ")}</div>}</div>
-                    <div className="flex-shrink-0">{isJobs ? <span className="inline-flex items-center rounded-full bg-accent-soft px-1.5 py-0.5 font-medium leading-none text-accent-ink" style={{ fontSize: 10 }}>Jobs</span> : isSF ? <span className="inline-flex items-center rounded-full bg-sky-50 px-1.5 py-0.5 font-medium leading-none text-sky-600" style={{ fontSize: 10 }}>SF</span> : isLinkedIn ? <span className="inline-flex items-center rounded-full bg-indigo-50 px-1.5 py-0.5 font-medium leading-none text-indigo-600" style={{ fontSize: 10 }}>LinkedIn</span> : null}</div>
-                  </button>
-                  {!isJobs && <div className="ml-2 flex-shrink-0">{addedToJobsIds.has(result.contact_id) ? <span className="text-[11px] font-medium text-accent">✓ Added</span> : <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={(e) => { e.stopPropagation(); addContactToJobs({ id: result.contact_id, add: true }, { onSuccess: () => setAddedToJobsIds((p) => new Set(p).add(result.contact_id)) }); }} className="rounded border border-border-strong px-2 py-0.5 text-[11px] text-ink-3 hover:border-accent hover:text-accent">+ Add to Jobs</button>}</div>}
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
 
       {/* Preview */}
       {previewContact && (
