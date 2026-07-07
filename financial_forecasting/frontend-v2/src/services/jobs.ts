@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient, keepPreviousData, type QueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 
@@ -289,6 +289,7 @@ export function useJobsContacts(filters: ContactFilters = {}) {
 
   return useQuery<{ data: JobContactWithDeal[]; total: number }>({
     queryKey: ["jobs", "contacts", filters],
+    placeholderData: keepPreviousData,
     queryFn: async () => {
       const { data } = await api.get<{ success: boolean; data: JobContactWithDeal[]; total: number }>(
         `/api/jobs/contacts?${params}`
@@ -390,6 +391,7 @@ export function useJobsAccounts(dealType?: string) {
   if (dealType && dealType !== "all") params.set("deal_type", dealType);
   return useQuery<JobsAccount[]>({
     queryKey: ["jobs", "accounts", dealType ?? "all"],
+    placeholderData: keepPreviousData,
     queryFn: async () => {
       const { data } = await api.get<ApiResponse<JobsAccount[]>>(`/api/jobs/accounts?${params}`);
       return data.data;
@@ -869,6 +871,7 @@ export function useJobsOpportunities(filters: OpportunityFilters = {}) {
 
   return useQuery<{ data: JobsOpportunity[]; total: number }>({
     queryKey: ["jobs", "opportunities", filters],
+    placeholderData: keepPreviousData,
     queryFn: async () => {
       const { data } = await api.get<ListResponse<JobsOpportunity>>(`/api/jobs/opportunities?${params}`);
       return { data: data.data, total: data.total };
