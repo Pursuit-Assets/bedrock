@@ -3285,7 +3285,11 @@ async def list_contacts(
             co.industry      AS company_industry,
             (SELECT count(*) FROM public.job_postings jp
                WHERE coalesce(trim(jp.company_name),'') <> ''
-                 AND lower(trim(jp.company_name)) = lower(trim(c.current_company))) AS open_roles
+                 AND lower(trim(jp.company_name)) = lower(trim(c.current_company))) AS open_roles,
+            -- jobs builders have applied to at this company (mostly self-directed)
+            (SELECT count(*) FROM public.job_applications ja
+               WHERE coalesce(trim(ja.company_name),'') <> ''
+                 AND lower(trim(ja.company_name)) = lower(trim(c.current_company))) AS builder_apps
         FROM public.contacts c
         LEFT JOIN bedrock.jobs_contact_membership m ON m.contact_id = c.contact_id
         LEFT JOIN public.companies co ON co.company_id = c.company_id
@@ -3579,6 +3583,23 @@ async def get_contact(
         )
         open_roles = [dict(r) for r in pr]
 
+    # Jobs builders have applied to at this company — self-directed (no team opp)
+    # or team-linked. A strong signal the company is already a builder target.
+    builder_apps: list = []
+    if row["current_company"]:
+        ba = await conn.fetch(
+            """
+            SELECT job_application_id, role_title, stage, source_type, date_applied,
+                   (jobs_opportunity_id IS NOT NULL) AS team_linked
+            FROM public.job_applications
+            WHERE coalesce(trim(company_name), '') <> ''
+              AND lower(trim(company_name)) = lower(trim($1))
+            ORDER BY date_applied DESC NULLS LAST
+            """,
+            row["current_company"],
+        )
+        builder_apps = [dict(r) for r in ba]
+
     # Membership (jobs activation flag + funnel), if any.
     mem = await conn.fetchrow(
         "SELECT stage, owner_email, first_outreach_by FROM bedrock.jobs_contact_membership WHERE contact_id = $1",
@@ -3607,6 +3628,7 @@ async def get_contact(
             "activity":        [dict(a) for a in activity],
             "connected_staff": connected_staff,
             "open_roles_list": open_roles,
+            "builder_applications": builder_apps,
             "membership_stage": mem["stage"] if mem else None,
             "membership_owner": mem["owner_email"] if mem else None,
             "first_outreach_by": mem["first_outreach_by"] if mem else None,

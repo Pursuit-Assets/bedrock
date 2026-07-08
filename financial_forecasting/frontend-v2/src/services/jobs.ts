@@ -222,7 +222,8 @@ export interface JobContactWithDeal extends JobContact {
   membership_owner?: string | null;
   first_outreach_by?: string | null;
   company_industry?: string | null;
-  open_roles?: number;
+  open_roles?: number;        // roles the team sourced at this company (job_postings)
+  builder_apps?: number;      // jobs builders applied to at this company (job_applications)
 }
 
 export type MembershipStage = "flagged" | "initial_outreach" | "active" | "handed_off" | "on_hold" | "not_a_fit";
@@ -264,10 +265,19 @@ export interface OpenRole {
   builder_interest_count: number | null;
   created_at: string | null;
 }
+export interface BuilderApplication {
+  job_application_id: number;
+  role_title: string | null;
+  stage: string | null;
+  source_type: string | null;
+  date_applied: string | null;
+  team_linked: boolean;   // false = builder applied on their own
+}
 export interface ContactDetail extends JobContactWithDeal {
   activity: ActivityEntry[];
   connected_staff?: ConnectedStaff[];
   open_roles_list?: OpenRole[];   // the actual sourced roles (list carries only the count)
+  builder_applications?: BuilderApplication[];
 }
 
 export function useContactDetail(id: number | null) {
