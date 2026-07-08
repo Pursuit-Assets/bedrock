@@ -9,7 +9,7 @@
  */
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { CheckSquare, ExternalLink, Linkedin, Plus, Search, X } from "lucide-react";
+import { Briefcase, CheckSquare, ExternalLink, Linkedin, Plus, Search, X, Zap } from "lucide-react";
 
 import { ContactDetail, initials } from "@/components/jobs/ProspectAccountExpandPanel";
 import { ContactExpandTabs, jobsContactPath, warmthTier, warmthRank } from "@/components/jobs/jobsEntity";
@@ -32,7 +32,8 @@ import { cn } from "@/lib/utils";
 import {
   useJobsContacts, useUpdateContact, useAddContactToJobs,
   useContactDetail, useCreateContact, STAGE_LABELS,
-  type JobStage, type JobContactWithDeal, type ContactSearchResult, type ContactCreateBody,
+  useFlagContactsForJobs, useUnflagJobsContact, MEMBERSHIP_STAGE_LABELS,
+  type JobStage, type JobContactWithDeal, type ContactSearchResult, type ContactCreateBody, type MembershipStage,
 } from "@/services/jobs";
 
 // ── stage metadata ────────────────────────────────────────────────────────────
@@ -68,25 +69,28 @@ function Warmth({ c }: { c: JobContactWithDeal }) {
 }
 
 // ── columns ──────────────────────────────────────────────────────────────────
-type ColKey = "name" | "title" | "company" | "stage" | "warmth" | "tasks" | "connected" | "deal" | "email" | "linkedin";
-const COLUMN_ORDER: ColKey[] = ["name", "title", "company", "stage", "warmth", "tasks", "connected", "deal", "email", "linkedin"];
-const DEFAULT_VISIBLE: ColKey[] = ["name", "title", "company", "stage", "warmth", "tasks", "connected", "deal"];
+type ColKey = "name" | "flag" | "title" | "company" | "industry" | "stage" | "warmth" | "roles" | "tasks" | "connected" | "deal" | "email" | "linkedin";
+const COLUMN_ORDER: ColKey[] = ["name", "flag", "title", "company", "industry", "stage", "warmth", "roles", "tasks", "connected", "deal", "email", "linkedin"];
+const DEFAULT_VISIBLE: ColKey[] = ["name", "flag", "title", "company", "connected", "warmth", "roles"];
 const COL_LABELS: Record<ColKey, string> = {
-  name: "Name", title: "Title", company: "Company", stage: "Stage", warmth: "Warmth", tasks: "Open tasks",
-  connected: "Connected staff", deal: "Linked deal", email: "Email", linkedin: "LinkedIn",
+  name: "Name", flag: "Jobs stage", title: "Title", company: "Company", industry: "Industry", stage: "Contact stage",
+  warmth: "Warmth", roles: "Open roles", tasks: "Open tasks", connected: "Connected staff", deal: "Linked deal", email: "Email", linkedin: "LinkedIn",
 };
 const COL_WEIGHT: Record<ColKey, number> = {
-  name: 18, title: 14, company: 14, stage: 9, warmth: 9, tasks: 8, connected: 14, deal: 13, email: 16, linkedin: 6,
+  name: 16, flag: 11, title: 12, company: 13, industry: 11, stage: 9, warmth: 8, roles: 7, tasks: 7, connected: 13, deal: 12, email: 14, linkedin: 5,
 };
-const SORTABLE = new Set<ColKey>(["name", "title", "company", "stage", "warmth", "tasks"]);
+const SORTABLE = new Set<ColKey>(["name", "flag", "title", "company", "industry", "stage", "warmth", "roles", "tasks"]);
 
 function extract(c: JobContactWithDeal, key: ColKey): string | number {
   switch (key) {
     case "name": return (c.full_name ?? "").toLowerCase();
+    case "flag": return c.membership_stage ?? "";
     case "title": return (c.current_title ?? "").toLowerCase();
     case "company": return (c.current_company ?? "").toLowerCase();
+    case "industry": return (c.company_industry ?? "").toLowerCase();
     case "stage": return c.contact_stage ?? "";
     case "warmth": return warmthRank(warmthInput(c));
+    case "roles": return c.open_roles ?? 0;
     case "tasks": return c.open_tasks ?? 0;
     default: return "";
   }
@@ -173,12 +177,13 @@ function NewContactModal({ onClose }: { onClose: () => void }) {
 }
 
 // ── row ──────────────────────────────────────────────────────────────────────
-function ContactRow({ contact, expanded, onOpen, visibleCols }: { contact: JobContactWithDeal; expanded: boolean; onOpen: () => void; visibleCols: ColKey[] }) {
+function ContactRow({ contact, expanded, onOpen, visibleCols, selected, onToggleSelect }: { contact: JobContactWithDeal; expanded: boolean; onOpen: () => void; visibleCols: ColKey[]; selected: boolean; onToggleSelect: () => void }) {
   const updateContact = useUpdateContact();
   const staff = contact.connected_staff_names ?? [];
   const cells: Record<ColKey, React.ReactNode> = {
     name: (
       <span className="flex min-w-0 items-center gap-2">
+        <input type="checkbox" checked={selected} onClick={(e) => e.stopPropagation()} onChange={onToggleSelect} className="h-3.5 w-3.5 shrink-0 accent-[color:var(--accent,#4242EA)]" aria-label="Select contact" />
         <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-accent-soft text-[10px] font-bold leading-none text-accent-ink">{initials(contact.full_name)}</span>
         <span className="truncate text-[13px] font-medium text-ink">{contact.full_name || "—"}</span>
         <Link to={jobsContactPath(contact.contact_id)} state={withReferrer({ pathname: "/jobs", label: "Jobs" })} onClick={(e) => e.stopPropagation()} className="shrink-0 text-ink-4 hover:text-accent" title="Open contact detail"><ExternalLink size={12} /></Link>
@@ -191,6 +196,13 @@ function ContactRow({ contact, expanded, onOpen, visibleCols }: { contact: JobCo
         renderValue={(v) => <ContactStagePill stage={v ?? null} />}
         onSave={(v) => new Promise<void>((res, rej) => updateContact.mutate({ id: contact.contact_id, contact_stage: v || null }, { onSuccess: () => res(), onError: rej }))} />
     ),
+    flag: contact.membership_stage
+      ? <span className="rounded-full bg-accent-soft px-1.5 py-0.5 text-[10.5px] font-medium text-accent-ink">{MEMBERSHIP_STAGE_LABELS[contact.membership_stage as MembershipStage] ?? contact.membership_stage}</span>
+      : <span className="text-ink-4">—</span>,
+    industry: <span className="truncate text-[12px] text-ink-3">{contact.company_industry || "—"}</span>,
+    roles: (contact.open_roles ?? 0) > 0
+      ? <span className="inline-flex items-center gap-1 text-[12px] text-ink-2"><Briefcase size={11} className="text-ink-4" />{contact.open_roles}</span>
+      : <span className="text-ink-4">—</span>,
     warmth: <Warmth c={contact} />,
     tasks: (contact.open_tasks ?? 0) > 0
       ? <span className="inline-flex items-center gap-1 text-[12px] text-ink-2"><CheckSquare size={11} className="text-ink-4" />{contact.open_tasks}</span>
@@ -227,6 +239,12 @@ export function JobsContacts({ initialQuery, initialContactId }: { initialQuery?
   const [collapsedGroups, setCollapsedGroups] = useSessionState<string[]>("jobs-contacts:groupCollapsed", EMPTY);
   const [showNewContact, setShowNewContact] = useState(false);
   const [expandedId, setExpandedId] = useState<number | null>(null);
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [flagView, setFlagView] = useState<"all" | "flagged" | "unflagged">("all");
+  const [flagOwner, setFlagOwner] = useState("");
+  const flagContacts = useFlagContactsForJobs();
+  const unflag = useUnflagJobsContact();
+  const toggleSelect = useCallback((id: number) => setSelected((p) => { const n = new Set(p); n.has(id) ? n.delete(id) : n.add(id); return n; }), []);
   const { sort, toggle, setSort } = useSort<ColKey>({ key: "name", direction: "asc" });
   const { visible: visibleCols, toggle: toggleCol, replaceAll: replaceVisibleCols } =
     useColumnVisibility<ColKey>("bedrock-v2:vis:jobs-contacts", COLUMN_ORDER, DEFAULT_VISIBLE);
@@ -245,7 +263,10 @@ export function JobsContacts({ initialQuery, initialContactId }: { initialQuery?
     const t = setTimeout(() => setDebouncedQuery(query.trim()), 300);
     return () => clearTimeout(t);
   }, [query]);
-  const { data: rawData, isLoading, isError, refetch } = useJobsContacts({ limit: 500, search: debouncedQuery || undefined });
+  const { data: rawData, isLoading, isError, refetch } = useJobsContacts({
+    limit: 500, search: debouncedQuery || undefined,
+    flagged: flagView === "all" ? undefined : flagView === "flagged",
+  });
   const allContacts: JobContactWithDeal[] = useMemo(() => rawData?.data ?? [], [rawData]);
 
   const openContact = useCallback((result: ContactSearchResult) => {
@@ -305,7 +326,8 @@ export function JobsContacts({ initialQuery, initialContactId }: { initialQuery?
 
   const visibleWeight = visibleCols.reduce((s, k) => s + COL_WEIGHT[k], 0);
   const renderRow = (c: JobContactWithDeal) => (
-    <ContactRow key={c.contact_id} contact={c} expanded={expandedId === c.contact_id} onOpen={() => setExpandedId((p) => p === c.contact_id ? null : c.contact_id)} visibleCols={visibleCols} />
+    <ContactRow key={c.contact_id} contact={c} expanded={expandedId === c.contact_id} onOpen={() => setExpandedId((p) => p === c.contact_id ? null : c.contact_id)} visibleCols={visibleCols}
+      selected={selected.has(c.contact_id)} onToggleSelect={() => toggleSelect(c.contact_id)} />
   );
 
   return (
@@ -331,6 +353,11 @@ export function JobsContacts({ initialQuery, initialContactId }: { initialQuery?
           <input placeholder="Search name, company, title, email…" value={query} onChange={(e) => setQuery(e.target.value)} className="h-7 w-60 rounded border border-border-strong bg-surface pl-7 pr-3 text-[12.5px] font-medium text-ink-2 outline-none placeholder:font-normal placeholder:text-ink-3 focus:border-accent focus:text-ink" />
         </div>
         <AddFilterButton<Field> filterable={FILTERABLE as Record<Field, FieldMeta<unknown>>} selectOptions={selectOptions} onAdd={(r) => setRules((p) => [...p, r])} buttonLabel="Filter" />
+        <select value={flagView} onChange={(e) => setFlagView(e.target.value as typeof flagView)} title="Filter by jobs-activation flag" className="h-7 rounded border border-border-strong bg-surface px-2 text-[12.5px] text-ink-2 outline-none focus:border-accent">
+          <option value="all">All contacts</option>
+          <option value="flagged">Flagged for jobs</option>
+          <option value="unflagged">Not flagged</option>
+        </select>
         <select value={groupBy} onChange={(e) => { setGroupBy(e.target.value); setCollapsedGroups([]); }} title="Group rows by a field" className="h-7 rounded border border-border-strong bg-surface px-2 text-[12.5px] text-ink-2 outline-none focus:border-accent">
           {GROUP_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
         </select>
@@ -341,6 +368,16 @@ export function JobsContacts({ initialQuery, initialContactId }: { initialQuery?
           <button type="button" onClick={() => setShowNewContact(true)} className="inline-flex h-7 items-center gap-1.5 rounded border border-ink bg-ink px-3 text-[12.5px] font-medium text-surface hover:opacity-90"><Plus size={13} /> New Contact</button>
         </div>
       </Toolbar>
+
+      {selected.size > 0 && (
+        <div className="flex flex-wrap items-center gap-2 rounded-lg border border-accent bg-accent-soft px-3 py-2 text-[12.5px]">
+          <span className="font-semibold text-accent-ink">{selected.size} selected</span>
+          <input value={flagOwner} onChange={(e) => setFlagOwner(e.target.value)} placeholder="owner email (optional)" className="h-7 w-56 rounded border border-border-strong bg-surface px-2 text-[12px] text-ink outline-none focus:border-accent" />
+          <button type="button" disabled={flagContacts.isPending} onClick={() => flagContacts.mutate({ contact_ids: [...selected], owner_email: flagOwner.trim() || undefined }, { onSuccess: () => setSelected(new Set()) })} className="inline-flex h-7 items-center gap-1 rounded bg-accent px-3 font-medium text-white hover:opacity-90 disabled:opacity-50"><Zap size={12} /> Flag for jobs activation</button>
+          <button type="button" onClick={() => { [...selected].forEach((id) => unflag.mutate(id)); setSelected(new Set()); }} className="h-7 rounded border border-border-strong bg-surface px-3 text-ink-2 hover:text-ink">Unflag</button>
+          <button type="button" onClick={() => setSelected(new Set())} className="ml-1 text-[11.5px] font-medium text-ink-3 underline-offset-4 hover:text-ink-2 hover:underline">Clear selection</button>
+        </div>
+      )}
 
       {rules.length > 0 && (
         <div className="flex flex-wrap items-center gap-1.5">

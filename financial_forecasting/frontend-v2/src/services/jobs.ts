@@ -217,13 +217,30 @@ export interface JobContactWithDeal extends JobContact {
   responded?: boolean;
   activity_actors?: string[];
   open_tasks?: number;
+  // jobs activation membership + triage signals
+  membership_stage?: string | null;
+  membership_owner?: string | null;
+  first_outreach_by?: string | null;
+  company_industry?: string | null;
+  open_roles?: number;
 }
+
+export type MembershipStage = "flagged" | "initial_outreach" | "active" | "handed_off" | "on_hold" | "not_a_fit";
+export const MEMBERSHIP_STAGES: MembershipStage[] = ["flagged", "initial_outreach", "active", "handed_off", "on_hold", "not_a_fit"];
+export const MEMBERSHIP_STAGE_LABELS: Record<MembershipStage, string> = {
+  flagged: "Flagged", initial_outreach: "Initial outreach", active: "Active",
+  handed_off: "Handed off", on_hold: "On hold", not_a_fit: "Not a fit",
+};
 
 export interface ContactFilters {
   stage?: string;
   search?: string;
   company?: string;
   limit?: number;
+  flagged?: boolean;
+  membership_stage?: string;
+  industry?: string;
+  has_open_roles?: boolean;
 }
 
 export interface ConnectedStaff {
@@ -285,6 +302,10 @@ export function useJobsContacts(filters: ContactFilters = {}) {
   if (filters.stage)   params.set("stage",   filters.stage);
   if (filters.search)  params.set("search",  filters.search);
   if (filters.company) params.set("company", filters.company);
+  if (filters.flagged !== undefined) params.set("flagged", String(filters.flagged));
+  if (filters.membership_stage) params.set("membership_stage", filters.membership_stage);
+  if (filters.industry) params.set("industry", filters.industry);
+  if (filters.has_open_roles) params.set("has_open_roles", "true");
   params.set("limit", String(filters.limit ?? 200));
 
   return useQuery<{ data: JobContactWithDeal[]; total: number }>({
@@ -297,6 +318,52 @@ export function useJobsContacts(filters: ContactFilters = {}) {
       return { data: data.data, total: data.total };
     },
     staleTime: 60_000,
+  });
+}
+
+/** Bulk "flag for jobs activation" → creates memberships at stage 'flagged'. */
+export function useFlagContactsForJobs() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (body: { contact_ids: number[]; owner_email?: string; activation_reason?: string; note?: string }) => {
+      const { data } = await api.post<ApiResponse<{ flagged: number }>>("/api/jobs/contacts/flag-jobs", body);
+      return data.data;
+    },
+    onSuccess: (d) => {
+      qc.invalidateQueries({ queryKey: ["jobs", "contacts"] });
+      qc.invalidateQueries({ queryKey: ["jobs", "accounts"] });
+      toast.success(`Flagged ${d?.flagged ?? 0} for jobs`);
+    },
+    onError: () => toast.error("Failed to flag contacts"),
+  });
+}
+
+/** Advance the funnel / reassign owner on a contact's jobs membership. */
+export function useUpdateJobsMembership() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ contact_id, ...body }: { contact_id: number; stage?: string; owner_email?: string; first_outreach_by?: string; not_a_fit_reason?: string }) => {
+      await api.patch(`/api/jobs/contacts/${contact_id}/jobs-membership`, body);
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["jobs", "contacts"] });
+      qc.invalidateQueries({ queryKey: ["jobs", "accounts"] });
+    },
+    onError: () => toast.error("Failed to update stage"),
+  });
+}
+
+/** Unflag — remove the jobs membership. */
+export function useUnflagJobsContact() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (contact_id: number) => { await api.delete(`/api/jobs/contacts/${contact_id}/jobs-membership`); },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["jobs", "contacts"] });
+      qc.invalidateQueries({ queryKey: ["jobs", "accounts"] });
+      toast.success("Unflagged");
+    },
+    onError: () => toast.error("Failed to unflag"),
   });
 }
 
