@@ -402,12 +402,15 @@ export function useJobsAccounts(dealType?: string, scope: "engaged" | "all" = "e
   });
 }
 
-export interface AccountResolveResult {
-  local: { account_key: string; display: string; record_count: number }[];
-  salesforce: { id: string; name: string; created: string }[];
+export interface AccountMatch {
+  key: string | null;            // local account_key, if we already have it
+  label: string;                 // display name
+  sf_account_id: string | null;  // carried silently for reconciliation
+  record_count: number;          // contacts/opps in our pipeline (0 = none yet)
 }
-/** Live check before creating an account: does a matching account already exist
- *  locally or in Salesforce? Drives the 'pick the existing one, don't dupe' flow. */
+export interface AccountResolveResult { matches: AccountMatch[]; exact: boolean }
+/** Does a matching account already exist? Returns ONE de-duplicated list merging
+ *  our pipeline + Salesforce; the caller never sees the source. */
 export function useResolveAccount(name: string) {
   return useQuery<AccountResolveResult>({
     queryKey: ["jobs", "account-resolve", name.trim().toLowerCase()],

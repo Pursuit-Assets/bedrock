@@ -2769,6 +2769,19 @@ class JobsAccountCreate(BaseModel):
     sf_account_id: Optional[str] = None   # link to an existing SF account; never creates one in SF
 
 
+def _acct_nkey(name: str) -> str:
+    """Normalized account-name key for de-duplication (case/punct/legal-suffix
+    insensitive). Keep in step with the dedupe tooling."""
+    s = (name or "").strip().lower()
+    s = re.sub(r"\([^)]*\)", " ", s)                 # drop parenthetical acronyms
+    s = re.sub(r"[,\.\&\'\"()]", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    for _ in range(3):
+        s = re.sub(r"\s+(inc|llc|ltd|limited|corp|corporation|co|company|the|group|"
+                   r"holdings|holding|plc|gmbh|sa|ag|incorporated)$", "", s).strip()
+    return s
+
+
 @router.get("/accounts/resolve")
 async def resolve_account(
     name: str = Query(..., min_length=1),
@@ -2776,13 +2789,15 @@ async def resolve_account(
     conn=Depends(get_db),
     client=Depends(get_mcp_client),
 ):
-    """Before creating an account, check whether it already exists — locally (any
-    opp / prospect / jobs_account under a matching name) or in Salesforce (live).
-    Powers the 'don't create a duplicate — pick the existing one' create flow."""
+    """Does an account matching this name already exist? Returns ONE de-duplicated
+    list of accounts, merging our pipeline and Salesforce by normalized name — the
+    caller never sees which system a match came from. Each match carries whatever
+    ids it has (local key and/or SF id) so selecting it can reconcile silently.
+    `exact` = an account with this exact (normalized) name already exists."""
     from security import escape_soql_string
     q = name.strip()
     like = f"%{q.lower()}%"
-    rows = await conn.fetch(
+    local_rows = await conn.fetch(
         """
         SELECT k, min(disp) AS display, sum(n) AS n FROM (
           SELECT lower(trim(account_name)) k, min(account_name) disp, count(*) n
@@ -2793,22 +2808,34 @@ async def resolve_account(
           UNION ALL
           SELECT account_key k, min(display_name) disp, 0 n
           FROM bedrock.jobs_account WHERE account_key LIKE $1 GROUP BY 1
-        ) s GROUP BY k ORDER BY sum(n) DESC, min(disp) LIMIT 10
+        ) s GROUP BY k
         """,
         like,
     )
-    local = [{"account_key": r["k"], "display": (r["display"] or r["k"]), "record_count": int(r["n"] or 0)} for r in rows]
-    sf = []
+    sf_rows = []
     try:
         safe = escape_soql_string(q)
         res = await client.salesforce.query(
-            "SELECT Id, Name, CreatedDate FROM Account WHERE RecordType.Name='Organization' "
-            f"AND Name LIKE '%{safe}%' ORDER BY Name LIMIT 10")
-        sf = [{"id": r["Id"], "name": r["Name"], "created": (r.get("CreatedDate") or "")[:10]}
-              for r in res.get("records", [])]
+            "SELECT Id, Name FROM Account WHERE RecordType.Name='Organization' "
+            f"AND Name LIKE '%{safe}%' ORDER BY Name LIMIT 25")
+        sf_rows = res.get("records", [])
     except Exception as e:
         logger.warning(f"resolve_account SF lookup failed: {e}")
-    return {"success": True, "data": {"local": local, "salesforce": sf}}
+
+    # Merge both sources by normalized name → one row per real company.
+    merged: dict = {}
+    for r in local_rows:
+        label = (r["display"] or r["k"]).strip()
+        e = merged.setdefault(_acct_nkey(label), {"key": None, "label": label, "sf_account_id": None, "record_count": 0})
+        if e["key"] is None:
+            e["key"] = r["k"]
+        e["record_count"] += int(r["n"] or 0)
+    for a in sf_rows:
+        e = merged.setdefault(_acct_nkey(a["Name"]), {"key": None, "label": a["Name"], "sf_account_id": None, "record_count": 0})
+        if not e["sf_account_id"]:
+            e["sf_account_id"] = a["Id"]
+    matches = sorted(merged.values(), key=lambda e: (-e["record_count"], (e["label"] or "").lower()))
+    return {"success": True, "data": {"matches": matches[:12], "exact": _acct_nkey(q) in merged}}
 
 
 @router.post("/accounts")
