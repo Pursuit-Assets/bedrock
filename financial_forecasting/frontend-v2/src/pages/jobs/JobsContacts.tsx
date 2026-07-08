@@ -261,7 +261,7 @@ export function JobsContacts({ initialQuery, initialContactId }: { initialQuery?
   const toggleSelect = useCallback((id: number) => setSelected((p) => { const n = new Set(p); n.has(id) ? n.delete(id) : n.add(id); return n; }), []);
   const { sort, toggle, setSort } = useSort<ColKey>({ key: "name", direction: "asc" });
   const { visible: visibleCols, toggle: toggleCol, replaceAll: replaceVisibleCols } =
-    useColumnVisibility<ColKey>("bedrock-v2:vis:jobs-contacts", COLUMN_ORDER, DEFAULT_VISIBLE);
+    useColumnVisibility<ColKey>("bedrock-v2:vis:jobs-contacts-v2", COLUMN_ORDER, DEFAULT_VISIBLE);
 
   const [previewContact, setPreviewContact] = useState<ContactSearchResult | null>(null);
   const [bannerAddedToJobs, setBannerAddedToJobs] = useState(false);
