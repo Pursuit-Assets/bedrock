@@ -93,6 +93,18 @@ async def _load_function_map(conn) -> dict[str, str]:
         return {}
 
 
+async def _load_intro_contact_ids(conn) -> set[int]:
+    """Contacts we've requested an introduction to — any intro_request, any
+    status. An intro request is an explicit jobs-outreach signal, so activity
+    with these contacts is jobs-relevant regardless of what the text looks like."""
+    try:
+        rows = await conn.fetch("SELECT DISTINCT contact_id FROM bedrock.intro_request WHERE contact_id IS NOT NULL")
+        return {r["contact_id"] for r in rows}
+    except Exception as e:
+        logger.warning("intro_request unavailable (%s); skipping intro-request signal", e)
+        return set()
+
+
 async def _load_builder_emails(conn) -> set[str]:
     """Lowercased builder/fellow emails (primary + backup). Used to detect when a
     counterpart is one of our learners (coaching, not employer outreach)."""
@@ -212,12 +224,14 @@ async def classify_new_activity(conn, limit: Optional[int] = None,
     client = anthropic.Anthropic(api_key=key)
     fmap = await _load_function_map(conn)
     bset = await _load_builder_emails(conn)
+    intro_set = await _load_intro_contact_ids(conn)
 
     where_new = "" if reclassify else "AND a.jobs_relevance IS NULL"
     lim = f"LIMIT {int(limit)}" if limit else ""
     rows = await conn.fetch(f"""
         SELECT a.id, a.type, a.subject, a.email_from, a.email_to, a.email_snippet,
-               a.email_body_text, coalesce(a.description,'') AS description, a.meeting_attendees
+               a.email_body_text, coalesce(a.description,'') AS description, a.meeting_attendees,
+               a.participant_public_contact_id
         FROM bedrock.activity a
         WHERE a.deleted_at IS NULL AND a.type IN ('email','meeting') {where_new}
           AND (
@@ -246,7 +260,15 @@ async def classify_new_activity(conn, limit: Optional[int] = None,
     for i in range(0, len(rows), CHUNK):
         chunk = rows[i:i + CHUNK]
         prompts = []
+        forced: dict = {}                        # row id -> verdict (skip the model)
         for row in chunk:                       # serial DB reads (meeting history)
+            # An intro request for this contact is an explicit jobs signal —
+            # tag it 'jobs' deterministically and don't spend a model call.
+            if row["participant_public_contact_id"] in intro_set:
+                forced[row["id"]] = {"label": "jobs", "confidence": 1.0,
+                                     "reason": "intro request exists for this contact"}
+                prompts.append(None)
+                continue
             try:
                 prompts.append(await _build_prompt(conn, row, fmap, bset))
             except Exception as e:
@@ -255,18 +277,20 @@ async def classify_new_activity(conn, limit: Optional[int] = None,
         verdicts = await asyncio.gather(         # concurrent model calls, no DB
             *[_model(p) if p else _noop() for p in prompts], return_exceptions=True)
         for row, out in zip(chunk, verdicts):    # serial DB writes
+            out = forced.get(row["id"], out)     # intro-request override wins
             if not isinstance(out, dict):
                 if isinstance(out, Exception):
                     logger.warning("classify call failed for %s: %s", row["id"], out)
                 continue
             label = out["label"]
+            model_tag = "rule:intro_request" if row["id"] in forced else MODEL
             await conn.execute(
                 """UPDATE bedrock.activity
                    SET jobs_relevance=$2, jobs_relevance_reason=$3, jobs_relevance_confidence=$4,
                        jobs_relevance_model=$5, jobs_relevance_at=now()
                    WHERE id=$1""",
                 row["id"], label, (out.get("reason") or "")[:300],
-                float(out.get("confidence") or 0.0), MODEL)
+                float(out.get("confidence") or 0.0), model_tag)
             counts[label] = counts.get(label, 0) + 1
         logger.info("jobs-relevance: %d/%d classified", min(i + CHUNK, len(rows)), len(rows))
 
