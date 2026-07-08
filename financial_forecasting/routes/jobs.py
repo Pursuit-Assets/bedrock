@@ -3212,6 +3212,10 @@ async def list_contacts(
     stage: Optional[str] = Query(None),
     company: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
+    flagged: Optional[bool] = Query(None, description="filter to (un)flagged-for-jobs-activation"),
+    membership_stage: Optional[str] = Query(None, description="funnel stage on the jobs membership"),
+    industry: Optional[str] = Query(None),
+    has_open_roles: Optional[bool] = Query(None, description="only contacts whose company has open job postings"),
     limit: int = Query(200, le=500),
     offset: int = Query(0),
     user=Depends(require_auth),
@@ -3236,6 +3240,20 @@ async def list_contacts(
     if search:
         filters.append(f"(lower(c.full_name) LIKE lower(${i}) OR lower(c.email) LIKE lower(${i}) OR lower(c.current_company) LIKE lower(${i}) OR lower(c.current_title) LIKE lower(${i}))")
         params.append(f"%{search}%"); i += 1
+    # Flag / funnel / signal filters — EXISTS subqueries so the count query needs
+    # no extra joins.
+    if flagged is not None:
+        filters.append(("EXISTS" if flagged else "NOT EXISTS")
+                       + " (SELECT 1 FROM bedrock.jobs_contact_membership m WHERE m.contact_id = c.contact_id)")
+    if membership_stage:
+        filters.append(f"EXISTS (SELECT 1 FROM bedrock.jobs_contact_membership m WHERE m.contact_id = c.contact_id AND m.stage = ${i})")
+        params.append(membership_stage); i += 1
+    if industry:
+        filters.append(f"EXISTS (SELECT 1 FROM public.companies co WHERE co.company_id = c.company_id AND co.industry ILIKE ${i})")
+        params.append(f"%{industry}%"); i += 1
+    if has_open_roles:
+        filters.append("EXISTS (SELECT 1 FROM public.job_postings jp WHERE coalesce(trim(jp.company_name),'') <> '' "
+                       "AND lower(trim(jp.company_name)) = lower(trim(c.current_company)))")
 
     where = " AND ".join(filters)
     rows = await conn.fetch(
@@ -3258,8 +3276,19 @@ async def list_contacts(
             -- OR via company name match (fallback)
             jo2.id           AS deal_id_by_company,
             jo2.account_name AS deal_account_by_company,
-            jo2.stage        AS deal_stage_by_company
+            jo2.stage        AS deal_stage_by_company,
+            -- jobs activation membership (the flag + funnel)
+            m.stage          AS membership_stage,
+            m.owner_email    AS membership_owner,
+            m.first_outreach_by AS first_outreach_by,
+            -- signals for triage
+            co.industry      AS company_industry,
+            (SELECT count(*) FROM public.job_postings jp
+               WHERE coalesce(trim(jp.company_name),'') <> ''
+                 AND lower(trim(jp.company_name)) = lower(trim(c.current_company))) AS open_roles
         FROM public.contacts c
+        LEFT JOIN bedrock.jobs_contact_membership m ON m.contact_id = c.contact_id
+        LEFT JOIN public.companies co ON co.company_id = c.company_id
         -- direct link via sf_contact_ids (airtable: or pub: ref).
         -- LATERAL + LIMIT 1: a contact tied to N opportunities must still be
         -- ONE row — pick the best deal (active first, then freshest) instead
