@@ -2440,7 +2440,7 @@ async def jobs_accounts(
     (
         opp_rows, prospect_rows, ja_rows, task_rows,
         act1_rows, act2_rows, role_resp_rows, er_resp_rows,
-        hires_rows, name_sf_rows,
+        hires_rows, name_sf_rows, flagged_rows,
     ) = await asyncio.gather(
         pool.fetch(
             """
@@ -2541,6 +2541,17 @@ async def jobs_accounts(
             WHERE coalesce(trim(co.name), '') <> '' AND m.sf_account_id IS NOT NULL
             GROUP BY 1
             """),
+        # Accounts (by normalized company name) with ≥1 contact flagged for jobs
+        # activation and actively in the funnel → derive to "Activating".
+        pool.fetch(
+            """
+            SELECT lower(trim(c.current_company)) AS key, count(*) AS n
+            FROM bedrock.jobs_contact_membership m
+            JOIN public.contacts c ON c.contact_id = m.contact_id
+            WHERE m.stage IN ('flagged','initial_outreach','active')
+              AND coalesce(trim(c.current_company), '') <> ''
+            GROUP BY 1
+            """),
     )
 
     accounts: dict = {}
@@ -2637,6 +2648,7 @@ async def jobs_accounts(
     name_sf_ids: dict[str, list[str]] = {
         r["key"]: [x for x in (r["ids"] or []) if x] for r in name_sf_rows
     }
+    flagged_keys = {r["key"] for r in flagged_rows}
 
     dt = deal_type if deal_type and deal_type != "all" else None
     now = datetime.now(timezone.utc)
@@ -2663,6 +2675,7 @@ async def jobs_accounts(
         recent = bool(last and (now - last).days <= 90)
         a = acct_act.get(key)
         has_activity = bool(a and (a["last"] or a["recent"]))
+        has_flagged = key in flagged_keys
         if rec and rec["status_override"]:
             status = rec["status_override"]
         elif has_open:
@@ -2671,8 +2684,9 @@ async def jobs_accounts(
             status = "Stewarding"
         elif opps:
             status = "Re-activating" if recent else "Dormant"
-        elif has_activity:
-            # No opportunity yet, but we've reached out / made contact.
+        elif has_activity or has_flagged:
+            # No opportunity yet, but we're working it — activity, or a
+            # contact here flagged for jobs activation.
             status = "Activating"
         else:
             status = "Prospect"
@@ -2887,6 +2901,118 @@ async def account_prospects(
         key.strip().lower(),
     )
     return {"success": True, "data": [dict(r) for r in rows]}
+
+
+# ── Jobs contact activation (flag + funnel membership) ────────────────────────
+_MEMBERSHIP_STAGES = ('flagged', 'initial_outreach', 'active', 'handed_off', 'on_hold', 'not_a_fit')
+
+
+def _user_email(user) -> Optional[str]:
+    return user.get("email") if isinstance(user, dict) else getattr(user, "email", None)
+
+
+async def _flag_contacts(conn, contact_ids: list[int], owner_email: Optional[str],
+                         reason: str, note: Optional[str], by: Optional[str]) -> int:
+    """Create/keep a 'flagged' membership per contact (never downgrades a further
+    stage). Writes through is_jobs_contact=true so legacy views stay consistent."""
+    if not contact_ids:
+        return 0
+    await conn.execute(
+        """
+        INSERT INTO bedrock.jobs_contact_membership
+            (contact_id, stage, owner_email, activation_reason, activation_note, flagged_by)
+        SELECT cid, 'flagged', $2, $3, $4, $5 FROM unnest($1::int[]) AS cid
+        ON CONFLICT (contact_id) DO UPDATE SET
+            owner_email       = COALESCE(jobs_contact_membership.owner_email, EXCLUDED.owner_email),
+            activation_reason = COALESCE(jobs_contact_membership.activation_reason, EXCLUDED.activation_reason),
+            updated_at        = now()
+        """,
+        contact_ids, owner_email, reason, note, by,
+    )
+    await conn.execute(
+        "UPDATE public.contacts SET is_jobs_contact = true WHERE contact_id = ANY($1::int[]) AND NOT is_jobs_contact",
+        contact_ids)
+    return len(contact_ids)
+
+
+class FlagJobsBody(BaseModel):
+    contact_ids: list[int]
+    owner_email: Optional[str] = None
+    activation_reason: str = "manual"
+    note: Optional[str] = None
+
+
+@router.post("/contacts/flag-jobs")
+async def flag_contacts_for_jobs(body: FlagJobsBody, user=Depends(require_auth), conn=Depends(get_db)):
+    """Bulk 'flag for jobs activation' — the contacts-page carve action."""
+    if body.activation_reason not in ("manual", "scraper_job", "strategic", "algorithm"):
+        raise HTTPException(400, "invalid activation_reason")
+    n = await _flag_contacts(conn, body.contact_ids, body.owner_email,
+                             body.activation_reason, body.note, _user_email(user))
+    return {"success": True, "data": {"flagged": n}}
+
+
+class MembershipPatch(BaseModel):
+    stage: Optional[str] = None
+    owner_email: Optional[str] = None
+    first_outreach_by: Optional[str] = None
+    opportunity_id: Optional[str] = None
+    not_a_fit_reason: Optional[str] = None
+
+
+@router.patch("/contacts/{contact_id}/jobs-membership")
+async def update_jobs_membership(contact_id: int, body: MembershipPatch,
+                                 user=Depends(require_auth), conn=Depends(get_db)):
+    """Advance the funnel / reassign owner. Stamps first_outreach_by (who actually
+    reached out — may differ from owner) on the → initial_outreach transition."""
+    sets, params, i = [], [contact_id], 2
+    if body.stage is not None:
+        if body.stage not in _MEMBERSHIP_STAGES:
+            raise HTTPException(400, f"invalid stage; one of {_MEMBERSHIP_STAGES}")
+        sets.append(f"stage = ${i}"); params.append(body.stage); i += 1
+        if body.stage == "initial_outreach":
+            sets.append(f"first_outreach_by = COALESCE(first_outreach_by, ${i})")
+            params.append(body.first_outreach_by or _user_email(user)); i += 1
+            sets.append("first_outreach_at = COALESCE(first_outreach_at, now())")
+    if body.owner_email is not None:
+        sets.append(f"owner_email = ${i}"); params.append(body.owner_email); i += 1
+    if body.opportunity_id is not None:
+        sets.append(f"opportunity_id = ${i}"); params.append(body.opportunity_id); i += 1
+    if body.not_a_fit_reason is not None:
+        sets.append(f"not_a_fit_reason = ${i}"); params.append(body.not_a_fit_reason); i += 1
+    if not sets:
+        return {"success": True}
+    sets.append("updated_at = now()")
+    res = await conn.execute(
+        f"UPDATE bedrock.jobs_contact_membership SET {', '.join(sets)} WHERE contact_id = $1", *params)
+    if res == "UPDATE 0":
+        raise HTTPException(404, "contact is not flagged for jobs")
+    return {"success": True}
+
+
+@router.delete("/contacts/{contact_id}/jobs-membership")
+async def unflag_jobs_contact(contact_id: int, user=Depends(require_auth), conn=Depends(get_db)):
+    """Unflag — remove the jobs membership (leaves the legacy is_jobs_contact as-is)."""
+    await conn.execute("DELETE FROM bedrock.jobs_contact_membership WHERE contact_id = $1", contact_id)
+    return {"success": True}
+
+
+class FlagAccountBody(BaseModel):
+    owner_email: Optional[str] = None
+    activation_reason: str = "manual"
+
+
+@router.post("/accounts/{account_key}/flag-contacts")
+async def flag_account_contacts(account_key: str, body: FlagAccountBody,
+                                user=Depends(require_auth), conn=Depends(get_db)):
+    """Flag every (not-yet-flagged) contact at an account — the account-driven side
+    of the bi-directional flag."""
+    rows = await conn.fetch(
+        "SELECT contact_id FROM public.contacts WHERE lower(trim(current_company)) = $1",
+        account_key.strip().lower())
+    ids = [r["contact_id"] for r in rows]
+    n = await _flag_contacts(conn, ids, body.owner_email, body.activation_reason, None, _user_email(user))
+    return {"success": True, "data": {"flagged": n}}
 
 
 @router.get("/account-activity")
