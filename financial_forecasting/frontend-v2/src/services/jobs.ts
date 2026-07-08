@@ -461,6 +461,9 @@ export interface JobsAccount {
    *  lazily per account via useAccountProspects. Only the count ships here. */
   opp_count: number;
   prospect_count: number;
+  job_listings?: number;    // roles sourced + open-market roles builders applied to
+  roles_sourced?: number;
+  roles_applied?: number;
   last_activity: string | null;
   open_tasks?: number;
   recent_activity_count?: number;

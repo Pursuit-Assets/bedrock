@@ -2440,7 +2440,7 @@ async def jobs_accounts(
     (
         opp_rows, prospect_rows, ja_rows, task_rows,
         act1_rows, act2_rows, role_resp_rows, er_resp_rows,
-        hires_rows, name_sf_rows, flagged_rows,
+        hires_rows, name_sf_rows, flagged_rows, listings_rows,
     ) = await asyncio.gather(
         pool.fetch(
             """
@@ -2552,6 +2552,20 @@ async def jobs_accounts(
               AND coalesce(trim(c.current_company), '') <> ''
             GROUP BY 1
             """),
+        # Job listings per account (by normalized company name): roles the team
+        # sourced (job_postings) + distinct roles builders applied to on the open
+        # market (job_applications).
+        pool.fetch(
+            """
+            SELECT k, sum(sourced)::int AS sourced, sum(applied)::int AS applied FROM (
+              SELECT lower(trim(company_name)) k, count(*) sourced, 0 applied
+              FROM public.job_postings WHERE coalesce(trim(company_name),'') <> '' GROUP BY 1
+              UNION ALL
+              SELECT lower(trim(company_name)) k, 0 sourced, count(DISTINCT lower(trim(role_title))) applied
+              FROM public.job_applications
+              WHERE coalesce(trim(company_name),'') <> '' AND coalesce(trim(role_title),'') <> '' GROUP BY 1
+            ) s GROUP BY k
+            """),
     )
 
     accounts: dict = {}
@@ -2649,6 +2663,7 @@ async def jobs_accounts(
         r["key"]: [x for x in (r["ids"] or []) if x] for r in name_sf_rows
     }
     flagged_keys = {r["key"] for r in flagged_rows}
+    listings_by_key = {r["k"]: (r["sourced"] or 0, r["applied"] or 0) for r in listings_rows}
 
     dt = deal_type if deal_type and deal_type != "all" else None
     now = datetime.now(timezone.utc)
@@ -2694,6 +2709,10 @@ async def jobs_accounts(
         g["account_status"] = status
         g["opp_count"] = len(opps)
         g["prospect_count"] = prospect_counts.get(key, 0)
+        _src, _app = listings_by_key.get(key, (0, 0))
+        g["roles_sourced"] = _src
+        g["roles_applied"] = _app
+        g["job_listings"] = _src + _app
         g["last_activity"] = last.isoformat() if last else None
         g["open_tasks"] = open_tasks.get(key, 0)
         g["recent_activity_count"] = a["recent"] if a else 0

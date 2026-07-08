@@ -51,18 +51,18 @@ const dealTypesOf = (a: JobsAccount) =>
   [...new Set(a.opportunities.map((o) => o.deal_type).filter(Boolean))] as string[];
 
 // ── columns ──────────────────────────────────────────────────────────────────
-type ColKey = "account" | "status" | "warmth" | "owner" | "opps" | "contacts" | "hired" | "tasks" | "deal_types" | "last_activity";
-const COLUMN_ORDER: ColKey[] = ["account", "status", "warmth", "owner", "opps", "contacts", "hired", "tasks", "deal_types", "last_activity"];
-const DEFAULT_VISIBLE: ColKey[] = ["account", "status", "warmth", "owner", "opps", "contacts", "hired", "tasks", "last_activity"];
+type ColKey = "account" | "status" | "warmth" | "owner" | "opps" | "contacts" | "listings" | "hired" | "tasks" | "deal_types" | "last_activity";
+const COLUMN_ORDER: ColKey[] = ["account", "status", "warmth", "owner", "opps", "contacts", "listings", "hired", "tasks", "deal_types", "last_activity"];
+const DEFAULT_VISIBLE: ColKey[] = ["account", "status", "warmth", "owner", "opps", "contacts", "listings", "hired", "tasks", "last_activity"];
 const COL_LABELS: Record<ColKey, string> = {
   account: "Account", status: "Status", warmth: "Warmth", owner: "Owner", opps: "Opps",
-  contacts: "Contacts", hired: "Hired", tasks: "Open tasks", deal_types: "Deal types", last_activity: "Last activity",
+  contacts: "Contacts", listings: "Roles", hired: "Hired", tasks: "Open tasks", deal_types: "Deal types", last_activity: "Last activity",
 };
 // Relative weights → percentage widths (table-fixed, fluid, never overflows).
 const COL_WEIGHT: Record<ColKey, number> = {
-  account: 26, status: 12, warmth: 9, owner: 13, opps: 7, contacts: 8, hired: 7, tasks: 8, deal_types: 11, last_activity: 10,
+  account: 24, status: 12, warmth: 9, owner: 12, opps: 7, contacts: 8, listings: 7, hired: 7, tasks: 7, deal_types: 10, last_activity: 9,
 };
-const SORTABLE = new Set<ColKey>(["account", "status", "warmth", "owner", "opps", "contacts", "hired", "tasks", "last_activity"]);
+const SORTABLE = new Set<ColKey>(["account", "status", "warmth", "owner", "opps", "contacts", "listings", "hired", "tasks", "last_activity"]);
 
 // Total hired = builders we placed (our DB) + historical Pursuit fellows (SF).
 const totalHired = (a: JobsAccount) => (a.builders_hired ?? 0) + (a.fellows_hired ?? 0);
@@ -75,6 +75,7 @@ function extract(a: JobsAccount, key: ColKey): string | number {
     case "owner":         return a.owner_email ?? "";
     case "opps":          return a.opp_count;
     case "contacts":      return a.prospect_count;
+    case "listings":      return a.job_listings ?? 0;
     case "hired":         return totalHired(a);
     case "tasks":         return a.open_tasks ?? 0;
     case "deal_types":    return dealTypesOf(a).join(",");
@@ -142,6 +143,9 @@ function AccountRow({
     owner: <OwnerSelect owner={account.owner_email} staff={staff} onSave={(email) => onSaveOwner(account.account, email)} />,
     opps: account.opp_count > 0 ? <span className="inline-flex items-center gap-1 text-[12px] text-ink-2"><Briefcase size={11} className="text-ink-4" />{account.opp_count}</span> : <span className="text-ink-4">—</span>,
     contacts: account.prospect_count > 0 ? <span className="inline-flex items-center gap-1 text-[12px] text-ink-2"><Users size={11} className="text-ink-4" />{account.prospect_count}</span> : <span className="text-ink-4">—</span>,
+    listings: (account.job_listings ?? 0) > 0
+      ? <span className="inline-flex items-center gap-1 text-[12px] text-ink-2" title={`${account.roles_sourced ?? 0} sourced · ${account.roles_applied ?? 0} builder-applied`}><Briefcase size={11} className="text-ink-4" />{account.job_listings}</span>
+      : <span className="text-ink-4">—</span>,
     hired: (() => {
       const b = account.builders_hired ?? 0;
       const f = account.fellows_hired ?? 0;
@@ -280,7 +284,7 @@ export function JobsAccountHub({ initialQuery }: { initialQuery?: string } = {})
     <div className="flex flex-col gap-3 px-5 py-4">
       {showNew && <NewAccountDialog onClose={() => setShowNew(false)} />}
       <Toolbar>
-        <button onClick={() => setShowNew(true)} className="flex h-7 items-center gap-1 rounded bg-accent px-2.5 text-[12.5px] font-semibold text-white hover:opacity-90"><Plus size={13} />New account</button>
+        <button onClick={() => setShowNew(true)} className="inline-flex h-7 shrink-0 items-center gap-1 whitespace-nowrap rounded bg-accent px-3 text-[12.5px] font-semibold text-white hover:opacity-90"><Plus size={13} className="shrink-0" />New account</button>
         <input placeholder="Search accounts, contacts, opportunities…" value={query} onChange={(e) => setQuery(e.target.value)} className="h-7 w-64 rounded border border-border-strong bg-surface px-3 text-[12.5px] font-medium text-ink-2 outline-none placeholder:font-normal placeholder:text-ink-3 focus:border-accent focus:text-ink" />
         <AddFilterButton<Field> filterable={FILTERABLE as Record<Field, FieldMeta<unknown>>} selectOptions={selectOptions} onAdd={(r) => setRules((p) => [...p, r])} buttonLabel="Filter" />
         <select value={dealType} onChange={(e) => setDealType(e.target.value)} title="Filter to accounts with a deal of this type" className="h-7 rounded border border-border-strong bg-surface px-2 text-[12.5px] text-ink-2 outline-none focus:border-accent">

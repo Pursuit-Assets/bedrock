@@ -30,7 +30,7 @@ import {
 } from "@/pages/cleanup/Filters";
 import { cn } from "@/lib/utils";
 import {
-  useJobsContacts, useUpdateContact, useAddContactToJobs,
+  useJobsContacts, useAddContactToJobs,
   useContactDetail, useCreateContact, STAGE_LABELS,
   useFlagContactsForJobs, useUnflagJobsContact, useUpdateJobsMembership, MEMBERSHIP_STAGE_LABELS, MEMBERSHIP_STAGES,
   type JobStage, type JobContactWithDeal, type ContactSearchResult, type ContactCreateBody, type MembershipStage,
@@ -47,12 +47,6 @@ const CONTACT_STAGE_STYLES: Record<string, { label: string; className: string }>
   lead: { label: "Lead", className: "bg-stone-100 text-stone-500" },
   on_hold: { label: "On Hold", className: "bg-amber-50 text-amber-600" },
 };
-function ContactStagePill({ stage }: { stage: string | null }) {
-  if (!stage) return <span className="text-ink-4">—</span>;
-  const s = CONTACT_STAGE_STYLES[stage];
-  if (!s) return <span className="text-[12px] text-ink-2">{stage}</span>;
-  return <span className={cn("inline-flex w-fit items-center rounded-full px-2 py-0.5 text-[10px] font-medium leading-none", s.className)}>{s.label}</span>;
-}
 
 // ── warmth: recency + responsiveness (shared model with accounts) ──────────────
 function warmthInput(c: JobContactWithDeal) {
@@ -69,17 +63,17 @@ function Warmth({ c }: { c: JobContactWithDeal }) {
 }
 
 // ── columns ──────────────────────────────────────────────────────────────────
-type ColKey = "name" | "flag" | "title" | "company" | "industry" | "stage" | "warmth" | "listings" | "tasks" | "connected" | "deal" | "email" | "linkedin";
-const COLUMN_ORDER: ColKey[] = ["name", "flag", "title", "company", "industry", "stage", "warmth", "listings", "tasks", "connected", "deal", "email", "linkedin"];
+type ColKey = "name" | "flag" | "title" | "company" | "industry" | "warmth" | "listings" | "tasks" | "connected" | "deal" | "email" | "linkedin";
+const COLUMN_ORDER: ColKey[] = ["name", "flag", "title", "company", "industry", "warmth", "listings", "tasks", "connected", "deal", "email", "linkedin"];
 const DEFAULT_VISIBLE: ColKey[] = ["name", "flag", "title", "company", "connected", "warmth", "listings"];
 const COL_LABELS: Record<ColKey, string> = {
-  name: "Name", flag: "Jobs stage", title: "Title", company: "Company", industry: "Industry", stage: "Contact stage",
+  name: "Name", flag: "Jobs stage", title: "Title", company: "Company", industry: "Industry",
   warmth: "Warmth", listings: "Job listings", tasks: "Open tasks", connected: "Connected staff", deal: "Linked deal", email: "Email", linkedin: "LinkedIn",
 };
 const COL_WEIGHT: Record<ColKey, number> = {
-  name: 16, flag: 11, title: 12, company: 13, industry: 11, stage: 9, warmth: 8, listings: 9, tasks: 7, connected: 13, deal: 12, email: 14, linkedin: 5,
+  name: 16, flag: 11, title: 12, company: 13, industry: 11, warmth: 8, listings: 9, tasks: 7, connected: 13, deal: 12, email: 14, linkedin: 5,
 };
-const SORTABLE = new Set<ColKey>(["name", "flag", "title", "company", "industry", "stage", "warmth", "listings", "tasks"]);
+const SORTABLE = new Set<ColKey>(["name", "flag", "title", "company", "industry", "warmth", "listings", "tasks"]);
 const MEMBERSHIP_STAGE_OPTIONS = MEMBERSHIP_STAGES.map((s) => ({ value: s, label: MEMBERSHIP_STAGE_LABELS[s] }));
 
 function extract(c: JobContactWithDeal, key: ColKey): string | number {
@@ -89,7 +83,6 @@ function extract(c: JobContactWithDeal, key: ColKey): string | number {
     case "title": return (c.current_title ?? "").toLowerCase();
     case "company": return (c.current_company ?? "").toLowerCase();
     case "industry": return (c.company_industry ?? "").toLowerCase();
-    case "stage": return c.contact_stage ?? "";
     case "warmth": return warmthRank(warmthInput(c));
     case "listings": return (c.open_roles ?? 0) + (c.builder_apps ?? 0);
     case "tasks": return c.open_tasks ?? 0;
@@ -184,7 +177,6 @@ function NewContactModal({ onClose }: { onClose: () => void }) {
 
 // ── row ──────────────────────────────────────────────────────────────────────
 function ContactRow({ contact, expanded, onOpen, visibleCols, selected, onToggleSelect }: { contact: JobContactWithDeal; expanded: boolean; onOpen: () => void; visibleCols: ColKey[]; selected: boolean; onToggleSelect: () => void }) {
-  const updateContact = useUpdateContact();
   const updateMembership = useUpdateJobsMembership();
   const flagOne = useFlagContactsForJobs();
   const staff = contact.connected_staff_names ?? [];
@@ -199,11 +191,6 @@ function ContactRow({ contact, expanded, onOpen, visibleCols, selected, onToggle
     ),
     title: <span className="truncate text-[12.5px] text-ink-2">{contact.current_title || "—"}</span>,
     company: <span className="truncate text-[12.5px] text-ink-2">{contact.current_company || "—"}</span>,
-    stage: (
-      <InlineSelect<string> value={contact.contact_stage} options={CONTACT_STAGE_SELECT} emptyLabel="—"
-        renderValue={(v) => <ContactStagePill stage={v ?? null} />}
-        onSave={(v) => new Promise<void>((res, rej) => updateContact.mutate({ id: contact.contact_id, contact_stage: v || null }, { onSuccess: () => res(), onError: rej }))} />
-    ),
     flag: contact.membership_stage
       ? <InlineSelect<string> value={contact.membership_stage} options={MEMBERSHIP_STAGE_OPTIONS}
           renderValue={(v) => <span className="rounded-full bg-accent-soft px-1.5 py-0.5 text-[10.5px] font-medium text-accent-ink">{MEMBERSHIP_STAGE_LABELS[(v ?? contact.membership_stage) as MembershipStage] ?? v}</span>}
@@ -238,7 +225,7 @@ function ContactRow({ contact, expanded, onOpen, visibleCols, selected, onToggle
     <Fragment>
       <tr id={`contact-${contact.contact_id}`} className={cn("cursor-pointer border-t border-border-strong hover:bg-surface-2/40", expanded && "bg-surface-2/40")} onClick={onOpen}>
         {visibleCols.map((key) => (
-          <td key={key} className="overflow-hidden px-3 py-1.5 align-middle" onClick={(key === "stage" || key === "flag") ? (e) => e.stopPropagation() : undefined}>{cells[key]}</td>
+          <td key={key} className="overflow-hidden px-3 py-1.5 align-middle" onClick={key === "flag" ? (e) => e.stopPropagation() : undefined}>{cells[key]}</td>
         ))}
       </tr>
       {expanded && <tr className="bg-surface-2/20"><td colSpan={visibleCols.length} className="p-0"><ContactExpandTabs contactId={contact.contact_id} /></td></tr>}
@@ -256,6 +243,7 @@ export function JobsContacts({ initialQuery, initialContactId }: { initialQuery?
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [flagView, setFlagView] = useState<"all" | "flagged" | "unflagged">("all");
   const [flagOwner, setFlagOwner] = useState("");
+  const [connectedStaff, setConnectedStaff] = useState("");
   const flagContacts = useFlagContactsForJobs();
   const unflag = useUnflagJobsContact();
   const toggleSelect = useCallback((id: number) => setSelected((p) => { const n = new Set(p); n.has(id) ? n.delete(id) : n.add(id); return n; }), []);
@@ -306,16 +294,21 @@ export function JobsContacts({ initialQuery, initialContactId }: { initialQuery?
   const collapsedSet = useMemo(() => new Set(collapsedGroups), [collapsedGroups]);
   const toggleGroup = useCallback((k: string) => setCollapsedGroups((p) => p.includes(k) ? p.filter((x) => x !== k) : [...p, k]), [setCollapsedGroups]);
 
+  const staffOptions = useMemo(
+    () => [...new Set(allContacts.flatMap((c) => c.connected_staff_names ?? []))].sort((a, b) => a.localeCompare(b)),
+    [allContacts]);
+
   const q = query.trim().toLowerCase();
   const filtered = useMemo(() => {
     const f = allContacts.filter((c) => {
       for (const r of rules) if (!ruleApplies(c, r, FILTERABLE)) return false;
+      if (connectedStaff && !(c.connected_staff_names ?? []).includes(connectedStaff)) return false;
       if (!q) return true;
       return (c.full_name ?? "").toLowerCase().includes(q) || (c.email ?? "").toLowerCase().includes(q)
         || (c.current_company ?? "").toLowerCase().includes(q) || (c.current_title ?? "").toLowerCase().includes(q);
     });
     return sort.key == null ? f : sortBy(f, sort, (c, k) => extract(c, k));
-  }, [allContacts, q, rules, sort]);
+  }, [allContacts, q, rules, sort, connectedStaff]);
 
   const groupLabel = useCallback((k: string) => {
     if (k === "") return "—";
@@ -372,6 +365,10 @@ export function JobsContacts({ initialQuery, initialContactId }: { initialQuery?
           <option value="all">All contacts</option>
           <option value="flagged">Flagged for jobs</option>
           <option value="unflagged">Not flagged</option>
+        </select>
+        <select value={connectedStaff} onChange={(e) => setConnectedStaff(e.target.value)} title="Filter to contacts connected to a specific staffer" className="h-7 rounded border border-border-strong bg-surface px-2 text-[12.5px] text-ink-2 outline-none focus:border-accent">
+          <option value="">Any connection</option>
+          {staffOptions.map((s) => <option key={s} value={s}>{s}</option>)}
         </select>
         <select value={groupBy} onChange={(e) => { setGroupBy(e.target.value); setCollapsedGroups([]); }} title="Group rows by a field" className="h-7 rounded border border-border-strong bg-surface px-2 text-[12.5px] text-ink-2 outline-none focus:border-accent">
           {GROUP_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
