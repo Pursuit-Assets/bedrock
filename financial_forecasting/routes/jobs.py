@@ -2465,7 +2465,7 @@ async def jobs_accounts(
             GROUP BY 1
             """),
         # Persistent account record (owner, manual status override, SF link).
-        pool.fetch("SELECT account_key, owner_email, status_override, sf_account_id FROM bedrock.jobs_account"),
+        pool.fetch("SELECT account_key, display_name, owner_email, status_override, sf_account_id FROM bedrock.jobs_account"),
         # Open account-level tasks per account_key.
         pool.fetch(
             "SELECT parent_id, count(*) AS n FROM bedrock.jobs_account_task "
@@ -2595,6 +2595,11 @@ async def jobs_accounts(
         prospect_counts[key] = r["n"]
 
     ja = {r["account_key"]: r for r in ja_rows}
+    # Manually-created accounts (a jobs_account row with no opps/prospects yet)
+    # still need to appear on the hub, so seed a bucket for each.
+    for k, rec in ja.items():
+        if k not in accounts:
+            bucket(k, (rec["display_name"] or k).strip())
     open_tasks = {r["parent_id"]: r["n"] for r in task_rows}
     acct_act: dict = {}
 
@@ -2757,6 +2762,79 @@ async def update_jobs_account(
         body.notes or None,
     )
     return {"success": True}
+
+
+class JobsAccountCreate(BaseModel):
+    name: str
+    sf_account_id: Optional[str] = None   # link to an existing SF account; never creates one in SF
+
+
+@router.get("/accounts/resolve")
+async def resolve_account(
+    name: str = Query(..., min_length=1),
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+    client=Depends(get_mcp_client),
+):
+    """Before creating an account, check whether it already exists — locally (any
+    opp / prospect / jobs_account under a matching name) or in Salesforce (live).
+    Powers the 'don't create a duplicate — pick the existing one' create flow."""
+    from security import escape_soql_string
+    q = name.strip()
+    like = f"%{q.lower()}%"
+    rows = await conn.fetch(
+        """
+        SELECT k, min(disp) AS display, sum(n) AS n FROM (
+          SELECT lower(trim(account_name)) k, min(account_name) disp, count(*) n
+          FROM bedrock.jobs_opportunity WHERE deleted_at IS NULL AND lower(trim(account_name)) LIKE $1 GROUP BY 1
+          UNION ALL
+          SELECT lower(trim(current_company)) k, min(current_company) disp, count(*) n
+          FROM public.contacts WHERE is_jobs_contact AND lower(trim(current_company)) LIKE $1 GROUP BY 1
+          UNION ALL
+          SELECT account_key k, min(display_name) disp, 0 n
+          FROM bedrock.jobs_account WHERE account_key LIKE $1 GROUP BY 1
+        ) s GROUP BY k ORDER BY sum(n) DESC, min(disp) LIMIT 10
+        """,
+        like,
+    )
+    local = [{"account_key": r["k"], "display": (r["display"] or r["k"]), "record_count": int(r["n"] or 0)} for r in rows]
+    sf = []
+    try:
+        safe = escape_soql_string(q)
+        res = await client.salesforce.query(
+            "SELECT Id, Name, CreatedDate FROM Account WHERE RecordType.Name='Organization' "
+            f"AND Name LIKE '%{safe}%' ORDER BY Name LIMIT 10")
+        sf = [{"id": r["Id"], "name": r["Name"], "created": (r.get("CreatedDate") or "")[:10]}
+              for r in res.get("records", [])]
+    except Exception as e:
+        logger.warning(f"resolve_account SF lookup failed: {e}")
+    return {"success": True, "data": {"local": local, "salesforce": sf}}
+
+
+@router.post("/accounts")
+async def create_jobs_account(
+    body: JobsAccountCreate,
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Create a net-new local jobs account. Optionally linked to an existing SF
+    account (sf_account_id) — we NEVER create the account in Salesforce here.
+    Idempotent on account_key; won't clobber an existing SF link with null."""
+    key = body.name.strip().lower()
+    if not key:
+        raise HTTPException(status_code=400, detail="name is required")
+    await conn.execute(
+        """
+        INSERT INTO bedrock.jobs_account (account_key, display_name, sf_account_id)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (account_key) DO UPDATE
+          SET display_name  = EXCLUDED.display_name,
+              sf_account_id = COALESCE(jobs_account.sf_account_id, EXCLUDED.sf_account_id),
+              updated_at    = now()
+        """,
+        key, body.name.strip(), body.sf_account_id,
+    )
+    return {"success": True, "data": {"account_key": key, "display": body.name.strip()}}
 
 
 @router.get("/account-prospects")

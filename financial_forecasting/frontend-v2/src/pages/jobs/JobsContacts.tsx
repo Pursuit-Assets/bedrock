@@ -8,11 +8,12 @@
  * preview + New Contact sit above the table.
  */
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { CheckSquare, ExternalLink, Linkedin, Plus, Search, X } from "lucide-react";
 
 import { ContactDetail, initials } from "@/components/jobs/ProspectAccountExpandPanel";
 import { ContactExpandTabs, jobsContactPath, warmthTier, warmthRank } from "@/components/jobs/jobsEntity";
+import { CompanyPicker } from "@/components/jobs/CompanyPicker";
 import { withReferrer } from "@/components/detail";
 import { ColumnChooser } from "@/components/ui/ColumnChooser";
 import { InlineSelect } from "@/components/ui/InlineEdit";
@@ -133,6 +134,7 @@ function Spinner() {
   return <svg className="h-3 w-3 animate-spin" viewBox="0 0 24 24" fill="none"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" /></svg>;
 }
 function NewContactModal({ onClose }: { onClose: () => void }) {
+  const nav = useNavigate();
   const [form, setForm] = useState<NewContactForm>(DEFAULT_NEW_CONTACT_FORM);
   const createContact = useCreateContact();
   const set = <K extends keyof NewContactForm>(k: K, v: NewContactForm[K]) => setForm((p) => ({ ...p, [k]: v }));
@@ -144,8 +146,9 @@ function NewContactModal({ onClose }: { onClose: () => void }) {
       current_company: form.company.trim() || undefined, linkedin_url: form.linkedIn.trim() || undefined,
       contact_stage: form.stage,
     };
-    await createContact.mutateAsync(body);
+    const created = await createContact.mutateAsync(body);
     onClose();
+    if (created?.contact_id) nav(jobsContactPath(created.contact_id));
   }
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
@@ -159,7 +162,7 @@ function NewContactModal({ onClose }: { onClose: () => void }) {
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div className="flex flex-col gap-1"><label className="text-[11px] font-semibold uppercase tracking-wider text-ink-4">Title</label><input value={form.title} onChange={(e) => set("title", e.target.value)} className="w-full rounded-md border border-border-strong bg-surface px-3 py-2 text-[13px] text-ink focus:outline-none focus:ring-1 focus:ring-accent/40" /></div>
-            <div className="flex flex-col gap-1"><label className="text-[11px] font-semibold uppercase tracking-wider text-ink-4">Company</label><input value={form.company} onChange={(e) => set("company", e.target.value)} className="w-full rounded-md border border-border-strong bg-surface px-3 py-2 text-[13px] text-ink focus:outline-none focus:ring-1 focus:ring-accent/40" /></div>
+            <div className="flex flex-col gap-1"><label className="text-[11px] font-semibold uppercase tracking-wider text-ink-4">Company</label><CompanyPicker value={form.company} onChange={(v) => set("company", v)} /></div>
           </div>
           <div className="flex flex-col gap-1"><label className="text-[11px] font-semibold uppercase tracking-wider text-ink-4">LinkedIn URL</label><input type="url" value={form.linkedIn} onChange={(e) => set("linkedIn", e.target.value)} className="w-full rounded-md border border-border-strong bg-surface px-3 py-2 text-[13px] text-ink focus:outline-none focus:ring-1 focus:ring-accent/40" /></div>
           <div className="flex items-center justify-end gap-3 pt-1"><button type="button" onClick={onClose} className="px-4 py-2 text-[13px] font-medium text-ink-3 hover:text-ink">Cancel</button><button type="submit" disabled={createContact.isPending || !form.fullName.trim()} className="flex items-center gap-1.5 rounded-lg bg-accent px-4 py-2 text-[13px] font-medium text-white hover:opacity-90 disabled:opacity-50">{createContact.isPending ? <Spinner /> : <Plus size={13} />}{createContact.isPending ? "Creating…" : "Create Contact"}</button></div>

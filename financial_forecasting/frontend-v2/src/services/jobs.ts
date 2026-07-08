@@ -402,6 +402,43 @@ export function useJobsAccounts(dealType?: string, scope: "engaged" | "all" = "e
   });
 }
 
+export interface AccountResolveResult {
+  local: { account_key: string; display: string; record_count: number }[];
+  salesforce: { id: string; name: string; created: string }[];
+}
+/** Live check before creating an account: does a matching account already exist
+ *  locally or in Salesforce? Drives the 'pick the existing one, don't dupe' flow. */
+export function useResolveAccount(name: string) {
+  return useQuery<AccountResolveResult>({
+    queryKey: ["jobs", "account-resolve", name.trim().toLowerCase()],
+    queryFn: async () => {
+      const { data } = await api.get<ApiResponse<AccountResolveResult>>(
+        `/api/jobs/accounts/resolve?name=${encodeURIComponent(name.trim())}`);
+      return data.data;
+    },
+    enabled: name.trim().length >= 2,
+    staleTime: 15_000,
+  });
+}
+/** Create a net-new local jobs account (optionally linked to an existing SF id).
+ *  Never creates an account in Salesforce. Returns the new account_key. */
+export function useCreateJobsAccount() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (body: { name: string; sf_account_id?: string | null }) => {
+      const { data } = await api.post<ApiResponse<{ account_key: string; display: string }>>(
+        "/api/jobs/accounts", body);
+      return data.data;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["jobs", "accounts"] });
+      qc.invalidateQueries({ queryKey: ["jobs", "account-names"] });
+      toast.success("Account created");
+    },
+    onError: () => toast.error("Failed to create account"),
+  });
+}
+
 export interface JobsAccountName { account_key: string; account: string }
 /** Lightweight account names for dropdowns — avoids the full /accounts payload
  *  (which nests every prospect, ~38k rows). */

@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   useJobsOpportunities,
   useJobsOpportunity,
@@ -31,6 +32,7 @@ import {
   type OppPlacement,
 } from "@/services/jobs";
 import { ActivitySourceIcon } from "@/components/ActivitySourceIcon";
+import { jobsOpportunityPath } from "@/components/jobs/jobsEntity";
 import { OppRolesSection } from "@/components/jobs/OppRolesSection";
 import { OppBuilderActivity } from "@/components/jobs/OppBuilderActivity";
 import { JobsTasks } from "@/components/jobs/JobsTasks";
@@ -1559,6 +1561,7 @@ const DEFAULT_NEW_DEAL_FORM: NewDealForm = {
 };
 
 function NewDealModal({ onClose }: { onClose: () => void }) {
+  const nav = useNavigate();
   const [form, setForm] = useState<NewDealForm>(DEFAULT_NEW_DEAL_FORM);
   const createOpportunity = useCreateOpportunity();
 
@@ -1574,7 +1577,7 @@ function NewDealModal({ onClose }: { onClose: () => void }) {
       ? Number(form.expectedSalary.replace(/[^0-9.]/g, ""))
       : undefined;
 
-    await createOpportunity.mutateAsync({
+    const created = await createOpportunity.mutateAsync({
       account_id: "UNKNOWN",
       account_name: form.companyName.trim(),
       stage: form.stage,
@@ -1586,6 +1589,7 @@ function NewDealModal({ onClose }: { onClose: () => void }) {
     } as Partial<JobsOpportunity>);
 
     onClose();
+    if (created?.id) nav(jobsOpportunityPath(created.id));
   }
 
   return (

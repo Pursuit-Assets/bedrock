@@ -9,11 +9,12 @@
  */
 import { Fragment, useCallback, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { Briefcase, CheckSquare, ChevronDown, ChevronRight, ExternalLink, UserCheck, Users } from "lucide-react";
+import { Briefcase, CheckSquare, ChevronDown, ChevronRight, ExternalLink, Plus, UserCheck, Users } from "lucide-react";
 
 import { AccountAvatar } from "@/components/AccountAvatar";
 import { withReferrer } from "@/components/detail";
 import { AccountExpandTabs } from "@/components/jobs/accountTabs";
+import { NewAccountDialog } from "@/components/jobs/NewAccountDialog";
 import { AccountWarmth, DEAL_TYPE_LABELS, OwnerSelect, jobsAccountPath, warmthRank } from "@/components/jobs/jobsEntity";
 import { ColumnChooser } from "@/components/ui/ColumnChooser";
 import { SavedViewsPicker } from "@/components/ui/SavedViewsPicker";
@@ -175,6 +176,7 @@ export function JobsAccountHub({ initialQuery }: { initialQuery?: string } = {})
   const [rules, setRules] = useState<FilterRule<Field>[]>([]);
   const [dealType, setDealType] = useState("all");
   const [scope, setScope] = useState<"engaged" | "all">("engaged"); // engaged hides ~32k cold contacts; All shows every jobs account (e.g. impact.com)
+  const [showNew, setShowNew] = useState(false);
   const [showAll, setShowAll] = useState(false); // window big lists (2.8k+ engaged accounts) so the table renders instantly
   const RENDER_CAP = 200;
   const [groupBy, setGroupBy] = useSessionState<string>("jobs-accounts:groupBy", "");
@@ -276,7 +278,9 @@ export function JobsAccountHub({ initialQuery }: { initialQuery?: string } = {})
 
   return (
     <div className="flex flex-col gap-3 px-5 py-4">
+      {showNew && <NewAccountDialog onClose={() => setShowNew(false)} />}
       <Toolbar>
+        <button onClick={() => setShowNew(true)} className="flex h-7 items-center gap-1 rounded bg-accent px-2.5 text-[12.5px] font-semibold text-white hover:opacity-90"><Plus size={13} />New account</button>
         <input placeholder="Search accounts, contacts, opportunities…" value={query} onChange={(e) => setQuery(e.target.value)} className="h-7 w-64 rounded border border-border-strong bg-surface px-3 text-[12.5px] font-medium text-ink-2 outline-none placeholder:font-normal placeholder:text-ink-3 focus:border-accent focus:text-ink" />
         <AddFilterButton<Field> filterable={FILTERABLE as Record<Field, FieldMeta<unknown>>} selectOptions={selectOptions} onAdd={(r) => setRules((p) => [...p, r])} buttonLabel="Filter" />
         <select value={dealType} onChange={(e) => setDealType(e.target.value)} title="Filter to accounts with a deal of this type" className="h-7 rounded border border-border-strong bg-surface px-2 text-[12.5px] text-ink-2 outline-none focus:border-accent">
