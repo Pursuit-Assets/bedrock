@@ -2912,22 +2912,27 @@ def _user_email(user) -> Optional[str]:
 
 
 async def _flag_contacts(conn, contact_ids: list[int], owner_email: Optional[str],
-                         reason: str, note: Optional[str], by: Optional[str]) -> int:
-    """Create/keep a 'flagged' membership per contact (never downgrades a further
-    stage). Writes through is_jobs_contact=true so legacy views stay consistent."""
+                         reason: str, note: Optional[str], by: Optional[str],
+                         stage: Optional[str] = None) -> int:
+    """Create/keep a membership per contact. With no stage → 'flagged' and never
+    downgrades an existing further stage (plain flag). With an explicit stage →
+    set it (bulk advance). Writes through is_jobs_contact=true for legacy views."""
     if not contact_ids:
         return 0
+    stg = stage or "flagged"
+    conflict_stage = "stage = EXCLUDED.stage," if stage else ""
     await conn.execute(
-        """
+        f"""
         INSERT INTO bedrock.jobs_contact_membership
             (contact_id, stage, owner_email, activation_reason, activation_note, flagged_by)
-        SELECT cid, 'flagged', $2, $3, $4, $5 FROM unnest($1::int[]) AS cid
+        SELECT cid, $6, $2, $3, $4, $5 FROM unnest($1::int[]) AS cid
         ON CONFLICT (contact_id) DO UPDATE SET
+            {conflict_stage}
             owner_email       = COALESCE(jobs_contact_membership.owner_email, EXCLUDED.owner_email),
             activation_reason = COALESCE(jobs_contact_membership.activation_reason, EXCLUDED.activation_reason),
             updated_at        = now()
         """,
-        contact_ids, owner_email, reason, note, by,
+        contact_ids, owner_email, reason, note, by, stg,
     )
     await conn.execute(
         "UPDATE public.contacts SET is_jobs_contact = true WHERE contact_id = ANY($1::int[]) AND NOT is_jobs_contact",
@@ -2940,15 +2945,19 @@ class FlagJobsBody(BaseModel):
     owner_email: Optional[str] = None
     activation_reason: str = "manual"
     note: Optional[str] = None
+    stage: Optional[str] = None   # bulk-advance to this funnel stage; None = 'flagged'
 
 
 @router.post("/contacts/flag-jobs")
 async def flag_contacts_for_jobs(body: FlagJobsBody, user=Depends(require_auth), conn=Depends(get_db)):
-    """Bulk 'flag for jobs activation' — the contacts-page carve action."""
+    """Bulk 'flag for jobs activation' — the contacts-page carve action. An
+    optional `stage` bulk-advances the funnel for the selected contacts."""
     if body.activation_reason not in ("manual", "scraper_job", "strategic", "algorithm"):
         raise HTTPException(400, "invalid activation_reason")
+    if body.stage is not None and body.stage not in _MEMBERSHIP_STAGES:
+        raise HTTPException(400, f"invalid stage; one of {_MEMBERSHIP_STAGES}")
     n = await _flag_contacts(conn, body.contact_ids, body.owner_email,
-                             body.activation_reason, body.note, _user_email(user))
+                             body.activation_reason, body.note, _user_email(user), body.stage)
     return {"success": True, "data": {"flagged": n}}
 
 

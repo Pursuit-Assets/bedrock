@@ -348,7 +348,7 @@ export function useJobsContacts(filters: ContactFilters = {}) {
 export function useFlagContactsForJobs() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async (body: { contact_ids: number[]; owner_email?: string; activation_reason?: string; note?: string }) => {
+    mutationFn: async (body: { contact_ids: number[]; owner_email?: string; activation_reason?: string; note?: string; stage?: string }) => {
       const { data } = await api.post<ApiResponse<{ flagged: number }>>("/api/jobs/contacts/flag-jobs", body);
       return data.data;
     },

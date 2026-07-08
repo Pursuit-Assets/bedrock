@@ -32,7 +32,7 @@ import { cn } from "@/lib/utils";
 import {
   useJobsContacts, useUpdateContact, useAddContactToJobs,
   useContactDetail, useCreateContact, STAGE_LABELS,
-  useFlagContactsForJobs, useUnflagJobsContact, MEMBERSHIP_STAGE_LABELS, MEMBERSHIP_STAGES,
+  useFlagContactsForJobs, useUnflagJobsContact, useUpdateJobsMembership, MEMBERSHIP_STAGE_LABELS, MEMBERSHIP_STAGES,
   type JobStage, type JobContactWithDeal, type ContactSearchResult, type ContactCreateBody, type MembershipStage,
 } from "@/services/jobs";
 
@@ -80,6 +80,7 @@ const COL_WEIGHT: Record<ColKey, number> = {
   name: 16, flag: 11, title: 12, company: 13, industry: 11, stage: 9, warmth: 8, listings: 9, tasks: 7, connected: 13, deal: 12, email: 14, linkedin: 5,
 };
 const SORTABLE = new Set<ColKey>(["name", "flag", "title", "company", "industry", "stage", "warmth", "listings", "tasks"]);
+const MEMBERSHIP_STAGE_OPTIONS = MEMBERSHIP_STAGES.map((s) => ({ value: s, label: MEMBERSHIP_STAGE_LABELS[s] }));
 
 function extract(c: JobContactWithDeal, key: ColKey): string | number {
   switch (key) {
@@ -184,6 +185,8 @@ function NewContactModal({ onClose }: { onClose: () => void }) {
 // ── row ──────────────────────────────────────────────────────────────────────
 function ContactRow({ contact, expanded, onOpen, visibleCols, selected, onToggleSelect }: { contact: JobContactWithDeal; expanded: boolean; onOpen: () => void; visibleCols: ColKey[]; selected: boolean; onToggleSelect: () => void }) {
   const updateContact = useUpdateContact();
+  const updateMembership = useUpdateJobsMembership();
+  const flagOne = useFlagContactsForJobs();
   const staff = contact.connected_staff_names ?? [];
   const cells: Record<ColKey, React.ReactNode> = {
     name: (
@@ -202,8 +205,11 @@ function ContactRow({ contact, expanded, onOpen, visibleCols, selected, onToggle
         onSave={(v) => new Promise<void>((res, rej) => updateContact.mutate({ id: contact.contact_id, contact_stage: v || null }, { onSuccess: () => res(), onError: rej }))} />
     ),
     flag: contact.membership_stage
-      ? <span className="rounded-full bg-accent-soft px-1.5 py-0.5 text-[10.5px] font-medium text-accent-ink">{MEMBERSHIP_STAGE_LABELS[contact.membership_stage as MembershipStage] ?? contact.membership_stage}</span>
-      : <span className="text-ink-4">—</span>,
+      ? <InlineSelect<string> value={contact.membership_stage} options={MEMBERSHIP_STAGE_OPTIONS}
+          renderValue={(v) => <span className="rounded-full bg-accent-soft px-1.5 py-0.5 text-[10.5px] font-medium text-accent-ink">{MEMBERSHIP_STAGE_LABELS[(v ?? contact.membership_stage) as MembershipStage] ?? v}</span>}
+          onSave={(v) => new Promise<void>((res, rej) => updateMembership.mutate({ contact_id: contact.contact_id, stage: v || undefined }, { onSuccess: () => res(), onError: rej }))} />
+      : <button type="button" onClick={(e) => { e.stopPropagation(); flagOne.mutate({ contact_ids: [contact.contact_id] }); }}
+          className="inline-flex items-center gap-1 rounded border border-dashed border-border-strong px-2 py-0.5 text-[11px] text-ink-3 hover:border-accent hover:text-accent"><Zap size={10} /> Flag</button>,
     industry: <span className="truncate text-[12px] text-ink-3">{contact.company_industry || "—"}</span>,
     listings: (() => {
       const src = contact.open_roles ?? 0, app = contact.builder_apps ?? 0, tot = src + app;
@@ -232,7 +238,7 @@ function ContactRow({ contact, expanded, onOpen, visibleCols, selected, onToggle
     <Fragment>
       <tr id={`contact-${contact.contact_id}`} className={cn("cursor-pointer border-t border-border-strong hover:bg-surface-2/40", expanded && "bg-surface-2/40")} onClick={onOpen}>
         {visibleCols.map((key) => (
-          <td key={key} className="overflow-hidden px-3 py-1.5 align-middle" onClick={key === "stage" ? (e) => e.stopPropagation() : undefined}>{cells[key]}</td>
+          <td key={key} className="overflow-hidden px-3 py-1.5 align-middle" onClick={(key === "stage" || key === "flag") ? (e) => e.stopPropagation() : undefined}>{cells[key]}</td>
         ))}
       </tr>
       {expanded && <tr className="bg-surface-2/20"><td colSpan={visibleCols.length} className="p-0"><ContactExpandTabs contactId={contact.contact_id} /></td></tr>}
@@ -383,6 +389,10 @@ export function JobsContacts({ initialQuery, initialContactId }: { initialQuery?
           <span className="font-semibold text-accent-ink">{selected.size} selected</span>
           <input value={flagOwner} onChange={(e) => setFlagOwner(e.target.value)} placeholder="owner email (optional)" className="h-7 w-56 rounded border border-border-strong bg-surface px-2 text-[12px] text-ink outline-none focus:border-accent" />
           <button type="button" disabled={flagContacts.isPending} onClick={() => flagContacts.mutate({ contact_ids: [...selected], owner_email: flagOwner.trim() || undefined }, { onSuccess: () => setSelected(new Set()) })} className="inline-flex h-7 items-center gap-1 rounded bg-accent px-3 font-medium text-white hover:opacity-90 disabled:opacity-50"><Zap size={12} /> Flag for jobs activation</button>
+          <select defaultValue="" onChange={(e) => { const st = e.target.value; if (!st) return; flagContacts.mutate({ contact_ids: [...selected], owner_email: flagOwner.trim() || undefined, stage: st }, { onSuccess: () => setSelected(new Set()) }); e.currentTarget.value = ""; }} className="h-7 rounded border border-border-strong bg-surface px-2 text-[12px] text-ink-2 outline-none focus:border-accent">
+            <option value="">Set stage…</option>
+            {MEMBERSHIP_STAGE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
           <button type="button" onClick={() => { [...selected].forEach((id) => unflag.mutate(id)); setSelected(new Set()); }} className="h-7 rounded border border-border-strong bg-surface px-3 text-ink-2 hover:text-ink">Unflag</button>
           <button type="button" onClick={() => setSelected(new Set())} className="ml-1 text-[11.5px] font-medium text-ink-3 underline-offset-4 hover:text-ink-2 hover:underline">Clear selection</button>
         </div>
