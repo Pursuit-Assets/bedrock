@@ -22,7 +22,7 @@ import {
   useUpdateContact,
   useUpdateOpportunity,
   type OpenRole,
-  type BuilderApplication,
+  type CompanyBuilderRole,
   STAGE_LABELS,
   type JobStage,
   type DealType,
@@ -261,18 +261,18 @@ function ContactOpenRolesTab({ roles }: { roles: OpenRole[] }) {
   );
 }
 
-function ContactBuilderAppsTab({ apps }: { apps: BuilderApplication[] }) {
+function ContactBuilderAppsTab({ apps }: { apps: CompanyBuilderRole[] }) {
   if (!apps.length) return <div className="p-4 text-[12px] italic text-ink-3">No builder applications at this company yet.</div>;
   return (
     <div className="flex flex-col divide-y divide-border">
       {apps.map((a) => (
-        <div key={a.job_application_id} className="flex items-center gap-3 px-4 py-2">
+        <div key={a.role_title} className="flex items-center gap-3 px-4 py-2">
           <div className="min-w-0 flex-1">
-            <div className="truncate text-[13px] font-medium text-ink">{a.role_title || "—"}</div>
-            <div className="truncate text-[11.5px] text-ink-3">{[a.source_type, a.date_applied ? new Date(a.date_applied).toLocaleDateString() : null].filter(Boolean).join(" · ") || "—"}</div>
+            <div className="truncate text-[13px] font-medium text-ink">{a.role_title}</div>
+            <div className="truncate text-[11.5px] text-ink-3">{[`${a.applicant_count} builder${a.applicant_count === 1 ? "" : "s"}`, a.source_type].filter(Boolean).join(" · ")}</div>
           </div>
           {!a.team_linked && <span className="shrink-0 rounded-full bg-surface-2 px-1.5 py-0.5 text-[10px] text-ink-3">self-applied</span>}
-          {a.stage && <span className="shrink-0 rounded-full bg-accent-soft px-1.5 py-0.5 text-[10px] font-medium text-accent-ink">{a.stage}</span>}
+          {(a.stages ?? []).slice(0, 3).map((s) => <span key={s} className="shrink-0 rounded-full bg-accent-soft px-1.5 py-0.5 text-[10px] font-medium text-accent-ink">{s}</span>)}
         </div>
       ))}
     </div>
@@ -281,7 +281,7 @@ function ContactBuilderAppsTab({ apps }: { apps: BuilderApplication[] }) {
 
 // Job-listings activity at the company — team-sourced roles + jobs builders
 // applied to on their own. Both are "there are jobs here worth a warm intro."
-function ContactJobListingsTab({ roles, apps }: { roles: OpenRole[]; apps: BuilderApplication[] }) {
+function ContactJobListingsTab({ roles, apps }: { roles: OpenRole[]; apps: CompanyBuilderRole[] }) {
   if (!roles.length && !apps.length) return <div className="p-4 text-[12px] italic text-ink-3">No job-listings activity at this company yet.</div>;
   const hdr = "bg-surface-2/40 px-4 py-1 text-[10px] font-semibold uppercase tracking-wider text-ink-4";
   return (

@@ -265,19 +265,19 @@ export interface OpenRole {
   builder_interest_count: number | null;
   created_at: string | null;
 }
-export interface BuilderApplication {
-  job_application_id: number;
-  role_title: string | null;
-  stage: string | null;
+export interface CompanyBuilderRole {
+  role_title: string;         // one row per unique role at the company
+  applicant_count: number;    // # distinct builders who applied to it
+  stages: string[] | null;    // stages across those applicants
   source_type: string | null;
-  date_applied: string | null;
-  team_linked: boolean;   // false = builder applied on their own
+  last_applied: string | null;
+  team_linked: boolean;       // true if any applicant tied to a team opportunity
 }
 export interface ContactDetail extends JobContactWithDeal {
   activity: ActivityEntry[];
   connected_staff?: ConnectedStaff[];
   open_roles_list?: OpenRole[];   // the actual sourced roles (list carries only the count)
-  builder_applications?: BuilderApplication[];
+  builder_applications?: CompanyBuilderRole[];
 }
 
 export function useContactDetail(id: number | null) {

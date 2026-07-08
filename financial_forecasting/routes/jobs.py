@@ -3286,10 +3286,12 @@ async def list_contacts(
             (SELECT count(*) FROM public.job_postings jp
                WHERE coalesce(trim(jp.company_name),'') <> ''
                  AND lower(trim(jp.company_name)) = lower(trim(c.current_company))) AS open_roles,
-            -- jobs builders have applied to at this company (mostly self-directed)
-            (SELECT count(*) FROM public.job_applications ja
+            -- DISTINCT roles builders have applied to at this company (not one per
+            -- applicant — 8 builders on the same role is 1 listing).
+            (SELECT count(DISTINCT lower(trim(ja.role_title))) FROM public.job_applications ja
                WHERE coalesce(trim(ja.company_name),'') <> ''
-                 AND lower(trim(ja.company_name)) = lower(trim(c.current_company))) AS builder_apps
+                 AND lower(trim(ja.company_name)) = lower(trim(c.current_company))
+                 AND coalesce(trim(ja.role_title),'') <> '') AS builder_apps
         FROM public.contacts c
         LEFT JOIN bedrock.jobs_contact_membership m ON m.contact_id = c.contact_id
         LEFT JOIN public.companies co ON co.company_id = c.company_id
@@ -3589,12 +3591,17 @@ async def get_contact(
     if row["current_company"]:
         ba = await conn.fetch(
             """
-            SELECT job_application_id, role_title, stage, source_type, date_applied,
-                   (jobs_opportunity_id IS NOT NULL) AS team_linked
+            SELECT coalesce(nullif(trim(role_title), ''), 'Unspecified role') AS role_title,
+                   count(DISTINCT builder_id)                                  AS applicant_count,
+                   array_agg(DISTINCT stage) FILTER (WHERE stage IS NOT NULL)  AS stages,
+                   bool_or(jobs_opportunity_id IS NOT NULL)                    AS team_linked,
+                   max(date_applied)                                          AS last_applied,
+                   (array_agg(source_type ORDER BY date_applied DESC NULLS LAST))[1] AS source_type
             FROM public.job_applications
             WHERE coalesce(trim(company_name), '') <> ''
               AND lower(trim(company_name)) = lower(trim($1))
-            ORDER BY date_applied DESC NULLS LAST
+            GROUP BY 1
+            ORDER BY count(DISTINCT builder_id) DESC, max(date_applied) DESC NULLS LAST
             """,
             row["current_company"],
         )
