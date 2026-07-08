@@ -21,6 +21,7 @@ import {
   useContactOpportunities,
   useUpdateContact,
   useUpdateOpportunity,
+  type OpenRole,
   STAGE_LABELS,
   type JobStage,
   type DealType,
@@ -240,8 +241,29 @@ export function ContactActivityTab({ contactId }: { contactId: number }) {
 /** The full contact expand panel — Activity · Opportunities · Tasks · Comments,
  * plus the contact-level actions (open detail, request intro) so the row a
  * user is already working in covers the whole workflow. */
+function ContactOpenRolesTab({ roles }: { roles: OpenRole[] }) {
+  if (!roles.length) return <div className="p-4 text-[12px] italic text-ink-3">No roles sourced at this company yet.</div>;
+  return (
+    <div className="flex flex-col divide-y divide-border">
+      {roles.map((r) => (
+        <div key={r.id} className="flex items-center gap-3 px-4 py-2">
+          <Briefcase size={13} className="shrink-0 text-ink-4" />
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-[13px] font-medium text-ink">{r.job_title || "—"}</div>
+            <div className="truncate text-[11.5px] text-ink-3">{[r.location, r.salary_range, r.aligned_sector].filter(Boolean).join(" · ") || "—"}</div>
+          </div>
+          {r.status && <span className="shrink-0 rounded-full bg-surface-2 px-1.5 py-0.5 text-[10px] text-ink-3">{r.status}</span>}
+          {r.job_url && <a href={r.job_url} target="_blank" rel="noreferrer" className="shrink-0 text-ink-4 hover:text-accent" title="Open posting"><ExternalLink size={13} /></a>}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function ContactExpandTabs({ contactId }: { contactId: number }) {
   const { data } = useContactOpportunities(contactId);
+  const detail = useContactDetail(contactId);
+  const roles = detail.data?.open_roles_list ?? [];
   const [introOpen, setIntroOpen] = useState(false);
   const id = String(contactId);
   return (
@@ -259,6 +281,7 @@ export function ContactExpandTabs({ contactId }: { contactId: number }) {
         tabs={[
           { id: "activity", label: "Activity", render: () => <ContactActivityTab contactId={contactId} /> },
           { id: "opps", label: "Opportunities", count: data?.length ?? null, render: () => <ContactOppsTab contactId={contactId} /> },
+          { id: "roles", label: "Open roles", count: roles.length || null, render: () => <ContactOpenRolesTab roles={roles} /> },
           { id: "tasks", label: "Tasks", render: () => <div className="p-3"><JobsTasks parentType="prospect" parentId={id} /></div> },
           { id: "comments", label: "Comments", render: () => <div className="p-3"><JobsComments parentType="prospect" parentId={id} /></div> },
         ]}

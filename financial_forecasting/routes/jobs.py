@@ -3562,6 +3562,28 @@ async def get_contact(
         for r in conn_rows
     ]
 
+    # Open roles the team has sourced at this contact's company (what the
+    # "open roles" signal on the list counts — here we return the actual rows).
+    open_roles: list = []
+    if row["current_company"]:
+        pr = await conn.fetch(
+            """
+            SELECT id, job_title, job_url, status, source, salary_range, location,
+                   aligned_sector, builder_interest_count, created_at
+            FROM public.job_postings
+            WHERE coalesce(trim(company_name), '') <> ''
+              AND lower(trim(company_name)) = lower(trim($1))
+            ORDER BY created_at DESC NULLS LAST
+            """,
+            row["current_company"],
+        )
+        open_roles = [dict(r) for r in pr]
+
+    # Membership (jobs activation flag + funnel), if any.
+    mem = await conn.fetchrow(
+        "SELECT stage, owner_email, first_outreach_by FROM bedrock.jobs_contact_membership WHERE contact_id = $1",
+        contact_id)
+
     deal = None
     if row["deal_id"]:
         deal = {"id": str(row["deal_id"]), "account_name": row["deal_account"], "stage": row["deal_stage"], "owner_email": row["deal_owner"]}
@@ -3584,6 +3606,10 @@ async def get_contact(
             "deal":            deal,
             "activity":        [dict(a) for a in activity],
             "connected_staff": connected_staff,
+            "open_roles_list": open_roles,
+            "membership_stage": mem["stage"] if mem else None,
+            "membership_owner": mem["owner_email"] if mem else None,
+            "first_outreach_by": mem["first_outreach_by"] if mem else None,
         },
     }
 

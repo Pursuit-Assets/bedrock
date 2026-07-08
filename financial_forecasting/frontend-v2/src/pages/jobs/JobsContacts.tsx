@@ -32,7 +32,7 @@ import { cn } from "@/lib/utils";
 import {
   useJobsContacts, useUpdateContact, useAddContactToJobs,
   useContactDetail, useCreateContact, STAGE_LABELS,
-  useFlagContactsForJobs, useUnflagJobsContact, MEMBERSHIP_STAGE_LABELS,
+  useFlagContactsForJobs, useUnflagJobsContact, MEMBERSHIP_STAGE_LABELS, MEMBERSHIP_STAGES,
   type JobStage, type JobContactWithDeal, type ContactSearchResult, type ContactCreateBody, type MembershipStage,
 } from "@/services/jobs";
 
@@ -97,16 +97,21 @@ function extract(c: JobContactWithDeal, key: ColKey): string | number {
 }
 
 // ── filters + grouping ─────────────────────────────────────────────────────────
-type Field = "name" | "title" | "company" | "stage" | "has_deal" | "connected" | "last_activity" | "first_contact_date" | "last_contact_date";
+type Field = "name" | "title" | "company" | "industry" | "stage" | "flag" | "roles" | "has_deal" | "connected" | "connection_count" | "last_activity" | "first_contact_date" | "last_contact_date";
 const FILTERABLE: Record<Field, FieldMeta<JobContactWithDeal>> = {
   name: { label: "Name", type: "text", getValue: (c) => c.full_name ?? "" },
   title: { label: "Title", type: "text", getValue: (c) => c.current_title ?? "" },
   company: { label: "Company", type: "text", getValue: (c) => c.current_company ?? "" },
-  stage: { label: "Stage", type: "select", getValue: (c) => c.contact_stage ?? "" },
+  industry: { label: "Industry", type: "text", getValue: (c) => c.company_industry ?? "" },
+  stage: { label: "Contact stage", type: "select", getValue: (c) => c.contact_stage ?? "" },
+  flag: { label: "Jobs stage", type: "select", getValue: (c) => c.membership_stage ?? "" },
+  roles: { label: "Open roles", type: "number", getValue: (c) => c.open_roles ?? 0 },
   has_deal: { label: "Linked deal", type: "select", getValue: (c) => (c.deal ? "yes" : "no") },
-  // Text so you can filter "Connected staff contains <person>" (search by person),
-  // plus is_empty / is_not_empty for has-any / none.
-  connected: { label: "Connected staff", type: "text", getValue: (c) => (c.connected_staff_names ?? []).join(", ") },
+  // Text: filter "Connected staff contains <person>" (a SPECIFIC staffer), plus
+  // is_empty / is_not_empty for none / any connection.
+  connected: { label: "Connected staff (name)", type: "text", getValue: (c) => (c.connected_staff_names ?? []).join(", ") },
+  // Number: "connected to more than N staff".
+  connection_count: { label: "# staff connections", type: "number", getValue: (c) => (c.connected_staff_names ?? []).length },
   // Top-of-funnel triage: filter by activity recency (Last 7/30/90 days dropdown).
   last_activity: { label: "Last activity", type: "recency", getValue: (c) => c.last_activity_at ?? "" },
   // Exact-date windows on the touch history (before/after a calendar date).
@@ -286,6 +291,7 @@ export function JobsContacts({ initialQuery, initialContactId }: { initialQuery?
 
   const selectOptions: Partial<Record<Field, { value: string; label: string }[]>> = useMemo(() => ({
     stage: CONTACT_STAGE_SELECT, has_deal: YESNO, last_activity: RECENCY_OPTIONS,
+    flag: MEMBERSHIP_STAGES.map((s) => ({ value: s, label: MEMBERSHIP_STAGE_LABELS[s] })),
   }), []);
 
   const collapsedSet = useMemo(() => new Set(collapsedGroups), [collapsedGroups]);
@@ -381,7 +387,7 @@ export function JobsContacts({ initialQuery, initialContactId }: { initialQuery?
 
       {rules.length > 0 && (
         <div className="flex flex-wrap items-center gap-1.5">
-          {rules.map((r) => <FilterChip key={r.id} label={describeRule(r, FILTERABLE, (f, v) => f === "stage" ? (CONTACT_STAGE_STYLES[v]?.label ?? v) : f === "last_activity" ? recencyLabel(v) : v)} onRemove={() => setRules((p) => p.filter((x) => x.id !== r.id))} />)}
+          {rules.map((r) => <FilterChip key={r.id} label={describeRule(r, FILTERABLE, (f, v) => f === "stage" ? (CONTACT_STAGE_STYLES[v]?.label ?? v) : f === "flag" ? (MEMBERSHIP_STAGE_LABELS[v as MembershipStage] ?? v) : f === "last_activity" ? recencyLabel(v) : v)} onRemove={() => setRules((p) => p.filter((x) => x.id !== r.id))} />)}
           <button type="button" onClick={() => setRules([])} className="ml-1 text-[11.5px] font-medium text-ink-3 underline-offset-4 hover:text-ink-2 hover:underline">Clear all</button>
         </div>
       )}

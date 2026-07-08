@@ -252,9 +252,22 @@ export interface ConnectedStaff {
   connected_date: string | null;
 }
 
+export interface OpenRole {
+  id: number;
+  job_title: string | null;
+  job_url: string | null;
+  status: string | null;
+  source: string | null;
+  salary_range: string | null;
+  location: string | null;
+  aligned_sector: string | null;
+  builder_interest_count: number | null;
+  created_at: string | null;
+}
 export interface ContactDetail extends JobContactWithDeal {
   activity: ActivityEntry[];
   connected_staff?: ConnectedStaff[];
+  open_roles_list?: OpenRole[];   // the actual sourced roles (list carries only the count)
 }
 
 export function useContactDetail(id: number | null) {
