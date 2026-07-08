@@ -279,6 +279,19 @@ function ContactBuilderAppsTab({ apps }: { apps: BuilderApplication[] }) {
   );
 }
 
+// Job-listings activity at the company — team-sourced roles + jobs builders
+// applied to on their own. Both are "there are jobs here worth a warm intro."
+function ContactJobListingsTab({ roles, apps }: { roles: OpenRole[]; apps: BuilderApplication[] }) {
+  if (!roles.length && !apps.length) return <div className="p-4 text-[12px] italic text-ink-3">No job-listings activity at this company yet.</div>;
+  const hdr = "bg-surface-2/40 px-4 py-1 text-[10px] font-semibold uppercase tracking-wider text-ink-4";
+  return (
+    <div className="flex flex-col">
+      {roles.length > 0 && <><div className={hdr}>Team-sourced ({roles.length})</div><ContactOpenRolesTab roles={roles} /></>}
+      {apps.length > 0 && <><div className={hdr}>Builders applied ({apps.length})</div><ContactBuilderAppsTab apps={apps} /></>}
+    </div>
+  );
+}
+
 export function ContactExpandTabs({ contactId }: { contactId: number }) {
   const { data } = useContactOpportunities(contactId);
   const detail = useContactDetail(contactId);
@@ -301,8 +314,7 @@ export function ContactExpandTabs({ contactId }: { contactId: number }) {
         tabs={[
           { id: "activity", label: "Activity", render: () => <ContactActivityTab contactId={contactId} /> },
           { id: "opps", label: "Opportunities", count: data?.length ?? null, render: () => <ContactOppsTab contactId={contactId} /> },
-          { id: "roles", label: "Open roles", count: roles.length || null, render: () => <ContactOpenRolesTab roles={roles} /> },
-          { id: "apps", label: "Builder apps", count: apps.length || null, render: () => <ContactBuilderAppsTab apps={apps} /> },
+          { id: "listings", label: "Job listings", count: (roles.length + apps.length) || null, render: () => <ContactJobListingsTab roles={roles} apps={apps} /> },
           { id: "tasks", label: "Tasks", render: () => <div className="p-3"><JobsTasks parentType="prospect" parentId={id} /></div> },
           { id: "comments", label: "Comments", render: () => <div className="p-3"><JobsComments parentType="prospect" parentId={id} /></div> },
         ]}

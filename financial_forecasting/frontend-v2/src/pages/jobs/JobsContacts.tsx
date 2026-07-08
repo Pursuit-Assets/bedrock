@@ -69,17 +69,17 @@ function Warmth({ c }: { c: JobContactWithDeal }) {
 }
 
 // ── columns ──────────────────────────────────────────────────────────────────
-type ColKey = "name" | "flag" | "title" | "company" | "industry" | "stage" | "warmth" | "roles" | "apps" | "tasks" | "connected" | "deal" | "email" | "linkedin";
-const COLUMN_ORDER: ColKey[] = ["name", "flag", "title", "company", "industry", "stage", "warmth", "roles", "apps", "tasks", "connected", "deal", "email", "linkedin"];
-const DEFAULT_VISIBLE: ColKey[] = ["name", "flag", "title", "company", "connected", "warmth", "roles", "apps"];
+type ColKey = "name" | "flag" | "title" | "company" | "industry" | "stage" | "warmth" | "listings" | "tasks" | "connected" | "deal" | "email" | "linkedin";
+const COLUMN_ORDER: ColKey[] = ["name", "flag", "title", "company", "industry", "stage", "warmth", "listings", "tasks", "connected", "deal", "email", "linkedin"];
+const DEFAULT_VISIBLE: ColKey[] = ["name", "flag", "title", "company", "connected", "warmth", "listings"];
 const COL_LABELS: Record<ColKey, string> = {
   name: "Name", flag: "Jobs stage", title: "Title", company: "Company", industry: "Industry", stage: "Contact stage",
-  warmth: "Warmth", roles: "Open roles", apps: "Builder apps", tasks: "Open tasks", connected: "Connected staff", deal: "Linked deal", email: "Email", linkedin: "LinkedIn",
+  warmth: "Warmth", listings: "Job listings", tasks: "Open tasks", connected: "Connected staff", deal: "Linked deal", email: "Email", linkedin: "LinkedIn",
 };
 const COL_WEIGHT: Record<ColKey, number> = {
-  name: 16, flag: 11, title: 12, company: 13, industry: 11, stage: 9, warmth: 8, roles: 7, apps: 8, tasks: 7, connected: 13, deal: 12, email: 14, linkedin: 5,
+  name: 16, flag: 11, title: 12, company: 13, industry: 11, stage: 9, warmth: 8, listings: 9, tasks: 7, connected: 13, deal: 12, email: 14, linkedin: 5,
 };
-const SORTABLE = new Set<ColKey>(["name", "flag", "title", "company", "industry", "stage", "warmth", "roles", "apps", "tasks"]);
+const SORTABLE = new Set<ColKey>(["name", "flag", "title", "company", "industry", "stage", "warmth", "listings", "tasks"]);
 
 function extract(c: JobContactWithDeal, key: ColKey): string | number {
   switch (key) {
@@ -90,15 +90,14 @@ function extract(c: JobContactWithDeal, key: ColKey): string | number {
     case "industry": return (c.company_industry ?? "").toLowerCase();
     case "stage": return c.contact_stage ?? "";
     case "warmth": return warmthRank(warmthInput(c));
-    case "roles": return c.open_roles ?? 0;
-    case "apps": return c.builder_apps ?? 0;
+    case "listings": return (c.open_roles ?? 0) + (c.builder_apps ?? 0);
     case "tasks": return c.open_tasks ?? 0;
     default: return "";
   }
 }
 
 // ── filters + grouping ─────────────────────────────────────────────────────────
-type Field = "name" | "title" | "company" | "industry" | "stage" | "flag" | "roles" | "apps" | "has_deal" | "connected" | "connection_count" | "last_activity" | "first_contact_date" | "last_contact_date";
+type Field = "name" | "title" | "company" | "industry" | "stage" | "flag" | "listings" | "has_deal" | "connected" | "connection_count" | "last_activity" | "first_contact_date" | "last_contact_date";
 const FILTERABLE: Record<Field, FieldMeta<JobContactWithDeal>> = {
   name: { label: "Name", type: "text", getValue: (c) => c.full_name ?? "" },
   title: { label: "Title", type: "text", getValue: (c) => c.current_title ?? "" },
@@ -106,8 +105,7 @@ const FILTERABLE: Record<Field, FieldMeta<JobContactWithDeal>> = {
   industry: { label: "Industry", type: "text", getValue: (c) => c.company_industry ?? "" },
   stage: { label: "Contact stage", type: "select", getValue: (c) => c.contact_stage ?? "" },
   flag: { label: "Jobs stage", type: "select", getValue: (c) => c.membership_stage ?? "" },
-  roles: { label: "Open roles (sourced)", type: "number", getValue: (c) => c.open_roles ?? 0 },
-  apps: { label: "Builder applications", type: "number", getValue: (c) => c.builder_apps ?? 0 },
+  listings: { label: "Job listings (sourced + applied)", type: "number", getValue: (c) => (c.open_roles ?? 0) + (c.builder_apps ?? 0) },
   has_deal: { label: "Linked deal", type: "select", getValue: (c) => (c.deal ? "yes" : "no") },
   // Text: filter "Connected staff contains <person>" (a SPECIFIC staffer), plus
   // is_empty / is_not_empty for none / any connection.
@@ -207,12 +205,12 @@ function ContactRow({ contact, expanded, onOpen, visibleCols, selected, onToggle
       ? <span className="rounded-full bg-accent-soft px-1.5 py-0.5 text-[10.5px] font-medium text-accent-ink">{MEMBERSHIP_STAGE_LABELS[contact.membership_stage as MembershipStage] ?? contact.membership_stage}</span>
       : <span className="text-ink-4">—</span>,
     industry: <span className="truncate text-[12px] text-ink-3">{contact.company_industry || "—"}</span>,
-    roles: (contact.open_roles ?? 0) > 0
-      ? <span className="inline-flex items-center gap-1 text-[12px] text-ink-2"><Briefcase size={11} className="text-ink-4" />{contact.open_roles}</span>
-      : <span className="text-ink-4">—</span>,
-    apps: (contact.builder_apps ?? 0) > 0
-      ? <span className="inline-flex items-center gap-1 text-[12px] text-ink-2" title="Jobs builders applied to at this company">{contact.builder_apps}</span>
-      : <span className="text-ink-4">—</span>,
+    listings: (() => {
+      const src = contact.open_roles ?? 0, app = contact.builder_apps ?? 0, tot = src + app;
+      return tot > 0
+        ? <span className="inline-flex items-center gap-1 text-[12px] text-ink-2" title={`${src} team-sourced · ${app} builder-applied`}><Briefcase size={11} className="text-ink-4" />{tot}</span>
+        : <span className="text-ink-4">—</span>;
+    })(),
     warmth: <Warmth c={contact} />,
     tasks: (contact.open_tasks ?? 0) > 0
       ? <span className="inline-flex items-center gap-1 text-[12px] text-ink-2"><CheckSquare size={11} className="text-ink-4" />{contact.open_tasks}</span>
