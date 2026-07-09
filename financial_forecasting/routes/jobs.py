@@ -235,7 +235,8 @@ async def metric_drilldown(
             "SELECT contact_id AS id, full_name, current_company, current_title, contact_stage, email "
             "FROM public.contacts ct WHERE ct.is_jobs_contact=true AND EXISTS("
             "  SELECT 1 FROM bedrock.activity a "
-            "  WHERE a.participant_public_contact_id = ct.contact_id AND a.deleted_at IS NULL) "
+            "  WHERE a.participant_public_contact_id = ct.contact_id AND a.deleted_at IS NULL "
+            f"    AND {_jobs_relevant('a')}) "
             "ORDER BY full_name"
         )
         return contact_cols, [dict(r) for r in rows], "contact"
@@ -1887,7 +1888,7 @@ def _engaged_clause(alias: str = "c") -> str:
     Keeps default lists ~15k instead of ~47k; pass scope=all to drop it."""
     return (
         f"({alias}.source IS DISTINCT FROM 'linkedin_import' "
-        f"OR EXISTS(SELECT 1 FROM bedrock.activity a WHERE a.participant_public_contact_id={alias}.contact_id AND a.deleted_at IS NULL) "
+        f"OR EXISTS(SELECT 1 FROM bedrock.activity a WHERE a.participant_public_contact_id={alias}.contact_id AND a.deleted_at IS NULL AND {_jobs_relevant('a')}) "
         f"OR EXISTS(SELECT 1 FROM bedrock.sf_contact_link l WHERE l.public_contact_id={alias}.contact_id))"
     )
 
@@ -2512,6 +2513,7 @@ async def jobs_accounts(
                    array_agg(DISTINCT {actor_case}) AS actors
             FROM bedrock.activity a JOIN public.contacts c ON c.contact_id = a.participant_public_contact_id
             WHERE a.deleted_at IS NULL AND coalesce(trim(c.current_company),'') <> ''
+              AND {_jobs_relevant('a')}
             GROUP BY 1"""),
         # Meeting attendees (calendar rows have no participant link) so
         # meetings/manual aren't undercounted.
@@ -2527,6 +2529,7 @@ async def jobs_accounts(
             JOIN public.contacts c ON lower(c.email) = lower(att->>'email')
             WHERE a.deleted_at IS NULL AND a.source = 'calendar-sync'
               AND coalesce(trim(c.current_company),'') <> ''
+              AND {_jobs_relevant('a')}
             GROUP BY 1"""),
         # A role created or a hire tagged is real momentum — count it as responded.
         pool.fetch(
@@ -3427,6 +3430,7 @@ async def list_contacts(
                    array_agg(DISTINCT {actor_case}) AS actors
             FROM bedrock.activity a
             WHERE a.deleted_at IS NULL AND a.participant_public_contact_id = ANY($1::int[])
+              AND {_jobs_relevant('a')}
             GROUP BY a.participant_public_contact_id
             """,
             contact_ids,
@@ -3871,6 +3875,7 @@ async def list_opportunities(
                 )                                                     AS recent_activity_count
             FROM bedrock.activity a
             WHERE a.deleted_at IS NULL
+              AND {_jobs_relevant('a')}
               AND (
                 a.jobs_opportunity_id = o.id
                 OR (o.account_id <> 'UNKNOWN' AND a.account_id = o.account_id)
@@ -4292,10 +4297,12 @@ async def my_network(
                    (array_agg(type ORDER BY activity_date DESC))[1] AS last_type
             FROM bedrock.activity a
             WHERE a.participant_public_contact_id = c.contact_id AND a.deleted_at IS NULL
+              AND {_jobs_relevant('a')}
         ) act ON true
         LEFT JOIN LATERAL (
             SELECT count(*) n, max(activity_date) last FROM bedrock.activity a
             WHERE a.participant_public_contact_id = c.contact_id AND a.deleted_at IS NULL
+              AND {_jobs_relevant('a')}
               AND (a.email_from ILIKE ${p_email} OR a.logged_by ILIKE ${p_email})
         ) mine ON true
         LEFT JOIN LATERAL (
