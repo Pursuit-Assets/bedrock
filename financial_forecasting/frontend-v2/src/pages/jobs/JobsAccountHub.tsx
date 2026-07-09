@@ -84,11 +84,14 @@ function extract(a: JobsAccount, key: ColKey): string | number {
 }
 
 // ── filters + grouping ───────────────────────────────────────────────────────
-type Field = "account" | "status" | "owner" | "has_opps" | "has_contacts" | "last_activity" | "first_contact_date" | "last_contact_date";
+type Field = "account" | "status" | "owner" | "deal_type" | "has_opps" | "has_contacts" | "last_activity" | "first_contact_date" | "last_contact_date";
 const FILTERABLE: Record<Field, FieldMeta<JobsAccount>> = {
   account:      { label: "Account",  type: "text",   getValue: (a) => a.account },
   status:       { label: "Status",   type: "select", getValue: (a) => a.account_status },
   owner:        { label: "Owner",    type: "select", getValue: (a) => a.owner_email ?? "" },
+  // An account can have several opportunities of different types; join code +
+  // label so a "contains" filter matches on either ("ft", "contract", "Part-time").
+  deal_type:    { label: "Deal type", type: "text", getValue: (a) => dealTypesOf(a).map((t) => `${t} ${DEAL_TYPE_LABELS[t as keyof typeof DEAL_TYPE_LABELS] ?? ""}`).join(" | ") },
   has_opps:     { label: "Has opportunities", type: "select", getValue: (a) => (a.opp_count > 0 ? "yes" : "no") },
   has_contacts: { label: "Has contacts",      type: "select", getValue: (a) => (a.prospect_count > 0 ? "yes" : "no") },
   // Top-of-funnel triage: filter by activity recency (Last 7/30/90 days dropdown).
@@ -106,14 +109,9 @@ const GROUP_OPTIONS = [
 const STATUSES: JobsAccountStatus[] = ["Pursuing", "Stewarding", "Re-activating", "Activating", "Prospect", "Dormant"];
 const YESNO = [{ value: "yes", label: "Yes" }, { value: "no", label: "No" }];
 
-const DEAL_TYPE_FILTER: { value: string; label: string }[] = [
-  { value: "all", label: "All deal types" },
-  ...(["ft", "pt_contract", "capstone", "volunteer", "workshop", "pilot"] as const).map((v) => ({ value: v, label: DEAL_TYPE_LABELS[v] })),
-];
-
 interface JobsAccountsView {
   query?: string; rules?: FilterRule<Field>[]; visibleCols?: ColKey[];
-  groupBy?: string; sort?: SortState<ColKey>; dealType?: string;
+  groupBy?: string; sort?: SortState<ColKey>;
 }
 
 const EMPTY: string[] = [];
@@ -178,7 +176,6 @@ function AccountRow({
 export function JobsAccountHub({ initialQuery }: { initialQuery?: string } = {}) {
   const [query, setQuery] = useState(initialQuery ?? "");
   const [rules, setRules] = useState<FilterRule<Field>[]>([]);
-  const [dealType, setDealType] = useState("all");
   const [scope, setScope] = useState<"engaged" | "all">("engaged"); // engaged hides ~32k cold contacts; All shows every jobs account (e.g. impact.com)
   const [showNew, setShowNew] = useState(false);
   const [showAll, setShowAll] = useState(false); // window big lists (2.8k+ engaged accounts) so the table renders instantly
@@ -198,7 +195,7 @@ export function JobsAccountHub({ initialQuery }: { initialQuery?: string } = {})
   const { visible: visibleCols, toggle: toggleCol, replaceAll: replaceVisibleCols } =
     useColumnVisibility<ColKey>("bedrock-v2:vis:jobs-accounts", COLUMN_ORDER, DEFAULT_VISIBLE);
 
-  const { data: rawAccounts = [], isLoading, isError, refetch } = useJobsAccounts(dealType, scope);
+  const { data: rawAccounts = [], isLoading, isError, refetch } = useJobsAccounts("all", scope);
   // Historical Pursuit fellows hired, from Salesforce (Affiliation object),
   // keyed by SF account id. Merged in client-side so /accounts stays SF-free
   // and the page still renders if SF is unavailable. When the affiliation
@@ -289,9 +286,6 @@ export function JobsAccountHub({ initialQuery }: { initialQuery?: string } = {})
           <input placeholder="Search accounts, contacts, opportunities…" value={query} onChange={(e) => setQuery(e.target.value)} className="h-7 w-64 rounded border border-border-strong bg-surface pl-7 pr-3 text-[12.5px] font-medium text-ink-2 outline-none placeholder:font-normal placeholder:text-ink-3 focus:border-accent focus:text-ink" />
         </div>
         <AddFilterButton<Field> filterable={FILTERABLE as Record<Field, FieldMeta<unknown>>} selectOptions={selectOptions} onAdd={(r) => setRules((p) => [...p, r])} buttonLabel="Filter" />
-        <select value={dealType} onChange={(e) => setDealType(e.target.value)} title="Filter to accounts with a deal of this type" className="h-7 shrink-0 rounded border border-border-strong bg-surface px-2 text-[12.5px] text-ink-2 outline-none focus:border-accent">
-          {DEAL_TYPE_FILTER.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-        </select>
         <select value={groupBy} onChange={(e) => { setGroupBy(e.target.value); setCollapsedGroups([]); }} title="Group rows by a field" className="h-7 shrink-0 rounded border border-border-strong bg-surface px-2 text-[12.5px] text-ink-2 outline-none focus:border-accent">
           {GROUP_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
         </select>
@@ -304,10 +298,9 @@ export function JobsAccountHub({ initialQuery }: { initialQuery?: string } = {})
           <ColumnChooser allColumns={COLUMN_ORDER} labels={COL_LABELS} visible={visibleCols} required={["account"]} onToggle={toggleCol} />
           <SavedViewsPicker<JobsAccountsView>
             scopeKey="jobs-accounts"
-            currentFilters={{ query, rules, visibleCols, groupBy, sort, dealType }}
+            currentFilters={{ query, rules, visibleCols, groupBy, sort }}
             onLoad={(v) => {
               setQuery(v.query ?? ""); setRules(v.rules ?? []); setGroupBy(v.groupBy ?? ""); setCollapsedGroups([]);
-              setDealType(v.dealType ?? "all");
               if (v.visibleCols?.length) replaceVisibleCols(v.visibleCols);
               if (v.sort) setSort(v.sort);
             }}
@@ -345,7 +338,7 @@ export function JobsAccountHub({ initialQuery }: { initialQuery?: string } = {})
                 <button type="button" className="text-accent underline underline-offset-2" onClick={() => refetch()}>Retry</button></td></tr>
             ) : filtered.length === 0 ? (
               <tr><td colSpan={visibleCols.length} className="px-6 py-10 text-center text-[13px] text-ink-3">No accounts match.{" "}
-                <button type="button" className="text-accent underline underline-offset-2" onClick={() => { setQuery(""); setRules([]); setDealType("all"); }}>Clear filters</button></td></tr>
+                <button type="button" className="text-accent underline underline-offset-2" onClick={() => { setQuery(""); setRules([]); }}>Clear filters</button></td></tr>
             ) : grouped ? (
               grouped.map((item) => item.kind === "header" ? (
                 <tr key={`g-${item.key}`} className="cursor-pointer border-y border-border-strong bg-surface-2/70 hover:bg-surface-2" onClick={() => toggleGroup(item.key)}>

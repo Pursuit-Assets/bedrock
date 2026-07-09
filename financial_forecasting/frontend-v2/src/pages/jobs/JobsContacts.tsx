@@ -243,7 +243,6 @@ export function JobsContacts({ initialQuery, initialContactId }: { initialQuery?
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [flagView, setFlagView] = useState<"all" | "flagged" | "unflagged">("all");
   const [flagOwner, setFlagOwner] = useState("");
-  const [connectedStaff, setConnectedStaff] = useState("");
   const flagContacts = useFlagContactsForJobs();
   const unflag = useUnflagJobsContact();
   const toggleSelect = useCallback((id: number) => setSelected((p) => { const n = new Set(p); n.has(id) ? n.delete(id) : n.add(id); return n; }), []);
@@ -294,21 +293,16 @@ export function JobsContacts({ initialQuery, initialContactId }: { initialQuery?
   const collapsedSet = useMemo(() => new Set(collapsedGroups), [collapsedGroups]);
   const toggleGroup = useCallback((k: string) => setCollapsedGroups((p) => p.includes(k) ? p.filter((x) => x !== k) : [...p, k]), [setCollapsedGroups]);
 
-  const staffOptions = useMemo(
-    () => [...new Set(allContacts.flatMap((c) => c.connected_staff_names ?? []))].sort((a, b) => a.localeCompare(b)),
-    [allContacts]);
-
   const q = query.trim().toLowerCase();
   const filtered = useMemo(() => {
     const f = allContacts.filter((c) => {
       for (const r of rules) if (!ruleApplies(c, r, FILTERABLE)) return false;
-      if (connectedStaff && !(c.connected_staff_names ?? []).includes(connectedStaff)) return false;
       if (!q) return true;
       return (c.full_name ?? "").toLowerCase().includes(q) || (c.email ?? "").toLowerCase().includes(q)
         || (c.current_company ?? "").toLowerCase().includes(q) || (c.current_title ?? "").toLowerCase().includes(q);
     });
     return sort.key == null ? f : sortBy(f, sort, (c, k) => extract(c, k));
-  }, [allContacts, q, rules, sort, connectedStaff]);
+  }, [allContacts, q, rules, sort]);
 
   const groupLabel = useCallback((k: string) => {
     if (k === "") return "—";
@@ -365,10 +359,6 @@ export function JobsContacts({ initialQuery, initialContactId }: { initialQuery?
           <option value="all">All contacts</option>
           <option value="flagged">Flagged for jobs</option>
           <option value="unflagged">Not flagged</option>
-        </select>
-        <select value={connectedStaff} onChange={(e) => setConnectedStaff(e.target.value)} title="Filter to contacts connected to a specific staffer" className="h-7 rounded border border-border-strong bg-surface px-2 text-[12.5px] text-ink-2 outline-none focus:border-accent">
-          <option value="">Any connection</option>
-          {staffOptions.map((s) => <option key={s} value={s}>{s}</option>)}
         </select>
         <select value={groupBy} onChange={(e) => { setGroupBy(e.target.value); setCollapsedGroups([]); }} title="Group rows by a field" className="h-7 rounded border border-border-strong bg-surface px-2 text-[12.5px] text-ink-2 outline-none focus:border-accent">
           {GROUP_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
