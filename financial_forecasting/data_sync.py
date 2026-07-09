@@ -156,6 +156,19 @@ class DataSyncService:
         )
         logger.info(summary)
 
+        # Jobs-relevance classification for the SF email/meeting rows just synced.
+        # These carry no email_from/attendees, so without this they stay NULL and
+        # the outreach gate (jobs_relevance='jobs') silently drops them. Idempotent
+        # (only NULL verdicts) and bounded so a large backlog can't blow up the sync
+        # — the newest NULL rows go first and nightly re-runs drain the rest.
+        try:
+            from services.activity_classifier import classify_new_activity
+            async with self.db_pool.acquire() as cls_conn:
+                cls = await classify_new_activity(cls_conn, limit=1500)
+            logger.info("Activity sync: jobs-relevance classified %s", cls)
+        except Exception as e:
+            logger.warning("Activity sync: jobs-relevance classification skipped: %s", e)
+
         self.sync_history.append({
             "timestamp": datetime.now(),
             "type": "activity_sync",

@@ -160,6 +160,17 @@ def _builder_note(counterpart_emails, bset: set[str]) -> str:
 
 async def _build_prompt(conn, row, fmap: dict[str, str], bset: set[str]) -> str:
     """Assemble the user prompt for one activity row."""
+    # Salesforce-logged tasks/events carry no email_from / meeting_attendees, so
+    # the email/meeting branches below would build an empty prompt. Judge these
+    # from the Subject + Description that SF does provide. They're staff-authored
+    # in SF, so there is no actor prior to apply.
+    if (row.get("source") == "salesforce") or (
+        row["type"] == "email" and not row["email_from"] and not row["email_to"]
+    ):
+        kind = "EMAIL" if row["type"] == "email" else "MEETING"
+        body = _strip_html(row["description"] or row["email_body_text"] or row["email_snippet"] or "")
+        return (f"[SALESFORCE-LOGGED {kind}]\nLogged in Salesforce by Pursuit staff — judge the "
+                f"purpose from the subject and notes below.\nSubject: {row['subject']}\n\n{body[:3500]}")
     if row["type"] == "email":
         to = [t for t in (row["email_to"] or []) if t]
         ext_to = sorted({t.split("@")[-1].lower() for t in to
@@ -229,12 +240,18 @@ async def classify_new_activity(conn, limit: Optional[int] = None,
     where_new = "" if reclassify else "AND a.jobs_relevance IS NULL"
     lim = f"LIMIT {int(limit)}" if limit else ""
     rows = await conn.fetch(f"""
-        SELECT a.id, a.type, a.subject, a.email_from, a.email_to, a.email_snippet,
+        SELECT a.id, a.type, a.source, a.subject, a.email_from, a.email_to, a.email_snippet,
                a.email_body_text, coalesce(a.description,'') AS description, a.meeting_attendees,
                a.participant_public_contact_id
         FROM bedrock.activity a
         WHERE a.deleted_at IS NULL AND a.type IN ('email','meeting') {where_new}
           AND (
+            -- Salesforce-logged tasks/events are authored by Pursuit staff in SF and
+            -- carry no email_from/attendees, so the org_users actor match below can't
+            -- see them; include them explicitly or they stay NULL forever and get
+            -- dropped by the outreach gate (jobs_relevance='jobs').
+            a.source = 'salesforce'
+            OR
             (a.type='email' AND EXISTS (SELECT 1 FROM public.org_users o
                  WHERE o.is_active AND a.email_from ILIKE '%'||o.email||'%'))
             OR
@@ -250,8 +267,18 @@ async def classify_new_activity(conn, limit: Optional[int] = None,
     counts = {"jobs": 0, "not_jobs": 0, "unclear": 0}
 
     async def _model(prompt):
+        # One retry on a transient API error so a hiccup doesn't strand the row at
+        # NULL (which the outreach gate silently drops). A row that still fails is
+        # left NULL on purpose — the next sync re-selects NULL rows and retries.
         async with sem:
-            return await asyncio.to_thread(_call_model, client, prompt)
+            for attempt in range(2):
+                try:
+                    return await asyncio.to_thread(_call_model, client, prompt)
+                except Exception:
+                    if attempt == 0:
+                        await asyncio.sleep(1.5)
+                        continue
+                    raise
 
     # A single asyncpg connection can't run concurrent operations, so DB work
     # (prompt-building reads + result writes) stays serial; only the model calls
