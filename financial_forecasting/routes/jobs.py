@@ -1969,7 +1969,9 @@ async def activity_trends(
     granularity: str = Query("week", pattern="^(day|week|month)$"),
     channel: str = Query("all", pattern="^(all|email|meeting)$"),
     owner: Optional[str] = Query(None, description="Scope to one staff email (else the scope)"),
-    scope: str = Query("team", pattern="^(team|staff)$", description="team = Avni/Damon/Devika; staff = everyone else's jobs outreach"),
+    scope: str = Query("team", pattern="^(team|staff)$", description="team = Avni/Damon/Devika; scope = everyone else's jobs outreach"),
+    date_from: Optional[str] = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$", description="Custom range start (ISO date); overrides trailing window when both from+to are set"),
+    date_to: Optional[str] = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$", description="Custom range end (ISO date)"),
     user=Depends(require_auth),
     conn=Depends(get_db),
 ):
@@ -2033,20 +2035,45 @@ async def activity_trends(
         GROUP BY 1, 2
     """, channel)
 
-    # Assemble trailing `periods` buckets (zero-filled), newest last.
-    base = await conn.fetchval(f"SELECT date_trunc('{granularity}', now())")
+    def _add_months(dt, n):
+        y, m = dt.year, dt.month + n
+        while m <= 0:
+            m += 12; y -= 1
+        while m > 12:
+            m -= 12; y += 1
+        return dt.replace(year=y, month=m, day=1)
+
     buckets = []
-    for i in range(periods - 1, -1, -1):
-        if granularity == "day":
-            start = base - timedelta(days=i)
-        elif granularity == "week":
-            start = base - timedelta(weeks=i)
-        else:
-            y, m = base.year, base.month - i
-            while m <= 0:
-                m += 12; y -= 1
-            start = base.replace(year=y, month=m, day=1)
-        buckets.append({"period": start.date().isoformat(), "new": 0, "existing": 0})
+    if date_from and date_to:
+        # Custom range: enumerate every bucket start between from..to (inclusive),
+        # aligned to the granularity via Postgres date_trunc so week starts match
+        # the aggregation. Capped at 400 buckets to bound the payload/chart.
+        start_b, end_b = await conn.fetchrow(
+            f"SELECT date_trunc('{granularity}', $1::timestamp) AS a, "
+            f"date_trunc('{granularity}', $2::timestamp) AS b",
+            datetime.fromisoformat(date_from), datetime.fromisoformat(date_to),
+        )
+        cur, guard = start_b, 0
+        while cur <= end_b and guard < 400:
+            buckets.append({"period": cur.date().isoformat(), "new": 0, "existing": 0})
+            if granularity == "day":
+                cur = cur + timedelta(days=1)
+            elif granularity == "week":
+                cur = cur + timedelta(weeks=1)
+            else:
+                cur = _add_months(cur, 1)
+            guard += 1
+    else:
+        # Assemble trailing `periods` buckets (zero-filled), newest last.
+        base = await conn.fetchval(f"SELECT date_trunc('{granularity}', now())")
+        for i in range(periods - 1, -1, -1):
+            if granularity == "day":
+                start = base - timedelta(days=i)
+            elif granularity == "week":
+                start = base - timedelta(weeks=i)
+            else:
+                start = _add_months(base, -i)
+            buckets.append({"period": start.date().isoformat(), "new": 0, "existing": 0})
     idx = {b["period"]: b for b in buckets}
 
     def _key(ts):

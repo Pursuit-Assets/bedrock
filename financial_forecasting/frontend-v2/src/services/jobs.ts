@@ -968,12 +968,16 @@ export interface ActivityTrends {
 
 export type OutreachScope = "team" | "staff";
 
-export function useActivityTrends(granularity: "day" | "week" | "month", channel: OutreachChannel, owner?: string, scope: OutreachScope = "team") {
+export interface OutreachRange { from: string; to: string }
+
+export function useActivityTrends(granularity: "day" | "week" | "month", channel: OutreachChannel, owner?: string, scope: OutreachScope = "team", range?: OutreachRange) {
+  const rangeKey = range ? `${range.from}..${range.to}` : "";
   return useQuery<ActivityTrends>({
-    queryKey: ["jobs", "activity-trends", granularity, channel, owner ?? scope],
+    queryKey: ["jobs", "activity-trends", granularity, channel, owner ?? scope, rangeKey],
     queryFn: async () => {
       const p = new URLSearchParams({ granularity, channel, scope });
       if (owner) p.set("owner", owner);
+      if (range) { p.set("date_from", range.from); p.set("date_to", range.to); }
       const { data } = await api.get<ApiResponse<ActivityTrends>>(`/api/jobs/activity-trends?${p}`);
       return data.data;
     },

@@ -9,7 +9,7 @@
  */
 import { Fragment, useCallback, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { Briefcase, CheckSquare, ChevronDown, ChevronRight, ExternalLink, Plus, UserCheck, Users } from "lucide-react";
+import { Briefcase, CheckSquare, ChevronDown, ChevronRight, ExternalLink, Plus, Search, UserCheck, Users } from "lucide-react";
 
 import { AccountAvatar } from "@/components/AccountAvatar";
 import { withReferrer } from "@/components/detail";
@@ -281,11 +281,13 @@ export function JobsAccountHub({ initialQuery }: { initialQuery?: string } = {})
   );
 
   return (
-    <div className="flex flex-col gap-3 px-5 py-4">
+    <div className="flex flex-col px-5 py-2">
       {showNew && <NewAccountDialog onClose={() => setShowNew(false)} />}
       <Toolbar>
-        <button onClick={() => setShowNew(true)} className="inline-flex h-7 shrink-0 items-center gap-1 whitespace-nowrap rounded bg-accent px-3 text-[12.5px] font-semibold text-white hover:opacity-90"><Plus size={13} className="shrink-0" />New account</button>
-        <input placeholder="Search accounts, contacts, opportunities…" value={query} onChange={(e) => setQuery(e.target.value)} className="h-7 w-64 rounded border border-border-strong bg-surface px-3 text-[12.5px] font-medium text-ink-2 outline-none placeholder:font-normal placeholder:text-ink-3 focus:border-accent focus:text-ink" />
+        <div className="relative">
+          <Search size={12} aria-hidden className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-3" />
+          <input placeholder="Search accounts, contacts, opportunities…" value={query} onChange={(e) => setQuery(e.target.value)} className="h-7 w-64 rounded border border-border-strong bg-surface pl-7 pr-3 text-[12.5px] font-medium text-ink-2 outline-none placeholder:font-normal placeholder:text-ink-3 focus:border-accent focus:text-ink" />
+        </div>
         <AddFilterButton<Field> filterable={FILTERABLE as Record<Field, FieldMeta<unknown>>} selectOptions={selectOptions} onAdd={(r) => setRules((p) => [...p, r])} buttonLabel="Filter" />
         <select value={dealType} onChange={(e) => setDealType(e.target.value)} title="Filter to accounts with a deal of this type" className="h-7 rounded border border-border-strong bg-surface px-2 text-[12.5px] text-ink-2 outline-none focus:border-accent">
           {DEAL_TYPE_FILTER.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
@@ -310,11 +312,12 @@ export function JobsAccountHub({ initialQuery }: { initialQuery?: string } = {})
               if (v.sort) setSort(v.sort);
             }}
           />
+          <button type="button" onClick={() => setShowNew(true)} className="inline-flex h-7 shrink-0 items-center gap-1.5 whitespace-nowrap rounded border border-ink bg-ink px-3 text-[12.5px] font-medium text-surface hover:opacity-90"><Plus size={13} className="shrink-0" /> New account</button>
         </div>
       </Toolbar>
 
       {rules.length > 0 && (
-        <div className="flex flex-wrap items-center gap-1.5">
+        <div className="flex flex-wrap items-center gap-1.5 border-x border-t border-border-strong bg-surface px-3 py-2">
           {rules.map((r) => (
             <FilterChip key={r.id} label={describeRule(r, FILTERABLE, (f, v) => f === "owner" ? (staff.find((s) => s.email === v)?.name ?? v) : f === "last_activity" ? recencyLabel(v) : v)} onRemove={() => setRules((p) => p.filter((x) => x.id !== r.id))} />
           ))}
@@ -322,7 +325,7 @@ export function JobsAccountHub({ initialQuery }: { initialQuery?: string } = {})
         </div>
       )}
 
-      <div className="overflow-hidden rounded-lg border border-border-strong bg-surface">
+      <div className="overflow-hidden rounded-b-lg border border-border-strong bg-surface">
         <table className="w-full table-fixed border-collapse">
           <colgroup>{visibleCols.map((k) => <col key={k} style={{ width: `${(COL_WEIGHT[k] / visibleWeight) * 100}%` }} />)}</colgroup>
           <thead className="bg-surface-2 text-[10.5px] uppercase tracking-wider text-ink-3">

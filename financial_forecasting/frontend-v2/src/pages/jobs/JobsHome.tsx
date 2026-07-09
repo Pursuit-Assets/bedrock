@@ -611,8 +611,8 @@ export function JobsHome() {
         </span>
       </div>
 
-      <TasksZone />
       <IntroRequestsZone />
+      <TasksZone />
       <MyNetworkZone />
       <InterviewsZone />
     </div>

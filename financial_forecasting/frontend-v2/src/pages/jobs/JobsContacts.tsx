@@ -339,12 +339,12 @@ export function JobsContacts({ initialQuery, initialContactId }: { initialQuery?
   );
 
   return (
-    <div className="flex flex-col gap-3 px-5 py-4">
+    <div className="flex flex-col px-5 py-2">
       {showNewContact && <NewContactModal onClose={() => setShowNewContact(false)} />}
 
       {/* Preview */}
       {previewContact && (
-        <div className="overflow-hidden rounded-xl border border-border-strong bg-surface">
+        <div className="mb-2 overflow-hidden rounded-xl border border-border-strong bg-surface">
           <div className="flex items-center gap-3 border-b border-border-strong bg-surface-2 px-4 py-3">
             <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-accent-soft text-[11px] font-bold text-accent-ink">{initials(previewContact.full_name)}</div>
             <div className="min-w-0 flex-1"><span className="mr-2 text-[14px] font-semibold text-ink">{previewContact.full_name || "—"}</span>{(previewContact.current_title || previewContact.current_company) && <span className="mr-2 text-[12px] text-ink-3">{[previewContact.current_title, previewContact.current_company].filter(Boolean).join(" @ ")}</span>}<span className="rounded-full bg-stone-100 px-1.5 py-0.5 text-[10px] font-medium text-ink-3">Preview · not in pipeline</span></div>
@@ -382,7 +382,7 @@ export function JobsContacts({ initialQuery, initialContactId }: { initialQuery?
       </Toolbar>
 
       {selected.size > 0 && (
-        <div className="flex flex-wrap items-center gap-2 rounded-lg border border-accent bg-accent-soft px-3 py-2 text-[12.5px]">
+        <div className="flex flex-wrap items-center gap-2 border-x border-t border-accent bg-accent-soft px-3 py-2 text-[12.5px]">
           <span className="font-semibold text-accent-ink">{selected.size} selected</span>
           <input value={flagOwner} onChange={(e) => setFlagOwner(e.target.value)} placeholder="owner email (optional)" className="h-7 w-56 rounded border border-border-strong bg-surface px-2 text-[12px] text-ink outline-none focus:border-accent" />
           <button type="button" disabled={flagContacts.isPending} onClick={() => flagContacts.mutate({ contact_ids: [...selected], owner_email: flagOwner.trim() || undefined }, { onSuccess: () => setSelected(new Set()) })} className="inline-flex h-7 items-center gap-1 rounded bg-accent px-3 font-medium text-white hover:opacity-90 disabled:opacity-50"><Zap size={12} /> Flag for jobs activation</button>
@@ -396,13 +396,13 @@ export function JobsContacts({ initialQuery, initialContactId }: { initialQuery?
       )}
 
       {rules.length > 0 && (
-        <div className="flex flex-wrap items-center gap-1.5">
+        <div className="flex flex-wrap items-center gap-1.5 border-x border-t border-border-strong bg-surface px-3 py-2">
           {rules.map((r) => <FilterChip key={r.id} label={describeRule(r, FILTERABLE, (f, v) => f === "stage" ? (CONTACT_STAGE_STYLES[v]?.label ?? v) : f === "flag" ? (MEMBERSHIP_STAGE_LABELS[v as MembershipStage] ?? v) : f === "last_activity" ? recencyLabel(v) : v)} onRemove={() => setRules((p) => p.filter((x) => x.id !== r.id))} />)}
           <button type="button" onClick={() => setRules([])} className="ml-1 text-[11.5px] font-medium text-ink-3 underline-offset-4 hover:text-ink-2 hover:underline">Clear all</button>
         </div>
       )}
 
-      <div className="overflow-hidden rounded-lg border border-border-strong bg-surface">
+      <div className="overflow-hidden rounded-b-lg border border-border-strong bg-surface">
         <table className="w-full table-fixed border-collapse">
           <colgroup>{visibleCols.map((k) => <col key={k} style={{ width: `${(COL_WEIGHT[k] / visibleWeight) * 100}%` }} />)}</colgroup>
           <thead className="bg-surface-2 text-[10.5px] uppercase tracking-wider text-ink-3">

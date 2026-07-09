@@ -8,7 +8,7 @@ import { SectionCard } from "@/components/detail";
 import { Drawer } from "@/components/ui/Drawer";
 import {
   useActivityTrends, useActivityTrendDetail, useJobsStaff,
-  type ActivityTrendBucket, type OutreachChannel, type OutreachScope,
+  type ActivityTrendBucket, type OutreachChannel, type OutreachScope, type OutreachRange,
 } from "@/services/jobs";
 
 // Core jobs team — excluded from the "Other staff" scope's owner picker.
@@ -42,7 +42,10 @@ export function ActivityTrends() {
   const [owner, setOwner] = useState<string>("");          // "" = whole scope
   const [scope, setScope] = useState<OutreachScope>("team"); // team = Avni/Damon/Devika; staff = everyone else
   const [openPeriod, setOpenPeriod] = useState<string | null>(null);
-  const { data, isLoading, isError, refetch } = useActivityTrends(gran, channel, owner || undefined, scope);
+  const [from, setFrom] = useState<string>("");
+  const [to, setTo] = useState<string>("");
+  const range: OutreachRange | undefined = from && to && from <= to ? { from, to } : undefined;
+  const { data, isLoading, isError, refetch } = useActivityTrends(gran, channel, owner || undefined, scope, range);
   const { data: staff = [] } = useJobsStaff();
 
   const chartData = useMemo(
@@ -73,6 +76,17 @@ export function ActivityTrends() {
                   opts={[["all", "All"], ["email", "Email"], ["meeting", "Meetings"]]} />
           <Toggle value={gran} onChange={(v) => setGran(v as "day" | "week" | "month")}
                   opts={[["day", "Daily"], ["week", "Weekly"], ["month", "Monthly"]]} />
+          <div className="flex items-center gap-1 rounded-md border border-border-strong px-1.5 py-0.5">
+            <input type="date" value={from} max={to || undefined} onChange={(e) => setFrom(e.target.value)}
+              title="Range start" className="h-6 bg-transparent text-[11.5px] text-ink-2 outline-none" />
+            <span className="text-[11px] text-ink-4">→</span>
+            <input type="date" value={to} min={from || undefined} onChange={(e) => setTo(e.target.value)}
+              title="Range end" className="h-6 bg-transparent text-[11.5px] text-ink-2 outline-none" />
+            {(from || to) && (
+              <button type="button" onClick={() => { setFrom(""); setTo(""); }}
+                title="Clear range (back to trailing window)" className="px-1 text-[11px] font-medium text-ink-4 hover:text-ink-2">×</button>
+            )}
+          </div>
         </div>
       }
     >
@@ -86,7 +100,7 @@ export function ActivityTrends() {
       ) : (
         <div className="flex flex-col gap-3 px-5 py-4">
           <div className="grid grid-cols-3 gap-3">
-            <Stat label={`Accounts reached · ${gran === "week" ? "12 wks" : "12 mos"}`} value={data?.totals.touches ?? 0} />
+            <Stat label={`Accounts reached · ${range ? `${from} → ${to}` : gran === "day" ? "14 days" : gran === "week" ? "12 wks" : "12 mos"}`} value={data?.totals.touches ?? 0} />
             <Stat label="To new accounts" value={data?.totals.new ?? 0} accent />
             <Stat label="To existing accounts" value={data?.totals.existing ?? 0} />
           </div>
