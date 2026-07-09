@@ -284,23 +284,23 @@ export function JobsAccountHub({ initialQuery }: { initialQuery?: string } = {})
     <div className="flex flex-col px-5 py-2">
       {showNew && <NewAccountDialog onClose={() => setShowNew(false)} />}
       <Toolbar>
-        <div className="relative">
+        <div className="relative shrink-0">
           <Search size={12} aria-hidden className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-3" />
           <input placeholder="Search accounts, contacts, opportunities…" value={query} onChange={(e) => setQuery(e.target.value)} className="h-7 w-64 rounded border border-border-strong bg-surface pl-7 pr-3 text-[12.5px] font-medium text-ink-2 outline-none placeholder:font-normal placeholder:text-ink-3 focus:border-accent focus:text-ink" />
         </div>
         <AddFilterButton<Field> filterable={FILTERABLE as Record<Field, FieldMeta<unknown>>} selectOptions={selectOptions} onAdd={(r) => setRules((p) => [...p, r])} buttonLabel="Filter" />
-        <select value={dealType} onChange={(e) => setDealType(e.target.value)} title="Filter to accounts with a deal of this type" className="h-7 rounded border border-border-strong bg-surface px-2 text-[12.5px] text-ink-2 outline-none focus:border-accent">
+        <select value={dealType} onChange={(e) => setDealType(e.target.value)} title="Filter to accounts with a deal of this type" className="h-7 shrink-0 rounded border border-border-strong bg-surface px-2 text-[12.5px] text-ink-2 outline-none focus:border-accent">
           {DEAL_TYPE_FILTER.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
         </select>
-        <select value={groupBy} onChange={(e) => { setGroupBy(e.target.value); setCollapsedGroups([]); }} title="Group rows by a field" className="h-7 rounded border border-border-strong bg-surface px-2 text-[12.5px] text-ink-2 outline-none focus:border-accent">
+        <select value={groupBy} onChange={(e) => { setGroupBy(e.target.value); setCollapsedGroups([]); }} title="Group rows by a field" className="h-7 shrink-0 rounded border border-border-strong bg-surface px-2 text-[12.5px] text-ink-2 outline-none focus:border-accent">
           {GROUP_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
         </select>
-        <select value={scope} onChange={(e) => setScope(e.target.value as "engaged" | "all")} title="Engaged hides cold, untouched contacts; All shows every jobs account" className="h-7 rounded border border-border-strong bg-surface px-2 text-[12.5px] text-ink-2 outline-none focus:border-accent">
+        <select value={scope} onChange={(e) => setScope(e.target.value as "engaged" | "all")} title="Engaged hides cold, untouched contacts; All shows every jobs account" className="h-7 shrink-0 rounded border border-border-strong bg-surface px-2 text-[12.5px] text-ink-2 outline-none focus:border-accent">
           <option value="engaged">Engaged</option>
           <option value="all">All accounts</option>
         </select>
-        <span className="whitespace-nowrap font-mono text-[12px] text-ink-4">{isLoading ? "…" : `${filtered.length} acct · ${totals.opps} opp · ${totals.contacts} contact`}</span>
-        <div className="ml-auto flex items-center gap-2">
+        <span className="shrink-0 whitespace-nowrap font-mono text-[12px] text-ink-4" title={isLoading ? undefined : `${totals.opps} opportunities · ${totals.contacts} contacts`}>{isLoading ? "…" : `${filtered.length.toLocaleString()} account${filtered.length === 1 ? "" : "s"}`}</span>
+        <div className="ml-auto flex shrink-0 items-center gap-2">
           <ColumnChooser allColumns={COLUMN_ORDER} labels={COL_LABELS} visible={visibleCols} required={["account"]} onToggle={toggleCol} />
           <SavedViewsPicker<JobsAccountsView>
             scopeKey="jobs-accounts"

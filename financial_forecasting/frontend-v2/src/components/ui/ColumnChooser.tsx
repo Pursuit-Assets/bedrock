@@ -35,7 +35,7 @@ export function ColumnChooser<K extends string>({
       <button
         onClick={() => setOpen((o) => !o)}
         className={cn(
-          "flex h-7 items-center gap-1.5 rounded-md border border-border-strong bg-surface px-2.5 text-[12px] font-medium text-ink-2 hover:bg-surface-2 hover:text-ink",
+          "flex h-7 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border border-border-strong bg-surface px-2.5 text-[12px] font-medium text-ink-2 hover:bg-surface-2 hover:text-ink",
           open && "bg-surface-2 text-ink",
         )}
       >
