@@ -299,7 +299,7 @@ export function JobsAccountHub({ initialQuery }: { initialQuery?: string } = {})
           <option value="engaged">Engaged</option>
           <option value="all">All accounts</option>
         </select>
-        <span className="font-mono text-[12px] text-ink-4">{isLoading ? "…" : `${filtered.length} acct · ${totals.opps} opp · ${totals.contacts} contact`}</span>
+        <span className="whitespace-nowrap font-mono text-[12px] text-ink-4">{isLoading ? "…" : `${filtered.length} acct · ${totals.opps} opp · ${totals.contacts} contact`}</span>
         <div className="ml-auto flex items-center gap-2">
           <ColumnChooser allColumns={COLUMN_ORDER} labels={COL_LABELS} visible={visibleCols} required={["account"]} onToggle={toggleCol} />
           <SavedViewsPicker<JobsAccountsView>
