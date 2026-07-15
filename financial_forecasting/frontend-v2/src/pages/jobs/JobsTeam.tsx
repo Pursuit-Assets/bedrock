@@ -47,7 +47,7 @@ import { ColumnChooser } from "@/components/ui/ColumnChooser";
 import { ResizableTh } from "@/components/ui/ResizableTable";
 import { Toolbar } from "@/components/ui/Toolbar";
 import { useColumnVisibility } from "@/lib/columnVisibility";
-import { totalWidth, useColumnWidths } from "@/lib/columnWidths";
+import { useColumnWidths } from "@/lib/columnWidths";
 import { useSessionState } from "@/lib/useSessionState";
 import {
   AddFilterButton,
@@ -1545,12 +1545,15 @@ function DealRow({
         )}
         onClick={onToggle}
       >
-        {visibleCols.map((key) => (
+        {visibleCols.map((key, i) => (
           <td
             key={key}
             className={cn(
               "overflow-hidden px-3 py-1.5 align-middle",
               key === "num_roles" && "text-right tabular-nums",
+              // Pinned identity column — keeps the company visible while the
+              // grid scrolls horizontally. Opaque bg so rows slide under it.
+              i === 0 && "sticky left-0 z-10 bg-surface",
             )}
             onClick={OPP_EDITABLE_COLS.has(key) ? (e) => e.stopPropagation() : undefined}
           >
@@ -2279,7 +2282,7 @@ export function JobsTeam() {
     return out;
   }, [filtered, groupBy, collapsedSet, groupLabelFor]);
 
-  const tableMinWidth = totalWidth(widths);
+  const tableMinWidth = visibleCols.reduce((s, k) => s + widths[k], 0);
 
   const renderDealRow = (deal: JobsOpportunity) => (
     <DealRow
@@ -2393,14 +2396,18 @@ export function JobsTeam() {
       {committedRolesDeal && <CommittedRolesModal deal={committedRolesDeal} onClose={() => setCommittedRolesDeal(null)} />}
       {closedLostDeal && <ClosedLostModal deal={closedLostDeal} onClose={() => setClosedLostDeal(null)} />}
 
-      <div className="overflow-x-auto rounded-b-lg border border-border-strong bg-surface">
-        {/* Columns keep their real pixel widths and the wrapper scrolls
-            horizontally when the window is narrower than the table — squeezing
-            every column proportionally made narrow windows unreadable
-            (truncated cells, overlapping content, clipped pickers). */}
+      <div
+        className="overflow-auto rounded-b-lg border border-border-strong bg-surface"
+        style={{ maxHeight: "calc(100vh - 220px)" }}
+      >
+        {/* Bounded data-grid viewport: the table scrolls BOTH axes inside this
+            container (header stays put on the long scroll down; identity
+            column pins during horizontal scroll). Columns keep their real
+            pixel widths — squeezing them proportionally made narrow windows
+            unreadable. */}
         <table className="w-full border-collapse" style={{ tableLayout: "fixed", minWidth: tableMinWidth }}>
           <colgroup>{visibleCols.map((key) => <col key={key} style={{ width: widths[key] }} />)}</colgroup>
-          <thead className="sticky top-0 z-10">
+          <thead className="sticky top-0 z-20">
             <tr>
               {visibleCols.map((key, idx) => (
                 <ResizableTh
@@ -2409,6 +2416,7 @@ export function JobsTeam() {
                   onStartResize={(e) => startResize(key, e)}
                   align={key === "num_roles" || key === "salary" ? "right" : "left"}
                   isLast={idx === visibleCols.length - 1}
+                  className={idx === 0 ? "sticky left-0 z-30" : undefined}
                 >
                   <SortableHeader label={OPP_COL_LABELS[key]} sortKey={key} sort={sort} onToggle={toggle} />
                 </ResizableTh>
