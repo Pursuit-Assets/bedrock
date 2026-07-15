@@ -2737,6 +2737,164 @@ async def outreach_scorecard_detail(
             "count": len(items), "contacts": items}}
 
 
+_TARGETING_DIMS = [
+    ("lead_source",   "By Lead Source"),
+    ("industry",      "By Industry"),
+    ("size_bucket",   "By Company Size"),
+    ("company_stage", "By Company Stage"),
+]
+
+
+@router.get("/outreach/targeting-mix")
+async def outreach_targeting_mix(
+    granularity: str = Query("week", pattern="^(day|week|month)$"),
+    scope: str = Query("team", pattern="^(pursuit|team|staff)$"),
+    owner: Optional[str] = Query(None),
+    date_from: Optional[str] = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    date_to: Optional[str] = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Targeting Mix — outreach volume + email replies for the period, cut by the
+    contact's lead source and their company's industry / size / stage. Answers
+    'where is our outreach going and which segments reply'. Contact-linked subset
+    only (needs participant_public_contact_id + company_id)."""
+    this_start, this_end, _ls, _le = _outreach_windows(granularity, date_from, date_to)
+
+    sql = f"""
+    WITH outreach AS (
+        SELECT a.participant_public_contact_id AS cid
+        FROM bedrock.activity a
+        WHERE a.deleted_at IS NULL AND a.type='email' AND {_activity_actor('a', scope, owner)}
+          AND {_not_autoreply('a')} AND {_jobs_relevant('a')}
+          AND a.participant_public_contact_id IS NOT NULL
+          AND a.activity_date >= $1 AND a.activity_date < $2
+    ),
+    sent_out AS (
+        SELECT lower(e) AS addr, min(a.activity_date) AS first_out
+        FROM bedrock.activity a,
+             unnest(coalesce(a.email_to,'{{}}') || coalesce(a.email_cc,'{{}}')) e
+        WHERE a.deleted_at IS NULL AND a.type='email' AND {_activity_actor('a', scope, owner)}
+          AND {_jobs_relevant('a')} AND lower(e) NOT LIKE '%@pursuit.org%'
+        GROUP BY 1
+    ),
+    first_reply AS (
+        SELECT {_email_addr('a')} AS addr, min(a.activity_date) AS reply_date,
+               max(a.participant_public_contact_id) AS cid
+        FROM bedrock.activity a
+        JOIN sent_out s ON s.addr = {_email_addr('a')} AND a.activity_date >= s.first_out
+        WHERE a.deleted_at IS NULL AND a.type='email' AND {_not_autoreply('a')}
+          AND a.email_from NOT ILIKE '%@pursuit.org%'
+        GROUP BY 1
+    ),
+    replies AS (SELECT cid FROM first_reply WHERE reply_date >= $1 AND reply_date < $2 AND cid IS NOT NULL),
+    contact_dims AS (
+        SELECT c.contact_id,
+               coalesce(nullif(trim(c.source),''), '(unknown)')      AS lead_source,
+               coalesce(co.industry, '(unknown)')                    AS industry,
+               coalesce(co.size_bucket, '(unknown)')                 AS size_bucket,
+               coalesce(co.stage, '(unknown)')                       AS company_stage
+        FROM public.contacts c
+        LEFT JOIN public.companies co ON co.company_id = c.company_id
+    ),
+    agg AS (
+        SELECT 'lead_source' AS dim, cd.lead_source AS bucket, count(*) AS sent, 0 AS resp FROM outreach o JOIN contact_dims cd ON cd.contact_id=o.cid GROUP BY 2
+        UNION ALL SELECT 'industry', cd.industry, count(*), 0 FROM outreach o JOIN contact_dims cd ON cd.contact_id=o.cid GROUP BY 2
+        UNION ALL SELECT 'size_bucket', cd.size_bucket, count(*), 0 FROM outreach o JOIN contact_dims cd ON cd.contact_id=o.cid GROUP BY 2
+        UNION ALL SELECT 'company_stage', cd.company_stage, count(*), 0 FROM outreach o JOIN contact_dims cd ON cd.contact_id=o.cid GROUP BY 2
+        UNION ALL SELECT 'lead_source', cd.lead_source, 0, count(*) FROM replies r JOIN contact_dims cd ON cd.contact_id=r.cid GROUP BY 2
+        UNION ALL SELECT 'industry', cd.industry, 0, count(*) FROM replies r JOIN contact_dims cd ON cd.contact_id=r.cid GROUP BY 2
+        UNION ALL SELECT 'size_bucket', cd.size_bucket, 0, count(*) FROM replies r JOIN contact_dims cd ON cd.contact_id=r.cid GROUP BY 2
+        UNION ALL SELECT 'company_stage', cd.company_stage, 0, count(*) FROM replies r JOIN contact_dims cd ON cd.contact_id=r.cid GROUP BY 2
+    )
+    SELECT dim, bucket, sum(sent)::int AS sent, sum(resp)::int AS responses
+    FROM agg GROUP BY dim, bucket HAVING sum(sent) + sum(resp) > 0
+    ORDER BY dim, sent DESC, responses DESC
+    """
+    rows = await conn.fetch(sql, this_start, this_end)
+    by_dim: dict = {d: [] for d, _ in _TARGETING_DIMS}
+    for r in rows:
+        by_dim.setdefault(r["dim"], []).append(
+            {"bucket": r["bucket"], "sent": r["sent"], "responses": r["responses"]})
+    return {"success": True, "data": {
+        "dims": [{"key": d, "label": lbl, "rows": by_dim.get(d, [])} for d, lbl in _TARGETING_DIMS],
+    }}
+
+
+@router.get("/outreach/accounts")
+async def outreach_accounts(
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Account working list for the deep-dive: every account with a comment or an
+    open task, with its owner, open tasks, and comments — rolled up from the
+    opportunity- and prospect-level jobs_comment / jobs_task rows. Ordered by most
+    recent note/task so freshly-worked accounts surface first. Not period-scoped —
+    it's the live discussion queue."""
+    sql = """
+    WITH comments AS (
+        SELECT lower(trim(o.account_name)) AS acct, o.account_name AS display,
+               jc.author_email AS author, jc.content, jc.created_at
+        FROM bedrock.jobs_comment jc
+        JOIN bedrock.jobs_opportunity o ON o.id::text = jc.parent_id
+        WHERE jc.parent_type='opportunity' AND o.deleted_at IS NULL AND coalesce(trim(o.account_name),'') <> ''
+        UNION ALL
+        SELECT lower(trim(c.current_company)), c.current_company, jc.author_email, jc.content, jc.created_at
+        FROM bedrock.jobs_comment jc
+        JOIN public.contacts c ON jc.parent_id ~ '^[0-9]+$' AND c.contact_id = jc.parent_id::int
+        WHERE jc.parent_type='prospect' AND coalesce(trim(c.current_company),'') <> '' AND lower(trim(c.current_company)) <> 'n/a'
+    ),
+    tasks AS (
+        SELECT lower(trim(o.account_name)) AS acct, o.account_name AS display,
+               jt.title, jt.status, jt.deadline, jt.owner, jt.created_at
+        FROM bedrock.jobs_task jt
+        JOIN bedrock.jobs_opportunity o ON o.id::text = jt.parent_id
+        WHERE jt.parent_type='opportunity' AND jt.deleted_at IS NULL AND jt.status <> 'Completed'
+          AND o.deleted_at IS NULL AND coalesce(trim(o.account_name),'') <> ''
+        UNION ALL
+        SELECT lower(trim(c.current_company)), c.current_company, jt.title, jt.status, jt.deadline, jt.owner, jt.created_at
+        FROM bedrock.jobs_task jt
+        JOIN public.contacts c ON jt.parent_id ~ '^[0-9]+$' AND c.contact_id = jt.parent_id::int
+        WHERE jt.parent_type='prospect' AND jt.deleted_at IS NULL AND jt.status <> 'Completed'
+          AND coalesce(trim(c.current_company),'') <> '' AND lower(trim(c.current_company)) <> 'n/a'
+    ),
+    accts AS (SELECT acct FROM comments UNION SELECT acct FROM tasks),
+    owners AS (
+        SELECT lower(trim(account_name)) AS acct,
+               (array_agg(owner_email ORDER BY updated_at DESC) FILTER (WHERE owner_email IS NOT NULL))[1] AS owner
+        FROM bedrock.jobs_opportunity WHERE deleted_at IS NULL AND coalesce(trim(account_name),'') <> '' GROUP BY 1
+    )
+    SELECT a.acct,
+           coalesce((SELECT display FROM comments c WHERE c.acct=a.acct AND display IS NOT NULL LIMIT 1),
+                    (SELECT display FROM tasks t WHERE t.acct=a.acct AND display IS NOT NULL LIMIT 1), a.acct) AS display,
+           coalesce(ja.owner_email, ow.owner) AS owner,
+           greatest(
+             (SELECT max(created_at) FROM comments c WHERE c.acct=a.acct),
+             (SELECT max(created_at) FROM tasks t WHERE t.acct=a.acct)
+           ) AS last_activity,
+           (SELECT json_agg(json_build_object('author', cc.author, 'content', cc.content, 'date', cc.created_at) ORDER BY cc.created_at DESC)
+            FROM comments cc WHERE cc.acct=a.acct) AS comments,
+           (SELECT json_agg(json_build_object('title', tt.title, 'status', tt.status, 'deadline', tt.deadline, 'owner', tt.owner) ORDER BY tt.deadline NULLS LAST)
+            FROM tasks tt WHERE tt.acct=a.acct) AS open_tasks
+    FROM accts a
+    LEFT JOIN bedrock.jobs_account ja ON ja.account_key = a.acct
+    LEFT JOIN owners ow ON ow.acct = a.acct
+    ORDER BY last_activity DESC NULLS LAST
+    """
+    rows = await conn.fetch(sql)
+    items = []
+    for r in rows:
+        comments = _jsonb(r["comments"]) or []
+        tasks = _jsonb(r["open_tasks"]) or []
+        items.append({
+            "account": r["display"], "owner": r["owner"],
+            "last_activity": r["last_activity"].isoformat() if r["last_activity"] else None,
+            "comment_count": len(comments), "open_task_count": len(tasks),
+            "comments": comments, "open_tasks": tasks,
+        })
+    return {"success": True, "data": {"accounts": items}}
+
+
 @router.get("/this-week-summary")
 async def this_week_summary(user=Depends(require_auth), conn=Depends(get_db)):
     """A narrative of the jobs team's last 7 days: who Avni/Damon emailed &

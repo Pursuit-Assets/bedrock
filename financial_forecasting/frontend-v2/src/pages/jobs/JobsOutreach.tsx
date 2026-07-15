@@ -4,6 +4,8 @@ import { ChevronRight, ChevronDown, Loader2 } from "lucide-react";
 import {
   useOutreachScorecard,
   useOutreachDrill,
+  useOutreachTargetingMix,
+  useOutreachAccounts,
   useJobsStaff,
   type OutreachGranularity,
   type OutreachScopeKind,
@@ -11,10 +13,12 @@ import {
   type OutreachScorecard,
   type ScorecardRow,
   type ScorecardCell,
+  type TargetingDim,
 } from "@/services/jobs";
 import { cn } from "@/lib/utils";
 
 const DRILL_PAGE = 25;
+const ACCOUNTS_PAGE = 10;
 
 // ── Toggles ───────────────────────────────────────────────────────────────────
 const SCOPES: { id: OutreachScopeKind; label: string }[] = [
@@ -287,7 +291,11 @@ function OriginComparison({ sc }: { sc: OutreachScorecard }) {
   );
 }
 
-function BySenderTable({ sc }: { sc: OutreachScorecard }) {
+function BySenderTable({ sc, selectedOwner, onPick }: {
+  sc: OutreachScorecard;
+  selectedOwner: string;
+  onPick: (email: string) => void;
+}) {
   if (sc.by_sender.length === 0) return <div className="rounded-xl border border-border-strong bg-surface px-4 py-6 text-center text-[13px] text-ink-4">No sends by this group in the period.</div>;
   return (
     <div className="overflow-hidden rounded-xl border border-border-strong bg-surface">
@@ -304,9 +312,19 @@ function BySenderTable({ sc }: { sc: OutreachScorecard }) {
           {sc.by_sender.map((s) => {
             const total = s.warm + s.cold;
             const wp = total ? (s.warm / total) * 100 : 0;
+            const active = selectedOwner === s.staff;
             return (
-              <tr key={s.staff} className="border-t border-border text-[13.5px]">
-                <td className="px-3.5 py-2.5 text-left font-medium">{s.staff}</td>
+              <tr
+                key={s.staff}
+                onClick={() => onPick(active ? "" : s.staff)}
+                title={active ? "Click to clear the sender filter" : "Click to filter the whole deep-dive to this sender"}
+                className={cn("cursor-pointer border-t border-border text-[13.5px] hover:bg-surface-2",
+                  active && "bg-accent-soft")}
+              >
+                <td className="px-3.5 py-2.5 text-left font-medium">
+                  {s.staff}
+                  {active && <span className="ml-2 rounded bg-surface px-1.5 py-0.5 text-[10px] font-bold uppercase text-accent-ink">filtering</span>}
+                </td>
                 <td className="px-3.5 py-2.5 text-right tabular-nums">{s.sent.this}</td>
                 <td className="px-3.5 py-2.5 text-right text-[12.5px]"><Trend current={s.sent.this} prior={s.sent.last} /></td>
                 <td className="px-3.5 py-2.5 text-left">
@@ -323,6 +341,141 @@ function BySenderTable({ sc }: { sc: OutreachScorecard }) {
           })}
         </tbody>
       </table>
+      <div className="border-t border-border bg-surface-2 px-3.5 py-1.5 text-[11px] text-ink-4">
+        Click a row to filter everything below to that sender.
+      </div>
+    </div>
+  );
+}
+
+// ── Targeting Mix (horizontal bar charts, 2×2) ────────────────────────────────
+function TargetingChart({ dim }: { dim: TargetingDim }) {
+  const rows = dim.rows.slice(0, 8);
+  const max = Math.max(1, ...rows.map((r) => r.sent));
+  return (
+    <div className="flex flex-col rounded-xl border border-border-strong bg-surface p-4">
+      <div className="mb-3 text-[13px] font-bold text-ink-2">{dim.label}</div>
+      {rows.length === 0 && <div className="py-4 text-center text-[12.5px] text-ink-4">No contact-linked outreach in this period.</div>}
+      <div className="flex flex-col gap-2">
+        {rows.map((r) => (
+          <div key={r.bucket} className="flex items-center gap-2">
+            <div className="w-[130px] shrink-0 truncate text-right text-[12.5px] text-ink-2" title={r.bucket}>{r.bucket}</div>
+            <div className="h-[18px] flex-1 rounded bg-surface-2">
+              <div className="h-full rounded bg-accent" style={{ width: `${Math.max(2, (r.sent / max) * 100)}%`, opacity: 0.85 }} />
+            </div>
+            <div className="w-[110px] shrink-0 text-[12px] tabular-nums text-ink-2">
+              <b>{r.sent}</b>
+              <span className="text-ink-4"> sent · {r.responses} repl{r.responses === 1 ? "y" : "ies"}</span>
+            </div>
+          </div>
+        ))}
+      </div>
+      {dim.rows.length > 8 && <div className="mt-2 text-[11px] text-ink-4">+{dim.rows.length - 8} smaller buckets not shown</div>}
+    </div>
+  );
+}
+
+function TargetingMix({ granularity, scope, owner, range }: {
+  granularity: OutreachGranularity; scope: OutreachScopeKind; owner?: string; range?: OutreachDateRange;
+}) {
+  const { data, isLoading } = useOutreachTargetingMix(granularity, scope, owner, range);
+  if (isLoading) return (
+    <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+      {[0, 1, 2, 3].map((i) => <div key={i} className="h-48 animate-pulse rounded-xl border border-border-strong bg-surface-2" />)}
+    </div>
+  );
+  if (!data) return null;
+  return (
+    <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+      {data.dims.map((d) => <TargetingChart key={d.key} dim={d} />)}
+    </div>
+  );
+}
+
+// ── Account working list (comments + open tasks per account) ──────────────────
+function AccountsPanel() {
+  const { data, isLoading } = useOutreachAccounts();
+  const [showAll, setShowAll] = useState(false);
+  const [open, setOpen] = useState<Set<string>>(new Set());
+
+  if (isLoading) return <div className="h-40 animate-pulse rounded-xl border border-border-strong bg-surface-2" />;
+  const accounts = data?.accounts ?? [];
+  if (accounts.length === 0) return <div className="rounded-xl border border-border-strong bg-surface px-4 py-6 text-center text-[13px] text-ink-4">No accounts with comments or open tasks yet.</div>;
+
+  const shown = showAll ? accounts : accounts.slice(0, ACCOUNTS_PAGE);
+  const fmtD = (iso: string | null) => (iso ? new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : "");
+
+  return (
+    <div className="flex flex-col overflow-hidden rounded-xl border border-border-strong bg-surface">
+      {shown.map((a, idx) => {
+        const isOpen = open.has(a.account);
+        const latest = a.comments[0];
+        return (
+          <div key={a.account} className={cn(idx > 0 && "border-t border-border")}>
+            <button
+              onClick={() => setOpen((prev) => { const n = new Set(prev); n.has(a.account) ? n.delete(a.account) : n.add(a.account); return n; })}
+              className="flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-surface-2"
+            >
+              <span className="w-3.5 shrink-0 text-ink-4">{isOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}</span>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-baseline gap-2">
+                  <span className="text-[13.5px] font-semibold text-ink">{a.account}</span>
+                  <span className="text-[11.5px] text-ink-4">{a.owner ? a.owner.split("@")[0] : "unowned"}</span>
+                </div>
+                {!isOpen && latest && (
+                  <div className="mt-0.5 truncate text-[12px] text-ink-3">
+                    “{latest.content}” <span className="text-ink-4">— {latest.author?.split("@")[0]}, {fmtD(latest.date)}</span>
+                  </div>
+                )}
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                {a.open_task_count > 0 && (
+                  <span className="rounded-full bg-amber-soft px-2 py-0.5 text-[11px] font-semibold text-amber">
+                    {a.open_task_count} open task{a.open_task_count === 1 ? "" : "s"}
+                  </span>
+                )}
+                <span className="rounded-full bg-surface-2 px-2 py-0.5 text-[11px] font-semibold text-ink-3">
+                  {a.comment_count} note{a.comment_count === 1 ? "" : "s"}
+                </span>
+                <span className="w-[52px] text-right text-[11.5px] tabular-nums text-ink-4">{fmtD(a.last_activity)}</span>
+              </div>
+            </button>
+            {isOpen && (
+              <div className="flex flex-col gap-3 border-t border-border bg-bg px-4 py-3 pl-10">
+                {a.open_tasks.length > 0 && (
+                  <div>
+                    <div className="mb-1 text-[10.5px] font-bold uppercase tracking-wide text-amber">Open tasks</div>
+                    {a.open_tasks.map((t, i) => (
+                      <div key={i} className="flex items-baseline gap-2 py-0.5 text-[12.5px]">
+                        <span className="text-ink">{t.title}</span>
+                        <span className="text-[11.5px] text-ink-4">
+                          {t.owner || "unassigned"}{t.deadline ? ` · due ${fmtD(t.deadline)}` : ""}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {a.comments.length > 0 && (
+                  <div>
+                    <div className="mb-1 text-[10.5px] font-bold uppercase tracking-wide text-ink-3">Notes</div>
+                    {a.comments.map((c, i) => (
+                      <div key={i} className="py-1 text-[12.5px] leading-relaxed text-ink-2">
+                        {c.content}
+                        <span className="ml-1.5 text-[11.5px] text-ink-4">— {c.author?.split("@")[0]}, {fmtD(c.date)}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })}
+      {!showAll && accounts.length > ACCOUNTS_PAGE && (
+        <button onClick={() => setShowAll(true)} className="border-t border-border px-4 py-2.5 text-left text-[12.5px] font-medium text-accent-ink hover:underline">
+          Show more ({accounts.length - ACCOUNTS_PAGE} more accounts)
+        </button>
+      )}
     </div>
   );
 }
@@ -413,8 +566,21 @@ export function JobsOutreach() {
           <SectionHead title="Origin Comparison" note="Warm vs. cold this period" />
           <OriginComparison sc={sc} />
 
-          <SectionHead title="By Sender" note="Sent volume & warm/cold, per staff" />
-          <BySenderTable sc={sc} />
+          {/* ── Deep-dive divider: everything above = high-level review; below = per-sender/account deep dive ── */}
+          <div className="mt-6 flex items-center gap-3">
+            <div className="h-px flex-1 bg-border-strong" />
+            <span className="text-[11px] font-bold uppercase tracking-[.12em] text-ink-3">Deep Dive · Senders, Segments &amp; Accounts</span>
+            <div className="h-px flex-1 bg-border-strong" />
+          </div>
+
+          <SectionHead title="By Sender" note="Sent volume & warm/cold, per staff — click a row to filter" />
+          <BySenderTable sc={sc} selectedOwner={owner} onPick={setOwner} />
+
+          <SectionHead title="Targeting Mix" note={`Outreach & replies by segment${owner ? ` · ${owner.split("@")[0]}` : ""} · this period`} />
+          <TargetingMix granularity={granularity} scope={scope} owner={owner || undefined} range={range} />
+
+          <SectionHead title="Account Working List" note="Accounts with notes & open tasks — most recently touched first" />
+          <AccountsPanel />
 
           <p className="text-[11px] italic text-ink-4">
             Warm = outreach to a company Bedrock already knew before the contact's first touch; Cold = the company's first appearance.

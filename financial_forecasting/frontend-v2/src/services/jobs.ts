@@ -1044,6 +1044,48 @@ export function useOutreachScorecard(granularity: OutreachGranularity, scope: Ou
   });
 }
 
+export interface TargetingBucket { bucket: string; sent: number; responses: number }
+export interface TargetingDim { key: string; label: string; rows: TargetingBucket[] }
+
+/** Targeting Mix — outreach volume + replies cut by lead source / industry / size / stage. */
+export function useOutreachTargetingMix(granularity: OutreachGranularity, scope: OutreachScopeKind, owner?: string, range?: OutreachDateRange) {
+  const rangeKey = range ? `${range.from}..${range.to}` : "";
+  return useQuery<{ dims: TargetingDim[] }>({
+    queryKey: ["jobs", "outreach-targeting", granularity, scope, owner ?? "", rangeKey],
+    queryFn: async () => {
+      const { data } = await api.get<ApiResponse<{ dims: TargetingDim[] }>>(
+        `/api/jobs/outreach/targeting-mix?${outreachParams(granularity, scope, owner, range)}`,
+      );
+      return data.data;
+    },
+    staleTime: 60_000,
+  });
+}
+
+export interface OutreachAccountComment { author: string | null; content: string; date: string | null }
+export interface OutreachAccountTask { title: string; status: string; deadline: string | null; owner: string | null }
+export interface OutreachAccount {
+  account: string;
+  owner: string | null;
+  last_activity: string | null;
+  comment_count: number;
+  open_task_count: number;
+  comments: OutreachAccountComment[];
+  open_tasks: OutreachAccountTask[];
+}
+
+/** Account working list — accounts with comments/open tasks for the deep-dive discussion. */
+export function useOutreachAccounts() {
+  return useQuery<{ accounts: OutreachAccount[] }>({
+    queryKey: ["jobs", "outreach-accounts"],
+    queryFn: async () => {
+      const { data } = await api.get<ApiResponse<{ accounts: OutreachAccount[] }>>("/api/jobs/outreach/accounts");
+      return data.data;
+    },
+    staleTime: 60_000,
+  });
+}
+
 export interface OutreachDrillTouch {
   date: string | null;
   type: string;
