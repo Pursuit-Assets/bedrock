@@ -51,6 +51,9 @@ export interface ProspectActivityBody {
   contact_id: number;
   type: ProspectActivityType;
   description: string;
+  /** ISO date — lets a call/text from a few days ago be logged retroactively
+   *  (TKT-126). Omitted → the server stamps now(). */
+  activity_date?: string;
 }
 
 /**

@@ -63,6 +63,7 @@ function LogBuilderForm({ oppId }: { oppId: string }) {
   const [roleId, setRoleId] = useState("");      // selected jobs_role (builders attach to a role)
   const [roleTitle, setRoleTitle] = useState(""); // free-text fallback when no roles exist yet
   const [stage, setStage] = useState<AppStage>("applied");
+  const [dateApplied, setDateApplied] = useState(() => new Date().toISOString().slice(0, 10));
 
   const buildersQ = useBuilders(search || undefined);
   const builders = buildersQ.data ?? [];
@@ -76,6 +77,7 @@ function LogBuilderForm({ oppId }: { oppId: string }) {
     setRoleId("");
     setRoleTitle("");
     setStage("applied");
+    setDateApplied(new Date().toISOString().slice(0, 10));
     setOpen(false);
   }
 
@@ -92,6 +94,7 @@ function LogBuilderForm({ oppId }: { oppId: string }) {
         jobs_role_id: roleId || undefined,
         role_title: picked ? picked.title : (roleTitle.trim() || undefined),
         stage,
+        date_applied: dateApplied || undefined,
       },
       { onSuccess: () => reset() },
     );
@@ -160,7 +163,7 @@ function LogBuilderForm({ oppId }: { oppId: string }) {
         </div>
       )}
 
-      <div className="grid grid-cols-2 gap-2">
+      <div className="grid grid-cols-3 gap-2">
         <label className="flex flex-col gap-0.5">
           <span className="text-[10px] font-medium text-ink-4">Role</span>
           {roles.length > 0 ? (
@@ -197,6 +200,16 @@ function LogBuilderForm({ oppId }: { oppId: string }) {
               <option key={s.value} value={s.value}>{s.label}</option>
             ))}
           </select>
+        </label>
+        <label className="flex flex-col gap-0.5">
+          <span className="text-[10px] font-medium text-ink-4">Date applied</span>
+          <input
+            type="date"
+            value={dateApplied}
+            max={new Date().toISOString().slice(0, 10)}
+            onChange={(e) => setDateApplied(e.target.value)}
+            className="w-full rounded border border-border-strong bg-surface px-2 py-1 text-[11.5px] text-ink-2 focus:outline-none focus:ring-1 focus:ring-accent/40"
+          />
         </label>
       </div>
 
