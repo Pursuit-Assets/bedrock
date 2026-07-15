@@ -386,7 +386,15 @@ async def metric_drilldown(
         return cols, out, "salary"
 
     async def any_paid(_where: str):
-        rows = await conn.fetch("SELECT * FROM bedrock.secured_jobs() WHERE payment_amount > 0 ORDER BY builder")
+        # Paid work = recorded pay OR paid-type work whose pay wasn't recorded
+        # (contract/freelance/part-time from the Pathfinder era often has no
+        # amount — TKT-129: 'sometimes counted, sometimes not' depended on
+        # whether someone filled the pay field). pro_bono stays excluded.
+        rows = await conn.fetch("""
+            SELECT * FROM bedrock.secured_jobs()
+            WHERE payment_amount > 0
+               OR (coalesce(payment_amount, 0) = 0 AND employment_type IN ('contract','freelance','part_time'))
+            ORDER BY builder""")
         seen: dict = {}
         for r in rows:
             seen.setdefault(r["user_id"], r)
@@ -492,7 +500,12 @@ async def get_placements(
         prows = await conn.fetch(f"WITH {_L3PLUS_POOL} SELECT user_id, segment FROM pool")
         seg_uids = {r["user_id"] for r in prows if r["segment"] == seg}
 
-    rows = await conn.fetch("SELECT * FROM bedrock.secured_jobs() WHERE payment_amount > 0")
+    # Same inclusion rule as the any_paid drill: typed paid work counts even
+    # when the pay amount wasn't recorded (TKT-129); pro_bono stays excluded.
+    rows = await conn.fetch("""
+        SELECT * FROM bedrock.secured_jobs()
+        WHERE payment_amount > 0
+           OR (coalesce(payment_amount, 0) = 0 AND employment_type IN ('contract','freelance','part_time'))""")
     if seg_uids is not None:
         rows = [r for r in rows if r["user_id"] in seg_uids]
 
@@ -605,7 +618,12 @@ async def get_placements(
             "influenced_any": infl_any,
             "committed_ft_roles": committed_ft_roles,
             "committed_trial_active": committed_trial_active,
-            "ft_roles_secured": ft_builders + committed_ft_roles,
+            # Committed roles have no builder, so no cohort — including them in
+            # a cohort-scoped headline repeated the same roles under every
+            # cohort (TKT-127). Under a segment they're reported separately
+            # (committed_ft_roles) and excluded from the additive number.
+            "ft_roles_secured": ft_builders + (0 if seg else committed_ft_roles),
+            "committed_is_global": True,
             "avg_salary_ft_placed": avg_salary_ft_placed,
             "avg_salary_ft_secured": avg_salary_ft_secured,
             "interviewing": interviewing,

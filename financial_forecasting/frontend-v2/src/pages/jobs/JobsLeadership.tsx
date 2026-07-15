@@ -80,7 +80,12 @@ export function JobsLeadership() {
             celebrate={!pLoading && (p?.ft_roles_secured ?? 0) > 0}
             subLead={pLoading ? undefined : [
               `${p?.ft_builders ?? 0} placed`,
-              `${p?.committed_ft_roles ?? 0} committed`,
+              // Committed roles have no builder → no cohort; under a segment
+              // they're informational, never added into the cohort's number
+              // (they'd otherwise repeat under every cohort — TKT-127).
+              segment === "all"
+                ? `${p?.committed_ft_roles ?? 0} committed`
+                : `+${p?.committed_ft_roles ?? 0} committed (all cohorts, not added)`,
               ...((p?.committed_trial_active ?? 0) > 0 ? [`${p?.committed_trial_active} in trial`] : []),
             ].join(" · ")}
             sub={pLoading ? undefined : `${pctOfPool(p?.ft_roles_secured ?? 0)}% of ${poolTotal} job-ready`}
@@ -95,6 +100,7 @@ export function JobsLeadership() {
             tone="sky"
             icon={<Users size={14} />}
             isLoading={pLoading}
+            subLead="any paid work · incl. full-time"
             sub={pLoading ? undefined : `${pctOfPool(p?.any_builders ?? 0)}% of ${poolTotal} job-ready`}
             progressPct={pctOfPool(p?.any_builders ?? 0)}
             progressLabel={`${pctOfPool(p?.any_builders ?? 0)}%`}
