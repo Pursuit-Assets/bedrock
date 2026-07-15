@@ -1,65 +1,121 @@
-import { Fragment, useState } from "react";
-import { ChevronRight, ChevronDown } from "lucide-react";
+import { Fragment, useMemo, useState } from "react";
+import { ChevronRight, ChevronDown, Loader2 } from "lucide-react";
 
 import {
   useOutreachScorecard,
+  useOutreachDrill,
   type OutreachGranularity,
+  type OutreachScopeKind,
+  type OutreachDateRange,
   type OutreachScorecard,
   type ScorecardRow,
   type ScorecardCell,
 } from "@/services/jobs";
 import { cn } from "@/lib/utils";
 
-// ── Period toggle ─────────────────────────────────────────────────────────────
+// ── Toggles ───────────────────────────────────────────────────────────────────
+const SCOPES: { id: OutreachScopeKind; label: string }[] = [
+  { id: "pursuit", label: "Pursuit" },
+  { id: "team", label: "Core team" },
+  { id: "staff", label: "Other staff" },
+];
 const PERIODS: { id: OutreachGranularity; label: string }[] = [
   { id: "day", label: "Daily" },
   { id: "week", label: "Weekly" },
   { id: "month", label: "Monthly" },
 ];
-const PERIOD_NOTE: Record<OutreachGranularity, string> = {
-  day: "Today vs. Yesterday",
-  week: "This Week vs. Last Week",
-  month: "This Month vs. Last Month",
-};
 
-// ── Trend helpers (mirror the mockup's trendPct) ──────────────────────────────
-function Trend({ current, prior }: { current: number; prior: number }) {
-  if (prior === 0) return <span className="text-ink-4">—</span>;
-  const v = (current - prior) / prior;
+// ── Formatting helpers ────────────────────────────────────────────────────────
+function fmtDate(iso: string) {
+  const d = new Date(iso);
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+function fmtRange(startISO: string, endISO: string) {
+  // end is exclusive (start-of-next-day) — show the last included day.
+  const end = new Date(new Date(endISO).getTime() - 1);
+  const y = end.getFullYear();
+  return `${fmtDate(startISO)} – ${end.toLocaleDateString(undefined, { month: "short", day: "numeric" })}, ${y}`;
+}
+function pct(num: number, den: number) {
+  return den ? `${((num / den) * 100).toFixed(1)}%` : "—";
+}
+
+function Trend({ current, prior, unit = "pct" }: { current: number; prior: number; unit?: "pct" | "pt" }) {
+  if (unit === "pct") {
+    if (!prior) return <span className="text-ink-4">—</span>;
+    const v = (current - prior) / prior;
+    const up = v >= 0;
+    return <span className={cn("font-semibold whitespace-nowrap", up ? "text-green" : "text-red")}>{up ? "▲" : "▼"} {(Math.abs(v) * 100).toFixed(1)}%</span>;
+  }
+  // percentage-point delta between two rates
+  const v = (current - prior) * 100;
   const up = v >= 0;
+  return <span className={cn("font-semibold whitespace-nowrap", up ? "text-green" : "text-red")}>{up ? "▲" : "▼"} {Math.abs(v).toFixed(1)}pt</span>;
+}
+
+// ── Drill-down (contacts → their touches) ─────────────────────────────────────
+function RowDrill({
+  kind, rowKey, granularity, scope, range,
+}: {
+  kind: "user" | "activity"; rowKey: string;
+  granularity: OutreachGranularity; scope: OutreachScopeKind; range?: OutreachDateRange;
+}) {
+  const [openContact, setOpenContact] = useState<Set<number>>(new Set());
+  const { data, isLoading, isError } = useOutreachDrill({ kind, key: rowKey, period: "this", granularity, scope, range });
+
+  if (isLoading) return <div className="flex items-center gap-2 px-4 py-3 text-[12.5px] text-ink-3"><Loader2 size={13} className="animate-spin" /> Loading…</div>;
+  if (isError) return <div className="px-4 py-3 text-[12.5px] text-red">Couldn't load the detail.</div>;
+  if (!data || data.contacts.length === 0) return <div className="px-4 py-3 text-[12.5px] text-ink-4">No records in this period.</div>;
+
   return (
-    <span className={cn("font-semibold whitespace-nowrap", up ? "text-green" : "text-red")}>
-      {up ? "▲" : "▼"} {(Math.abs(v) * 100).toFixed(1)}%
-    </span>
+    <div className="flex flex-col divide-y divide-border">
+      {data.contacts.map((c) => {
+        const open = openContact.has(c.contact_id);
+        return (
+          <div key={c.contact_id}>
+            <button
+              onClick={() => setOpenContact((prev) => { const n = new Set(prev); n.has(c.contact_id) ? n.delete(c.contact_id) : n.add(c.contact_id); return n; })}
+              className="flex w-full items-center gap-2 px-4 py-2 text-left hover:bg-surface-2"
+            >
+              <span className="w-3.5 text-ink-4">{open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}</span>
+              <span className="text-[13px] font-medium text-ink">{c.name || "Unknown contact"}</span>
+              <span className="text-[12px] text-ink-3">{c.company || "—"}</span>
+              <span className="ml-auto text-[11.5px] text-ink-4">{c.touches.length} touch{c.touches.length === 1 ? "" : "es"}</span>
+            </button>
+            {open && (
+              <div className="flex flex-col gap-1 bg-bg px-4 py-2 pl-10">
+                {c.touches.length === 0 && <div className="text-[12px] text-ink-4">No jobs touches in this period.</div>}
+                {c.touches.map((t, i) => (
+                  <div key={i} className="flex items-baseline gap-2 text-[12.5px]">
+                    <span className={cn("rounded px-1.5 py-0.5 text-[10.5px] font-semibold uppercase",
+                      t.direction === "received" ? "bg-green-soft text-green" : "bg-surface-2 text-ink-3")}>
+                      {t.direction === "received" ? "reply" : t.type}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate text-ink-2">{t.subject || t.snippet || "(no subject)"}</span>
+                    <span className="shrink-0 text-ink-4">{t.date ? fmtDate(t.date) : ""}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
   );
 }
 
-function TargetDelta({ actual, target }: { actual: number; target: number | null }) {
-  if (target == null || target === 0) return <span className="text-ink-4">—</span>;
-  return <Trend current={actual} prior={target} />;
-}
-
-// ── One expandable table ──────────────────────────────────────────────────────
+// ── A scorecard table (User Pipeline / Activity Pipeline) ─────────────────────
 function ScorecardTable({
-  title,
-  rows,
-  idPrefix,
-  firstColHeader,
-  expanded,
-  toggle,
+  title, rows, idPrefix, firstColHeader, drillKind, granularity, scope, range,
 }: {
-  title: string;
-  rows: ScorecardRow[];
-  idPrefix: string;
-  firstColHeader: string;
-  expanded: Set<string>;
-  toggle: (id: string) => void;
+  title: string; rows: ScorecardRow[]; idPrefix: string; firstColHeader: string;
+  drillKind: "user" | "activity";
+  granularity: OutreachGranularity; scope: OutreachScopeKind; range?: OutreachDateRange;
 }) {
+  const [open, setOpen] = useState<string | null>(null);
   return (
     <div className="flex flex-col overflow-hidden rounded-xl border border-border-strong bg-surface">
-      <div className="border-b border-border-strong bg-accent-soft px-4 py-3 text-[14px] font-bold text-accent-ink">
-        {title}
-      </div>
+      <div className="border-b border-border-strong bg-surface-2 px-4 py-3 text-[13px] font-bold text-ink-2">{title}</div>
       <table className="w-full border-collapse">
         <thead>
           <tr className="bg-surface-2 text-[10.5px] uppercase tracking-wide text-ink-3">
@@ -72,51 +128,34 @@ function ScorecardTable({
         </thead>
         <tbody>
           {rows.map((r, idx) => {
-            const key = (r.stage ?? r.metric ?? String(idx));
-            const id = `${idPrefix}-${key}`;
-            const open = expanded.has(id);
+            const rowKey = r.stage ?? r.metric ?? String(idx);
+            const id = `${idPrefix}-${rowKey}`;
+            const isOpen = open === id;
             const isLast = idx === rows.length - 1;
-            const subRows: { label: string; sel: (c: ScorecardCell) => number }[] = [
-              { label: "Warm", sel: (c) => c.warm },
-              { label: "Cold", sel: (c) => c.cold },
-            ];
             return (
               <Fragment key={id}>
                 <tr
-                  onClick={() => toggle(id)}
-                  className={cn(
-                    "cursor-pointer text-[13.5px] hover:bg-surface-2",
-                    !isLast && "border-b border-border-strong",
-                    isLast && "bg-surface-2 font-bold",
-                  )}
+                  onClick={() => setOpen(isOpen ? null : id)}
+                  className={cn("cursor-pointer text-[13.5px] hover:bg-surface-2", !isLast && "border-b border-border")}
                 >
                   <td className="px-3.5 py-2.5 text-left font-semibold">
                     <span className="mr-1 inline-block w-3.5 text-ink-4">
-                      {open ? <ChevronDown size={12} className="inline" /> : <ChevronRight size={12} className="inline" />}
+                      {isOpen ? <ChevronDown size={12} className="inline" /> : <ChevronRight size={12} className="inline" />}
                     </span>
                     {r.label}
                   </td>
                   <td className="px-3.5 py-2.5 text-right tabular-nums">{r.this_period.total}</td>
                   <td className="px-3.5 py-2.5 text-right tabular-nums">{r.last_period.total}</td>
-                  <td className="px-3.5 py-2.5 text-right text-[12.5px]">
-                    <Trend current={r.this_period.total} prior={r.last_period.total} />
-                  </td>
-                  <td className="px-3.5 py-2.5 text-right text-[12.5px]">
-                    <TargetDelta actual={r.this_period.total} target={r.target} />
-                  </td>
+                  <td className="px-3.5 py-2.5 text-right text-[12.5px]"><Trend current={r.this_period.total} prior={r.last_period.total} /></td>
+                  <td className="px-3.5 py-2.5 text-right text-[12.5px]">{r.target ? <Trend current={r.this_period.total} prior={r.target} /> : <span className="text-ink-4">—</span>}</td>
                 </tr>
-                {open &&
-                  subRows.map((sr) => (
-                    <tr key={`${id}-${sr.label}`} className="bg-bg text-[12.5px] text-ink-3">
-                      <td className="py-2 pl-9 pr-3.5 text-left font-medium">{sr.label}</td>
-                      <td className="px-3.5 py-2 text-right tabular-nums">{sr.sel(r.this_period)}</td>
-                      <td className="px-3.5 py-2 text-right tabular-nums">{sr.sel(r.last_period)}</td>
-                      <td className="px-3.5 py-2 text-right">
-                        <Trend current={sr.sel(r.this_period)} prior={sr.sel(r.last_period)} />
-                      </td>
-                      <td className="px-3.5 py-2 text-right text-ink-4">—</td>
-                    </tr>
-                  ))}
+                {isOpen && (
+                  <tr>
+                    <td colSpan={5} className="border-b border-border bg-bg p-0">
+                      <RowDrill kind={drillKind} rowKey={rowKey} granularity={granularity} scope={scope} range={range} />
+                    </td>
+                  </tr>
+                )}
               </Fragment>
             );
           })}
@@ -126,87 +165,241 @@ function ScorecardTable({
   );
 }
 
+// ── Conversion Figures + Origin Comparison (computed from the scorecard) ──────
+function byKey(rows: ScorecardRow[], k: "stage" | "metric") {
+  const m: Record<string, ScorecardRow> = {};
+  for (const r of rows) { const key = r[k]; if (key) m[key] = r; }
+  return m;
+}
+const EMPTY: ScorecardCell = { warm: 0, cold: 0, total: 0 };
+
+function ConversionTables({ sc }: { sc: OutreachScorecard }) {
+  const u = byKey(sc.user_pipeline, "stage");
+  const a = byKey(sc.activity_pipeline, "metric");
+  const leads = u.flagged ?? { this_period: EMPTY, last_period: EMPTY } as ScorecardRow;
+  const out = u.initial_outreach ?? { this_period: EMPTY, last_period: EMPTY } as ScorecardRow;
+  const qual = u.active ?? { this_period: EMPTY, last_period: EMPTY } as ScorecardRow;
+  const comm = u.handed_off ?? { this_period: EMPTY, last_period: EMPTY } as ScorecardRow;
+  const email = a.direct_email_sent ?? { this_period: EMPTY, last_period: EMPTY } as ScorecardRow;
+  const resp = a.response ?? { this_period: EMPTY, last_period: EMPTY } as ScorecardRow;
+
+  const ratio = (numRow: ScorecardRow, denRow: ScorecardRow, when: "this_period" | "last_period") => {
+    const d = denRow[when].total; return d ? numRow[when].total / d : null;
+  };
+  const convRows = [
+    { label: "Leads → Outreached", n: out, d: leads },
+    { label: "Outreached → Qualified", n: qual, d: out },
+    { label: "Qualified → Committed", n: comm, d: qual },
+    { label: "Leads → Committed (Overall)", n: comm, d: leads, overall: true },
+  ];
+
+  const RatioTable = ({ title, children }: { title: string; children: React.ReactNode }) => (
+    <div className="flex flex-col overflow-hidden rounded-xl border border-border-strong bg-surface">
+      <div className="border-b border-border-strong bg-surface-2 px-4 py-2.5 text-[12.5px] font-bold text-ink-2">{title}</div>
+      <table className="w-full border-collapse">
+        <thead>
+          <tr className="text-[10.5px] uppercase tracking-wide text-ink-3">
+            <th className="px-3.5 py-2 text-left font-bold">Ratio</th>
+            <th className="px-3.5 py-2 text-right font-bold">This</th>
+            <th className="px-3.5 py-2 text-right font-bold">Last</th>
+            <th className="px-3.5 py-2 text-right font-bold">Trend</th>
+          </tr>
+        </thead>
+        <tbody>{children}</tbody>
+      </table>
+    </div>
+  );
+  const fmt = (v: number | null) => (v == null ? "—" : `${(v * 100).toFixed(1)}%`);
+
+  return (
+    <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+      <RatioTable title="User Pipeline">
+        {convRows.map((r, i) => {
+          const t = ratio(r.n, r.d, "this_period"), l = ratio(r.n, r.d, "last_period");
+          return (
+            <tr key={i} className={cn("text-[13px] border-t border-border", r.overall && "font-bold bg-surface-2")}>
+              <td className="px-3.5 py-2 text-left">{r.label}</td>
+              <td className="px-3.5 py-2 text-right tabular-nums">{fmt(t)}</td>
+              <td className="px-3.5 py-2 text-right tabular-nums">{fmt(l)}</td>
+              <td className="px-3.5 py-2 text-right text-[12px]">{t != null && l != null ? <Trend current={t} prior={l} unit="pt" /> : <span className="text-ink-4">—</span>}</td>
+            </tr>
+          );
+        })}
+      </RatioTable>
+      <RatioTable title="Activity">
+        {(() => {
+          const t = ratio(resp, email, "this_period"), l = ratio(resp, email, "last_period");
+          return (
+            <tr className="text-[13px] border-t border-border">
+              <td className="px-3.5 py-2 text-left">Responses / Emails Sent</td>
+              <td className="px-3.5 py-2 text-right tabular-nums">{fmt(t)}</td>
+              <td className="px-3.5 py-2 text-right tabular-nums">{fmt(l)}</td>
+              <td className="px-3.5 py-2 text-right text-[12px]">{t != null && l != null ? <Trend current={t} prior={l} unit="pt" /> : <span className="text-ink-4">—</span>}</td>
+            </tr>
+          );
+        })()}
+      </RatioTable>
+    </div>
+  );
+}
+
+function OriginComparison({ sc }: { sc: OutreachScorecard }) {
+  const u = byKey(sc.user_pipeline, "stage");
+  const a = byKey(sc.activity_pipeline, "metric");
+  const flagged = (u.flagged ?? { this_period: EMPTY } as ScorecardRow).this_period;
+  const email = (a.direct_email_sent ?? { this_period: EMPTY } as ScorecardRow).this_period;
+  const resp = (a.response ?? { this_period: EMPTY } as ScorecardRow).this_period;
+  const qual = (u.active ?? { this_period: EMPTY } as ScorecardRow).this_period;
+
+  const Card = ({ label, w }: { label: string; w: "warm" | "cold" }) => (
+    <div className="rounded-xl border border-border-strong bg-surface p-4">
+      <div className="mb-3 text-[13px] font-bold text-ink">{label}</div>
+      <div className="grid grid-cols-4 gap-2">
+        {[
+          { n: String(flagged[w]), l: "Sourced" },
+          { n: String(email[w]), l: "Sent" },
+          { n: pct(resp[w], email[w]), l: "Response" },
+          { n: pct(qual[w], flagged[w]), l: "Qual. Rate" },
+        ].map((s, i) => (
+          <div key={i}>
+            <div className="text-[19px] font-bold tabular-nums text-ink">{s.n}</div>
+            <div className="text-[11px] uppercase tracking-wide text-ink-3">{s.l}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+  return (
+    <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+      <Card label="Warm" w="warm" />
+      <Card label="Cold" w="cold" />
+    </div>
+  );
+}
+
+function BySenderTable({ sc }: { sc: OutreachScorecard }) {
+  if (sc.by_sender.length === 0) return <div className="rounded-xl border border-border-strong bg-surface px-4 py-6 text-center text-[13px] text-ink-4">No sends by this group in the period.</div>;
+  return (
+    <div className="overflow-hidden rounded-xl border border-border-strong bg-surface">
+      <table className="w-full border-collapse">
+        <thead>
+          <tr className="bg-surface-2 text-[10.5px] uppercase tracking-wide text-ink-3">
+            <th className="px-3.5 py-2.5 text-left font-bold">Staff</th>
+            <th className="px-3.5 py-2.5 text-right font-bold">Sent</th>
+            <th className="px-3.5 py-2.5 text-right font-bold">Trend</th>
+            <th className="px-3.5 py-2.5 text-left font-bold">Warm / Cold split</th>
+          </tr>
+        </thead>
+        <tbody>
+          {sc.by_sender.map((s) => {
+            const total = s.warm + s.cold;
+            const wp = total ? (s.warm / total) * 100 : 0;
+            return (
+              <tr key={s.staff} className="border-t border-border text-[13.5px]">
+                <td className="px-3.5 py-2.5 text-left font-medium">{s.staff}</td>
+                <td className="px-3.5 py-2.5 text-right tabular-nums">{s.sent.this}</td>
+                <td className="px-3.5 py-2.5 text-right text-[12.5px]"><Trend current={s.sent.this} prior={s.sent.last} /></td>
+                <td className="px-3.5 py-2.5 text-left">
+                  <div className="flex items-center gap-2 text-[12px] text-ink-3">
+                    <div className="flex h-1.5 w-16 overflow-hidden rounded bg-surface-2">
+                      <div className="h-full bg-amber" style={{ width: `${wp}%` }} />
+                      <div className="h-full bg-ink-3" style={{ width: `${100 - wp}%` }} />
+                    </div>
+                    {s.warm} / {s.cold}
+                  </div>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ── Section header ────────────────────────────────────────────────────────────
+function SectionHead({ title, note }: { title: string; note?: string }) {
+  return (
+    <div className="flex items-baseline justify-between">
+      <h2 className="text-[13px] font-bold uppercase tracking-wider text-ink-3">{title}</h2>
+      {note && <span className="text-[12.5px] text-ink-4">{note}</span>}
+    </div>
+  );
+}
+
 // ── Page ──────────────────────────────────────────────────────────────────────
 export function JobsOutreach() {
-  const [granularity, setGranularity] = useState<OutreachGranularity>("week");
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const { data, isLoading, isError } = useOutreachScorecard(granularity);
+  const [granularity, setGranularity] = useState<OutreachGranularity>("month");
+  const [scope, setScope] = useState<OutreachScopeKind>("team");
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
+  const range: OutreachDateRange | undefined = from && to ? { from, to } : undefined;
 
-  const toggle = (id: string) =>
-    setExpanded((prev) => {
-      const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
-      return next;
-    });
+  const { data: sc, isLoading, isError } = useOutreachScorecard(granularity, scope, range);
+  const rangeLabel = useMemo(() => (sc ? fmtRange(sc.period.this_start, sc.period.this_end) : ""), [sc]);
 
-  const sc: OutreachScorecard | undefined = data;
+  const Seg = <T extends string>({ items, value, onChange }: { items: { id: T; label: string }[]; value: T; onChange: (v: T) => void }) => (
+    <div className="flex rounded-lg border border-border-strong bg-surface p-1">
+      {items.map((it) => (
+        <button key={it.id} onClick={() => onChange(it.id)}
+          className={cn("rounded-md px-3 py-1.5 text-[13px] transition-colors", value === it.id ? "bg-surface-2 font-semibold text-ink" : "text-ink-3 hover:text-ink-2")}>
+          {it.label}
+        </button>
+      ))}
+    </div>
+  );
 
   return (
     <div className="flex flex-col gap-4 pt-3">
-      {/* Filter / period toggle */}
-      <div className="flex items-center gap-2">
+      {/* Filter bar */}
+      <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border-strong bg-surface-2 px-3 py-2">
+        <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">Outreach</span>
+        <Seg items={SCOPES} value={scope} onChange={setScope} />
         <div className="flex-1" />
-        <div className="flex rounded-lg border border-border-strong bg-surface p-1">
-          {PERIODS.map((p) => (
-            <button
-              key={p.id}
-              onClick={() => setGranularity(p.id)}
-              className={cn(
-                "rounded-md px-3.5 py-1.5 text-[13px] transition-colors",
-                granularity === p.id ? "bg-surface-2 font-semibold text-ink" : "text-ink-3 hover:text-ink-2",
-              )}
-            >
-              {p.label}
-            </button>
-          ))}
+        <Seg items={PERIODS} value={granularity} onChange={setGranularity} />
+        <div className="flex items-center gap-1 text-[12.5px] text-ink-3">
+          <input type="date" value={from} onChange={(e) => setFrom(e.target.value)}
+            className="rounded-md border border-border-strong bg-surface px-2 py-1 text-[12.5px] text-ink outline-none focus:border-accent" />
+          <span>→</span>
+          <input type="date" value={to} onChange={(e) => setTo(e.target.value)}
+            className="rounded-md border border-border-strong bg-surface px-2 py-1 text-[12.5px] text-ink outline-none focus:border-accent" />
+          {range && <button onClick={() => { setFrom(""); setTo(""); }} className="ml-1 text-[12px] text-ink-3 underline hover:text-ink">clear</button>}
         </div>
       </div>
 
-      {/* Section head */}
-      <div className="flex items-baseline justify-between">
-        <h2 className="text-[13px] font-bold uppercase tracking-wider text-ink-3">Scorecard</h2>
-        <span className="text-[12.5px] text-ink-4">{PERIOD_NOTE[granularity]}</span>
-      </div>
+      <SectionHead title="Scorecard" note={rangeLabel ? `${rangeLabel} vs. prior period` : undefined} />
 
-      {isError && (
-        <div className="rounded-lg border border-red-soft bg-red-soft px-4 py-3 text-[13px] text-red">
-          Couldn't load the scorecard. Try again in a moment.
-        </div>
-      )}
+      {isError && <div className="rounded-lg border border-red-soft bg-red-soft px-4 py-3 text-[13px] text-red">Couldn't load the scorecard. Try again in a moment.</div>}
       {isLoading && !sc && (
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-          {[0, 1].map((i) => (
-            <div key={i} className="h-64 animate-pulse rounded-xl border border-border-strong bg-surface-2" />
-          ))}
+          {[0, 1].map((i) => <div key={i} className="h-64 animate-pulse rounded-xl border border-border-strong bg-surface-2" />)}
         </div>
       )}
 
       {sc && (
-        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-          <ScorecardTable
-            title="User / Contact Pipeline"
-            firstColHeader="Stage"
-            rows={sc.user_pipeline}
-            idPrefix="user"
-            expanded={expanded}
-            toggle={toggle}
-          />
-          <ScorecardTable
-            title="Activity Pipeline"
-            firstColHeader="Activity"
-            rows={sc.activity_pipeline}
-            idPrefix="act"
-            expanded={expanded}
-            toggle={toggle}
-          />
-        </div>
-      )}
+        <>
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+            <ScorecardTable title="User Pipeline" firstColHeader="Stage" rows={sc.user_pipeline} idPrefix="user" drillKind="user" granularity={granularity} scope={scope} range={range} />
+            <ScorecardTable title="Activity Pipeline" firstColHeader="Activity" rows={sc.activity_pipeline} idPrefix="act" drillKind="activity" granularity={granularity} scope={scope} range={range} />
+          </div>
 
-      <p className="text-[11px] italic text-ink-4">
-        Warm = outreach to a company already known to Bedrock before the contact's first touch; Cold = the company's
-        first appearance. Counts are flow (contacts entering a stage / activities logged in the period). Qualified Lead
-        &amp; Committed populate once stage-entry tracking is live.
-      </p>
+          <SectionHead title="Conversion Figures" />
+          <ConversionTables sc={sc} />
+
+          <SectionHead title="Origin Comparison" note="Warm vs. cold this period" />
+          <OriginComparison sc={sc} />
+
+          <SectionHead title="By Sender" note="Sent volume & warm/cold, per staff" />
+          <BySenderTable sc={sc} />
+
+          <p className="text-[11px] italic text-ink-4">
+            Warm = outreach to a company Bedrock already knew before the contact's first touch; Cold = the company's first appearance.
+            Counts are flow (entering a stage / logged in the period). Activity is gated to jobs-classified touches (the nightly classifier
+            is still catching up, so counts will rise). The scope filter applies to activity &amp; by-sender; the User Pipeline is team-wide
+            (per-contact staff attribution isn't captured yet). Qualified Lead &amp; Committed populate once stage-entry tracking is live.
+          </p>
+        </>
+      )}
     </div>
   );
 }

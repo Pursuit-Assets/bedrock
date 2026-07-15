@@ -16,20 +16,24 @@ Granularity keys match the API's granularity param: day | week | month.
 
 from typing import Optional
 
+# Targets are 0 for now (per product) — the "Δ Target" column renders "—" until
+# real goals are set. Bump these when the team agrees on per-period goals.
+_ZERO = {"day": 0, "week": 0, "month": 0}
+
 # Contacts ENTERING each funnel stage in the period (flow, not occupancy).
 USER_PIPELINE_TARGETS: dict[str, dict[str, int]] = {
-    "flagged":          {"day": 76, "week": 380, "month": 1645},  # Lead Sourced
-    "initial_outreach": {"day": 72, "week": 360, "month": 1559},  # Outreached
-    "active":           {"day": 5,  "week": 25,  "month": 108},   # Qualified Lead
-    "handed_off":       {"day": 2,  "week": 10,  "month": 43},    # Committed
+    "flagged":          dict(_ZERO),  # Lead Sourced
+    "initial_outreach": dict(_ZERO),  # Outreached
+    "active":           dict(_ZERO),  # Qualified Lead
+    "handed_off":       dict(_ZERO),  # Committed
 }
 
 # Raw activity rows sent/received in the period.
 ACTIVITY_PIPELINE_TARGETS: dict[str, dict[str, int]] = {
-    "direct_email_sent":      {"day": 40, "week": 200, "month": 866},
-    "linkedin_message_sent":  {"day": 18, "week": 90,  "month": 390},
-    "facilitated_intro_sent": {"day": 8,  "week": 40,  "month": 173},
-    "response":               {"day": 14, "week": 70,  "month": 303},
+    "direct_email_sent":      dict(_ZERO),
+    "linkedin_message_sent":  dict(_ZERO),
+    "facilitated_intro_sent": dict(_ZERO),
+    "response":               dict(_ZERO),
 }
 
 

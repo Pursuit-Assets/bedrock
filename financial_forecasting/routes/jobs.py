@@ -2199,32 +2199,142 @@ _OUTREACH_ACTIVITY_META = [
     ("facilitated_intro_sent", "Facilitated Intro Sent"),
     ("response",               "Responses"),
 ]
-_OUTREACH_GRANULARITY_DAYS = {"day": 1, "week": 7, "month": 30}
+_STAGE_ENTERED_COL = {
+    "flagged": "flagged_at", "initial_outreach": "first_outreach_at",
+    "active": "active_at", "handed_off": "handed_off_at",
+}
+
+
+def _shift_months(dt, n):
+    m = dt.month - 1 + n
+    return dt.replace(year=dt.year + m // 12, month=m % 12 + 1)
+
+
+def _outreach_windows(granularity, date_from, date_to):
+    """(this_start, this_end, last_start, last_end) — calendar-aligned, compared
+    against the same elapsed span in the prior period. A custom date_from/date_to
+    range overrides granularity and compares against the preceding equal-length
+    range."""
+    now = datetime.now(timezone.utc)
+    if date_from and date_to:
+        ds = datetime.fromisoformat(date_from).replace(tzinfo=timezone.utc)
+        de = datetime.fromisoformat(date_to).replace(tzinfo=timezone.utc) + timedelta(days=1)
+        length = de - ds
+        return ds, de, ds - length, ds
+    midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    if granularity == "day":
+        this_start, last_start = midnight, midnight - timedelta(days=1)
+    elif granularity == "week":
+        this_start = midnight - timedelta(days=midnight.weekday())  # Monday
+        last_start = this_start - timedelta(days=7)
+    else:  # month, to-date
+        this_start = midnight.replace(day=1)
+        last_start = _shift_months(this_start, -1)
+    elapsed = now - this_start
+    return this_start, now, last_start, last_start + elapsed
+
+
+def _scope_author(alias, scope):
+    """Activity authored by the chosen staff scope: core team (Avni/Damon/Devika),
+    other active staff, or anyone at Pursuit."""
+    if scope == "team":
+        return _team_actor(alias)
+    if scope == "staff":
+        return _staff_actor(alias)
+    return f"({_team_actor(alias)} OR {_staff_actor(alias)})"
+
+
+def _scope_email_pred(col, scope):
+    """Predicate: this email column belongs to the chosen staff scope."""
+    core = ",".join(f"'{e.lower()}'" for e in JOBS_TEAM_EMAILS)
+    if scope == "team":
+        return f"lower({col}) IN ({core})"
+    staff = (f"EXISTS (SELECT 1 FROM public.org_users o WHERE o.is_active "
+             f"AND lower(o.email) = lower({col}) AND lower(o.email) NOT IN ({core}))")
+    if scope == "staff":
+        return staff
+    return f"(lower({col}) IN ({core}) OR {staff})"
+
+
+# Per-contact Warm/Cold classification, shared by the scorecard + by-sender
+# queries (spliced in after WITH). Warm iff the contact's company had a Bedrock
+# presence — an opportunity, or another jobs-pipeline contact (membership) —
+# predating this contact's first touch; else cold. Decided once per contact.
+_OUTREACH_WARMTH_CTES = """
+    company_presence AS (
+        SELECT lower(trim(account_name)) AS company, min(created_at) AS first_seen
+        FROM bedrock.jobs_opportunity
+        WHERE deleted_at IS NULL AND coalesce(trim(account_name),'') <> ''
+        GROUP BY 1
+        UNION ALL
+        SELECT lower(trim(c.current_company)) AS company, min(m.flagged_at) AS first_seen
+        FROM bedrock.jobs_contact_membership m
+        JOIN public.contacts c ON c.contact_id = m.contact_id
+        WHERE coalesce(trim(c.current_company),'') <> '' AND m.flagged_at IS NOT NULL
+        GROUP BY 1
+    ),
+    company_first_seen AS (
+        SELECT company, min(first_seen) AS first_seen FROM company_presence GROUP BY company
+    ),
+    contact_activity_first AS (
+        SELECT participant_public_contact_id AS contact_id, min(activity_date) AS first_activity
+        FROM bedrock.activity
+        WHERE deleted_at IS NULL AND participant_public_contact_id IS NOT NULL
+        GROUP BY 1
+    ),
+    contact_universe AS (
+        SELECT contact_id FROM bedrock.jobs_contact_membership
+        UNION
+        SELECT DISTINCT participant_public_contact_id FROM bedrock.activity
+          WHERE participant_public_contact_id IS NOT NULL AND deleted_at IS NULL
+        UNION
+        SELECT contact_id FROM bedrock.intro_request WHERE contact_id IS NOT NULL
+    ),
+    contact_first_touch AS (
+        SELECT u.contact_id,
+               lower(trim(c.current_company)) AS company,
+               LEAST(
+                   coalesce(caf.first_activity,   'infinity'::timestamptz),
+                   coalesce(m.first_outreach_at,  'infinity'::timestamptz),
+                   coalesce(m.flagged_at,         'infinity'::timestamptz)
+               ) AS first_touch
+        FROM contact_universe u
+        JOIN public.contacts c ON c.contact_id = u.contact_id
+        LEFT JOIN contact_activity_first caf ON caf.contact_id = u.contact_id
+        LEFT JOIN bedrock.jobs_contact_membership m ON m.contact_id = u.contact_id
+    ),
+    contact_warmth AS (
+        SELECT ct.contact_id,
+               CASE WHEN cfs.first_seen IS NOT NULL AND cfs.first_seen < ct.first_touch
+                    THEN 'warm' ELSE 'cold' END AS warmth
+        FROM contact_first_touch ct
+        LEFT JOIN company_first_seen cfs ON cfs.company = ct.company
+    )"""
 
 
 @router.get("/outreach/scorecard")
 async def outreach_scorecard(
     granularity: str = Query("week", pattern="^(day|week|month)$"),
+    scope: str = Query("team", pattern="^(pursuit|team|staff)$"),
+    date_from: Optional[str] = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    date_to: Optional[str] = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
     user=Depends(require_auth),
     conn=Depends(get_db),
 ):
-    """Outreach Dashboard P0 scorecard — User/Contact Pipeline + Activity Pipeline.
+    """Outreach Dashboard P0 scorecard — User Pipeline + Activity Pipeline, each
+    split Warm/Cold, this period vs last, plus a per-sender breakdown.
 
-    Periods are trailing equal-length windows: `this` = the last N days, `last`
-    = the N days before that (N = 1 | 7 | 30). Simple and always a fair
-    like-for-like; not calendar-aligned (this week ≠ Mon–Sun) — swap to
-    date_trunc boundaries later if the team wants calendar periods.
+    Periods are calendar-aligned (this week = Mon–today, this month = 1st–today)
+    and compared against the same elapsed span in the prior period; a custom
+    date_from/date_to range overrides. `scope` (pursuit|team|staff) filters the
+    ACTIVITY side by author — the User Pipeline stays team-wide because per-contact
+    staff attribution (owner / first_outreach_by) isn't populated yet.
 
-    NOTE: `active_at` / `handed_off_at` only exist once the 2026-07-15 migration
-    is applied and only fill in for transitions that happen after that. Until
-    then the Qualified Lead / Committed rows read 0 by design (that history was
-    never recorded), while Lead Sourced / Outreached are real immediately.
+    NOTE: active_at / handed_off_at exist only once the 2026-07-15 migration is
+    applied and fill in going forward, so Qualified Lead / Committed read 0 until
+    then; first_outreach_at is likewise only stamped on new transitions.
     """
-    days = _OUTREACH_GRANULARITY_DAYS[granularity]
-    now = datetime.now(timezone.utc)
-    delta = timedelta(days=days)
-    this_start, this_end = now - delta, now
-    last_start, last_end = now - delta * 2, now - delta
+    this_start, this_end, last_start, last_end = _outreach_windows(granularity, date_from, date_to)
 
     team_sender = " OR ".join(f"a.email_from ILIKE '%{e}%'" for e in JOBS_TEAM_EMAILS)
 
@@ -2256,75 +2366,22 @@ async def outreach_scorecard(
 
     # One query, warmth computed once, two labelled result sets unioned.
     sql = f"""
-    WITH company_presence AS (
-        -- "Company already had a Bedrock presence", with each source's earliest date.
-        SELECT lower(trim(account_name)) AS company, min(created_at) AS first_seen
-        FROM bedrock.jobs_opportunity
-        WHERE deleted_at IS NULL AND coalesce(trim(account_name),'') <> ''
-        GROUP BY 1
-        UNION ALL
-        -- jobs-pipeline contacts (membership.flagged_at) — deliberately NOT raw
-        -- is_jobs_contact (near-universal → would mark almost everything warm).
-        SELECT lower(trim(c.current_company)) AS company, min(m.flagged_at) AS first_seen
-        FROM bedrock.jobs_contact_membership m
-        JOIN public.contacts c ON c.contact_id = m.contact_id
-        WHERE coalesce(trim(c.current_company),'') <> '' AND m.flagged_at IS NOT NULL
-        GROUP BY 1
-    ),
-    company_first_seen AS (
-        SELECT company, min(first_seen) AS first_seen FROM company_presence GROUP BY company
-    ),
-    contact_activity_first AS (
-        SELECT participant_public_contact_id AS contact_id, min(activity_date) AS first_activity
-        FROM bedrock.activity
-        WHERE deleted_at IS NULL AND participant_public_contact_id IS NOT NULL
-        GROUP BY 1
-    ),
-    -- Every contact that could appear in either table: has activity, an intro, or a membership.
-    contact_universe AS (
-        SELECT contact_id FROM bedrock.jobs_contact_membership
-        UNION
-        SELECT DISTINCT participant_public_contact_id FROM bedrock.activity
-          WHERE participant_public_contact_id IS NOT NULL AND deleted_at IS NULL
-        UNION
-        SELECT contact_id FROM bedrock.intro_request WHERE contact_id IS NOT NULL
-    ),
-    contact_first_touch AS (
-        SELECT u.contact_id,
-               lower(trim(c.current_company)) AS company,
-               LEAST(
-                   coalesce(caf.first_activity,   'infinity'::timestamptz),
-                   coalesce(m.first_outreach_at,  'infinity'::timestamptz),
-                   coalesce(m.flagged_at,         'infinity'::timestamptz)
-               ) AS first_touch
-        FROM contact_universe u
-        JOIN public.contacts c ON c.contact_id = u.contact_id
-        LEFT JOIN contact_activity_first caf ON caf.contact_id = u.contact_id
-        LEFT JOIN bedrock.jobs_contact_membership m ON m.contact_id = u.contact_id
-    ),
-    contact_warmth AS (
-        -- Strict "<": the first-ever contact at a brand-new company can't predate
-        -- itself, so it's correctly cold without any self-exclusion.
-        SELECT ct.contact_id,
-               CASE WHEN cfs.first_seen IS NOT NULL AND cfs.first_seen < ct.first_touch
-                    THEN 'warm' ELSE 'cold' END AS warmth
-        FROM contact_first_touch ct
-        LEFT JOIN company_first_seen cfs ON cfs.company = ct.company
-    ),
+    WITH {_OUTREACH_WARMTH_CTES},
     stage_events AS (
         {stage_events_sql}
     ),
     activity_events AS (
         SELECT 'direct_email_sent' AS metric, a.activity_date AS ts, a.participant_public_contact_id AS contact_id
         FROM bedrock.activity a
-        WHERE a.deleted_at IS NULL AND a.type = 'email' AND {_team_actor('a')}
+        WHERE a.deleted_at IS NULL AND a.type = 'email' AND {_scope_author('a', scope)}
           AND {_not_autoreply('a')} AND {_jobs_relevant('a')}
         UNION ALL
         SELECT 'linkedin_message_sent', a.activity_date, a.participant_public_contact_id
         FROM bedrock.activity a
-        WHERE a.deleted_at IS NULL AND a.type = 'linkedin' AND {_team_actor('a')} AND {_jobs_relevant('a')}
+        WHERE a.deleted_at IS NULL AND a.type = 'linkedin' AND {_scope_author('a', scope)} AND {_jobs_relevant('a')}
         UNION ALL
-        -- Inbound = a response: a call/meeting, or an email NOT from the team.
+        -- Inbound = a response: a call/meeting, or an email NOT from the team. Not
+        -- scoped by author (it's the counterpart replying, not our staff).
         SELECT 'response', a.activity_date, a.participant_public_contact_id
         FROM bedrock.activity a
         WHERE a.deleted_at IS NULL AND {_jobs_relevant('a')} AND {_not_autoreply('a')}
@@ -2333,7 +2390,7 @@ async def outreach_scorecard(
         -- Facilitated intro that was acted on (no completed_at column; use responded_at).
         SELECT 'facilitated_intro_sent', coalesce(ir.responded_at, ir.created_at), ir.contact_id
         FROM bedrock.intro_request ir
-        WHERE ir.status IN ('accepted','completed')
+        WHERE ir.status IN ('accepted','completed') AND {_scope_email_pred('ir.requested_by_email', scope)}
     ),
     stage_counts AS (
         SELECT 'user' AS kind, se.stage AS key, coalesce(cw.warmth,'cold') AS warmth,
@@ -2356,6 +2413,37 @@ async def outreach_scorecard(
     SELECT * FROM activity_counts
     """
     rows = await conn.fetch(sql, this_start, this_end, last_start, last_end)
+
+    # ── By Sender: per-staff sent volume (email + linkedin) with warm/cold split,
+    # this period vs last. Real, author-attributed. Qualified/Committed/response-
+    # rate per sender await first_outreach_by attribution (not populated yet).
+    core = ",".join(f"'{e.lower()}'" for e in JOBS_TEAM_EMAILS)
+    sender_scope = {"team": f"AND lower(o.email) IN ({core})",
+                    "staff": f"AND lower(o.email) NOT IN ({core})",
+                    "pursuit": ""}[scope]
+    sender_sql = f"""
+    WITH {_OUTREACH_WARMTH_CTES}
+    SELECT o.email AS sender,
+           count(*) FILTER (WHERE a.activity_date >= $1 AND a.activity_date < $2) AS sent_this,
+           count(*) FILTER (WHERE a.activity_date >= $3 AND a.activity_date < $4) AS sent_last,
+           count(*) FILTER (WHERE a.activity_date >= $1 AND a.activity_date < $2 AND coalesce(cw.warmth,'cold')='warm') AS warm_this,
+           count(*) FILTER (WHERE a.activity_date >= $1 AND a.activity_date < $2 AND coalesce(cw.warmth,'cold')='cold') AS cold_this
+    FROM bedrock.activity a
+    JOIN public.org_users o ON o.is_active
+      AND (a.email_from ILIKE '%'||o.email||'%' OR a.logged_by ILIKE '%'||o.email||'%')
+    LEFT JOIN contact_warmth cw ON cw.contact_id = a.participant_public_contact_id
+    WHERE a.deleted_at IS NULL AND a.type IN ('email','linkedin') AND {_jobs_relevant('a')}
+      AND a.activity_date >= $3 {sender_scope}
+    GROUP BY o.email
+    HAVING count(*) FILTER (WHERE a.activity_date >= $3 AND a.activity_date < $2) > 0
+    ORDER BY sent_this DESC, sent_last DESC
+    """
+    sender_rows = await conn.fetch(sender_sql, this_start, this_end, last_start, last_end)
+    by_sender = [{
+        "staff": r["sender"],
+        "sent": {"this": r["sent_this"], "last": r["sent_last"]},
+        "warm": r["warm_this"], "cold": r["cold_this"],
+    } for r in sender_rows]
 
     # (kind, key) → {"this": {warm,cold}, "last": {warm,cold}}
     agg: dict = {}
@@ -2387,9 +2475,138 @@ async def outreach_scorecard(
     ]
     return {"success": True, "data": {
         "granularity": granularity,
+        "scope": scope,
+        "period": {
+            "this_start": this_start.isoformat(), "this_end": this_end.isoformat(),
+            "last_start": last_start.isoformat(), "last_end": last_end.isoformat(),
+        },
         "user_pipeline": user_pipeline,
         "activity_pipeline": activity_pipeline,
+        "by_sender": by_sender,
     }}
+
+
+def _touch_direction(type_: str, email_from: Optional[str]) -> str:
+    """Label a touch as sent / received / meeting for the drill-down."""
+    if type_ == "email":
+        return "sent" if "@pursuit.org" in (email_from or "").lower() else "received"
+    if type_ == "meeting":
+        return "meeting"
+    return "sent"
+
+
+@router.get("/outreach/scorecard/detail")
+async def outreach_scorecard_detail(
+    kind: str = Query(..., pattern="^(user|activity)$"),
+    key: str = Query(..., description="stage (user) or metric (activity)"),
+    period: str = Query("this", pattern="^(this|last)$"),
+    granularity: str = Query("week", pattern="^(day|week|month)$"),
+    scope: str = Query("team", pattern="^(pursuit|team|staff)$"),
+    date_from: Optional[str] = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    date_to: Optional[str] = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Drill-down behind one scorecard row: the contacts in that stage / behind
+    that activity count for the period, each with the actual touches that went
+    out (or came in). Powers the click-to-expand on the Outreach tab."""
+    this_start, this_end, last_start, last_end = _outreach_windows(granularity, date_from, date_to)
+    start, end = (this_start, this_end) if period == "this" else (last_start, last_end)
+    team_sender = " OR ".join(f"a.email_from ILIKE '%{e}%'" for e in JOBS_TEAM_EMAILS)
+
+    contacts: dict = {}   # contact_id → {contact_id, name, company, entered_at, touches:[]}
+
+    def _contact(cid, name, company):
+        return contacts.setdefault(cid, {
+            "contact_id": cid, "name": name, "company": company,
+            "entered_at": None, "touches": []})
+
+    if kind == "activity":
+        if key == "facilitated_intro_sent":
+            rows = await conn.fetch(f"""
+                SELECT ir.contact_id, c.full_name, c.current_company,
+                       coalesce(ir.responded_at, ir.created_at) AS activity_date,
+                       ir.specific_ask AS subject, ir.context AS snippet
+                FROM bedrock.intro_request ir
+                JOIN public.contacts c ON c.contact_id = ir.contact_id
+                WHERE ir.status IN ('accepted','completed')
+                  AND {_scope_email_pred('ir.requested_by_email', scope)}
+                  AND coalesce(ir.responded_at, ir.created_at) >= $1
+                  AND coalesce(ir.responded_at, ir.created_at) < $2
+                ORDER BY activity_date DESC LIMIT 500
+            """, start, end)
+            for r in rows:
+                g = _contact(r["contact_id"], r["full_name"], r["current_company"])
+                g["touches"].append({
+                    "date": r["activity_date"].isoformat() if r["activity_date"] else None,
+                    "type": "intro", "subject": r["subject"], "snippet": r["snippet"],
+                    "direction": "sent"})
+        else:
+            where = {
+                "direct_email_sent":
+                    f"a.type = 'email' AND {_scope_author('a', scope)} AND {_not_autoreply('a')} AND {_jobs_relevant('a')}",
+                "linkedin_message_sent":
+                    f"a.type = 'linkedin' AND {_scope_author('a', scope)} AND {_jobs_relevant('a')}",
+                "response":
+                    f"{_jobs_relevant('a')} AND {_not_autoreply('a')} "
+                    f"AND (a.type IN ('call','meeting') OR (a.type = 'email' AND NOT ({team_sender})))",
+            }.get(key)
+            if where is None:
+                raise HTTPException(400, "invalid activity key")
+            rows = await conn.fetch(f"""
+                SELECT a.participant_public_contact_id AS contact_id, c.full_name, c.current_company,
+                       a.activity_date, a.type, a.subject, a.email_snippet, a.email_from
+                FROM bedrock.activity a
+                JOIN public.contacts c ON c.contact_id = a.participant_public_contact_id
+                WHERE a.deleted_at IS NULL AND a.activity_date >= $1 AND a.activity_date < $2 AND {where}
+                ORDER BY c.current_company NULLS LAST, a.activity_date DESC LIMIT 500
+            """, start, end)
+            for r in rows:
+                g = _contact(r["contact_id"], r["full_name"], r["current_company"])
+                g["touches"].append({
+                    "date": r["activity_date"].isoformat() if r["activity_date"] else None,
+                    "type": r["type"], "subject": r["subject"], "snippet": r["email_snippet"],
+                    "direction": _touch_direction(r["type"], r["email_from"])})
+    else:  # kind == "user"
+        col = _STAGE_ENTERED_COL.get(key)
+        if col is None:
+            raise HTTPException(400, "invalid stage key")
+        # active_at / handed_off_at may not exist pre-migration → empty drill.
+        exists = await conn.fetchval(
+            """SELECT true FROM information_schema.columns
+               WHERE table_schema='bedrock' AND table_name='jobs_contact_membership'
+                 AND column_name=$1""", col)
+        if exists:
+            crows = await conn.fetch(f"""
+                SELECT m.contact_id, c.full_name, c.current_company, m.{col} AS entered_at
+                FROM bedrock.jobs_contact_membership m
+                JOIN public.contacts c ON c.contact_id = m.contact_id
+                WHERE m.{col} IS NOT NULL AND m.{col} >= $1 AND m.{col} < $2
+                ORDER BY m.{col} DESC LIMIT 300
+            """, start, end)
+            for r in crows:
+                g = _contact(r["contact_id"], r["full_name"], r["current_company"])
+                g["entered_at"] = r["entered_at"].isoformat() if r["entered_at"] else None
+            if contacts:
+                touch_rows = await conn.fetch(f"""
+                    SELECT a.participant_public_contact_id AS contact_id, a.activity_date,
+                           a.type, a.subject, a.email_snippet, a.email_from
+                    FROM bedrock.activity a
+                    WHERE a.deleted_at IS NULL AND a.participant_public_contact_id = ANY($1::int[])
+                      AND a.activity_date >= $2 AND a.activity_date < $3 AND {_jobs_relevant('a')}
+                    ORDER BY a.activity_date DESC
+                """, list(contacts.keys()), start, end)
+                for r in touch_rows:
+                    g = contacts.get(r["contact_id"])
+                    if g is not None:
+                        g["touches"].append({
+                            "date": r["activity_date"].isoformat() if r["activity_date"] else None,
+                            "type": r["type"], "subject": r["subject"], "snippet": r["email_snippet"],
+                            "direction": _touch_direction(r["type"], r["email_from"])})
+
+    items = sorted(contacts.values(), key=lambda g: (-(len(g["touches"])), g["company"] or ""))
+    return {"success": True, "data": {"kind": kind, "key": key, "period": period,
+            "count": len(items), "contacts": items}}
 
 
 @router.get("/this-week-summary")

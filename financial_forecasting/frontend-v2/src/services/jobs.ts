@@ -988,6 +988,8 @@ export function useActivityTrends(granularity: "day" | "week" | "month", channel
 // ── Outreach Dashboard scorecard ──────────────────────────────────────────────
 
 export type OutreachGranularity = "day" | "week" | "month";
+export type OutreachScopeKind = "pursuit" | "team" | "staff";
+export interface OutreachDateRange { from: string; to: string }
 
 export interface ScorecardCell { warm: number; cold: number; total: number }
 
@@ -1002,19 +1004,80 @@ export interface ScorecardRow {
   target: number | null;
 }
 
-export interface OutreachScorecard {
-  granularity: OutreachGranularity;
-  user_pipeline: ScorecardRow[];
-  activity_pipeline: ScorecardRow[];
+export interface ScorecardPeriod {
+  this_start: string; this_end: string; last_start: string; last_end: string;
+}
+export interface BySenderRow {
+  staff: string;
+  sent: { this: number; last: number };
+  warm: number;
+  cold: number;
 }
 
-export function useOutreachScorecard(granularity: OutreachGranularity) {
+export interface OutreachScorecard {
+  granularity: OutreachGranularity;
+  scope: OutreachScopeKind;
+  period: ScorecardPeriod;
+  user_pipeline: ScorecardRow[];
+  activity_pipeline: ScorecardRow[];
+  by_sender: BySenderRow[];
+}
+
+function outreachParams(granularity: OutreachGranularity, scope: OutreachScopeKind, range?: OutreachDateRange) {
+  const p = new URLSearchParams({ granularity, scope });
+  if (range) { p.set("date_from", range.from); p.set("date_to", range.to); }
+  return p;
+}
+
+export function useOutreachScorecard(granularity: OutreachGranularity, scope: OutreachScopeKind, range?: OutreachDateRange) {
+  const rangeKey = range ? `${range.from}..${range.to}` : "";
   return useQuery<OutreachScorecard>({
-    queryKey: ["jobs", "outreach-scorecard", granularity],
+    queryKey: ["jobs", "outreach-scorecard", granularity, scope, rangeKey],
     queryFn: async () => {
       const { data } = await api.get<ApiResponse<OutreachScorecard>>(
-        `/api/jobs/outreach/scorecard?granularity=${granularity}`,
+        `/api/jobs/outreach/scorecard?${outreachParams(granularity, scope, range)}`,
       );
+      return data.data;
+    },
+    staleTime: 60_000,
+  });
+}
+
+export interface OutreachDrillTouch {
+  date: string | null;
+  type: string;
+  subject: string | null;
+  snippet: string | null;
+  direction: string;
+}
+export interface OutreachDrillContact {
+  contact_id: number;
+  name: string | null;
+  company: string | null;
+  entered_at: string | null;
+  touches: OutreachDrillTouch[];
+}
+export interface OutreachDrill {
+  kind: "user" | "activity";
+  key: string;
+  period: "this" | "last";
+  count: number;
+  contacts: OutreachDrillContact[];
+}
+
+/** Drill-down behind one scorecard row. `enabled` false until the row is expanded. */
+export function useOutreachDrill(
+  args: { kind: "user" | "activity"; key: string; period: "this" | "last";
+          granularity: OutreachGranularity; scope: OutreachScopeKind; range?: OutreachDateRange } | null,
+) {
+  const rangeKey = args?.range ? `${args.range.from}..${args.range.to}` : "";
+  return useQuery<OutreachDrill>({
+    enabled: !!args,
+    queryKey: ["jobs", "outreach-drill", args?.kind, args?.key, args?.period, args?.granularity, args?.scope, rangeKey],
+    queryFn: async () => {
+      const p = outreachParams(args!.granularity, args!.scope, args!.range);
+      p.set("kind", args!.kind); p.set("key", args!.key); p.set("period", args!.period);
+      const { data } = await api.get<ApiResponse<OutreachDrill>>(`/api/jobs/outreach/scorecard/detail?${p}`);
       return data.data;
     },
     staleTime: 60_000,
