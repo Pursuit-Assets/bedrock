@@ -1074,12 +1074,14 @@ export interface OutreachAccount {
   open_tasks: OutreachAccountTask[];
 }
 
-/** Account working list — accounts with comments/open tasks for the deep-dive discussion. */
-export function useOutreachAccounts() {
+/** Account working list — accounts with comments/open tasks for the deep-dive discussion.
+ *  With `owner`, restricts to accounts that staffer is involved with. */
+export function useOutreachAccounts(owner?: string) {
   return useQuery<{ accounts: OutreachAccount[] }>({
-    queryKey: ["jobs", "outreach-accounts"],
+    queryKey: ["jobs", "outreach-accounts", owner ?? ""],
     queryFn: async () => {
-      const { data } = await api.get<ApiResponse<{ accounts: OutreachAccount[] }>>("/api/jobs/outreach/accounts");
+      const qs = owner ? `?owner=${encodeURIComponent(owner)}` : "";
+      const { data } = await api.get<ApiResponse<{ accounts: OutreachAccount[] }>>(`/api/jobs/outreach/accounts${qs}`);
       return data.data;
     },
     staleTime: 60_000,

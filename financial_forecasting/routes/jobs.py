@@ -2823,6 +2823,7 @@ async def outreach_targeting_mix(
 
 @router.get("/outreach/accounts")
 async def outreach_accounts(
+    owner: Optional[str] = Query(None, description="Filter to accounts this staff sender is involved with"),
     user=Depends(require_auth),
     conn=Depends(get_db),
 ):
@@ -2830,8 +2831,29 @@ async def outreach_accounts(
     open task, with its owner, open tasks, and comments — rolled up from the
     opportunity- and prospect-level jobs_comment / jobs_task rows. Ordered by most
     recent note/task so freshly-worked accounts surface first. Not period-scoped —
-    it's the live discussion queue."""
-    sql = """
+    it's the live discussion queue.
+
+    With `owner` set, restricts to accounts that staffer is involved with: they
+    outreached to it (jobs email/linkedin to a contact there), own the opportunity,
+    or authored a comment/task. Accounts with no notes/tasks simply don't appear."""
+    # owner is regex-validated → safe to interpolate. When set, add a filter CTE.
+    owner_cte, owner_where = "", ""
+    if owner and _SAFE_EMAIL.match(owner):
+        owner_cte = f""",
+    owner_accounts AS (
+        SELECT DISTINCT lower(trim(c.current_company)) AS acct
+        FROM bedrock.activity a JOIN public.contacts c ON c.contact_id = a.participant_public_contact_id
+        WHERE a.deleted_at IS NULL AND a.type IN ('email','linkedin')
+          AND (a.email_from ILIKE '%{owner}%' OR a.logged_by ILIKE '%{owner}%')
+          AND {_jobs_relevant('a')} AND coalesce(trim(c.current_company),'') <> ''
+        UNION
+        SELECT lower(trim(account_name)) FROM bedrock.jobs_opportunity
+          WHERE deleted_at IS NULL AND lower(owner_email) = lower('{owner}') AND coalesce(trim(account_name),'') <> ''
+        UNION SELECT acct FROM comments WHERE lower(author) = lower('{owner}')
+        UNION SELECT acct FROM tasks WHERE lower(owner) = lower('{owner}')
+    )"""
+        owner_where = "WHERE a.acct IN (SELECT acct FROM owner_accounts)"
+    sql = f"""
     WITH comments AS (
         SELECT lower(trim(o.account_name)) AS acct, o.account_name AS display,
                jc.author_email AS author, jc.content, jc.created_at
@@ -2863,7 +2885,7 @@ async def outreach_accounts(
         SELECT lower(trim(account_name)) AS acct,
                (array_agg(owner_email ORDER BY updated_at DESC) FILTER (WHERE owner_email IS NOT NULL))[1] AS owner
         FROM bedrock.jobs_opportunity WHERE deleted_at IS NULL AND coalesce(trim(account_name),'') <> '' GROUP BY 1
-    )
+    ){owner_cte}
     SELECT a.acct,
            coalesce((SELECT display FROM comments c WHERE c.acct=a.acct AND display IS NOT NULL LIMIT 1),
                     (SELECT display FROM tasks t WHERE t.acct=a.acct AND display IS NOT NULL LIMIT 1), a.acct) AS display,
@@ -2879,6 +2901,7 @@ async def outreach_accounts(
     FROM accts a
     LEFT JOIN bedrock.jobs_account ja ON ja.account_key = a.acct
     LEFT JOIN owners ow ON ow.acct = a.acct
+    {owner_where}
     ORDER BY last_activity DESC NULLS LAST
     """
     rows = await conn.fetch(sql)

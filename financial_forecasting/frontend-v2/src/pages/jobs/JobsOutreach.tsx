@@ -393,14 +393,14 @@ function TargetingMix({ granularity, scope, owner, range }: {
 }
 
 // ── Account working list (comments + open tasks per account) ──────────────────
-function AccountsPanel() {
-  const { data, isLoading } = useOutreachAccounts();
+function AccountsPanel({ owner }: { owner?: string }) {
+  const { data, isLoading } = useOutreachAccounts(owner);
   const [showAll, setShowAll] = useState(false);
   const [open, setOpen] = useState<Set<string>>(new Set());
 
   if (isLoading) return <div className="h-40 animate-pulse rounded-xl border border-border-strong bg-surface-2" />;
   const accounts = data?.accounts ?? [];
-  if (accounts.length === 0) return <div className="rounded-xl border border-border-strong bg-surface px-4 py-6 text-center text-[13px] text-ink-4">No accounts with comments or open tasks yet.</div>;
+  if (accounts.length === 0) return <div className="rounded-xl border border-border-strong bg-surface px-4 py-6 text-center text-[13px] text-ink-4">{owner ? `No accounts with notes or open tasks for ${owner.split("@")[0]} yet.` : "No accounts with comments or open tasks yet."}</div>;
 
   const shown = showAll ? accounts : accounts.slice(0, ACCOUNTS_PAGE);
   const fmtD = (iso: string | null) => (iso ? new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : "");
@@ -579,8 +579,8 @@ export function JobsOutreach() {
           <SectionHead title="Targeting Mix" note={`Outreach & replies by segment${owner ? ` · ${owner.split("@")[0]}` : ""} · this period`} />
           <TargetingMix granularity={granularity} scope={scope} owner={owner || undefined} range={range} />
 
-          <SectionHead title="Account Working List" note="Accounts with notes & open tasks — most recently touched first" />
-          <AccountsPanel />
+          <SectionHead title="Account Working List" note={owner ? `${owner.split("@")[0]}'s accounts · notes & open tasks` : "Accounts with notes & open tasks — most recently touched first"} />
+          <AccountsPanel owner={owner || undefined} />
 
           <p className="text-[11px] italic text-ink-4">
             Warm = outreach to a company Bedrock already knew before the contact's first touch; Cold = the company's first appearance.
