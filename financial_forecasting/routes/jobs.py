@@ -1587,10 +1587,16 @@ async def get_funnel(
             movement_by_stage.setdefault(h["from_stage"], []).append({**item, "flow": "out"})
 
     elif ftype == "prospects":
+        # The Contacts funnel runs on the jobs-pipeline membership stage
+        # (bedrock.jobs_contact_membership) — the stage the team actually
+        # manages on the Contacts page — not the legacy contacts.contact_stage.
+        # on_hold shows as a terminal parking stage; not_a_fit is a dead
+        # disposition and stays out of the funnel.
         stage_order = [
-            ("lead", "Lead"),
+            ("flagged", "Flagged"),
             ("initial_outreach", "Initial Outreach"),
             ("active", "Active"),
+            ("handed_off", "Handed Off"),
             ("on_hold", "On Hold"),
         ]
         record_columns = [
@@ -1598,13 +1604,14 @@ async def get_funnel(
             {"key": "company", "label": "Company"},
         ]
         rows = await conn.fetch("""
-            SELECT contact_stage AS stage, full_name AS name, current_company AS company
-            FROM public.contacts
-            WHERE is_jobs_contact=true
-              AND ($1::text IS NULL OR lower(current_company) IN (
+            SELECT m.stage, c.full_name AS name, c.current_company AS company
+            FROM bedrock.jobs_contact_membership m
+            JOIN public.contacts c ON c.contact_id = m.contact_id
+            WHERE m.stage <> 'not_a_fit'
+              AND ($1::text IS NULL OR lower(c.current_company) IN (
                     SELECT lower(account_name) FROM bedrock.jobs_opportunity
                     WHERE deleted_at IS NULL AND deal_type = $1 AND account_name IS NOT NULL))
-            ORDER BY full_name
+            ORDER BY c.full_name
         """, dt)
         by_stage = {}
         for r in rows:

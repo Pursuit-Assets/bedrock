@@ -16,19 +16,19 @@ import { cn } from "@/lib/utils";
 
 const FUNNEL_TABS: { type: FunnelType; label: string }[] = [
   { type: "opportunities", label: "Opportunities" },
-  { type: "prospects", label: "Prospects" },
+  { type: "prospects", label: "Contacts" },
   { type: "builders", label: "Builders" },
 ];
 
 const FUNNEL_TITLE: Record<FunnelType, string> = {
   opportunities: "Opportunities",
-  prospects: "Prospects",
+  prospects: "Contacts",
   builders: "Builders",
 };
 
 const FUNNEL_SUBTITLE: Record<FunnelType, string> = {
   opportunities: "Employer deals by stage · transitions in the last 30d",
-  prospects: "Outreach contacts by stage",
+  prospects: "Jobs-pipeline contacts by stage",
   builders: "Builder applications by stage",
 };
 
