@@ -985,6 +985,42 @@ export function useActivityTrends(granularity: "day" | "week" | "month", channel
   });
 }
 
+// ── Outreach Dashboard scorecard ──────────────────────────────────────────────
+
+export type OutreachGranularity = "day" | "week" | "month";
+
+export interface ScorecardCell { warm: number; cold: number; total: number }
+
+/** One row of either scorecard table. `stage` is set for user-pipeline rows,
+ *  `metric` for activity-pipeline rows. `target` is null when unconfigured. */
+export interface ScorecardRow {
+  stage?: string;
+  metric?: string;
+  label: string;
+  this_period: ScorecardCell;
+  last_period: ScorecardCell;
+  target: number | null;
+}
+
+export interface OutreachScorecard {
+  granularity: OutreachGranularity;
+  user_pipeline: ScorecardRow[];
+  activity_pipeline: ScorecardRow[];
+}
+
+export function useOutreachScorecard(granularity: OutreachGranularity) {
+  return useQuery<OutreachScorecard>({
+    queryKey: ["jobs", "outreach-scorecard", granularity],
+    queryFn: async () => {
+      const { data } = await api.get<ApiResponse<OutreachScorecard>>(
+        `/api/jobs/outreach/scorecard?granularity=${granularity}`,
+      );
+      return data.data;
+    },
+    staleTime: 60_000,
+  });
+}
+
 export interface OutreachTouch { activity_id: string; contact_id: number | null; contact: string | null; subject: string | null; channel: string; date: string | null }
 export interface OutreachAccountDetail { account: string; touches: OutreachTouch[] }
 export interface ActivityTrendDetail { period: string; accounts: OutreachAccountDetail[]; total_touches: number; total_accounts: number }

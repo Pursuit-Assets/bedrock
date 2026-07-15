@@ -23,6 +23,7 @@ from db import get_db, get_pool
 from dependencies import get_mcp_client, require_sf_mcp_client
 from sf_errors import sf_http_error
 from services.placement_sf import sync_placement_to_sf, record_sync_error, NotEligible, AccountAmbiguous
+from services.outreach_targets import user_pipeline_target, activity_pipeline_target
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
@@ -2175,6 +2176,202 @@ async def activity_trends_detail(
             "total_touches": sum(len(a["touches"]) for a in items), "total_accounts": len(items)}}
 
 
+# ── Outreach Dashboard scorecard ──────────────────────────────────────────────
+# Two tables, both split Warm/Cold, this-period vs last-period, with a target:
+#   User/Contact Pipeline — contacts ENTERING each funnel stage in the period
+#       (flow, keyed by the stage-entry timestamps flagged_at / first_outreach_at
+#        / active_at / handed_off_at).
+#   Activity Pipeline     — raw activity-row counts (email/linkedin/intro/response).
+# Warm/Cold is decided ONCE per contact: warm iff their company already had a
+# Bedrock presence (an opportunity, or another jobs-pipeline contact) that
+# predates this contact's own first touch; else cold. Every stage-entry and
+# activity row for that contact inherits that label (never recomputed per row).
+
+_OUTREACH_STAGE_META = [
+    ("flagged",          "Lead Sourced"),
+    ("initial_outreach", "Outreached"),
+    ("active",           "Qualified Lead"),
+    ("handed_off",       "Committed"),
+]
+_OUTREACH_ACTIVITY_META = [
+    ("direct_email_sent",      "Direct Email Sent"),
+    ("linkedin_message_sent",  "LinkedIn Messages Sent"),
+    ("facilitated_intro_sent", "Facilitated Intro Sent"),
+    ("response",               "Responses"),
+]
+_OUTREACH_GRANULARITY_DAYS = {"day": 1, "week": 7, "month": 30}
+
+
+@router.get("/outreach/scorecard")
+async def outreach_scorecard(
+    granularity: str = Query("week", pattern="^(day|week|month)$"),
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Outreach Dashboard P0 scorecard — User/Contact Pipeline + Activity Pipeline.
+
+    Periods are trailing equal-length windows: `this` = the last N days, `last`
+    = the N days before that (N = 1 | 7 | 30). Simple and always a fair
+    like-for-like; not calendar-aligned (this week ≠ Mon–Sun) — swap to
+    date_trunc boundaries later if the team wants calendar periods.
+
+    NOTE: `active_at` / `handed_off_at` only exist once the 2026-07-15 migration
+    is applied and only fill in for transitions that happen after that. Until
+    then the Qualified Lead / Committed rows read 0 by design (that history was
+    never recorded), while Lead Sourced / Outreached are real immediately.
+    """
+    days = _OUTREACH_GRANULARITY_DAYS[granularity]
+    now = datetime.now(timezone.utc)
+    delta = timedelta(days=days)
+    this_start, this_end = now - delta, now
+    last_start, last_end = now - delta * 2, now - delta
+
+    team_sender = " OR ".join(f"a.email_from ILIKE '%{e}%'" for e in JOBS_TEAM_EMAILS)
+
+    # One query, warmth computed once, two labelled result sets unioned.
+    sql = f"""
+    WITH company_presence AS (
+        -- "Company already had a Bedrock presence", with each source's earliest date.
+        SELECT lower(trim(account_name)) AS company, min(created_at) AS first_seen
+        FROM bedrock.jobs_opportunity
+        WHERE deleted_at IS NULL AND coalesce(trim(account_name),'') <> ''
+        GROUP BY 1
+        UNION ALL
+        -- jobs-pipeline contacts (membership.flagged_at) — deliberately NOT raw
+        -- is_jobs_contact (near-universal → would mark almost everything warm).
+        SELECT lower(trim(c.current_company)) AS company, min(m.flagged_at) AS first_seen
+        FROM bedrock.jobs_contact_membership m
+        JOIN public.contacts c ON c.contact_id = m.contact_id
+        WHERE coalesce(trim(c.current_company),'') <> '' AND m.flagged_at IS NOT NULL
+        GROUP BY 1
+    ),
+    company_first_seen AS (
+        SELECT company, min(first_seen) AS first_seen FROM company_presence GROUP BY company
+    ),
+    contact_activity_first AS (
+        SELECT participant_public_contact_id AS contact_id, min(activity_date) AS first_activity
+        FROM bedrock.activity
+        WHERE deleted_at IS NULL AND participant_public_contact_id IS NOT NULL
+        GROUP BY 1
+    ),
+    -- Every contact that could appear in either table: has activity, an intro, or a membership.
+    contact_universe AS (
+        SELECT contact_id FROM bedrock.jobs_contact_membership
+        UNION
+        SELECT DISTINCT participant_public_contact_id FROM bedrock.activity
+          WHERE participant_public_contact_id IS NOT NULL AND deleted_at IS NULL
+        UNION
+        SELECT contact_id FROM bedrock.intro_request WHERE contact_id IS NOT NULL
+    ),
+    contact_first_touch AS (
+        SELECT u.contact_id,
+               lower(trim(c.current_company)) AS company,
+               LEAST(
+                   coalesce(caf.first_activity,   'infinity'::timestamptz),
+                   coalesce(m.first_outreach_at,  'infinity'::timestamptz),
+                   coalesce(m.flagged_at,         'infinity'::timestamptz)
+               ) AS first_touch
+        FROM contact_universe u
+        JOIN public.contacts c ON c.contact_id = u.contact_id
+        LEFT JOIN contact_activity_first caf ON caf.contact_id = u.contact_id
+        LEFT JOIN bedrock.jobs_contact_membership m ON m.contact_id = u.contact_id
+    ),
+    contact_warmth AS (
+        -- Strict "<": the first-ever contact at a brand-new company can't predate
+        -- itself, so it's correctly cold without any self-exclusion.
+        SELECT ct.contact_id,
+               CASE WHEN cfs.first_seen IS NOT NULL AND cfs.first_seen < ct.first_touch
+                    THEN 'warm' ELSE 'cold' END AS warmth
+        FROM contact_first_touch ct
+        LEFT JOIN company_first_seen cfs ON cfs.company = ct.company
+    ),
+    stage_events AS (
+        SELECT contact_id, 'flagged'          AS stage, flagged_at        AS entered_at FROM bedrock.jobs_contact_membership WHERE flagged_at        IS NOT NULL
+        UNION ALL
+        SELECT contact_id, 'initial_outreach', first_outreach_at FROM bedrock.jobs_contact_membership WHERE first_outreach_at IS NOT NULL
+        UNION ALL
+        SELECT contact_id, 'active',           active_at         FROM bedrock.jobs_contact_membership WHERE active_at         IS NOT NULL
+        UNION ALL
+        SELECT contact_id, 'handed_off',       handed_off_at     FROM bedrock.jobs_contact_membership WHERE handed_off_at     IS NOT NULL
+    ),
+    activity_events AS (
+        SELECT 'direct_email_sent' AS metric, a.activity_date AS ts, a.participant_public_contact_id AS contact_id
+        FROM bedrock.activity a
+        WHERE a.deleted_at IS NULL AND a.type = 'email' AND {_team_actor('a')}
+          AND {_not_autoreply('a')} AND {_jobs_relevant('a')}
+        UNION ALL
+        SELECT 'linkedin_message_sent', a.activity_date, a.participant_public_contact_id
+        FROM bedrock.activity a
+        WHERE a.deleted_at IS NULL AND a.type = 'linkedin' AND {_team_actor('a')} AND {_jobs_relevant('a')}
+        UNION ALL
+        -- Inbound = a response: a call/meeting, or an email NOT from the team.
+        SELECT 'response', a.activity_date, a.participant_public_contact_id
+        FROM bedrock.activity a
+        WHERE a.deleted_at IS NULL AND {_jobs_relevant('a')} AND {_not_autoreply('a')}
+          AND (a.type IN ('call','meeting') OR (a.type = 'email' AND NOT ({team_sender})))
+        UNION ALL
+        -- Facilitated intro that was acted on (no completed_at column; use responded_at).
+        SELECT 'facilitated_intro_sent', coalesce(ir.responded_at, ir.created_at), ir.contact_id
+        FROM bedrock.intro_request ir
+        WHERE ir.status IN ('accepted','completed')
+    ),
+    stage_counts AS (
+        SELECT 'user' AS kind, se.stage AS key, coalesce(cw.warmth,'cold') AS warmth,
+               count(*) FILTER (WHERE se.entered_at >= $1 AND se.entered_at < $2) AS this_period,
+               count(*) FILTER (WHERE se.entered_at >= $3 AND se.entered_at < $4) AS last_period
+        FROM stage_events se
+        LEFT JOIN contact_warmth cw ON cw.contact_id = se.contact_id
+        GROUP BY se.stage, coalesce(cw.warmth,'cold')
+    ),
+    activity_counts AS (
+        SELECT 'activity' AS kind, ae.metric AS key, coalesce(cw.warmth,'cold') AS warmth,
+               count(*) FILTER (WHERE ae.ts >= $1 AND ae.ts < $2) AS this_period,
+               count(*) FILTER (WHERE ae.ts >= $3 AND ae.ts < $4) AS last_period
+        FROM activity_events ae
+        LEFT JOIN contact_warmth cw ON cw.contact_id = ae.contact_id
+        GROUP BY ae.metric, coalesce(cw.warmth,'cold')
+    )
+    SELECT * FROM stage_counts
+    UNION ALL
+    SELECT * FROM activity_counts
+    """
+    rows = await conn.fetch(sql, this_start, this_end, last_start, last_end)
+
+    # (kind, key) → {"this": {warm,cold}, "last": {warm,cold}}
+    agg: dict = {}
+    for r in rows:
+        bucket = agg.setdefault((r["kind"], r["key"]),
+                                {"this": {"warm": 0, "cold": 0}, "last": {"warm": 0, "cold": 0}})
+        bucket["this"][r["warmth"]] = r["this_period"]
+        bucket["last"][r["warmth"]] = r["last_period"]
+
+    def _row(kind, key, label, target):
+        b = agg.get((kind, key), {"this": {"warm": 0, "cold": 0}, "last": {"warm": 0, "cold": 0}})
+        tw, tc = b["this"]["warm"], b["this"]["cold"]
+        lw, lc = b["last"]["warm"], b["last"]["cold"]
+        out = {
+            "label": label,
+            "this_period": {"warm": tw, "cold": tc, "total": tw + tc},
+            "last_period": {"warm": lw, "cold": lc, "total": lw + lc},
+            "target": target,
+        }
+        return out
+
+    user_pipeline = [
+        {"stage": s, **_row("user", s, label, user_pipeline_target(s, granularity))}
+        for s, label in _OUTREACH_STAGE_META
+    ]
+    activity_pipeline = [
+        {"metric": m, **_row("activity", m, label, activity_pipeline_target(m, granularity))}
+        for m, label in _OUTREACH_ACTIVITY_META
+    ]
+    return {"success": True, "data": {
+        "granularity": granularity,
+        "user_pipeline": user_pipeline,
+        "activity_pipeline": activity_pipeline,
+    }}
+
+
 @router.get("/this-week-summary")
 async def this_week_summary(user=Depends(require_auth), conn=Depends(get_db)):
     """A narrative of the jobs team's last 7 days: who Avni/Damon emailed &
@@ -2969,14 +3166,30 @@ async def _flag_contacts(conn, contact_ids: list[int], owner_email: Optional[str
     if not contact_ids:
         return 0
     stg = stage or "flagged"
-    conflict_stage = "stage = EXCLUDED.stage," if stage else ""
+    # When bulk-advancing to an explicit stage, stamp the stage-entry timestamp
+    # for active/handed_off too (mirrors the single-contact PATCH path) so the
+    # scorecard flow count sees these transitions. On a fresh insert the CASE on
+    # $6 stamps directly; on conflict it stamps only on a genuine stage change.
+    if stage:
+        conflict_stage = "stage = EXCLUDED.stage,"
+        stamp_cols = ", active_at, handed_off_at"
+        stamp_vals = (", CASE WHEN $6 = 'active' THEN now() END"
+                      ", CASE WHEN $6 = 'handed_off' THEN now() END")
+        conflict_stamp = (
+            "active_at = CASE WHEN EXCLUDED.stage = 'active' AND jobs_contact_membership.stage "
+            "IS DISTINCT FROM 'active' THEN now() ELSE jobs_contact_membership.active_at END,"
+            "handed_off_at = CASE WHEN EXCLUDED.stage = 'handed_off' AND jobs_contact_membership.stage "
+            "IS DISTINCT FROM 'handed_off' THEN now() ELSE jobs_contact_membership.handed_off_at END,")
+    else:
+        conflict_stage = stamp_cols = stamp_vals = conflict_stamp = ""
     await conn.execute(
         f"""
         INSERT INTO bedrock.jobs_contact_membership
-            (contact_id, stage, owner_email, activation_reason, activation_note, flagged_by)
-        SELECT cid, $6, $2, $3, $4, $5 FROM unnest($1::int[]) AS cid
+            (contact_id, stage, owner_email, activation_reason, activation_note, flagged_by{stamp_cols})
+        SELECT cid, $6, $2, $3, $4, $5{stamp_vals} FROM unnest($1::int[]) AS cid
         ON CONFLICT (contact_id) DO UPDATE SET
             {conflict_stage}
+            {conflict_stamp}
             owner_email       = COALESCE(jobs_contact_membership.owner_email, EXCLUDED.owner_email),
             activation_reason = COALESCE(jobs_contact_membership.activation_reason, EXCLUDED.activation_reason),
             updated_at        = now()
@@ -3032,6 +3245,17 @@ async def update_jobs_membership(contact_id: int, body: MembershipPatch,
             sets.append(f"first_outreach_by = COALESCE(first_outreach_by, ${i})")
             params.append(body.first_outreach_by or _user_email(user)); i += 1
             sets.append("first_outreach_at = COALESCE(first_outreach_at, now())")
+        # Stamp the stage-entry timestamp ONLY when this call actually moves the
+        # contact INTO that stage — SET expressions see the pre-update row, so
+        # `jobs_contact_membership.stage` here is the OLD stage. Re-stamps on a
+        # genuine re-entry (e.g. active → on_hold → active), which is what the
+        # scorecard's "entered this period" flow count wants.
+        if body.stage == "active":
+            sets.append("active_at = CASE WHEN jobs_contact_membership.stage "
+                        "IS DISTINCT FROM 'active' THEN now() ELSE jobs_contact_membership.active_at END")
+        if body.stage == "handed_off":
+            sets.append("handed_off_at = CASE WHEN jobs_contact_membership.stage "
+                        "IS DISTINCT FROM 'handed_off' THEN now() ELSE jobs_contact_membership.handed_off_at END")
     if body.owner_email is not None:
         sets.append(f"owner_email = ${i}"); params.append(body.owner_email); i += 1
     if body.opportunity_id is not None:
