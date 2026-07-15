@@ -2228,6 +2228,32 @@ async def outreach_scorecard(
 
     team_sender = " OR ".join(f"a.email_from ILIKE '%{e}%'" for e in JOBS_TEAM_EMAILS)
 
+    # active_at / handed_off_at are added by the 2026-07-15 migration, applied
+    # separately (admin role). Until then they don't exist — detect and omit
+    # those stage-entry branches so the query still runs; the Qualified Lead /
+    # Committed rows just come back empty (rendered as 0) rather than 500ing.
+    have_cols = {r["column_name"] for r in await conn.fetch(
+        """SELECT column_name FROM information_schema.columns
+           WHERE table_schema='bedrock' AND table_name='jobs_contact_membership'
+             AND column_name = ANY($1::text[])""",
+        ["active_at", "handed_off_at"],
+    )}
+    stage_event_parts = [
+        "SELECT contact_id, 'flagged' AS stage, flagged_at AS entered_at "
+        "FROM bedrock.jobs_contact_membership WHERE flagged_at IS NOT NULL",
+        "SELECT contact_id, 'initial_outreach', first_outreach_at "
+        "FROM bedrock.jobs_contact_membership WHERE first_outreach_at IS NOT NULL",
+    ]
+    if "active_at" in have_cols:
+        stage_event_parts.append(
+            "SELECT contact_id, 'active', active_at "
+            "FROM bedrock.jobs_contact_membership WHERE active_at IS NOT NULL")
+    if "handed_off_at" in have_cols:
+        stage_event_parts.append(
+            "SELECT contact_id, 'handed_off', handed_off_at "
+            "FROM bedrock.jobs_contact_membership WHERE handed_off_at IS NOT NULL")
+    stage_events_sql = "\n        UNION ALL\n        ".join(stage_event_parts)
+
     # One query, warmth computed once, two labelled result sets unioned.
     sql = f"""
     WITH company_presence AS (
@@ -2286,13 +2312,7 @@ async def outreach_scorecard(
         LEFT JOIN company_first_seen cfs ON cfs.company = ct.company
     ),
     stage_events AS (
-        SELECT contact_id, 'flagged'          AS stage, flagged_at        AS entered_at FROM bedrock.jobs_contact_membership WHERE flagged_at        IS NOT NULL
-        UNION ALL
-        SELECT contact_id, 'initial_outreach', first_outreach_at FROM bedrock.jobs_contact_membership WHERE first_outreach_at IS NOT NULL
-        UNION ALL
-        SELECT contact_id, 'active',           active_at         FROM bedrock.jobs_contact_membership WHERE active_at         IS NOT NULL
-        UNION ALL
-        SELECT contact_id, 'handed_off',       handed_off_at     FROM bedrock.jobs_contact_membership WHERE handed_off_at     IS NOT NULL
+        {stage_events_sql}
     ),
     activity_events AS (
         SELECT 'direct_email_sent' AS metric, a.activity_date AS ts, a.participant_public_contact_id AS contact_id
