@@ -1546,34 +1546,14 @@ async def get_funnel(
             {"key": "owner", "label": "Owner"},
         ]
         rows = await conn.fetch("""
-            SELECT o.stage, o.account_name AS name, o.deal_type, o.owner_email AS owner,
-                   EXISTS (SELECT 1 FROM bedrock.jobs_role r
-                           WHERE r.opportunity_id = o.id
-                             AND r.commitment = 'committed'
-                             AND r.status <> 'cancelled') AS has_committed_role
-            FROM bedrock.jobs_opportunity o
-            WHERE o.deleted_at IS NULL AND ($1::text IS NULL OR o.deal_type = $1)
-            ORDER BY o.account_name
+            SELECT stage, account_name AS name, deal_type, owner_email AS owner
+            FROM bedrock.jobs_opportunity
+            WHERE deleted_at IS NULL AND ($1::text IS NULL OR deal_type = $1)
+            ORDER BY account_name
         """, dt)
-
-        # "Opportunity Confirmed" is defined by ROLE-LEVEL COMMITMENT, not the
-        # free-text stage: the team had been using the stage for both "formal
-        # hiring commitment" and "there's an opportunity", which made the
-        # funnel unreadable (TKT-130, decision 2026-07-16). An opp with a
-        # committed role sits at Confirmed even if its stage lags; an opp
-        # STAGED as confirmed with no committed role reads as In Discussions.
-        def _effective_stage(stage: str, committed: bool) -> str:
-            if stage in ("closed_won", "closed_lost", "active_builder_interview"):
-                return stage
-            if committed:
-                return "active_opportunity_confirmed"
-            if stage == "active_opportunity_confirmed":
-                return "active_in_discussions"
-            return stage
-
         by_stage: dict = {}
         for r in rows:
-            by_stage.setdefault(_effective_stage(r["stage"], r["has_committed_role"]), []).append(
+            by_stage.setdefault(r["stage"], []).append(
                 {"name": r["name"], "deal_type": r["deal_type"], "owner": r["owner"]}
             )
 
