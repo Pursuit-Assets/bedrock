@@ -4,6 +4,7 @@ import { ChevronRight, ChevronDown, Loader2 } from "lucide-react";
 import {
   useOutreachScorecard,
   useOutreachDrill,
+  useJobsStaff,
   type OutreachGranularity,
   type OutreachScopeKind,
   type OutreachDateRange,
@@ -12,6 +13,8 @@ import {
   type ScorecardCell,
 } from "@/services/jobs";
 import { cn } from "@/lib/utils";
+
+const DRILL_PAGE = 25;
 
 // ── Toggles ───────────────────────────────────────────────────────────────────
 const SCOPES: { id: OutreachScopeKind; label: string }[] = [
@@ -55,21 +58,23 @@ function Trend({ current, prior, unit = "pct" }: { current: number; prior: numbe
 
 // ── Drill-down (contacts → their touches) ─────────────────────────────────────
 function RowDrill({
-  kind, rowKey, granularity, scope, range,
+  kind, rowKey, granularity, scope, owner, range,
 }: {
   kind: "user" | "activity"; rowKey: string;
-  granularity: OutreachGranularity; scope: OutreachScopeKind; range?: OutreachDateRange;
+  granularity: OutreachGranularity; scope: OutreachScopeKind; owner?: string; range?: OutreachDateRange;
 }) {
   const [openContact, setOpenContact] = useState<Set<number>>(new Set());
-  const { data, isLoading, isError } = useOutreachDrill({ kind, key: rowKey, period: "this", granularity, scope, range });
+  const [showAll, setShowAll] = useState(false);
+  const { data, isLoading, isError } = useOutreachDrill({ kind, key: rowKey, period: "this", granularity, scope, owner, range });
 
   if (isLoading) return <div className="flex items-center gap-2 px-4 py-3 text-[12.5px] text-ink-3"><Loader2 size={13} className="animate-spin" /> Loading…</div>;
   if (isError) return <div className="px-4 py-3 text-[12.5px] text-red">Couldn't load the detail.</div>;
   if (!data || data.contacts.length === 0) return <div className="px-4 py-3 text-[12.5px] text-ink-4">No records in this period.</div>;
 
+  const shown = showAll ? data.contacts : data.contacts.slice(0, DRILL_PAGE);
   return (
     <div className="flex flex-col divide-y divide-border">
-      {data.contacts.map((c) => {
+      {shown.map((c) => {
         const open = openContact.has(c.contact_id);
         return (
           <div key={c.contact_id}>
@@ -100,17 +105,22 @@ function RowDrill({
           </div>
         );
       })}
+      {!showAll && data.contacts.length > DRILL_PAGE && (
+        <button onClick={() => setShowAll(true)} className="px-4 py-2 text-left text-[12.5px] font-medium text-accent-ink hover:underline">
+          Show more ({data.contacts.length - DRILL_PAGE} more)
+        </button>
+      )}
     </div>
   );
 }
 
 // ── A scorecard table (User Pipeline / Activity Pipeline) ─────────────────────
 function ScorecardTable({
-  title, rows, idPrefix, firstColHeader, drillKind, granularity, scope, range,
+  title, rows, idPrefix, firstColHeader, drillKind, granularity, scope, owner, range,
 }: {
   title: string; rows: ScorecardRow[]; idPrefix: string; firstColHeader: string;
   drillKind: "user" | "activity";
-  granularity: OutreachGranularity; scope: OutreachScopeKind; range?: OutreachDateRange;
+  granularity: OutreachGranularity; scope: OutreachScopeKind; owner?: string; range?: OutreachDateRange;
 }) {
   const [open, setOpen] = useState<string | null>(null);
   return (
@@ -152,7 +162,7 @@ function ScorecardTable({
                 {isOpen && (
                   <tr>
                     <td colSpan={5} className="border-b border-border bg-bg p-0">
-                      <RowDrill kind={drillKind} rowKey={rowKey} granularity={granularity} scope={scope} range={range} />
+                      <RowDrill kind={drillKind} rowKey={rowKey} granularity={granularity} scope={scope} owner={owner} range={range} />
                     </td>
                   </tr>
                 )}
@@ -329,13 +339,15 @@ function SectionHead({ title, note }: { title: string; note?: string }) {
 
 // ── Page ──────────────────────────────────────────────────────────────────────
 export function JobsOutreach() {
-  const [granularity, setGranularity] = useState<OutreachGranularity>("month");
+  const [granularity, setGranularity] = useState<OutreachGranularity>("week");
   const [scope, setScope] = useState<OutreachScopeKind>("team");
+  const [owner, setOwner] = useState<string>("");   // "" = whole scope
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const range: OutreachDateRange | undefined = from && to ? { from, to } : undefined;
 
-  const { data: sc, isLoading, isError } = useOutreachScorecard(granularity, scope, range);
+  const { data: staff = [] } = useJobsStaff();
+  const { data: sc, isLoading, isError } = useOutreachScorecard(granularity, scope, owner || undefined, range);
   const rangeLabel = useMemo(() => (sc ? fmtRange(sc.period.this_start, sc.period.this_end) : ""), [sc]);
 
   const Seg = <T extends string>({ items, value, onChange }: { items: { id: T; label: string }[]; value: T; onChange: (v: T) => void }) => (
@@ -354,7 +366,19 @@ export function JobsOutreach() {
       {/* Filter bar */}
       <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border-strong bg-surface-2 px-3 py-2">
         <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">Outreach</span>
-        <Seg items={SCOPES} value={scope} onChange={setScope} />
+        <div className={cn(owner && "opacity-40 pointer-events-none")}>
+          <Seg items={SCOPES} value={scope} onChange={setScope} />
+        </div>
+        <select
+          value={owner}
+          onChange={(e) => setOwner(e.target.value)}
+          className="rounded-md border border-border-strong bg-surface px-2 py-1.5 text-[12.5px] text-ink outline-none focus:border-accent"
+          title="Filter to one sender (overrides scope)"
+        >
+          <option value="">All senders</option>
+          {[...staff].sort((a, b) => (a.name || a.email).localeCompare(b.name || b.email))
+            .map((s) => <option key={s.email} value={s.email}>{s.name || s.email}</option>)}
+        </select>
         <div className="flex-1" />
         <Seg items={PERIODS} value={granularity} onChange={setGranularity} />
         <div className="flex items-center gap-1 text-[12.5px] text-ink-3">
@@ -379,8 +403,8 @@ export function JobsOutreach() {
       {sc && (
         <>
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-            <ScorecardTable title="User Pipeline" firstColHeader="Stage" rows={sc.user_pipeline} idPrefix="user" drillKind="user" granularity={granularity} scope={scope} range={range} />
-            <ScorecardTable title="Activity Pipeline" firstColHeader="Activity" rows={sc.activity_pipeline} idPrefix="act" drillKind="activity" granularity={granularity} scope={scope} range={range} />
+            <ScorecardTable title="User Pipeline" firstColHeader="Stage" rows={sc.user_pipeline} idPrefix="user" drillKind="user" granularity={granularity} scope={scope} owner={owner || undefined} range={range} />
+            <ScorecardTable title="Activity Pipeline" firstColHeader="Activity" rows={sc.activity_pipeline} idPrefix="act" drillKind="activity" granularity={granularity} scope={scope} owner={owner || undefined} range={range} />
           </div>
 
           <SectionHead title="Conversion Figures" />

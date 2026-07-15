@@ -1023,19 +1023,20 @@ export interface OutreachScorecard {
   by_sender: BySenderRow[];
 }
 
-function outreachParams(granularity: OutreachGranularity, scope: OutreachScopeKind, range?: OutreachDateRange) {
+function outreachParams(granularity: OutreachGranularity, scope: OutreachScopeKind, owner?: string, range?: OutreachDateRange) {
   const p = new URLSearchParams({ granularity, scope });
+  if (owner) p.set("owner", owner);
   if (range) { p.set("date_from", range.from); p.set("date_to", range.to); }
   return p;
 }
 
-export function useOutreachScorecard(granularity: OutreachGranularity, scope: OutreachScopeKind, range?: OutreachDateRange) {
+export function useOutreachScorecard(granularity: OutreachGranularity, scope: OutreachScopeKind, owner?: string, range?: OutreachDateRange) {
   const rangeKey = range ? `${range.from}..${range.to}` : "";
   return useQuery<OutreachScorecard>({
-    queryKey: ["jobs", "outreach-scorecard", granularity, scope, rangeKey],
+    queryKey: ["jobs", "outreach-scorecard", granularity, scope, owner ?? "", rangeKey],
     queryFn: async () => {
       const { data } = await api.get<ApiResponse<OutreachScorecard>>(
-        `/api/jobs/outreach/scorecard?${outreachParams(granularity, scope, range)}`,
+        `/api/jobs/outreach/scorecard?${outreachParams(granularity, scope, owner, range)}`,
       );
       return data.data;
     },
@@ -1068,14 +1069,14 @@ export interface OutreachDrill {
 /** Drill-down behind one scorecard row. `enabled` false until the row is expanded. */
 export function useOutreachDrill(
   args: { kind: "user" | "activity"; key: string; period: "this" | "last";
-          granularity: OutreachGranularity; scope: OutreachScopeKind; range?: OutreachDateRange } | null,
+          granularity: OutreachGranularity; scope: OutreachScopeKind; owner?: string; range?: OutreachDateRange } | null,
 ) {
   const rangeKey = args?.range ? `${args.range.from}..${args.range.to}` : "";
   return useQuery<OutreachDrill>({
     enabled: !!args,
-    queryKey: ["jobs", "outreach-drill", args?.kind, args?.key, args?.period, args?.granularity, args?.scope, rangeKey],
+    queryKey: ["jobs", "outreach-drill", args?.kind, args?.key, args?.period, args?.granularity, args?.scope, args?.owner ?? "", rangeKey],
     queryFn: async () => {
-      const p = outreachParams(args!.granularity, args!.scope, args!.range);
+      const p = outreachParams(args!.granularity, args!.scope, args!.owner, args!.range);
       p.set("kind", args!.kind); p.set("key", args!.key); p.set("period", args!.period);
       const { data } = await api.get<ApiResponse<OutreachDrill>>(`/api/jobs/outreach/scorecard/detail?${p}`);
       return data.data;

@@ -2211,10 +2211,11 @@ def _shift_months(dt, n):
 
 
 def _outreach_windows(granularity, date_from, date_to):
-    """(this_start, this_end, last_start, last_end) — calendar-aligned, compared
-    against the same elapsed span in the prior period. A custom date_from/date_to
-    range overrides granularity and compares against the preceding equal-length
-    range."""
+    """(this_start, this_end, last_start, last_end). Reviews happen after a period
+    closes (e.g. Monday standup on last week), so `this` is the most recently
+    COMPLETED period and `last` the one before it — never an in-progress period.
+    Weeks run Sunday–Saturday. A custom date_from/date_to range overrides and
+    compares against the immediately preceding equal-length range."""
     now = datetime.now(timezone.utc)
     if date_from and date_to:
         ds = datetime.fromisoformat(date_from).replace(tzinfo=timezone.utc)
@@ -2223,15 +2224,19 @@ def _outreach_windows(granularity, date_from, date_to):
         return ds, de, ds - length, ds
     midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
     if granularity == "day":
-        this_start, last_start = midnight, midnight - timedelta(days=1)
+        this_start = midnight - timedelta(days=1)          # yesterday
+        last_start = this_start - timedelta(days=1)
     elif granularity == "week":
-        this_start = midnight - timedelta(days=midnight.weekday())  # Monday
+        days_since_sun = (midnight.weekday() + 1) % 7       # Mon=0..Sun=6 → days since Sunday
+        cur_week_sun = midnight - timedelta(days=days_since_sun)  # Sunday of the in-progress week
+        this_start = cur_week_sun - timedelta(days=7)       # last completed Sun–Sat week
         last_start = this_start - timedelta(days=7)
-    else:  # month, to-date
-        this_start = midnight.replace(day=1)
+    else:  # month — last completed calendar month
+        this_month_first = midnight.replace(day=1)
+        this_start = _shift_months(this_month_first, -1)
         last_start = _shift_months(this_start, -1)
-    elapsed = now - this_start
-    return this_start, now, last_start, last_start + elapsed
+    this_end = _shift_months(this_start, 1) if granularity == "month" else this_start + timedelta(days=1 if granularity == "day" else 7)
+    return this_start, this_end, last_start, this_start
 
 
 def _scope_author(alias, scope):
@@ -2242,6 +2247,22 @@ def _scope_author(alias, scope):
     if scope == "staff":
         return _staff_actor(alias)
     return f"({_team_actor(alias)} OR {_staff_actor(alias)})"
+
+
+def _activity_actor(alias, scope, owner):
+    """Author filter for the scorecard: a specific sender (owner) overrides the
+    scope toggle; otherwise fall back to the scope group. `owner` is regex-checked
+    so it's safe to interpolate."""
+    if owner and _SAFE_EMAIL.match(owner):
+        return f"({alias}.email_from ILIKE '%{owner}%' OR {alias}.logged_by ILIKE '%{owner}%')"
+    return _scope_author(alias, scope)
+
+
+def _scope_intro_pred(scope, owner):
+    """requested_by_email filter for facilitated intros — owner overrides scope."""
+    if owner and _SAFE_EMAIL.match(owner):
+        return f"lower(ir.requested_by_email) = lower('{owner}')"
+    return _scope_email_pred("ir.requested_by_email", scope)
 
 
 def _scope_email_pred(col, scope):
@@ -2316,6 +2337,7 @@ _OUTREACH_WARMTH_CTES = """
 async def outreach_scorecard(
     granularity: str = Query("week", pattern="^(day|week|month)$"),
     scope: str = Query("team", pattern="^(pursuit|team|staff)$"),
+    owner: Optional[str] = Query(None, description="Scope to one staff sender (overrides scope)"),
     date_from: Optional[str] = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
     date_to: Optional[str] = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
     user=Depends(require_auth),
@@ -2324,19 +2346,18 @@ async def outreach_scorecard(
     """Outreach Dashboard P0 scorecard — User Pipeline + Activity Pipeline, each
     split Warm/Cold, this period vs last, plus a per-sender breakdown.
 
-    Periods are calendar-aligned (this week = Mon–today, this month = 1st–today)
-    and compared against the same elapsed span in the prior period; a custom
-    date_from/date_to range overrides. `scope` (pursuit|team|staff) filters the
-    ACTIVITY side by author — the User Pipeline stays team-wide because per-contact
-    staff attribution (owner / first_outreach_by) isn't populated yet.
+    Periods are the most recently COMPLETED period (this week = last full Sun–Sat
+    week, this month = last full month, daily = yesterday) vs the one before — so
+    a Monday review looks at the week that just closed. A custom date_from/date_to
+    range overrides. `scope` (pursuit|team|staff) filters the ACTIVITY side by
+    author; `owner` (a specific staff email) overrides scope. The User Pipeline
+    stays team-wide because per-contact staff attribution isn't populated yet.
 
     NOTE: active_at / handed_off_at exist only once the 2026-07-15 migration is
     applied and fill in going forward, so Qualified Lead / Committed read 0 until
     then; first_outreach_at is likewise only stamped on new transitions.
     """
     this_start, this_end, last_start, last_end = _outreach_windows(granularity, date_from, date_to)
-
-    team_sender = " OR ".join(f"a.email_from ILIKE '%{e}%'" for e in JOBS_TEAM_EMAILS)
 
     # active_at / handed_off_at are added by the 2026-07-15 migration, applied
     # separately (admin role). Until then they don't exist — detect and omit
@@ -2373,24 +2394,24 @@ async def outreach_scorecard(
     activity_events AS (
         SELECT 'direct_email_sent' AS metric, a.activity_date AS ts, a.participant_public_contact_id AS contact_id
         FROM bedrock.activity a
-        WHERE a.deleted_at IS NULL AND a.type = 'email' AND {_scope_author('a', scope)}
+        WHERE a.deleted_at IS NULL AND a.type = 'email' AND {_activity_actor('a', scope, owner)}
           AND {_not_autoreply('a')} AND {_jobs_relevant('a')}
         UNION ALL
         SELECT 'linkedin_message_sent', a.activity_date, a.participant_public_contact_id
         FROM bedrock.activity a
-        WHERE a.deleted_at IS NULL AND a.type = 'linkedin' AND {_scope_author('a', scope)} AND {_jobs_relevant('a')}
+        WHERE a.deleted_at IS NULL AND a.type = 'linkedin' AND {_activity_actor('a', scope, owner)} AND {_jobs_relevant('a')}
         UNION ALL
-        -- Inbound = a response: a call/meeting, or an email NOT from the team. Not
-        -- scoped by author (it's the counterpart replying, not our staff).
+        -- Response = an inbound email REPLY (from outside Pursuit), jobs-relevant,
+        -- not an auto-reply. Not scoped by author (it's the counterpart replying).
         SELECT 'response', a.activity_date, a.participant_public_contact_id
         FROM bedrock.activity a
-        WHERE a.deleted_at IS NULL AND {_jobs_relevant('a')} AND {_not_autoreply('a')}
-          AND (a.type IN ('call','meeting') OR (a.type = 'email' AND NOT ({team_sender})))
+        WHERE a.deleted_at IS NULL AND a.type = 'email' AND {_jobs_relevant('a')} AND {_not_autoreply('a')}
+          AND a.email_from NOT ILIKE '%@pursuit.org%'
         UNION ALL
         -- Facilitated intro that was acted on (no completed_at column; use responded_at).
         SELECT 'facilitated_intro_sent', coalesce(ir.responded_at, ir.created_at), ir.contact_id
         FROM bedrock.intro_request ir
-        WHERE ir.status IN ('accepted','completed') AND {_scope_email_pred('ir.requested_by_email', scope)}
+        WHERE ir.status IN ('accepted','completed') AND {_scope_intro_pred(scope, owner)}
     ),
     stage_counts AS (
         SELECT 'user' AS kind, se.stage AS key, coalesce(cw.warmth,'cold') AS warmth,
@@ -2418,9 +2439,12 @@ async def outreach_scorecard(
     # this period vs last. Real, author-attributed. Qualified/Committed/response-
     # rate per sender await first_outreach_by attribution (not populated yet).
     core = ",".join(f"'{e.lower()}'" for e in JOBS_TEAM_EMAILS)
-    sender_scope = {"team": f"AND lower(o.email) IN ({core})",
-                    "staff": f"AND lower(o.email) NOT IN ({core})",
-                    "pursuit": ""}[scope]
+    if owner and _SAFE_EMAIL.match(owner):
+        sender_scope = f"AND lower(o.email) = lower('{owner}')"
+    else:
+        sender_scope = {"team": f"AND lower(o.email) IN ({core})",
+                        "staff": f"AND lower(o.email) NOT IN ({core})",
+                        "pursuit": ""}[scope]
     sender_sql = f"""
     WITH {_OUTREACH_WARMTH_CTES}
     SELECT o.email AS sender,
@@ -2502,6 +2526,7 @@ async def outreach_scorecard_detail(
     period: str = Query("this", pattern="^(this|last)$"),
     granularity: str = Query("week", pattern="^(day|week|month)$"),
     scope: str = Query("team", pattern="^(pursuit|team|staff)$"),
+    owner: Optional[str] = Query(None),
     date_from: Optional[str] = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
     date_to: Optional[str] = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
     user=Depends(require_auth),
@@ -2512,7 +2537,6 @@ async def outreach_scorecard_detail(
     out (or came in). Powers the click-to-expand on the Outreach tab."""
     this_start, this_end, last_start, last_end = _outreach_windows(granularity, date_from, date_to)
     start, end = (this_start, this_end) if period == "this" else (last_start, last_end)
-    team_sender = " OR ".join(f"a.email_from ILIKE '%{e}%'" for e in JOBS_TEAM_EMAILS)
 
     contacts: dict = {}   # contact_id → {contact_id, name, company, entered_at, touches:[]}
 
@@ -2530,7 +2554,7 @@ async def outreach_scorecard_detail(
                 FROM bedrock.intro_request ir
                 JOIN public.contacts c ON c.contact_id = ir.contact_id
                 WHERE ir.status IN ('accepted','completed')
-                  AND {_scope_email_pred('ir.requested_by_email', scope)}
+                  AND {_scope_intro_pred(scope, owner)}
                   AND coalesce(ir.responded_at, ir.created_at) >= $1
                   AND coalesce(ir.responded_at, ir.created_at) < $2
                 ORDER BY activity_date DESC LIMIT 500
@@ -2544,12 +2568,12 @@ async def outreach_scorecard_detail(
         else:
             where = {
                 "direct_email_sent":
-                    f"a.type = 'email' AND {_scope_author('a', scope)} AND {_not_autoreply('a')} AND {_jobs_relevant('a')}",
+                    f"a.type = 'email' AND {_activity_actor('a', scope, owner)} AND {_not_autoreply('a')} AND {_jobs_relevant('a')}",
                 "linkedin_message_sent":
-                    f"a.type = 'linkedin' AND {_scope_author('a', scope)} AND {_jobs_relevant('a')}",
+                    f"a.type = 'linkedin' AND {_activity_actor('a', scope, owner)} AND {_jobs_relevant('a')}",
                 "response":
-                    f"{_jobs_relevant('a')} AND {_not_autoreply('a')} "
-                    f"AND (a.type IN ('call','meeting') OR (a.type = 'email' AND NOT ({team_sender})))",
+                    f"a.type = 'email' AND {_jobs_relevant('a')} AND {_not_autoreply('a')} "
+                    f"AND a.email_from NOT ILIKE '%@pursuit.org%'",
             }.get(key)
             if where is None:
                 raise HTTPException(400, "invalid activity key")
