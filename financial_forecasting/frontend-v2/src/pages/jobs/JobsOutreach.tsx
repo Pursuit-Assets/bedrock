@@ -191,7 +191,7 @@ function ConversionTables({ sc }: { sc: OutreachScorecard }) {
   const qual = u.active ?? { this_period: EMPTY, last_period: EMPTY } as ScorecardRow;
   const comm = u.handed_off ?? { this_period: EMPTY, last_period: EMPTY } as ScorecardRow;
   const email = a.direct_email_sent ?? { this_period: EMPTY, last_period: EMPTY } as ScorecardRow;
-  const resp = a.response ?? { this_period: EMPTY, last_period: EMPTY } as ScorecardRow;
+  const resp = a.direct_email_response ?? { this_period: EMPTY, last_period: EMPTY } as ScorecardRow;
 
   const ratio = (numRow: ScorecardRow, denRow: ScorecardRow, when: "this_period" | "last_period") => {
     const d = denRow[when].total; return d ? numRow[when].total / d : null;
@@ -241,7 +241,7 @@ function ConversionTables({ sc }: { sc: OutreachScorecard }) {
           const t = ratio(resp, email, "this_period"), l = ratio(resp, email, "last_period");
           return (
             <tr className="text-[13px] border-t border-border">
-              <td className="px-3.5 py-2 text-left">Responses / Emails Sent</td>
+              <td className="px-3.5 py-2 text-left">Direct Email Responses / Emails Sent</td>
               <td className="px-3.5 py-2 text-right tabular-nums">{fmt(t)}</td>
               <td className="px-3.5 py-2 text-right tabular-nums">{fmt(l)}</td>
               <td className="px-3.5 py-2 text-right text-[12px]">{t != null && l != null ? <Trend current={t} prior={l} unit="pt" /> : <span className="text-ink-4">—</span>}</td>
@@ -258,7 +258,7 @@ function OriginComparison({ sc }: { sc: OutreachScorecard }) {
   const a = byKey(sc.activity_pipeline, "metric");
   const flagged = (u.flagged ?? { this_period: EMPTY } as ScorecardRow).this_period;
   const email = (a.direct_email_sent ?? { this_period: EMPTY } as ScorecardRow).this_period;
-  const resp = (a.response ?? { this_period: EMPTY } as ScorecardRow).this_period;
+  const resp = (a.direct_email_response ?? { this_period: EMPTY } as ScorecardRow).this_period;
   const qual = (u.active ?? { this_period: EMPTY } as ScorecardRow).this_period;
 
   const Card = ({ label, w }: { label: string; w: "warm" | "cold" }) => (
@@ -418,9 +418,12 @@ export function JobsOutreach() {
 
           <p className="text-[11px] italic text-ink-4">
             Warm = outreach to a company Bedrock already knew before the contact's first touch; Cold = the company's first appearance.
-            Counts are flow (entering a stage / logged in the period). Activity is gated to jobs-classified touches (the nightly classifier
-            is still catching up, so counts will rise). The scope filter applies to activity &amp; by-sender; the User Pipeline is team-wide
-            (per-contact staff attribution isn't captured yet). Qualified Lead &amp; Committed populate once stage-entry tracking is live.
+            <strong> Lead Sourced</strong> = contacts newly flagged into the pipeline; <strong>Outreached</strong> = distinct contacts who
+            received a jobs outreach email this period (activity-driven). <strong>Engagements</strong> = meetings, calls, or inbound emails
+            from outside Pursuit. <strong>Direct Email Responses</strong> = external addresses that replied for the first time after we
+            emailed them. <strong>Facilitated Intro</strong> = a warm intro (someone introduced us). Activity is gated to jobs-classified
+            touches, so counts will rise as the nightly classifier catches up. Scope/sender filter the activity side; Qualified Lead &amp;
+            Committed populate once stage-entry tracking is live.
           </p>
         </>
       )}

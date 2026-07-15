@@ -33,7 +33,8 @@ ACTIVITY_PIPELINE_TARGETS: dict[str, dict[str, int]] = {
     "direct_email_sent":      dict(_ZERO),
     "linkedin_message_sent":  dict(_ZERO),
     "facilitated_intro_sent": dict(_ZERO),
-    "response":               dict(_ZERO),
+    "engagement":             dict(_ZERO),
+    "direct_email_response":  dict(_ZERO),
 }
 
 
