@@ -478,7 +478,13 @@ function StaffPicker({
     >
       <button
         type="button"
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => {
+          // Refetch on open: a staff fetch that failed earlier (e.g. fired
+          // pre-login and 401'd) would otherwise stay cached as an empty
+          // list and the picker reads "No staff found" forever (TKT-128).
+          if (!open && (staffQ.isError || staff.length === 0)) void staffQ.refetch();
+          setOpen((v) => !v);
+        }}
         className="group flex w-full items-center gap-1.5 rounded px-1 py-0.5 text-left text-[12px] text-ink-2 hover:bg-surface-2"
       >
         <span className={cn(value ? "text-ink-2" : "text-ink-4")}>{displayLabel}</span>
@@ -511,8 +517,13 @@ function StaffPicker({
           >
             Unassign
           </div>
-          {staffQ.isLoading ? (
+          {staffQ.isLoading || staffQ.isRefetching ? (
             <div className="px-3 py-1.5 text-[12px] text-ink-4">Loading…</div>
+          ) : staffQ.isError ? (
+            <div className="px-3 py-1.5 text-[12px]">
+              <span className="text-red">Couldn't load staff.</span>{" "}
+              <button type="button" className="text-accent underline underline-offset-2" onMouseDown={(e) => e.preventDefault()} onClick={() => void staffQ.refetch()}>Retry</button>
+            </div>
           ) : filtered.length === 0 ? (
             <div className="px-3 py-1.5 text-[12px] text-ink-4">No staff found.</div>
           ) : (
@@ -602,6 +613,11 @@ function DealContextStrip({ deal }: { deal: JobsOpportunity }) {
           </button>
         </Field>
       ) : null}
+      <Field label="Owner">
+        <div className="min-w-[160px]">
+          <StaffPicker value={deal.owner_email} onChange={(email) => patch({ owner_email: email })} />
+        </div>
+      </Field>
       <Field label="Warm intro by">
         <InlineText value={deal.intro_by} placeholder="—" onSave={(v) => patch({ intro_by: v || null })} />
       </Field>
