@@ -9,6 +9,7 @@
 """
 
 import asyncio
+import json
 import logging
 import re
 from datetime import date, datetime, timedelta, timezone
@@ -3281,7 +3282,8 @@ async def list_contacts(
     membership_stage: Optional[str] = Query(None, description="funnel stage on the jobs membership"),
     industry: Optional[str] = Query(None),
     has_open_roles: Optional[bool] = Query(None, description="only contacts whose company has open job postings"),
-    limit: int = Query(200, le=500),
+    filter_rules: Optional[str] = Query(None, alias="filters", description="JSON array of {field,op,values} rules — applied in SQL so filters see the full universe, not the loaded page"),
+    limit: int = Query(200, le=5000),
     offset: int = Query(0),
     user=Depends(require_auth),
     conn=Depends(get_db),
@@ -3319,6 +3321,109 @@ async def list_contacts(
     if has_open_roles:
         filters.append("EXISTS (SELECT 1 FROM public.job_postings jp WHERE coalesce(trim(jp.company_name),'') <> '' "
                        "AND lower(trim(jp.company_name)) = lower(trim(c.current_company)))")
+
+    # ── Generic rule filters (the page's Filter menu) ─────────────────────
+    # Filtering MUST constrain the SQL: the old client-side approach sifted
+    # only the loaded page, so "connected staff contains X" matched 9 of a
+    # few hundred. Each UI field maps to a whitelisted SQL expression that
+    # mirrors the page's column semantics exactly; unknown fields/ops 400
+    # instead of silently under-filtering. The frontend normalizes date
+    # presets (in_range → between) before sending.
+    _ACT_GATE = "(a.jobs_relevance = 'jobs' OR a.type NOT IN ('email','meeting'))"
+    _ACT_LAST = ("(SELECT max(a.activity_date) FROM bedrock.activity a "
+                 "WHERE a.participant_public_contact_id = c.contact_id "
+                 f"AND a.deleted_at IS NULL AND {_ACT_GATE})")
+    _ACT_FIRST = _ACT_LAST.replace("max(", "min(", 1)
+    _RULE_FIELDS: dict[str, tuple[str, str]] = {
+        "name":     ("text", "c.full_name"),
+        "title":    ("text", "c.current_title"),
+        "company":  ("text", "c.current_company"),
+        "industry": ("text", "(SELECT co2.industry FROM public.companies co2 WHERE co2.company_id = c.company_id)"),
+        "stage":    ("select", "c.contact_stage"),
+        "flag":     ("select", "(SELECT m2.stage FROM bedrock.jobs_contact_membership m2 WHERE m2.contact_id = c.contact_id)"),
+        "connected":        ("text", "(SELECT string_agg(sm.display_name, ', ') FROM public.staff_contact_relationships scr "
+                                     "JOIN bedrock.staff_user_id_map sm ON sm.staff_user_id = scr.staff_user_id "
+                                     "WHERE scr.contact_id = c.contact_id)"),
+        "connection_count": ("number", "(SELECT count(*) FROM public.staff_contact_relationships scr2 WHERE scr2.contact_id = c.contact_id)"),
+        "listings": ("number", "((SELECT count(*) FROM public.job_postings jp2 WHERE coalesce(trim(jp2.company_name),'') <> '' "
+                               "AND lower(trim(jp2.company_name)) = lower(trim(c.current_company))) + "
+                               "(SELECT count(DISTINCT lower(trim(ja2.role_title))) FROM public.job_applications ja2 "
+                               "WHERE coalesce(trim(ja2.company_name),'') <> '' "
+                               "AND lower(trim(ja2.company_name)) = lower(trim(c.current_company)) "
+                               "AND coalesce(trim(ja2.role_title),'') <> ''))"),
+        "has_deal": ("boolean", "EXISTS (SELECT 1 FROM bedrock.jobs_opportunity o2 WHERE o2.deleted_at IS NULL AND ("
+                                "(c.airtable_id IS NOT NULL AND ('airtable:' || c.airtable_id) = ANY(o2.sf_contact_ids)) "
+                                "OR ('pub:' || c.contact_id::text) = ANY(o2.sf_contact_ids) "
+                                "OR lower(trim(o2.account_name)) = lower(trim(c.current_company))))"),
+        "last_activity":      ("recency", _ACT_LAST),
+        "first_contact_date": ("date", _ACT_FIRST),
+        "last_contact_date":  ("date", _ACT_LAST),
+    }
+    if filter_rules:
+        try:
+            parsed_rules = json.loads(filter_rules)
+            assert isinstance(parsed_rules, list)
+        except Exception:
+            raise HTTPException(400, "filters must be a JSON array of {field,op,values}")
+        for rule in parsed_rules[:20]:
+            field, op = rule.get("field"), rule.get("op")
+            values = [str(v) for v in (rule.get("values") or [])]
+            spec = _RULE_FIELDS.get(field)
+            if not spec:
+                raise HTTPException(400, f"unfilterable field: {field}")
+            ftype, expr = spec
+            first = values[0] if values else ""
+            if op == "is_empty":
+                filters.append(f"({expr} IS NULL OR ({expr})::text = '')" if ftype != "number" else f"coalesce({expr}, 0) = 0")
+            elif op == "is_not_empty":
+                filters.append(f"({expr} IS NOT NULL AND ({expr})::text <> '')" if ftype != "number" else f"coalesce({expr}, 0) > 0")
+            elif ftype == "select" and op in ("equals", "not_equals"):
+                if not values:
+                    continue
+                neg = "NOT " if op == "not_equals" else ""
+                filters.append(f"{neg}(coalesce({expr}, '') = ANY(${i}::text[]))")
+                params.append(values); i += 1
+            elif ftype == "text" and op in ("contains", "equals", "not_equals"):
+                if op == "contains":
+                    filters.append(f"lower(coalesce({expr}, '')) LIKE lower(${i})")
+                    params.append(f"%{first}%")
+                else:
+                    filters.append(f"lower(coalesce({expr}, '')) {'=' if op == 'equals' else '<>'} lower(${i})")
+                    params.append(first)
+                i += 1
+            elif ftype == "number" and op in ("gt", "lt", "equals", "not_equals"):
+                sym = {"gt": ">", "lt": "<", "equals": "=", "not_equals": "<>"}[op]
+                try:
+                    num = float(first)
+                except ValueError:
+                    raise HTTPException(400, f"non-numeric value for {field}")
+                filters.append(f"coalesce({expr}, 0) {sym} ${i}")
+                params.append(num); i += 1
+            elif ftype == "boolean" and op in ("equals", "not_equals"):
+                want = (first == "yes") ^ (op == "not_equals")
+                filters.append(expr if want else f"NOT {expr}")
+            elif ftype == "recency" and op == "within":
+                if first == "none":
+                    filters.append(f"({expr} IS NULL OR {expr} < now() - interval '90 days')")
+                else:
+                    try:
+                        days = int(first)
+                    except ValueError:
+                        raise HTTPException(400, "recency window must be a number of days or 'none'")
+                    filters.append(f"{expr} >= now() - make_interval(days => ${i})")
+                    params.append(days); i += 1
+            elif ftype == "date" and op in ("before", "after", "equals", "not_equals", "between"):
+                if op == "between":
+                    filters.append(f"({expr} >= ${i}::date AND {expr} < ${i+1}::date + 1)")
+                    params.append(first); params.append(values[1] if len(values) > 1 else first); i += 2
+                elif op in ("equals", "not_equals"):
+                    filters.append(f"({expr})::date {'=' if op == 'equals' else '<>'} ${i}::date")
+                    params.append(first); i += 1
+                else:
+                    filters.append(f"{expr} {'<' if op == 'before' else '>'} ${i}::date")
+                    params.append(first); i += 1
+            else:
+                raise HTTPException(400, f"unsupported op '{op}' for {field}")
 
     where = " AND ".join(filters)
     rows = await conn.fetch(
