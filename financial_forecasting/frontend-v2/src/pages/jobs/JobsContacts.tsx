@@ -392,8 +392,10 @@ export function JobsContacts({ initialQuery, initialContactId }: { initialQuery?
         </div>
       )}
 
-      <div className="overflow-hidden rounded-b-lg border border-border-strong bg-surface">
-        <table className="w-full table-fixed border-collapse">
+      <div className="overflow-x-auto rounded-b-lg border border-border-strong bg-surface">
+        {/* Weight-proportional widths against a readable minimum table width —
+            narrow windows scroll horizontally instead of squeezing columns. */}
+        <table className="w-full table-fixed border-collapse" style={{ minWidth: visibleWeight * 11 }}>
           <colgroup>{visibleCols.map((k) => <col key={k} style={{ width: `${(COL_WEIGHT[k] / visibleWeight) * 100}%` }} />)}</colgroup>
           <thead className="bg-surface-2 text-[10.5px] uppercase tracking-wider text-ink-3">
             <tr>{visibleCols.map((key) => <th key={key} className="px-3 py-1.5 text-left font-semibold">{SORTABLE.has(key) ? <SortableHeader label={COL_LABELS[key]} sortKey={key} sort={sort} onToggle={toggle} /> : COL_LABELS[key]}</th>)}</tr>

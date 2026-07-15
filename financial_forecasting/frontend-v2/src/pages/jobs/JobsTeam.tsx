@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useMemo, useState } from "react";
+import { Fragment, useCallback, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   useJobsOpportunities,
@@ -437,6 +437,11 @@ function StaffPicker({
   const [search, setSearch] = useState("");
   const [saving, setSaving] = useState(false);
   const [savedTick, setSavedTick] = useState(false);
+  // Fixed-position dropdown anchored to the trigger: inside the table the
+  // wrapper scrolls/clips, so an absolutely-positioned menu gets cut off or
+  // overlaps neighbouring cells in narrow windows.
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const [menuPos, setMenuPos] = useState<{ top: number; left: number; up: boolean } | null>(null);
 
   // useStaff() with no arg returns up to 50 active staff; filter client-side for snappiness.
   const staffQ = useStaff();
@@ -478,11 +483,17 @@ function StaffPicker({
     >
       <button
         type="button"
+        ref={triggerRef}
         onClick={() => {
           // Refetch on open: a staff fetch that failed earlier (e.g. fired
           // pre-login and 401'd) would otherwise stay cached as an empty
           // list and the picker reads "No staff found" forever (TKT-128).
           if (!open && (staffQ.isError || staff.length === 0)) void staffQ.refetch();
+          if (!open && triggerRef.current) {
+            const r = triggerRef.current.getBoundingClientRect();
+            const up = window.innerHeight - r.bottom < 300; // flip when near the bottom
+            setMenuPos({ top: up ? r.top - 4 : r.bottom + 4, left: Math.min(r.left, window.innerWidth - 244), up });
+          }
           setOpen((v) => !v);
         }}
         className="group flex w-full items-center gap-1.5 rounded px-1 py-0.5 text-left text-[12px] text-ink-2 hover:bg-surface-2"
@@ -497,8 +508,13 @@ function StaffPicker({
         )}
       </button>
 
-      {open && (
-        <div className="absolute z-30 mt-1 max-h-64 w-full min-w-[180px] overflow-auto rounded border border-border-strong bg-surface shadow">
+      {open && menuPos && (
+        <div
+          className="fixed z-50 max-h-64 w-60 overflow-auto rounded border border-border-strong bg-surface shadow-lg"
+          style={menuPos.up
+            ? { left: menuPos.left, bottom: window.innerHeight - menuPos.top }
+            : { left: menuPos.left, top: menuPos.top }}
+        >
           <div className="sticky top-0 bg-surface px-2 pt-2 pb-1">
             <input
               type="text"
@@ -2377,12 +2393,13 @@ export function JobsTeam() {
       {committedRolesDeal && <CommittedRolesModal deal={committedRolesDeal} onClose={() => setCommittedRolesDeal(null)} />}
       {closedLostDeal && <ClosedLostModal deal={closedLostDeal} onClose={() => setClosedLostDeal(null)} />}
 
-      <div className="overflow-hidden rounded-b-lg border border-border-strong bg-surface">
-        <table className="w-full border-collapse" style={{ tableLayout: "fixed" }}>
-          {/* fluid widths: column px widths rendered as % of the total so the
-              table fills 100% and never scrolls horizontally; resizing still
-              works (it reproportions the columns). */}
-          <colgroup>{visibleCols.map((key) => <col key={key} style={{ width: `${(widths[key] / tableMinWidth) * 100}%` }} />)}</colgroup>
+      <div className="overflow-x-auto rounded-b-lg border border-border-strong bg-surface">
+        {/* Columns keep their real pixel widths and the wrapper scrolls
+            horizontally when the window is narrower than the table — squeezing
+            every column proportionally made narrow windows unreadable
+            (truncated cells, overlapping content, clipped pickers). */}
+        <table className="w-full border-collapse" style={{ tableLayout: "fixed", minWidth: tableMinWidth }}>
+          <colgroup>{visibleCols.map((key) => <col key={key} style={{ width: widths[key] }} />)}</colgroup>
           <thead className="sticky top-0 z-10">
             <tr>
               {visibleCols.map((key, idx) => (
