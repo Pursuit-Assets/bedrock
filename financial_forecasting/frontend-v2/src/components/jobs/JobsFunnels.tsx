@@ -27,7 +27,7 @@ const FUNNEL_TITLE: Record<FunnelType, string> = {
 };
 
 const FUNNEL_SUBTITLE: Record<FunnelType, string> = {
-  opportunities: "Employer deals by stage · transitions in the last 30d",
+  opportunities: "Employer deals by stage · Confirmed = has a committed role · transitions in the last 30d",
   prospects: "Jobs-pipeline contacts by stage",
   builders: "Builder applications by stage",
 };
