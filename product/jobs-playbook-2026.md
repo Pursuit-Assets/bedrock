@@ -30,33 +30,65 @@
 
 ```mermaid
 flowchart TB
-  subgraph ACCT["ACCOUNT — the employer · manage everything here · status auto-derives"]
+  subgraph ACCT["&nbsp;&nbsp;🏢 &nbsp;ACCOUNT — the employer · manage everything here · status auto-derives&nbsp;&nbsp;"]
     direction TB
-    subgraph CT["1 · CONTACTS — activate people"]
+    subgraph CT["&nbsp;1 · CONTACTS — activate people&nbsp;"]
       direction LR
-      f["Flagged"] --> io["Initial Outreach<br/><i>(advances itself)</i>"] --> q["Qualified"] --> conv["Converted to<br/>Opportunity"]
+      f["Flagged"] --> io["Initial Outreach<br/><i>advances itself</i>"] --> q["Qualified"] --> conv["Converted to<br/>Opportunity"]
     end
-    subgraph OP["2 · OPPORTUNITY — the hiring conversation · owner + target close date"]
+    subgraph OP["&nbsp;2 · OPPORTUNITY — the hiring conversation · owner + target close date&nbsp;"]
       direction LR
       s1["Initial Outreach"] --> s2["In Discussions"] --> s3["Opportunity<br/>Confirmed"] --> s4["Builder<br/>Interview"] --> s5["Closed — Won"]
     end
-    subgraph RL["3 · ROLES — the seats · one or many per opportunity"]
+    subgraph RL["&nbsp;3 · ROLES — the seats · one or many per opportunity&nbsp;"]
       direction LR
-      om["Open market"] -.->|"employer commits"| co["Committed — open req<br/><b>counts in FT #</b>"]
-      tr["Trial active<br/><i>counts on conversion</i>"] --> ft["Full-time placed<br/><b>counts in FT #</b>"]
-      co --> ft
+      r0(["New role"]) --> om["Open market<br/><i>CVs welcome · no commitment</i>"]
+      r0 --> co["Committed<br/><b>counts in FT #</b>"]
+      co --> req["Open req<br/><i>hire directly</i>"]
+      co --> tr["Trial active<br/><i>counts on conversion</i>"]
     end
-    CT ==>|"real hiring interest →<br/>create the opportunity"| OP
+    CT ==>|"real hiring interest —<br/>create the opportunity"| OP
     OP ==>|"seats defined at<br/>Opportunity Confirmed"| RL
   end
-  RL ==>|"hire a builder"| PL["PLACEMENT<br/>record created · role closes ·<br/>Fellow Affiliation → Salesforce"]
+  om ==>|"builder hired"| PL
+  req ==>|"builder hired"| PL["✓ FULL-TIME PLACED<br/>placement record · role closes ·<br/>Fellow Affiliation → Salesforce"]
+  tr ==>|"trial converts"| PL
+
+  classDef contactN fill:#EDEDFD,stroke:#4242EA,color:#1E1E1E
+  classDef oppN fill:#FDF2F8,stroke:#DB2777,color:#1E1E1E
+  classDef newN fill:#F5F5F4,stroke:#78716C,color:#1E1E1E
+  classDef openN fill:#E0F2FE,stroke:#0284C7,color:#0C4A6E
+  classDef commitN fill:#FEF3C7,stroke:#D97706,color:#78350F
+  classDef trialN fill:#E0E7FF,stroke:#6366F1,color:#312E81
+  classDef placedN fill:#16A34A,stroke:#15803D,color:#FFFFFF
+  class f,io,q,conv contactN
+  class s1,s2,s3,s4,s5 oppN
+  class r0 newN
+  class om openN
+  class co,req commitN
+  class tr trialN
+  class PL placedN
+  style ACCT fill:#FAFAF9,stroke:#1E1E1E,stroke-width:1.5px
+  style CT fill:#FFFFFF,stroke:#4242EA,stroke-dasharray:4 3
+  style OP fill:#FFFFFF,stroke:#DB2777,stroke-dasharray:4 3
+  style RL fill:#FFFFFF,stroke:#D97706,stroke-dasharray:4 3
 ```
+
+A role is **open market or committed** — that's the commitment. A committed seat can run a **trial** first or hire directly, and **any kind becomes a placement** when a builder is hired; only committed seats (and placements) count in FT Roles Secured, with trials counting on conversion.
 
 The account's status follows this progression on its own — your job is to move it rightward:
 
 ```mermaid
 flowchart LR
-  P["Prospect<br/><i>target, no activity</i>"] -->|"flag contacts,<br/>start outreach"| A["Activating"] -->|"opportunity<br/>opened"| Pu["Pursuing"] -->|"builders placed /<br/>seats committed"| St["Stewarding"]
+  P["Prospect<br/><i>target · no activity</i>"] -->|"flag contacts,<br/>start outreach"| A["Activating"] -->|"opportunity<br/>opened"| Pu["Pursuing"] -->|"builders placed /<br/>seats committed"| St["Stewarding"]
+  classDef s0 fill:#FAFAF9,stroke:#A8A29E,color:#1E1E1E
+  classDef s1c fill:#EDEDFD,stroke:#4242EA,color:#1E1E1E
+  classDef s2c fill:#D6D6FB,stroke:#4242EA,color:#1E1E1E
+  classDef s3c fill:#4242EA,stroke:#2E2EB8,color:#FFFFFF
+  class P s0
+  class A s1c
+  class Pu s2c
+  class St s3c
 ```
 
 **Where leads come from — two arms:**
