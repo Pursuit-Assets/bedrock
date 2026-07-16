@@ -39,6 +39,7 @@
 - Anyone can live in the contact base; **flagging** a contact makes them a *lead* — they enter the funnel.
 - Stages: **Flagged → Initial Outreach → Qualified → Converted to Opportunity**, with **On Hold** and **Not a fit** as parking/exit dispositions.
 - *Definitions the funnel uses:* a **lead** is a contact someone deliberately flagged (or requested an intro to). **Outreach** starts when the first real touch happens. Being in the database is neither.
+- **Initial Outreach advances itself.** Once a flagged contact gets real jobs outreach — a synced email or meeting, or a touch you log — they move to Initial Outreach automatically, with the who/when stamped from the actual activity. You never set that stage by hand. **Qualified** and **Converted to Opportunity** are your judgment calls — those you set.
 - **Intro requests** are how the network gets activated: request an intro from the connected staffer → they're notified in Slack and on their Home page → they accept/decline/make the intro → the contact moves through the funnel. Every staffer also has a **My Network** view to pre-mark their own connections ("would reach out" / "not a fit") — do this once and the team's lead list builds itself.
 
 ---
