@@ -26,6 +26,39 @@
 
 **The chain:** activate a *contact* → that warms an *account* → the conversation becomes an *opportunity* → the commitment becomes *roles* (one or many) → a hire becomes a *placement*.
 
+**The full picture — how one employer progresses.** Everything below lives on the **account page** (contacts, opportunities, roles, activity, tasks), so the account is where you manage the whole story at once:
+
+```mermaid
+flowchart TB
+  subgraph ACCT["ACCOUNT — the employer · manage everything here · status auto-derives"]
+    direction TB
+    subgraph CT["1 · CONTACTS — activate people"]
+      direction LR
+      f["Flagged"] --> io["Initial Outreach<br/><i>(advances itself)</i>"] --> q["Qualified"] --> conv["Converted to<br/>Opportunity"]
+    end
+    subgraph OP["2 · OPPORTUNITY — the hiring conversation · owner + target close date"]
+      direction LR
+      s1["Initial Outreach"] --> s2["In Discussions"] --> s3["Opportunity<br/>Confirmed"] --> s4["Builder<br/>Interview"] --> s5["Closed — Won"]
+    end
+    subgraph RL["3 · ROLES — the seats · one or many per opportunity"]
+      direction LR
+      om["Open market"] -.->|"employer commits"| co["Committed — open req<br/><b>counts in FT #</b>"]
+      tr["Trial active<br/><i>counts on conversion</i>"] --> ft["Full-time placed<br/><b>counts in FT #</b>"]
+      co --> ft
+    end
+    CT ==>|"real hiring interest →<br/>create the opportunity"| OP
+    OP ==>|"seats defined at<br/>Opportunity Confirmed"| RL
+  end
+  RL ==>|"hire a builder"| PL["PLACEMENT<br/>record created · role closes ·<br/>Fellow Affiliation → Salesforce"]
+```
+
+The account's status follows this progression on its own — your job is to move it rightward:
+
+```mermaid
+flowchart LR
+  P["Prospect<br/><i>target, no activity</i>"] -->|"flag contacts,<br/>start outreach"| A["Activating"] -->|"opportunity<br/>opened"| Pu["Pursuing"] -->|"builders placed /<br/>seats committed"| St["Stewarding"]
+```
+
 **Where leads come from — two arms:**
 1. **Existing partnerships.** Funders and program partners who meet our builders (demo days, grants, workshops) and get interested in hiring. These arrive warm through the fundraising side.
 2. **Staff network.** Pursuit staff's combined LinkedIn networks — 40,000+ people — scraped into the contact base. The team filters by industry/role, flags targets, and requests warm intros from the connected staffer.
