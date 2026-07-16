@@ -1,5 +1,6 @@
-import { Fragment, useState } from "react";
-import { ChevronRight, ChevronDown } from "lucide-react";
+import { Fragment, useEffect, useState } from "react";
+import { Link } from "react-router-dom";
+import { ChevronRight, ChevronDown, ExternalLink } from "lucide-react";
 import { Drawer } from "@/components/ui/Drawer";
 import {
   useMetricDrill,
@@ -15,6 +16,7 @@ import {
   type MetricDrill,
 } from "@/services/jobs";
 import { useUpdateRole } from "@/services/jobsOpps2";
+import { OppRolesSection } from "@/components/jobs/OppRolesSection";
 import { useQueryClient } from "@tanstack/react-query";
 
 // Pretty-print known coded values; pass everything else through.
@@ -99,6 +101,7 @@ export function MetricDrawer({
   }
   const open = metricKey !== null;
   const [expandedRow, setExpandedRow] = useState<number | null>(null);
+  useEffect(() => setExpandedRow(null), [metricKey]);
 
   // Decide whether a given (entity, column) is an editable dropdown.
   // Returns the select config, or null for read-only text.
@@ -257,6 +260,77 @@ export function MetricDrawer({
               })}
             </tbody>
           </table>
+        ) : data.entity === "placement" ? (
+          <table className="w-full text-[12.5px]">
+            <thead className="sticky top-0 bg-surface-2 text-[10.5px] uppercase tracking-wider text-ink-3">
+              <tr>
+                <th className="w-7 px-2 py-2" />
+                {data.columns.map((c) => (
+                  <th key={c.key} className="px-3 py-2 text-left font-semibold">
+                    {c.label}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {data.rows.map((row, i) => {
+                const isExpanded = expandedRow === i;
+                return (
+                  <Fragment key={i}>
+                    <tr
+                      className="cursor-pointer border-t border-border-strong hover:bg-surface-2/50"
+                      onClick={() => setExpandedRow((cur) => (cur === i ? null : i))}
+                    >
+                      <td className="px-2 py-2 text-ink-3">
+                        {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                      </td>
+                      {data.columns.map((c, ci) => (
+                        <td
+                          key={c.key}
+                          className={ci === 0 ? "px-3 py-2 font-medium text-ink" : "px-3 py-2 text-ink-2"}
+                        >
+                          {c.key === "salary"
+                            ? row.salary
+                              ? `$${Number(row.salary).toLocaleString("en-US")}`
+                              : "—"
+                            : formatCell(c.key, row[c.key])}
+                        </td>
+                      ))}
+                    </tr>
+                    {isExpanded ? (
+                      <tr className="border-t border-border-strong bg-surface-2/40">
+                        <td colSpan={data.columns.length + 1} className="px-4 py-3 pl-9">
+                          {row.opportunity_id ? (
+                            // The same roles editor used on the Opportunity page /
+                            // Accounts tab: edit fields, hire a builder, add roles.
+                            <div className="flex flex-col gap-2">
+                              <Link
+                                to={`/jobs/opportunities/${row.opportunity_id}`}
+                                className="inline-flex w-fit items-center gap-1 text-[11px] font-medium text-accent hover:underline"
+                              >
+                                Open opportunity <ExternalLink size={11} />
+                              </Link>
+                              <OppRolesSection oppId={row.opportunity_id} />
+                            </div>
+                          ) : (
+                            <div className="flex flex-col gap-2">
+                              <span className="text-[11.5px] text-ink-3">
+                                This placement isn't linked to an opportunity — edit it directly:
+                              </span>
+                              <div className="flex items-center gap-3">
+                                <TextInput value={row.role} onSave={(v) => saveTitle(row, v)} />
+                                <SalaryInput value={row.salary} onSave={(v) => saveSalary(row, v)} />
+                              </div>
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    ) : null}
+                  </Fragment>
+                );
+              })}
+            </tbody>
+          </table>
         ) : (
           <table className="w-full text-[12.5px]">
             <thead className="sticky top-0 bg-surface-2 text-[10.5px] uppercase tracking-wider text-ink-3">
@@ -273,11 +347,7 @@ export function MetricDrawer({
                 <tr key={i} className="border-t border-border-strong hover:bg-surface-2/50">
                   {data.columns.map((c, ci) => {
                     const editable = getEditableSelect(data.entity, c.key, row);
-                    const salaryEditable =
-                      (data.entity === "salary" || data.entity === "placement") &&
-                      c.key === "salary" && row.id != null;
-                    const titleEditable =
-                      data.entity === "placement" && c.key === "role" && row.id != null;
+                    const salaryEditable = data.entity === "salary" && c.key === "salary" && row.id != null;
                     return (
                       <td
                         key={c.key}
@@ -285,8 +355,6 @@ export function MetricDrawer({
                       >
                         {salaryEditable ? (
                           <SalaryInput value={row.salary} onSave={(v) => saveSalary(row, v)} />
-                        ) : titleEditable ? (
-                          <TextInput value={row.role} onSave={(v) => saveTitle(row, v)} />
                         ) : editable ? (
                           <select
                             className={selectClass}
