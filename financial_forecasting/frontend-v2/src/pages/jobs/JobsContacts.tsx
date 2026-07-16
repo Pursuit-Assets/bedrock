@@ -22,10 +22,12 @@ import { SortableHeader } from "@/components/ui/SortableHeader";
 import { Toolbar } from "@/components/ui/Toolbar";
 import { RECENCY_OPTIONS, recencyLabel } from "@/lib/recencyFilter";
 import { useColumnVisibility } from "@/lib/columnVisibility";
+import { useColumnWidths } from "@/lib/columnWidths";
+import { ResizableTh, ColGroup } from "@/components/ui/ResizableTable";
 import { useSessionState } from "@/lib/useSessionState";
 import { useSort, sortBy, type SortState } from "@/lib/sort";
 import {
-  AddFilterButton, FilterChip, describeRule, ruleApplies,
+  AddFilterButton, FilterChip, describeRule, ruleApplies, serializeRulesForServer,
   type FieldMeta, type FilterRule,
 } from "@/pages/cleanup/Filters";
 import { cn } from "@/lib/utils";
@@ -70,8 +72,10 @@ const COL_LABELS: Record<ColKey, string> = {
   name: "Name", flag: "Jobs stage", title: "Title", company: "Company", industry: "Industry",
   warmth: "Warmth", listings: "Job listings", tasks: "Open tasks", connected: "Connected staff", deal: "Linked deal", email: "Email", linkedin: "LinkedIn",
 };
-const COL_WEIGHT: Record<ColKey, number> = {
-  name: 16, flag: 11, title: 12, company: 13, industry: 11, warmth: 8, listings: 9, tasks: 7, connected: 13, deal: 12, email: 14, linkedin: 5,
+// Default pixel widths — user-resizable via drag handles (useColumnWidths),
+// same grid components as the Opportunities table.
+const DEFAULT_WIDTHS: Record<ColKey, number> = {
+  name: 190, flag: 130, title: 150, company: 160, industry: 130, warmth: 95, listings: 105, tasks: 85, connected: 155, deal: 145, email: 170, linkedin: 60,
 };
 const SORTABLE = new Set<ColKey>(["name", "flag", "title", "company", "industry", "warmth", "listings", "tasks"]);
 const MEMBERSHIP_STAGE_OPTIONS = MEMBERSHIP_STAGES.map((s) => ({ value: s, label: MEMBERSHIP_STAGE_LABELS[s] }));
@@ -224,8 +228,8 @@ function ContactRow({ contact, expanded, onOpen, visibleCols, selected, onToggle
   return (
     <Fragment>
       <tr id={`contact-${contact.contact_id}`} className={cn("cursor-pointer border-t border-border-strong hover:bg-surface-2/40", expanded && "bg-surface-2/40")} onClick={onOpen}>
-        {visibleCols.map((key) => (
-          <td key={key} className="overflow-hidden px-3 py-1.5 align-middle" onClick={key === "flag" ? (e) => e.stopPropagation() : undefined}>{cells[key]}</td>
+        {visibleCols.map((key, i) => (
+          <td key={key} className={cn("overflow-hidden px-3 py-1.5 align-middle", i === 0 && "sticky left-0 z-10 bg-surface")} onClick={key === "flag" ? (e) => e.stopPropagation() : undefined}>{cells[key]}</td>
         ))}
       </tr>
       {expanded && <tr className="bg-surface-2/20"><td colSpan={visibleCols.length} className="p-0"><ContactExpandTabs contactId={contact.contact_id} /></td></tr>}
@@ -249,6 +253,8 @@ export function JobsContacts({ initialQuery, initialContactId }: { initialQuery?
   const { sort, toggle, setSort } = useSort<ColKey>({ key: "name", direction: "asc" });
   const { visible: visibleCols, toggle: toggleCol, replaceAll: replaceVisibleCols } =
     useColumnVisibility<ColKey>("bedrock-v2:vis:jobs-contacts-v2", COLUMN_ORDER, DEFAULT_VISIBLE);
+  const { widths, startResize } = useColumnWidths<ColKey>("bedrock-v2:cols:jobs-contacts", DEFAULT_WIDTHS);
+  const [showAllRows, setShowAllRows] = useState(false);
 
   const [previewContact, setPreviewContact] = useState<ContactSearchResult | null>(null);
   const [bannerAddedToJobs, setBannerAddedToJobs] = useState(false);
@@ -264,11 +270,21 @@ export function JobsContacts({ initialQuery, initialContactId }: { initialQuery?
     const t = setTimeout(() => setDebouncedQuery(query.trim()), 300);
     return () => clearTimeout(t);
   }, [query]);
+  // Filter rules are translated to SQL server-side (see list_contacts) so a
+  // rule like "connected staff contains jac" scans all 47k contacts — the old
+  // client-only filtering silently sifted just the loaded page. Client-side
+  // ruleApplies still runs on top for instant feedback while typing.
+  const serverRules = useMemo(() => serializeRulesForServer(rules), [rules]);
+  const filteringActive = serverRules.length > 0 || !!debouncedQuery;
   const { data: rawData, isLoading, isError, refetch } = useJobsContacts({
-    limit: 500, search: debouncedQuery || undefined,
+    limit: filteringActive ? 5000 : 500,
+    search: debouncedQuery || undefined,
     flagged: flagView === "all" ? undefined : flagView === "flagged",
+    rules: serverRules.length > 0 ? serverRules : undefined,
   });
   const allContacts: JobContactWithDeal[] = useMemo(() => rawData?.data ?? [], [rawData]);
+  const serverTotal = rawData?.total ?? 0;
+  const universeTruncated = filteringActive && serverTotal > allContacts.length;
 
   const openContact = useCallback((result: ContactSearchResult) => {
     if (allContacts.some((c) => c.contact_id === result.contact_id)) {
@@ -326,7 +342,7 @@ export function JobsContacts({ initialQuery, initialContactId }: { initialQuery?
     return out;
   }, [filtered, groupBy, collapsedSet, groupLabel]);
 
-  const visibleWeight = visibleCols.reduce((s, k) => s + COL_WEIGHT[k], 0);
+  const tableMinWidth = visibleCols.reduce((s, k) => s + widths[k], 0);
   const renderRow = (c: JobContactWithDeal) => (
     <ContactRow key={c.contact_id} contact={c} expanded={expandedId === c.contact_id} onOpen={() => setExpandedId((p) => p === c.contact_id ? null : c.contact_id)} visibleCols={visibleCols}
       selected={selected.has(c.contact_id)} onToggleSelect={() => toggleSelect(c.contact_id)} />
@@ -392,11 +408,33 @@ export function JobsContacts({ initialQuery, initialContactId }: { initialQuery?
         </div>
       )}
 
-      <div className="overflow-hidden rounded-b-lg border border-border-strong bg-surface">
-        <table className="w-full table-fixed border-collapse">
-          <colgroup>{visibleCols.map((k) => <col key={k} style={{ width: `${(COL_WEIGHT[k] / visibleWeight) * 100}%` }} />)}</colgroup>
-          <thead className="bg-surface-2 text-[10.5px] uppercase tracking-wider text-ink-3">
-            <tr>{visibleCols.map((key) => <th key={key} className="px-3 py-1.5 text-left font-semibold">{SORTABLE.has(key) ? <SortableHeader label={COL_LABELS[key]} sortKey={key} sort={sort} onToggle={toggle} /> : COL_LABELS[key]}</th>)}</tr>
+      {universeTruncated && (
+        <div className="border-x border-t border-amber-300 bg-amber-50 px-3 py-1.5 text-[11.5px] text-amber-900">
+          Filters matched {serverTotal.toLocaleString()} contacts — showing the first {allContacts.length.toLocaleString()}. Refine to narrow further.
+        </div>
+      )}
+
+      <div
+        className="overflow-auto rounded-b-lg border border-border-strong bg-surface"
+        style={{ maxHeight: "calc(100vh - 220px)" }}
+      >
+        {/* Bounded data-grid viewport: scrolls both axes internally with a
+            sticky header and pinned first column (same shell as
+            Opportunities); columns keep real, user-resizable pixel widths. */}
+        <table className="w-full table-fixed border-collapse" style={{ minWidth: tableMinWidth }}>
+          <ColGroup order={visibleCols} widths={widths} />
+          <thead className="sticky top-0 z-20 text-[10.5px] uppercase tracking-wider text-ink-3">
+            <tr>{visibleCols.map((key, idx) => (
+              <ResizableTh
+                key={key}
+                width={widths[key]}
+                onStartResize={(e) => startResize(key, e)}
+                isLast={idx === visibleCols.length - 1}
+                className={cn("py-1.5 font-semibold", idx === 0 && "sticky left-0 z-30")}
+              >
+                {SORTABLE.has(key) ? <SortableHeader label={COL_LABELS[key]} sortKey={key} sort={sort} onToggle={toggle} /> : COL_LABELS[key]}
+              </ResizableTh>
+            ))}</tr>
           </thead>
           <tbody>
             {isLoading ? (
@@ -412,7 +450,17 @@ export function JobsContacts({ initialQuery, initialContactId }: { initialQuery?
                 </tr>
               ) : renderRow(item.c))
             ) : (
-              filtered.map(renderRow)
+              <>
+                {(showAllRows ? filtered : filtered.slice(0, 300)).map(renderRow)}
+                {!showAllRows && filtered.length > 300 && (
+                  <tr>
+                    <td colSpan={visibleCols.length} className="border-t border-border-strong px-6 py-2.5 text-center text-[12px] text-ink-3">
+                      Showing 300 of {filtered.length.toLocaleString()} —{" "}
+                      <button type="button" className="text-accent underline underline-offset-2" onClick={() => setShowAllRows(true)}>show all</button>
+                    </td>
+                  </tr>
+                )}
+              </>
             )}
           </tbody>
         </table>

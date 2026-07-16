@@ -22,9 +22,12 @@ import { SortableHeader } from "@/components/ui/SortableHeader";
 import { Tag } from "@/components/ui/Tag";
 import { Toolbar } from "@/components/ui/Toolbar";
 import { accountStatusVariant } from "@/lib/accountStatus";
+import { cn } from "@/lib/utils";
 import { RECENCY_OPTIONS, recencyLabel } from "@/lib/recencyFilter";
 import { useAccountsWithFellows } from "@/services/affiliations";
 import { useColumnVisibility } from "@/lib/columnVisibility";
+import { useColumnWidths } from "@/lib/columnWidths";
+import { ResizableTh, ColGroup } from "@/components/ui/ResizableTable";
 import { useSessionState } from "@/lib/useSessionState";
 import { useSort, sortBy, type SortState } from "@/lib/sort";
 import {
@@ -58,9 +61,10 @@ const COL_LABELS: Record<ColKey, string> = {
   account: "Account", status: "Status", warmth: "Warmth", owner: "Owner", opps: "Opps",
   contacts: "Contacts", listings: "Roles", hired: "Hired", tasks: "Open tasks", deal_types: "Deal types", last_activity: "Last activity",
 };
-// Relative weights → percentage widths (table-fixed, fluid, never overflows).
-const COL_WEIGHT: Record<ColKey, number> = {
-  account: 24, status: 12, warmth: 9, owner: 12, opps: 7, contacts: 8, listings: 7, hired: 7, tasks: 7, deal_types: 10, last_activity: 9,
+// Default pixel widths — user-resizable via drag handles (useColumnWidths),
+// same grid components as the Opportunities table.
+const DEFAULT_WIDTHS: Record<ColKey, number> = {
+  account: 250, status: 125, warmth: 95, owner: 135, opps: 75, contacts: 90, listings: 80, hired: 80, tasks: 90, deal_types: 115, last_activity: 100,
 };
 const SORTABLE = new Set<ColKey>(["account", "status", "warmth", "owner", "opps", "contacts", "listings", "hired", "tasks", "last_activity"]);
 
@@ -160,8 +164,8 @@ function AccountRow({
   return (
     <Fragment>
       <tr className="cursor-pointer border-t border-border-strong bg-surface hover:bg-surface-2/50" onClick={onToggle}>
-        {visibleCols.map((key) => (
-          <td key={key} className="overflow-hidden px-3 py-2 align-middle" onClick={key === "owner" ? (e) => e.stopPropagation() : undefined}>
+        {visibleCols.map((key, i) => (
+          <td key={key} className={cn("overflow-hidden px-3 py-2 align-middle", i === 0 && "sticky left-0 z-10 bg-surface")} onClick={key === "owner" ? (e) => e.stopPropagation() : undefined}>
             {cells[key]}
           </td>
         ))}
@@ -194,6 +198,7 @@ export function JobsAccountHub({ initialQuery }: { initialQuery?: string } = {})
   const { sort, toggle, setSort } = useSort<ColKey>({ key: "status", direction: "asc" });
   const { visible: visibleCols, toggle: toggleCol, replaceAll: replaceVisibleCols } =
     useColumnVisibility<ColKey>("bedrock-v2:vis:jobs-accounts", COLUMN_ORDER, DEFAULT_VISIBLE);
+  const { widths, startResize } = useColumnWidths<ColKey>("bedrock-v2:cols:jobs-accounts", DEFAULT_WIDTHS);
 
   const { data: rawAccounts = [], isLoading, isError, refetch } = useJobsAccounts("all", scope);
   // Historical Pursuit fellows hired, from Salesforce (Affiliation object),
@@ -271,7 +276,7 @@ export function JobsAccountHub({ initialQuery }: { initialQuery?: string } = {})
   }, [filtered, groupBy, collapsedSet, groupLabel]);
 
   const totals = useMemo(() => filtered.reduce((acc, a) => ({ opps: acc.opps + a.opp_count, contacts: acc.contacts + a.prospect_count }), { opps: 0, contacts: 0 }), [filtered]);
-  const visibleWeight = visibleCols.reduce((s, k) => s + COL_WEIGHT[k], 0);
+  const tableMinWidth = visibleCols.reduce((s, k) => s + widths[k], 0);
 
   const renderRow = (a: JobsAccount) => (
     <AccountRow key={a.account} account={a} expanded={expanded.has(a.account)} onToggle={() => toggleRow(a.account)} visibleCols={visibleCols} staff={staff} onSaveOwner={saveOwner} scope={scope} />
@@ -318,15 +323,27 @@ export function JobsAccountHub({ initialQuery }: { initialQuery?: string } = {})
         </div>
       )}
 
-      <div className="overflow-hidden rounded-b-lg border border-border-strong bg-surface">
-        <table className="w-full table-fixed border-collapse">
-          <colgroup>{visibleCols.map((k) => <col key={k} style={{ width: `${(COL_WEIGHT[k] / visibleWeight) * 100}%` }} />)}</colgroup>
-          <thead className="bg-surface-2 text-[10.5px] uppercase tracking-wider text-ink-3">
+      <div
+        className="overflow-auto rounded-b-lg border border-border-strong bg-surface"
+        style={{ maxHeight: "calc(100vh - 220px)" }}
+      >
+        {/* Bounded data-grid viewport: scrolls both axes internally with a
+            sticky header and pinned first column (same shell as
+            Opportunities); columns keep real, user-resizable pixel widths. */}
+        <table className="w-full table-fixed border-collapse" style={{ minWidth: tableMinWidth }}>
+          <ColGroup order={visibleCols} widths={widths} />
+          <thead className="sticky top-0 z-20 text-[10.5px] uppercase tracking-wider text-ink-3">
             <tr>
-              {visibleCols.map((key) => (
-                <th key={key} className="px-3 py-1.5 text-left font-semibold">
+              {visibleCols.map((key, idx) => (
+                <ResizableTh
+                  key={key}
+                  width={widths[key]}
+                  onStartResize={(e) => startResize(key, e)}
+                  isLast={idx === visibleCols.length - 1}
+                  className={cn("py-1.5 font-semibold", idx === 0 && "sticky left-0 z-30")}
+                >
                   {SORTABLE.has(key) ? <SortableHeader label={COL_LABELS[key]} sortKey={key} sort={sort} onToggle={toggle} /> : COL_LABELS[key]}
-                </th>
+                </ResizableTh>
               ))}
             </tr>
           </thead>

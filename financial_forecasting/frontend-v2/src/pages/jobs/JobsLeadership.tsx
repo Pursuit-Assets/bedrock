@@ -1,8 +1,7 @@
 import { useState } from "react";
-import { Users, Trophy, DollarSign, UserCheck, Building2 } from "lucide-react";
+import { Users, Trophy, DollarSign } from "lucide-react";
 
 import {
-  useContactsSummary,
   usePlacements,
   useBuilderSegments,
 } from "@/services/jobs";
@@ -36,8 +35,6 @@ function SectionWrap({
 export function JobsLeadership() {
   const [openMetric, setOpenMetric] = useState<string | null>(null);
   const [segment, setSegment] = useState<string>("all");
-
-  const contactsQ = useContactsSummary();
   const placementsQ = usePlacements(segment);
   const segmentsQ = useBuilderSegments();
 
@@ -51,11 +48,6 @@ export function JobsLeadership() {
       ? segmentsQ.data?.total ?? 0
       : segmentsQ.data?.segments.find((s) => s.value === segment)?.count ?? 0;
   const pctOfPool = (n: number) => (poolTotal ? Math.round((100 * n) / poolTotal) : 0);
-
-  // ── Account activity derived values ────────────────────────────────────
-  const contactsLoading = contactsQ.isLoading;
-  const totalAccounts = contactsQ.data?.accounts?.total ?? null;
-  const engagedAccounts = contactsQ.data?.accounts?.engaged ?? null;
 
   return (
     <div className="flex flex-col gap-7">
@@ -88,7 +80,12 @@ export function JobsLeadership() {
             celebrate={!pLoading && (p?.ft_roles_secured ?? 0) > 0}
             subLead={pLoading ? undefined : [
               `${p?.ft_builders ?? 0} placed`,
-              `${p?.committed_ft_roles ?? 0} committed`,
+              // Committed roles have no builder → no cohort; under a segment
+              // they're informational, never added into the cohort's number
+              // (they'd otherwise repeat under every cohort — TKT-127).
+              segment === "all"
+                ? `${p?.committed_ft_roles ?? 0} committed`
+                : `+${p?.committed_ft_roles ?? 0} committed (all cohorts, not added)`,
               ...((p?.committed_trial_active ?? 0) > 0 ? [`${p?.committed_trial_active} in trial`] : []),
             ].join(" · ")}
             sub={pLoading ? undefined : `${pctOfPool(p?.ft_roles_secured ?? 0)}% of ${poolTotal} job-ready`}
@@ -103,6 +100,7 @@ export function JobsLeadership() {
             tone="sky"
             icon={<Users size={14} />}
             isLoading={pLoading}
+            subLead="any paid work · incl. full-time"
             sub={pLoading ? undefined : `${pctOfPool(p?.any_builders ?? 0)}% of ${poolTotal} job-ready`}
             progressPct={pctOfPool(p?.any_builders ?? 0)}
             progressLabel={`${pctOfPool(p?.any_builders ?? 0)}%`}
@@ -126,37 +124,6 @@ export function JobsLeadership() {
       {/* ── ZONE 2 · The Funnel (the engine) ──────────────────────────── */}
       <JobsFunnels builderSegment={segment} />
 
-      {/* ── ZONE 3 · Account Activity (leading indicators) ────────────── */}
-      <div className="flex flex-col gap-1.5">
-        <div className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">
-          Account Activity
-        </div>
-        <div className="text-[11px] text-ink-4">
-          Top-of-funnel engagement feeding the pipeline, at the account level.
-        </div>
-        <div className="mt-1 grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <JobsStatBubble
-            label="Total Accounts"
-            value={totalAccounts ?? 0}
-            tone="violet"
-            icon={<Building2 size={14} />}
-            isLoading={contactsLoading}
-            sub={
-              totalAccounts != null && engagedAccounts != null && totalAccounts > 0
-                ? `${Math.round((engagedAccounts / totalAccounts) * 100)}% engaged`
-                : undefined
-            }
-          />
-          <JobsStatBubble
-            label="Engaged Accounts"
-            value={engagedAccounts ?? 0}
-            tone="sky"
-            icon={<UserCheck size={14} />}
-            isLoading={contactsLoading}
-            sub="accounts with any activity"
-          />
-        </div>
-      </div>
 
       {/* ── ZONE 3a · Outreach & activation over time ─────────────────── */}
       <ActivityTrends />

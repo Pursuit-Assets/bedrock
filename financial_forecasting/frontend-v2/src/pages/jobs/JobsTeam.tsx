@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useMemo, useState } from "react";
+import { Fragment, useCallback, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   useJobsOpportunities,
@@ -39,7 +39,7 @@ import { JobsTasks } from "@/components/jobs/JobsTasks";
 import { JobsComments } from "@/components/jobs/JobsComments";
 import { CommittedRolesModal } from "@/components/jobs/CommittedRolesModal";
 import { RowExpandPanel, type ExpandTab } from "@/components/RowExpandPanel";
-import { InlineText, InlineSelect } from "@/components/ui/InlineEdit";
+import { InlineText, InlineSelect, InlineDate } from "@/components/ui/InlineEdit";
 import { useSort, sortBy, type SortState } from "@/lib/sort";
 import { SortableHeader } from "@/components/ui/SortableHeader";
 import { SavedViewsPicker } from "@/components/ui/SavedViewsPicker";
@@ -47,7 +47,7 @@ import { ColumnChooser } from "@/components/ui/ColumnChooser";
 import { ResizableTh } from "@/components/ui/ResizableTable";
 import { Toolbar } from "@/components/ui/Toolbar";
 import { useColumnVisibility } from "@/lib/columnVisibility";
-import { totalWidth, useColumnWidths } from "@/lib/columnWidths";
+import { useColumnWidths } from "@/lib/columnWidths";
 import { useSessionState } from "@/lib/useSessionState";
 import {
   AddFilterButton,
@@ -437,6 +437,11 @@ function StaffPicker({
   const [search, setSearch] = useState("");
   const [saving, setSaving] = useState(false);
   const [savedTick, setSavedTick] = useState(false);
+  // Fixed-position dropdown anchored to the trigger: inside the table the
+  // wrapper scrolls/clips, so an absolutely-positioned menu gets cut off or
+  // overlaps neighbouring cells in narrow windows.
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const [menuPos, setMenuPos] = useState<{ top: number; left: number; up: boolean } | null>(null);
 
   // useStaff() with no arg returns up to 50 active staff; filter client-side for snappiness.
   const staffQ = useStaff();
@@ -478,7 +483,19 @@ function StaffPicker({
     >
       <button
         type="button"
-        onClick={() => setOpen((v) => !v)}
+        ref={triggerRef}
+        onClick={() => {
+          // Refetch on open: a staff fetch that failed earlier (e.g. fired
+          // pre-login and 401'd) would otherwise stay cached as an empty
+          // list and the picker reads "No staff found" forever (TKT-128).
+          if (!open && (staffQ.isError || staff.length === 0)) void staffQ.refetch();
+          if (!open && triggerRef.current) {
+            const r = triggerRef.current.getBoundingClientRect();
+            const up = window.innerHeight - r.bottom < 300; // flip when near the bottom
+            setMenuPos({ top: up ? r.top - 4 : r.bottom + 4, left: Math.min(r.left, window.innerWidth - 244), up });
+          }
+          setOpen((v) => !v);
+        }}
         className="group flex w-full items-center gap-1.5 rounded px-1 py-0.5 text-left text-[12px] text-ink-2 hover:bg-surface-2"
       >
         <span className={cn(value ? "text-ink-2" : "text-ink-4")}>{displayLabel}</span>
@@ -491,8 +508,13 @@ function StaffPicker({
         )}
       </button>
 
-      {open && (
-        <div className="absolute z-30 mt-1 max-h-64 w-full min-w-[180px] overflow-auto rounded border border-border-strong bg-surface shadow">
+      {open && menuPos && (
+        <div
+          className="fixed z-50 max-h-64 w-60 overflow-auto rounded border border-border-strong bg-surface shadow-lg"
+          style={menuPos.up
+            ? { left: menuPos.left, bottom: window.innerHeight - menuPos.top }
+            : { left: menuPos.left, top: menuPos.top }}
+        >
           <div className="sticky top-0 bg-surface px-2 pt-2 pb-1">
             <input
               type="text"
@@ -511,8 +533,13 @@ function StaffPicker({
           >
             Unassign
           </div>
-          {staffQ.isLoading ? (
+          {staffQ.isLoading || staffQ.isRefetching ? (
             <div className="px-3 py-1.5 text-[12px] text-ink-4">Loading…</div>
+          ) : staffQ.isError ? (
+            <div className="px-3 py-1.5 text-[12px]">
+              <span className="text-red">Couldn't load staff.</span>{" "}
+              <button type="button" className="text-accent underline underline-offset-2" onMouseDown={(e) => e.preventDefault()} onClick={() => void staffQ.refetch()}>Retry</button>
+            </div>
           ) : filtered.length === 0 ? (
             <div className="px-3 py-1.5 text-[12px] text-ink-4">No staff found.</div>
           ) : (
@@ -602,6 +629,14 @@ function DealContextStrip({ deal }: { deal: JobsOpportunity }) {
           </button>
         </Field>
       ) : null}
+      <Field label="Owner">
+        <div className="min-w-[160px]">
+          <StaffPicker value={deal.owner_email} onChange={(email) => patch({ owner_email: email })} />
+        </div>
+      </Field>
+      <Field label="Target close">
+        <InlineDate value={deal.target_close_date} onSave={(v) => patch({ target_close_date: v || null })} />
+      </Field>
       <Field label="Warm intro by">
         <InlineText value={deal.intro_by} placeholder="—" onSave={(v) => patch({ intro_by: v || null })} />
       </Field>
@@ -1266,26 +1301,26 @@ const DEAL_TYPE_OPTIONS: { value: DealType; label: string }[] = (
 
 type OppColKey =
   | "company" | "role" | "salary" | "stage" | "status" | "deal_type"
-  | "priority" | "segment" | "likelihood" | "num_roles" | "owner" | "tasks" | "recent" | "updated";
+  | "priority" | "segment" | "likelihood" | "num_roles" | "owner" | "target_close" | "tasks" | "recent" | "updated";
 
 const OPP_COLUMN_ORDER: OppColKey[] = [
   "company", "role", "salary", "stage", "status", "deal_type",
-  "priority", "segment", "likelihood", "num_roles", "owner", "tasks", "recent", "updated",
+  "priority", "segment", "likelihood", "num_roles", "owner", "target_close", "tasks", "recent", "updated",
 ];
 
 const OPP_DEFAULT_VISIBLE: OppColKey[] = [
-  "company", "role", "salary", "stage", "status", "deal_type", "priority", "segment", "owner", "tasks",
+  "company", "role", "salary", "stage", "status", "deal_type", "priority", "segment", "owner", "target_close", "tasks",
 ];
 
 const OPP_COL_LABELS: Record<OppColKey, string> = {
   company: "Company", role: "Role", salary: "Salary", stage: "Stage", status: "Status",
   deal_type: "Deal Type", priority: "Priority", segment: "Segment", likelihood: "Likelihood",
-  num_roles: "# Roles", owner: "Owner", tasks: "Open tasks", recent: "Recent activity", updated: "Updated",
+  num_roles: "# Roles", owner: "Owner", target_close: "Target close", tasks: "Open tasks", recent: "Recent activity", updated: "Updated",
 };
 
 const OPP_DEFAULT_WIDTHS: Record<OppColKey, number> = {
   company: 280, role: 210, salary: 120, stage: 210, status: 104, deal_type: 140,
-  priority: 96, segment: 150, likelihood: 116, num_roles: 84, owner: 190, tasks: 96, recent: 120, updated: 120,
+  priority: 96, segment: 150, likelihood: 116, num_roles: 84, owner: 190, target_close: 118, tasks: 96, recent: 120, updated: 120,
 };
 
 const LIKELIHOOD_RANK: Record<Likelihood, number> = { low: 1, medium: 2, high: 3 };
@@ -1304,6 +1339,7 @@ function extractOpp(d: JobsOpportunity, key: OppColKey): string | number {
     case "likelihood": return d.likelihood ? LIKELIHOOD_RANK[d.likelihood] : 0;
     case "num_roles":  return d.num_roles ?? 0;
     case "owner":      return d.owner_email ?? "";
+    case "target_close": return d.target_close_date ?? "";
     case "tasks":      return d.open_tasks ?? 0;
     case "recent":     return d.recent_activity_count ?? 0;
     case "updated":    return d.updated_at ?? "";
@@ -1314,7 +1350,7 @@ function extractOpp(d: JobsOpportunity, key: OppColKey): string | number {
 
 type OppField =
   | "company" | "role" | "stage" | "status" | "deal_type" | "segment"
-  | "priority" | "likelihood" | "owner" | "salary" | "num_roles" | "recent" | "updated";
+  | "priority" | "likelihood" | "owner" | "salary" | "num_roles" | "target_close" | "recent" | "updated";
 
 const OPP_FILTERABLE: Record<OppField, FieldMeta<JobsOpportunity>> = {
   company:    { label: "Company",    type: "text",   getValue: (d) => d.account_name ?? "" },
@@ -1326,6 +1362,7 @@ const OPP_FILTERABLE: Record<OppField, FieldMeta<JobsOpportunity>> = {
   priority:   { label: "Priority",   type: "select", getValue: (d) => (d.priority != null ? String(d.priority) : "") },
   likelihood: { label: "Likelihood", type: "select", getValue: (d) => d.likelihood ?? "" },
   owner:      { label: "Owner",      type: "select", getValue: (d) => d.owner_email ?? "" },
+  target_close: { label: "Target close date", type: "date", getValue: (d) => d.target_close_date ?? "" },
   salary:     { label: "Salary",     type: "number", getValue: (d) => d.salary_expected ?? null },
   num_roles:  { label: "# Roles",    type: "number", getValue: (d) => d.num_roles ?? null },
   recent:     { label: "Recent activity (7d)", type: "number", getValue: (d) => d.recent_activity_count ?? 0 },
@@ -1344,7 +1381,7 @@ const OPP_GROUP_OPTIONS: { value: string; label: string }[] = [
 // Columns whose <td> should swallow clicks (inline editors) so editing
 // doesn't toggle the row's expand.
 const OPP_EDITABLE_COLS = new Set<OppColKey>([
-  "role", "salary", "stage", "deal_type", "likelihood", "priority", "segment", "num_roles", "owner",
+  "role", "salary", "stage", "deal_type", "likelihood", "priority", "segment", "num_roles", "owner", "target_close",
 ]);
 
 function DealRow({
@@ -1491,6 +1528,7 @@ function DealRow({
       />
     ),
     owner: <StaffPicker value={deal.owner_email} onChange={(email) => patch({ owner_email: email })} />,
+    target_close: <InlineDate value={deal.target_close_date} onSave={(v) => patch({ target_close_date: v || null })} />,
     tasks: (deal.open_tasks ?? 0) > 0
       ? <span className="inline-flex items-center gap-1 text-[12px] text-ink-2"><CheckSquare size={11} className="text-ink-4" />{deal.open_tasks}</span>
       : <span className="text-ink-4">—</span>,
@@ -1513,12 +1551,15 @@ function DealRow({
         )}
         onClick={onToggle}
       >
-        {visibleCols.map((key) => (
+        {visibleCols.map((key, i) => (
           <td
             key={key}
             className={cn(
               "overflow-hidden px-3 py-1.5 align-middle",
               key === "num_roles" && "text-right tabular-nums",
+              // Pinned identity column — keeps the company visible while the
+              // grid scrolls horizontally. Opaque bg so rows slide under it.
+              i === 0 && "sticky left-0 z-10 bg-surface",
             )}
             onClick={OPP_EDITABLE_COLS.has(key) ? (e) => e.stopPropagation() : undefined}
           >
@@ -2247,7 +2288,7 @@ export function JobsTeam() {
     return out;
   }, [filtered, groupBy, collapsedSet, groupLabelFor]);
 
-  const tableMinWidth = totalWidth(widths);
+  const tableMinWidth = visibleCols.reduce((s, k) => s + widths[k], 0);
 
   const renderDealRow = (deal: JobsOpportunity) => (
     <DealRow
@@ -2361,13 +2402,18 @@ export function JobsTeam() {
       {committedRolesDeal && <CommittedRolesModal deal={committedRolesDeal} onClose={() => setCommittedRolesDeal(null)} />}
       {closedLostDeal && <ClosedLostModal deal={closedLostDeal} onClose={() => setClosedLostDeal(null)} />}
 
-      <div className="overflow-hidden rounded-b-lg border border-border-strong bg-surface">
-        <table className="w-full border-collapse" style={{ tableLayout: "fixed" }}>
-          {/* fluid widths: column px widths rendered as % of the total so the
-              table fills 100% and never scrolls horizontally; resizing still
-              works (it reproportions the columns). */}
-          <colgroup>{visibleCols.map((key) => <col key={key} style={{ width: `${(widths[key] / tableMinWidth) * 100}%` }} />)}</colgroup>
-          <thead className="sticky top-0 z-10">
+      <div
+        className="overflow-auto rounded-b-lg border border-border-strong bg-surface"
+        style={{ maxHeight: "calc(100vh - 220px)" }}
+      >
+        {/* Bounded data-grid viewport: the table scrolls BOTH axes inside this
+            container (header stays put on the long scroll down; identity
+            column pins during horizontal scroll). Columns keep their real
+            pixel widths — squeezing them proportionally made narrow windows
+            unreadable. */}
+        <table className="w-full border-collapse" style={{ tableLayout: "fixed", minWidth: tableMinWidth }}>
+          <colgroup>{visibleCols.map((key) => <col key={key} style={{ width: widths[key] }} />)}</colgroup>
+          <thead className="sticky top-0 z-20">
             <tr>
               {visibleCols.map((key, idx) => (
                 <ResizableTh
@@ -2376,6 +2422,7 @@ export function JobsTeam() {
                   onStartResize={(e) => startResize(key, e)}
                   align={key === "num_roles" || key === "salary" ? "right" : "left"}
                   isLast={idx === visibleCols.length - 1}
+                  className={idx === 0 ? "sticky left-0 z-30" : undefined}
                 >
                   <SortableHeader label={OPP_COL_LABELS[key]} sortKey={key} sort={sort} onToggle={toggle} />
                 </ResizableTh>

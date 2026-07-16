@@ -9,6 +9,7 @@
 """
 
 import asyncio
+import json
 import logging
 import re
 from datetime import date, datetime, timedelta, timezone
@@ -165,6 +166,7 @@ class OpportunityUpdate(BaseModel):
     sf_contact_ids: Optional[list[str]] = None
     builder_ids: Optional[list[str]] = None
     follow_up_date: Optional[datetime] = None
+    target_close_date: Optional[date] = None
     touch_count: Optional[int] = None
     sf_opportunity_id: Optional[str] = None
     note: Optional[str] = None  # optional note when changing stage
@@ -311,6 +313,7 @@ async def metric_drilldown(
                 "builder": r["builder"] or "—",
                 "status": "Full-time placed",
                 "role": r["role_title"] or "—",
+                "counted": "✓",
             })
         # (2) committed active trials — builder in a trial (converts to the open FT req below)
         trials = await conn.fetch("""
@@ -326,8 +329,9 @@ async def metric_drilldown(
             out.append({
                 "company": tr["account_name"] or "—",
                 "builder": tr["builder"] or "—",
-                "status": "Committed: trial active",
+                "status": "Trial active — counts on conversion",
                 "role": tr["title"] or "Trial",
+                "counted": "—",
             })
         # (3) committed FT roles still open — no builder placed yet
         committed = await conn.fetch("""
@@ -345,12 +349,17 @@ async def metric_drilldown(
                 "builder": "—",
                 "status": "Committed – open req",
                 "role": cr["title"] or "FT role",
+                "counted": "✓",
             })
+        # Sort so one company's rows sit together — a trial + its conversion seat
+        # read as one story instead of a confusing duplicate (JPMC, Fowler).
+        out.sort(key=lambda r: (r["company"].lower(), r["counted"] != "✓"))
         cols = [
             {"key": "company", "label": "Company"},
             {"key": "builder", "label": "Builder"},
             {"key": "status",  "label": "Status"},
             {"key": "role",    "label": "Role"},
+            {"key": "counted", "label": "In FT #"},
         ]
         return cols, out, "placement"
 
@@ -386,18 +395,27 @@ async def metric_drilldown(
         return cols, out, "salary"
 
     async def any_paid(_where: str):
-        rows = await conn.fetch("SELECT * FROM bedrock.secured_jobs() WHERE payment_amount > 0 ORDER BY builder")
-        seen: dict = {}
-        for r in rows:
-            seen.setdefault(r["user_id"], r)
+        # Paid work = recorded pay OR paid-type work whose pay wasn't recorded
+        # (contract/freelance/part-time from the Pathfinder era often has no
+        # amount — TKT-129: 'sometimes counted, sometimes not' depended on
+        # whether someone filled the pay field). pro_bono stays excluded.
+        rows = await conn.fetch("""
+            SELECT * FROM bedrock.secured_jobs()
+            WHERE payment_amount > 0
+               OR (coalesce(payment_amount, 0) = 0 AND employment_type IN ('contract','freelance','part_time'))
+            ORDER BY builder""")
+        # One row PER PAID ROLE: builders with several paid engagements show each
+        # (the headline still counts distinct builders). Grouped by builder.
+        rows = sorted(rows, key=lambda r: ((r["builder"] or "").lower(),
+                                           r["employment_type"] != "full_time"))
         out = [{
             "builder": r["builder"],
             "company": r["company_name"] or "—",
             "role": r["role_title"] or "—",
             "type": ("Full-Time" if r["employment_type"] == "full_time"
                      else (r["employment_type"] or "—").replace("_", " ").title()),
-            "salary": f"${int(r['payment_amount']):,}" if r["payment_amount"] else "—",
-        } for r in seen.values()]
+            "salary": f"${int(r['payment_amount']):,}" if r["payment_amount"] else "— (pay unrecorded)",
+        } for r in rows]
         cols = [{"key": "builder", "label": "Builder"}, {"key": "company", "label": "Company"},
                 {"key": "role", "label": "Role"}, {"key": "type", "label": "Type"}, {"key": "salary", "label": "Pay"}]
         return cols, out, "builder"
@@ -492,7 +510,12 @@ async def get_placements(
         prows = await conn.fetch(f"WITH {_L3PLUS_POOL} SELECT user_id, segment FROM pool")
         seg_uids = {r["user_id"] for r in prows if r["segment"] == seg}
 
-    rows = await conn.fetch("SELECT * FROM bedrock.secured_jobs() WHERE payment_amount > 0")
+    # Same inclusion rule as the any_paid drill: typed paid work counts even
+    # when the pay amount wasn't recorded (TKT-129); pro_bono stays excluded.
+    rows = await conn.fetch("""
+        SELECT * FROM bedrock.secured_jobs()
+        WHERE payment_amount > 0
+           OR (coalesce(payment_amount, 0) = 0 AND employment_type IN ('contract','freelance','part_time'))""")
     if seg_uids is not None:
         rows = [r for r in rows if r["user_id"] in seg_uids]
 
@@ -605,7 +628,12 @@ async def get_placements(
             "influenced_any": infl_any,
             "committed_ft_roles": committed_ft_roles,
             "committed_trial_active": committed_trial_active,
-            "ft_roles_secured": ft_builders + committed_ft_roles,
+            # Committed roles have no builder, so no cohort — including them in
+            # a cohort-scoped headline repeated the same roles under every
+            # cohort (TKT-127). Under a segment they're reported separately
+            # (committed_ft_roles) and excluded from the additive number.
+            "ft_roles_secured": ft_builders + (0 if seg else committed_ft_roles),
+            "committed_is_global": True,
             "avg_salary_ft_placed": avg_salary_ft_placed,
             "avg_salary_ft_secured": avg_salary_ft_secured,
             "interviewing": interviewing,
@@ -1544,17 +1572,31 @@ async def get_funnel(
             {"key": "name", "label": "Company"},
             {"key": "deal_type", "label": "Type"},
             {"key": "owner", "label": "Owner"},
+            {"key": "roles", "label": "Roles (commitment)"},
         ]
+        # Per-opp roles rollup so the drill shows what "Opportunity Confirmed"
+        # actually contains — each role with its status and whether it's a
+        # committed seat or open-market (feedback 2026-07-16).
         rows = await conn.fetch("""
-            SELECT stage, account_name AS name, deal_type, owner_email AS owner
-            FROM bedrock.jobs_opportunity
-            WHERE deleted_at IS NULL AND ($1::text IS NULL OR deal_type = $1)
-            ORDER BY account_name
+            SELECT o.stage, o.account_name AS name, o.deal_type, o.owner_email AS owner,
+                   (SELECT string_agg(
+                            coalesce(r.title, 'Role') || ' — ' ||
+                            CASE WHEN r.status = 'cancelled' THEN 'cancelled'
+                                 WHEN r.status = 'filled' AND r.is_trial THEN 'trial active'
+                                 WHEN r.status = 'filled' THEN 'filled'
+                                 WHEN r.commitment = 'committed' THEN 'committed · open'
+                                 ELSE 'open market' END,
+                            '  ·  ' ORDER BY r.created_at)
+                      FROM bedrock.jobs_role r WHERE r.opportunity_id = o.id) AS roles
+            FROM bedrock.jobs_opportunity o
+            WHERE o.deleted_at IS NULL AND ($1::text IS NULL OR o.deal_type = $1)
+            ORDER BY o.account_name
         """, dt)
         by_stage: dict = {}
         for r in rows:
             by_stage.setdefault(r["stage"], []).append(
-                {"name": r["name"], "deal_type": r["deal_type"], "owner": r["owner"]}
+                {"name": r["name"], "deal_type": r["deal_type"], "owner": r["owner"],
+                 "roles": r["roles"] or "—"}
             )
 
         idx = {k: i for i, (k, _) in enumerate(stage_order)}
@@ -1588,10 +1630,16 @@ async def get_funnel(
             movement_by_stage.setdefault(h["from_stage"], []).append({**item, "flow": "out"})
 
     elif ftype == "prospects":
+        # The Contacts funnel runs on the jobs-pipeline membership stage
+        # (bedrock.jobs_contact_membership) — the stage the team actually
+        # manages on the Contacts page — not the legacy contacts.contact_stage.
+        # on_hold shows as a terminal parking stage; not_a_fit is a dead
+        # disposition and stays out of the funnel.
         stage_order = [
-            ("lead", "Lead"),
+            ("flagged", "Flagged"),
             ("initial_outreach", "Initial Outreach"),
             ("active", "Active"),
+            ("handed_off", "Handed Off"),
             ("on_hold", "On Hold"),
         ]
         record_columns = [
@@ -1599,13 +1647,14 @@ async def get_funnel(
             {"key": "company", "label": "Company"},
         ]
         rows = await conn.fetch("""
-            SELECT contact_stage AS stage, full_name AS name, current_company AS company
-            FROM public.contacts
-            WHERE is_jobs_contact=true
-              AND ($1::text IS NULL OR lower(current_company) IN (
+            SELECT m.stage, c.full_name AS name, c.current_company AS company
+            FROM bedrock.jobs_contact_membership m
+            JOIN public.contacts c ON c.contact_id = m.contact_id
+            WHERE m.stage <> 'not_a_fit'
+              AND ($1::text IS NULL OR lower(c.current_company) IN (
                     SELECT lower(account_name) FROM bedrock.jobs_opportunity
                     WHERE deleted_at IS NULL AND deal_type = $1 AND account_name IS NOT NULL))
-            ORDER BY full_name
+            ORDER BY c.full_name
         """, dt)
         by_stage = {}
         for r in rows:
@@ -4093,7 +4142,8 @@ async def list_contacts(
     membership_stage: Optional[str] = Query(None, description="funnel stage on the jobs membership"),
     industry: Optional[str] = Query(None),
     has_open_roles: Optional[bool] = Query(None, description="only contacts whose company has open job postings"),
-    limit: int = Query(200, le=500),
+    filter_rules: Optional[str] = Query(None, alias="filters", description="JSON array of {field,op,values} rules — applied in SQL so filters see the full universe, not the loaded page"),
+    limit: int = Query(200, le=5000),
     offset: int = Query(0),
     user=Depends(require_auth),
     conn=Depends(get_db),
@@ -4132,7 +4182,144 @@ async def list_contacts(
         filters.append("EXISTS (SELECT 1 FROM public.job_postings jp WHERE coalesce(trim(jp.company_name),'') <> '' "
                        "AND lower(trim(jp.company_name)) = lower(trim(c.current_company)))")
 
+    # ── Generic rule filters (the page's Filter menu) ─────────────────────
+    # Filtering MUST constrain the SQL: the old client-side approach sifted
+    # only the loaded page, so "connected staff contains X" matched 9 of a
+    # few hundred. Each UI field maps to a whitelisted SQL expression that
+    # mirrors the page's column semantics exactly; unknown fields/ops 400
+    # instead of silently under-filtering. The frontend normalizes date
+    # presets (in_range → between) before sending.
+    _ACT_GATE = "(a.jobs_relevance = 'jobs' OR a.type NOT IN ('email','meeting'))"
+    _ACT_LAST = ("(SELECT max(a.activity_date) FROM bedrock.activity a "
+                 "WHERE a.participant_public_contact_id = c.contact_id "
+                 f"AND a.deleted_at IS NULL AND {_ACT_GATE})")
+    _ACT_FIRST = _ACT_LAST.replace("max(", "min(", 1)
+    _RULE_FIELDS: dict[str, tuple[str, str]] = {
+        "name":     ("text", "c.full_name"),
+        "title":    ("text", "c.current_title"),
+        "company":  ("text", "c.current_company"),
+        "industry": ("text", "(SELECT co2.industry FROM public.companies co2 WHERE co2.company_id = c.company_id)"),
+        "stage":    ("select", "c.contact_stage"),
+        "flag":     ("select", "(SELECT m2.stage FROM bedrock.jobs_contact_membership m2 WHERE m2.contact_id = c.contact_id)"),
+        "connected":        ("text", "(SELECT string_agg(sm.display_name, ', ') FROM public.staff_contact_relationships scr "
+                                     "JOIN bedrock.staff_user_id_map sm ON sm.staff_user_id = scr.staff_user_id "
+                                     "WHERE scr.contact_id = c.contact_id)"),
+        "connection_count": ("number", "(SELECT count(*) FROM public.staff_contact_relationships scr2 WHERE scr2.contact_id = c.contact_id)"),
+        # listings + activity dates resolve through hash JOINs (see _RULE_JOINS):
+        # aggregate the source table once, join by key. The correlated
+        # per-contact versions re-executed per row across 47k contacts in the
+        # COUNT query and wedged the pool (found by filter fuzzing 2026-07-16).
+        "listings": ("number", "(coalesce(f_jp.cnt, 0) + coalesce(f_ja.cnt, 0))"),
+        "has_deal": ("boolean", "EXISTS (SELECT 1 FROM bedrock.jobs_opportunity o2 WHERE o2.deleted_at IS NULL AND ("
+                                "(c.airtable_id IS NOT NULL AND ('airtable:' || c.airtable_id) = ANY(o2.sf_contact_ids)) "
+                                "OR ('pub:' || c.contact_id::text) = ANY(o2.sf_contact_ids) "
+                                "OR lower(trim(o2.account_name)) = lower(trim(c.current_company))))"),
+        "last_activity":      ("recency", "f_act.last_act"),
+        "first_contact_date": ("date", "f_act.first_act"),
+        "last_contact_date":  ("date", "f_act.last_act"),
+    }
+    # Joins backing the expressions above — added to BOTH the rows and count
+    # queries only when a rule references them.
+    _RULE_JOINS: dict[str, str] = {
+        "listings": (
+            " LEFT JOIN (SELECT lower(trim(company_name)) AS comp, count(*) AS cnt"
+            " FROM public.job_postings WHERE coalesce(trim(company_name),'') <> '' GROUP BY 1) f_jp"
+            "   ON f_jp.comp = lower(trim(c.current_company))"
+            " LEFT JOIN (SELECT lower(trim(company_name)) AS comp, count(DISTINCT lower(trim(role_title))) AS cnt"
+            " FROM public.job_applications WHERE coalesce(trim(company_name),'') <> ''"
+            " AND coalesce(trim(role_title),'') <> '' GROUP BY 1) f_ja"
+            "   ON f_ja.comp = lower(trim(c.current_company))"
+        ),
+        "last_activity": (
+            " LEFT JOIN (SELECT a.participant_public_contact_id AS pid,"
+            " min(a.activity_date) AS first_act, max(a.activity_date) AS last_act"
+            " FROM bedrock.activity a WHERE a.deleted_at IS NULL AND " + _ACT_GATE +
+            " GROUP BY 1) f_act ON f_act.pid = c.contact_id"
+        ),
+    }
+    _RULE_JOINS["first_contact_date"] = _RULE_JOINS["last_activity"]
+    _RULE_JOINS["last_contact_date"] = _RULE_JOINS["last_activity"]
+    filter_joins: dict[str, str] = {}
+    if filter_rules:
+        try:
+            parsed_rules = json.loads(filter_rules)
+            assert isinstance(parsed_rules, list)
+        except Exception:
+            raise HTTPException(400, "filters must be a JSON array of {field,op,values}")
+        for rule in parsed_rules[:20]:
+            field, op = rule.get("field"), rule.get("op")
+            values = [str(v) for v in (rule.get("values") or [])]
+            spec = _RULE_FIELDS.get(field)
+            if not spec:
+                raise HTTPException(400, f"unfilterable field: {field}")
+            if field in _RULE_JOINS:
+                filter_joins[_RULE_JOINS[field]] = field
+            ftype, expr = spec
+            first = values[0] if values else ""
+            if op == "is_empty":
+                filters.append(f"({expr} IS NULL OR ({expr})::text = '')" if ftype != "number" else f"coalesce({expr}, 0) = 0")
+            elif op == "is_not_empty":
+                filters.append(f"({expr} IS NOT NULL AND ({expr})::text <> '')" if ftype != "number" else f"coalesce({expr}, 0) > 0")
+            elif ftype == "select" and op in ("equals", "not_equals"):
+                if not values:
+                    continue
+                neg = "NOT " if op == "not_equals" else ""
+                filters.append(f"{neg}(coalesce({expr}, '') = ANY(${i}::text[]))")
+                params.append(values); i += 1
+            elif ftype == "text" and op in ("contains", "equals", "not_equals"):
+                if op == "contains":
+                    filters.append(f"lower(coalesce({expr}, '')) LIKE lower(${i})")
+                    params.append(f"%{first}%")
+                else:
+                    filters.append(f"lower(coalesce({expr}, '')) {'=' if op == 'equals' else '<>'} lower(${i})")
+                    params.append(first)
+                i += 1
+            elif ftype == "number" and op in ("gt", "lt", "equals", "not_equals"):
+                sym = {"gt": ">", "lt": "<", "equals": "=", "not_equals": "<>"}[op]
+                try:
+                    num = float(first)
+                except ValueError:
+                    raise HTTPException(400, f"non-numeric value for {field}")
+                filters.append(f"coalesce({expr}, 0) {sym} ${i}")
+                params.append(num); i += 1
+            elif ftype == "boolean" and op in ("equals", "not_equals"):
+                want = (first == "yes") ^ (op == "not_equals")
+                filters.append(expr if want else f"NOT {expr}")
+            elif ftype == "recency" and op == "within":
+                if first == "none":
+                    filters.append(f"({expr} IS NULL OR {expr} < now() - interval '90 days')")
+                else:
+                    try:
+                        days = int(first)
+                    except ValueError:
+                        raise HTTPException(400, "recency window must be a number of days or 'none'")
+                    filters.append(f"{expr} >= now() - make_interval(days => ${i})")
+                    params.append(days); i += 1
+            elif ftype == "date" and op in ("before", "after", "equals", "not_equals", "between"):
+                # asyncpg binds ::date params as Python dates, not strings.
+                def _d(s: str):
+                    try:
+                        return date.fromisoformat(s)
+                    except ValueError:
+                        raise HTTPException(400, f"invalid date for {field}: {s!r}")
+                if op == "between":
+                    filters.append(f"({expr} >= ${i}::date AND {expr} < ${i+1}::date + 1)")
+                    params.append(_d(first)); params.append(_d(values[1] if len(values) > 1 else first)); i += 2
+                elif op in ("equals", "not_equals"):
+                    filters.append(f"({expr})::date {'=' if op == 'equals' else '<>'} ${i}::date")
+                    params.append(_d(first)); i += 1
+                else:
+                    filters.append(f"{expr} {'<' if op == 'before' else '>'} ${i}::date")
+                    params.append(_d(first)); i += 1
+            else:
+                raise HTTPException(400, f"unsupported op '{op}' for {field}")
+
     where = " AND ".join(filters)
+    filter_join_sql = "".join(filter_joins.keys()) if filter_rules else ""
+    # A pathological filter must never wedge the shared pool: cap this
+    # request's statement time (the pool resets session state on release).
+    if filter_rules:
+        await conn.execute("SET statement_timeout = '15000'")
     rows = await conn.fetch(
         f"""
         SELECT
@@ -4200,6 +4387,7 @@ async def list_contacts(
             ORDER BY (o.stage LIKE 'active%') DESC, o.updated_at DESC NULLS LAST
             LIMIT 1
         ) jo2 ON true
+        {filter_join_sql}
         WHERE {where}
         ORDER BY c.contact_stage NULLS LAST, c.full_name
         LIMIT ${i} OFFSET ${i+1}
@@ -4207,8 +4395,10 @@ async def list_contacts(
         *params, limit, offset,
     )
     total = await conn.fetchval(
-        f"SELECT count(*) FROM public.contacts c WHERE {where}", *params
+        f"SELECT count(*) FROM public.contacts c{filter_join_sql} WHERE {where}", *params
     )
+    if filter_rules:
+        await conn.execute("RESET statement_timeout")
 
     # Batch-resolve LinkedIn-connected staff names for all returned contacts so
     # the contacts list can show who on the team knows each person.
@@ -4851,7 +5041,7 @@ async def update_opportunity(
     for field in ("stage", "deal_type", "title", "description", "salary_expected",
                   "num_roles", "likelihood",
                   "source", "owner_email", "relationship_owner", "sf_contact_ids", "builder_ids",
-                  "follow_up_date", "touch_count", "sf_opportunity_id",
+                  "follow_up_date", "target_close_date", "touch_count", "sf_opportunity_id",
                   "closed_lost_reason", "closed_lost_note", "priority", "segment", "intro_by"):
         if field not in fields_set:
             continue
