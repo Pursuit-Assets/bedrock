@@ -304,12 +304,15 @@ async def metric_drilldown(
         out = []
         # (1) FT-placed builders (full_time employment_records)
         placed = await conn.fetch(
-            "SELECT * FROM bedrock.secured_jobs() "
-            f"WHERE payment_amount > 0 AND employment_type = 'full_time' AND {where} ORDER BY builder"
+            "SELECT s.*, (SELECT r2.opportunity_id::text FROM bedrock.jobs_role r2 "
+            "             WHERE r2.employment_record_id = s.id LIMIT 1) AS opp_id "
+            "FROM bedrock.secured_jobs() s "
+            f"WHERE s.payment_amount > 0 AND s.employment_type = 'full_time' AND {where} ORDER BY s.builder"
         )
         for r in placed:
             out.append({
                 "id": str(r["id"]), "kind": "placed",
+                "opportunity_id": r["opp_id"],
                 "company": r["company_name"] or "—",
                 "builder": r["builder"] or "—",
                 "status": "Full-time placed",
@@ -319,7 +322,7 @@ async def metric_drilldown(
             })
         # (2) committed active trials — builder in a trial (converts to the open FT req below)
         trials = await conn.fetch("""
-            SELECT r.id, r.approx_salary, o.account_name, r.title, s.builder
+            SELECT r.id, r.approx_salary, r.opportunity_id::text AS opp_id, o.account_name, r.title, s.builder
             FROM bedrock.jobs_role r
             JOIN bedrock.jobs_opportunity o ON o.id = r.opportunity_id
             LEFT JOIN bedrock.secured_jobs() s ON s.id = r.employment_record_id
@@ -330,6 +333,7 @@ async def metric_drilldown(
         for tr in trials:
             out.append({
                 "id": str(tr["id"]), "kind": "role",
+                "opportunity_id": tr["opp_id"],
                 "company": tr["account_name"] or "—",
                 "builder": tr["builder"] or "—",
                 "status": "Trial active — counts on conversion",
@@ -339,7 +343,7 @@ async def metric_drilldown(
             })
         # (3) committed FT roles still open — no builder placed yet
         committed = await conn.fetch("""
-            SELECT r.id, r.approx_salary, o.account_name, r.title
+            SELECT r.id, r.approx_salary, r.opportunity_id::text AS opp_id, o.account_name, r.title
             FROM bedrock.jobs_role r
             JOIN bedrock.jobs_opportunity o ON o.id = r.opportunity_id
             WHERE r.status = 'open' AND o.deleted_at IS NULL
@@ -350,6 +354,7 @@ async def metric_drilldown(
         for cr in committed:
             out.append({
                 "id": str(cr["id"]), "kind": "role",
+                "opportunity_id": cr["opp_id"],
                 "company": cr["account_name"] or "—",
                 "builder": "—",
                 "status": "Committed – open req",
