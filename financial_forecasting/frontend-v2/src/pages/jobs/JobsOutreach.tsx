@@ -307,16 +307,18 @@ function OriginComparison({ sc }: { sc: OutreachScorecard }) {
 
       {/* Origin details table */}
       <div className="mt-4">
-        <div className="grid grid-cols-[1fr_auto_auto] items-center gap-x-8 border-b border-border pb-2">
+        <div className="grid grid-cols-[1fr_4.5rem_4.5rem_1fr] items-center gap-x-6 border-b border-border pb-2">
           <span className="text-[13px] font-bold text-ink">Origin Details</span>
-          <span className="flex items-center gap-1.5 text-[12px] text-ink-2"><span className="h-2.5 w-2.5 rounded-sm bg-amber" />Warm</span>
-          <span className="flex items-center gap-1.5 text-[12px] text-ink-2"><span className="h-2.5 w-2.5 rounded-sm bg-ink-3" />Cold</span>
+          <span className="flex items-center justify-center gap-1.5 text-[12px] text-ink-2"><span className="h-2.5 w-2.5 rounded-sm bg-amber" />Warm</span>
+          <span className="flex items-center justify-center gap-1.5 text-[12px] text-ink-2"><span className="h-2.5 w-2.5 rounded-sm bg-ink-3" />Cold</span>
+          <span />
         </div>
         {rows.map((r) => (
-          <div key={r.l} className="grid grid-cols-[1fr_auto_auto] items-center gap-x-8 border-b border-border py-2 last:border-b-0">
+          <div key={r.l} className="grid grid-cols-[1fr_4.5rem_4.5rem_1fr] items-center gap-x-6 border-b border-border py-2 last:border-b-0">
             <span className="text-[13px] text-ink-2">{r.l}</span>
-            <span className="w-12 text-right text-[13.5px] font-semibold tabular-nums text-ink">{r.warm}</span>
-            <span className="w-12 text-right text-[13.5px] font-semibold tabular-nums text-ink">{r.cold}</span>
+            <span className="text-center text-[13.5px] font-semibold tabular-nums text-ink">{r.warm}</span>
+            <span className="text-center text-[13.5px] font-semibold tabular-nums text-ink">{r.cold}</span>
+            <span />
           </div>
         ))}
       </div>
