@@ -602,6 +602,9 @@ export function JobsOutreach() {
 
   return (
     <div className="flex flex-col gap-4 pt-3">
+      <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-[12px] font-medium text-amber-900">
+        🚧 WIP — to be merged with Performance
+      </div>
       {/* Filter bar */}
       <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border-strong bg-surface-2 px-3 py-2">
         <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">Outreach</span>
