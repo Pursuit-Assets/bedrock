@@ -292,15 +292,15 @@ function OriginComparison({ sc }: { sc: OutreachScorecard }) {
   return (
     <div className="rounded-xl border border-border-strong bg-surface p-4">
       {/* Single stacked warm/cold bar */}
-      <div className="flex h-8 w-[72%] overflow-hidden rounded-lg bg-surface-2">
+      <div className="mx-auto flex h-8 w-[72%] overflow-hidden rounded-lg bg-surface-2">
         {warmShare > 0 && (
-          <div className="flex h-full items-center justify-center bg-amber text-[12px] font-bold text-white" style={{ width: `${warmShare}%` }}>
-            {warmShare >= 12 && `${Math.round(warmShare)}%`}
+          <div className="flex h-full items-center justify-center overflow-hidden whitespace-nowrap bg-amber text-[12px] font-bold text-white" style={{ width: `${warmShare}%` }}>
+            {warmShare >= 8 && `${Math.round(warmShare)}%`}
           </div>
         )}
         {coldShare > 0 && (
-          <div className="flex h-full items-center justify-center bg-ink-3 text-[12px] font-bold text-white" style={{ width: `${coldShare}%` }}>
-            {coldShare >= 12 && `${Math.round(coldShare)}%`}
+          <div className="flex h-full items-center justify-center overflow-hidden whitespace-nowrap bg-ink-3 text-[12px] font-bold text-white" style={{ width: `${coldShare}%` }}>
+            {coldShare >= 8 && `${Math.round(coldShare)}%`}
           </div>
         )}
       </div>
