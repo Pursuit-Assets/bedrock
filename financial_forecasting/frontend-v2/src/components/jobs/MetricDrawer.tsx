@@ -6,6 +6,7 @@ import {
   useUpdateOpportunity,
   useUpdateContact,
   useUpdatePlacementSalary,
+  useUpdatePlacementTitle,
   STAGES_ORDERED,
   STAGE_LABELS,
   DEAL_TYPE_LABELS,
@@ -69,19 +70,32 @@ export function MetricDrawer({
   const updateOpportunity = useUpdateOpportunity();
   const updateContact = useUpdateContact();
   const updatePlacementSalary = useUpdatePlacementSalary();
+  const updatePlacementTitle = useUpdatePlacementTitle();
   const updateRole = useUpdateRole();
   const queryClient = useQueryClient();
 
   // Save an edited salary from the FT-salary drill: placed rows write to the
   // placement, committed rows to the role (both stay in sync server-side).
   async function saveSalary(row: Record<string, string | null>, value: number) {
-    if (row.kind === "committed") {
+    if (row.kind === "committed" || row.kind === "role") {
       await updateRole.mutateAsync({ roleId: String(row.id), approx_salary: value });
       queryClient.invalidateQueries({ queryKey: ["jobs", "metric"] });
       queryClient.invalidateQueries({ queryKey: ["jobs", "placements"] });
     } else if (row.id != null) {
       await updatePlacementSalary.mutateAsync({ id: String(row.id), salary: value });
     }
+  }
+
+  // Save an edited role title from the FT Roles Secured drill: role rows write
+  // to the jobs_role, placed rows to the placement (title syncs server-side).
+  async function saveTitle(row: Record<string, string | null>, value: string) {
+    if (row.kind === "role") {
+      await updateRole.mutateAsync({ roleId: String(row.id), title: value });
+    } else if (row.id != null) {
+      await updatePlacementTitle.mutateAsync({ id: String(row.id), role_title: value });
+    }
+    queryClient.invalidateQueries({ queryKey: ["jobs", "metric"] });
+    queryClient.invalidateQueries({ queryKey: ["jobs", "placements"] });
   }
   const open = metricKey !== null;
   const [expandedRow, setExpandedRow] = useState<number | null>(null);
@@ -156,7 +170,7 @@ export function MetricDrawer({
           </div>
         ) : !data || data.rows.length === 0 ? (
           <div className="py-12 text-center text-[13px] text-ink-3">No records.</div>
-        ) : data.entity === "placement" ? (
+        ) : data.child_columns && data.child_columns.length > 0 ? (
           <table className="w-full text-[12.5px]">
             <thead className="sticky top-0 bg-surface-2 text-[10.5px] uppercase tracking-wider text-ink-3">
               <tr>
@@ -259,7 +273,11 @@ export function MetricDrawer({
                 <tr key={i} className="border-t border-border-strong hover:bg-surface-2/50">
                   {data.columns.map((c, ci) => {
                     const editable = getEditableSelect(data.entity, c.key, row);
-                    const salaryEditable = data.entity === "salary" && c.key === "salary";
+                    const salaryEditable =
+                      (data.entity === "salary" || data.entity === "placement") &&
+                      c.key === "salary" && row.id != null;
+                    const titleEditable =
+                      data.entity === "placement" && c.key === "role" && row.id != null;
                     return (
                       <td
                         key={c.key}
@@ -267,6 +285,8 @@ export function MetricDrawer({
                       >
                         {salaryEditable ? (
                           <SalaryInput value={row.salary} onSave={(v) => saveSalary(row, v)} />
+                        ) : titleEditable ? (
+                          <TextInput value={row.role} onSave={(v) => saveTitle(row, v)} />
                         ) : editable ? (
                           <select
                             className={selectClass}
@@ -325,5 +345,29 @@ function SalaryInput({ value, onSave }: { value: string | null; onSave: (v: numb
         className="w-24 rounded border border-border-strong bg-surface px-1.5 py-0.5 text-[12px] tabular-nums outline-none focus:border-accent disabled:opacity-50"
       />
     </span>
+  );
+}
+
+// Inline-editable text (role title). Saves on Enter/blur when changed;
+// Escape resets. Mirrors SalaryInput.
+function TextInput({ value, onSave }: { value: string | null; onSave: (v: string) => void }) {
+  const initial = value ?? "";
+  const [draft, setDraft] = useState(initial);
+  const [saving, setSaving] = useState(false);
+  const commit = async () => {
+    const v = draft.trim();
+    if (!v || v === initial) { setDraft(initial); return; }
+    setSaving(true);
+    try { await onSave(v); } finally { setSaving(false); }
+  };
+  return (
+    <input
+      value={draft}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); if (e.key === "Escape") setDraft(initial); }}
+      disabled={saving}
+      className="w-44 rounded border border-border-strong bg-surface px-1.5 py-0.5 text-[12px] outline-none focus:border-accent disabled:opacity-50"
+    />
   );
 }

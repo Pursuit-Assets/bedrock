@@ -309,15 +309,17 @@ async def metric_drilldown(
         )
         for r in placed:
             out.append({
+                "id": str(r["id"]), "kind": "placed",
                 "company": r["company_name"] or "—",
                 "builder": r["builder"] or "—",
                 "status": "Full-time placed",
                 "role": r["role_title"] or "—",
+                "salary": str(int(r["payment_amount"])) if r["payment_amount"] else "",
                 "counted": "✓",
             })
         # (2) committed active trials — builder in a trial (converts to the open FT req below)
         trials = await conn.fetch("""
-            SELECT o.account_name, r.title, s.builder
+            SELECT r.id, r.approx_salary, o.account_name, r.title, s.builder
             FROM bedrock.jobs_role r
             JOIN bedrock.jobs_opportunity o ON o.id = r.opportunity_id
             LEFT JOIN bedrock.secured_jobs() s ON s.id = r.employment_record_id
@@ -327,15 +329,17 @@ async def metric_drilldown(
         """)
         for tr in trials:
             out.append({
+                "id": str(tr["id"]), "kind": "role",
                 "company": tr["account_name"] or "—",
                 "builder": tr["builder"] or "—",
                 "status": "Trial active — counts on conversion",
                 "role": tr["title"] or "Trial",
+                "salary": str(int(tr["approx_salary"])) if tr["approx_salary"] else "",
                 "counted": "—",
             })
         # (3) committed FT roles still open — no builder placed yet
         committed = await conn.fetch("""
-            SELECT o.account_name, r.title
+            SELECT r.id, r.approx_salary, o.account_name, r.title
             FROM bedrock.jobs_role r
             JOIN bedrock.jobs_opportunity o ON o.id = r.opportunity_id
             WHERE r.status = 'open' AND o.deleted_at IS NULL
@@ -345,10 +349,12 @@ async def metric_drilldown(
         """)
         for cr in committed:
             out.append({
+                "id": str(cr["id"]), "kind": "role",
                 "company": cr["account_name"] or "—",
                 "builder": "—",
                 "status": "Committed – open req",
                 "role": cr["title"] or "FT role",
+                "salary": str(int(cr["approx_salary"])) if cr["approx_salary"] else "",
                 "counted": "✓",
             })
         # Sort so one company's rows sit together — a trial + its conversion seat
@@ -359,6 +365,7 @@ async def metric_drilldown(
             {"key": "builder", "label": "Builder"},
             {"key": "status",  "label": "Status"},
             {"key": "role",    "label": "Role"},
+            {"key": "salary",  "label": "Pay"},
             {"key": "counted", "label": "In FT #"},
         ]
         return cols, out, "placement"
@@ -845,6 +852,7 @@ async def link_opp_placement(
 class PlacementUpdate(BaseModel):
     influenced: Optional[bool] = None  # true / false / null (unclassify)
     salary: Optional[int] = None       # edit payment_amount (the secured-jobs SoT)
+    role_title: Optional[str] = None   # edit the title (syncs the linked role)
 
 
 @router.patch("/placements/{placement_id}")
@@ -861,6 +869,8 @@ async def update_placement(
         sets.append(f"influenced=${i}"); params.append(body.influenced); i += 1
     if "salary" in fields:
         sets.append(f"payment_amount=${i}"); params.append(body.salary); i += 1
+    if "role_title" in fields and (body.role_title or "").strip():
+        sets.append(f"role_title=${i}"); params.append(body.role_title.strip()); i += 1
     if not sets:
         return {"success": True, "data": {"id": placement_id}}
     params.append(placement_id)
@@ -868,11 +878,15 @@ async def update_placement(
         f"UPDATE public.employment_records SET {', '.join(sets)}, updated_at=now() WHERE id=${i}", *params)
     if result == "UPDATE 0":
         raise HTTPException(404, "Placement not found")
-    # Keep the linked role's salary in sync (the other half of the filled-role pair).
+    # Keep the linked role in sync (the other half of the filled-role pair).
     if "salary" in fields:
         await conn.execute(
             "UPDATE bedrock.jobs_role SET approx_salary=$1, updated_at=now() WHERE employment_record_id=$2",
             body.salary, placement_id)
+    if "role_title" in fields and (body.role_title or "").strip():
+        await conn.execute(
+            "UPDATE bedrock.jobs_role SET title=$1, updated_at=now() WHERE employment_record_id=$2",
+            body.role_title.strip(), placement_id)
     return {"success": True, "data": {"id": placement_id, **fields}}
 
 

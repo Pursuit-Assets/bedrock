@@ -877,6 +877,21 @@ export function useUpdatePlacementSalary() {
   });
 }
 
+export function useUpdatePlacementTitle() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, role_title }: { id: string; role_title: string }) => {
+      await api.patch(`/api/jobs/placements/${id}`, { role_title });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["jobs", "placements"] });
+      qc.invalidateQueries({ queryKey: ["jobs", "metric"] });
+      toast.success("Title updated");
+    },
+    onError: () => toast.error("Update failed"),
+  });
+}
+
 export type FunnelType = "opportunities" | "prospects" | "builders";
 
 export interface FunnelMovement {
