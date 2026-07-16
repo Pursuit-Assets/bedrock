@@ -135,17 +135,6 @@ Rules of the road: the same person or company can appear on both sides — the a
 
 ---
 
-## Section 11 · Team cadence *(draft — confirm owners & times)*
-
-| When | Length | What | Owner |
-|---|---|---|---|
-| Weekly | 60 min | Pipeline review — confirmed opps, committed seats, target close dates | Jobs lead |
-| Weekly | 30 min | Contacts triage — new flags, intro requests, stale outreach | Team |
-| Monthly | 60 min | Placement health review (trials, conversions, forecast) | Jobs lead |
-| As needed | — | Account deep-dives (per employer) | Account owner |
-
----
-
 ## Clean data is everyone's job.
 
 Keep **Stage, Roles, Salary, Owner, and Target close date** current.
