@@ -6038,6 +6038,19 @@ async def log_activity(
             body.contact_id,
             user_email,
         )
+        # A logged touch IS outreach — a still-flagged contact advances to
+        # initial_outreach immediately (the nightly pass covers synced email).
+        await conn.execute(
+            """
+            UPDATE bedrock.jobs_contact_membership
+            SET stage = 'initial_outreach',
+                first_outreach_at = COALESCE(first_outreach_at, $2),
+                first_outreach_by = COALESCE(first_outreach_by, $3),
+                updated_at = now()
+            WHERE contact_id = $1 AND stage = 'flagged'
+            """,
+            body.contact_id, body.activity_date or datetime.now(timezone.utc), user_email,
+        )
 
     row = await conn.fetchrow("SELECT * FROM bedrock.activity WHERE id=$1", row_id)
     return {"success": True, "data": dict(row)}

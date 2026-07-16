@@ -160,3 +160,52 @@ async def auto_flag_jobs_prospects(conn) -> dict[str, Any]:
     flagged = int(result.split()[-1]) if result and result.split()[-1].isdigit() else 0
     logger.info("auto-flagged %d existing contacts as jobs prospects", flagged)
     return {"flagged": flagged}
+
+
+async def auto_advance_outreached(conn) -> dict[str, Any]:
+    """Auto-advance FLAGGED memberships to initial_outreach once real jobs
+    outreach exists (decision 2026-07-16: the funnel should move itself).
+
+    Evidence = jobs-relevant activity linked to the contact AFTER they were
+    flagged: a staff-sent email, a meeting, or a manually logged call/text/
+    LinkedIn touch (manual types always count as jobs outreach). Pre-flag
+    activity does NOT auto-advance — it would leapfrog the Flagged stage and
+    put first_outreach_at before flagged_at, breaking the scorecard's flow
+    counts; a human can still set the stage for those. Never downgrades:
+    only stage='flagged' rows move. Idempotent — runs in the nightly sync
+    after the activity relink, and inline after a manual activity log.
+    """
+    result = await conn.execute("""
+        WITH outreach AS (
+            SELECT m.contact_id,
+                   min(a.activity_date) AS first_out,
+                   (array_agg(coalesce(a.email_from, a.logged_by)
+                              ORDER BY a.activity_date))[1] AS author
+            FROM bedrock.jobs_contact_membership m
+            JOIN bedrock.activity a ON a.participant_public_contact_id = m.contact_id
+            WHERE m.stage = 'flagged'
+              AND a.deleted_at IS NULL
+              AND a.activity_date >= m.flagged_at
+              AND (a.jobs_relevance = 'jobs' OR a.type NOT IN ('email','meeting'))
+              AND (
+                    a.type IN ('call', 'text', 'linkedin')
+                 OR (a.type IN ('email', 'meeting') AND EXISTS (
+                        SELECT 1 FROM public.org_users o
+                        WHERE o.is_active
+                          AND (a.email_from ILIKE '%'||o.email||'%'
+                               OR a.logged_by ILIKE '%'||o.email||'%'
+                               OR a.meeting_attendees::text ILIKE '%'||o.email||'%')))
+              )
+            GROUP BY m.contact_id
+        )
+        UPDATE bedrock.jobs_contact_membership m
+        SET stage = 'initial_outreach',
+            first_outreach_at = COALESCE(m.first_outreach_at, o.first_out),
+            first_outreach_by = COALESCE(m.first_outreach_by, o.author),
+            updated_at = now()
+        FROM outreach o
+        WHERE o.contact_id = m.contact_id AND m.stage = 'flagged'
+    """)
+    advanced = int(result.split()[-1]) if result and result.split()[-1].isdigit() else 0
+    logger.info("auto-advanced %d flagged contacts to initial_outreach", advanced)
+    return {"advanced": advanced}

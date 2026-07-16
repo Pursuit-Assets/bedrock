@@ -137,6 +137,19 @@ async def run_interaction_sync(
     except Exception as e:
         logger.error("jobs-prospect auto-flag failed: %s", e)
 
+    # Funnel auto-advance — flagged contacts with real jobs outreach since the
+    # flag move to initial_outreach on their own (the funnel moves itself).
+    try:
+        from services.jobs_activity_link import auto_advance_outreached
+        adv_conn = await _get_conn()
+        try:
+            adv_result = await auto_advance_outreached(adv_conn)
+        finally:
+            await _release_conn(adv_conn)
+        logger.info("auto-advanced %d flagged contacts to initial_outreach", adv_result.get("advanced", 0))
+    except Exception as e:
+        logger.error("membership auto-advance failed: %s", e)
+
     # Candidate pipeline — for external counterparties in this run's activity:
     # link to an existing/SF-mirrored contact (via the alias index), else create
     # a review candidate (owner-attributed, company from domain). This is what
