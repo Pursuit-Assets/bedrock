@@ -3385,20 +3385,41 @@ async def list_contacts(
                                      "JOIN bedrock.staff_user_id_map sm ON sm.staff_user_id = scr.staff_user_id "
                                      "WHERE scr.contact_id = c.contact_id)"),
         "connection_count": ("number", "(SELECT count(*) FROM public.staff_contact_relationships scr2 WHERE scr2.contact_id = c.contact_id)"),
-        "listings": ("number", "((SELECT count(*) FROM public.job_postings jp2 WHERE coalesce(trim(jp2.company_name),'') <> '' "
-                               "AND lower(trim(jp2.company_name)) = lower(trim(c.current_company))) + "
-                               "(SELECT count(DISTINCT lower(trim(ja2.role_title))) FROM public.job_applications ja2 "
-                               "WHERE coalesce(trim(ja2.company_name),'') <> '' "
-                               "AND lower(trim(ja2.company_name)) = lower(trim(c.current_company)) "
-                               "AND coalesce(trim(ja2.role_title),'') <> ''))"),
+        # listings + activity dates resolve through hash JOINs (see _RULE_JOINS):
+        # aggregate the source table once, join by key. The correlated
+        # per-contact versions re-executed per row across 47k contacts in the
+        # COUNT query and wedged the pool (found by filter fuzzing 2026-07-16).
+        "listings": ("number", "(coalesce(f_jp.cnt, 0) + coalesce(f_ja.cnt, 0))"),
         "has_deal": ("boolean", "EXISTS (SELECT 1 FROM bedrock.jobs_opportunity o2 WHERE o2.deleted_at IS NULL AND ("
                                 "(c.airtable_id IS NOT NULL AND ('airtable:' || c.airtable_id) = ANY(o2.sf_contact_ids)) "
                                 "OR ('pub:' || c.contact_id::text) = ANY(o2.sf_contact_ids) "
                                 "OR lower(trim(o2.account_name)) = lower(trim(c.current_company))))"),
-        "last_activity":      ("recency", _ACT_LAST),
-        "first_contact_date": ("date", _ACT_FIRST),
-        "last_contact_date":  ("date", _ACT_LAST),
+        "last_activity":      ("recency", "f_act.last_act"),
+        "first_contact_date": ("date", "f_act.first_act"),
+        "last_contact_date":  ("date", "f_act.last_act"),
     }
+    # Joins backing the expressions above — added to BOTH the rows and count
+    # queries only when a rule references them.
+    _RULE_JOINS: dict[str, str] = {
+        "listings": (
+            " LEFT JOIN (SELECT lower(trim(company_name)) AS comp, count(*) AS cnt"
+            " FROM public.job_postings WHERE coalesce(trim(company_name),'') <> '' GROUP BY 1) f_jp"
+            "   ON f_jp.comp = lower(trim(c.current_company))"
+            " LEFT JOIN (SELECT lower(trim(company_name)) AS comp, count(DISTINCT lower(trim(role_title))) AS cnt"
+            " FROM public.job_applications WHERE coalesce(trim(company_name),'') <> ''"
+            " AND coalesce(trim(role_title),'') <> '' GROUP BY 1) f_ja"
+            "   ON f_ja.comp = lower(trim(c.current_company))"
+        ),
+        "last_activity": (
+            " LEFT JOIN (SELECT a.participant_public_contact_id AS pid,"
+            " min(a.activity_date) AS first_act, max(a.activity_date) AS last_act"
+            " FROM bedrock.activity a WHERE a.deleted_at IS NULL AND " + _ACT_GATE +
+            " GROUP BY 1) f_act ON f_act.pid = c.contact_id"
+        ),
+    }
+    _RULE_JOINS["first_contact_date"] = _RULE_JOINS["last_activity"]
+    _RULE_JOINS["last_contact_date"] = _RULE_JOINS["last_activity"]
+    filter_joins: dict[str, str] = {}
     if filter_rules:
         try:
             parsed_rules = json.loads(filter_rules)
@@ -3411,6 +3432,8 @@ async def list_contacts(
             spec = _RULE_FIELDS.get(field)
             if not spec:
                 raise HTTPException(400, f"unfilterable field: {field}")
+            if field in _RULE_JOINS:
+                filter_joins[_RULE_JOINS[field]] = field
             ftype, expr = spec
             first = values[0] if values else ""
             if op == "is_empty":
@@ -3453,19 +3476,30 @@ async def list_contacts(
                     filters.append(f"{expr} >= now() - make_interval(days => ${i})")
                     params.append(days); i += 1
             elif ftype == "date" and op in ("before", "after", "equals", "not_equals", "between"):
+                # asyncpg binds ::date params as Python dates, not strings.
+                def _d(s: str):
+                    try:
+                        return date.fromisoformat(s)
+                    except ValueError:
+                        raise HTTPException(400, f"invalid date for {field}: {s!r}")
                 if op == "between":
                     filters.append(f"({expr} >= ${i}::date AND {expr} < ${i+1}::date + 1)")
-                    params.append(first); params.append(values[1] if len(values) > 1 else first); i += 2
+                    params.append(_d(first)); params.append(_d(values[1] if len(values) > 1 else first)); i += 2
                 elif op in ("equals", "not_equals"):
                     filters.append(f"({expr})::date {'=' if op == 'equals' else '<>'} ${i}::date")
-                    params.append(first); i += 1
+                    params.append(_d(first)); i += 1
                 else:
                     filters.append(f"{expr} {'<' if op == 'before' else '>'} ${i}::date")
-                    params.append(first); i += 1
+                    params.append(_d(first)); i += 1
             else:
                 raise HTTPException(400, f"unsupported op '{op}' for {field}")
 
     where = " AND ".join(filters)
+    filter_join_sql = "".join(filter_joins.keys()) if filter_rules else ""
+    # A pathological filter must never wedge the shared pool: cap this
+    # request's statement time (the pool resets session state on release).
+    if filter_rules:
+        await conn.execute("SET statement_timeout = '15000'")
     rows = await conn.fetch(
         f"""
         SELECT
@@ -3533,6 +3567,7 @@ async def list_contacts(
             ORDER BY (o.stage LIKE 'active%') DESC, o.updated_at DESC NULLS LAST
             LIMIT 1
         ) jo2 ON true
+        {filter_join_sql}
         WHERE {where}
         ORDER BY c.contact_stage NULLS LAST, c.full_name
         LIMIT ${i} OFFSET ${i+1}
@@ -3540,8 +3575,10 @@ async def list_contacts(
         *params, limit, offset,
     )
     total = await conn.fetchval(
-        f"SELECT count(*) FROM public.contacts c WHERE {where}", *params
+        f"SELECT count(*) FROM public.contacts c{filter_join_sql} WHERE {where}", *params
     )
+    if filter_rules:
+        await conn.execute("RESET statement_timeout")
 
     # Batch-resolve LinkedIn-connected staff names for all returned contacts so
     # the contacts list can show who on the team knows each person.
