@@ -19,7 +19,7 @@
 
 | Object | What it is | Where you manage it | How it's measured |
 |---|---|---|---|
-| **Contact** | A person at an employer (or who can open doors to one) | Contacts page — flag into the pipeline, set stage, request intros | Contacts funnel on Performance |
+| **Contact** | A person at an employer (or who can open doors to one) | Contacts page — flag into the pipeline, set stage, request intros | Contacts funnel + the Outreach scorecard |
 | **Account** | The employer company | Accounts page — owner, warmth, roles, contacts, activity | Account status (auto-derived), warmth |
 | **Opportunity** | A hiring *conversation* with an employer — named freely ("JPMC Early-Career Q3") | Opportunities page — stage, owner, target close date, activity, tasks | Opportunities funnel |
 | **Role** | A specific seat under an opportunity. **One opportunity can hold one or many roles** — JPMC's single conversation carries six. | The opportunity's **Roles** tab | Placement status → FT Roles Secured |
@@ -126,12 +126,18 @@ Rules of the road: the same person or company can appear on both sides — the a
 
 ---
 
-## Section 10 · How we're measured (Performance tab)
+## Section 10 · How we're measured
 
 - **FT Roles Secured** = builders placed full-time **+** committed open seats. Trials show but count on conversion. Cohort views count only that cohort's placements — committed seats display separately (they belong to no cohort).
 - **Builders w/ Paid Work** = distinct builders with any paid engagement; the drill shows every paid role each builder has held.
 - **Funnels** — Opportunities (by stage, each opp's roles and commitments visible), Contacts (by pipeline stage), Builders (L3+ pool → paid → FT).
 - **Outreach & Activation** — accounts reached over time by the core jobs team, new vs existing, with a staff-mobilization view for everyone else's network activation.
+
+**The Outreach tab** (the Monday scorecard — reports on the last *completed* Sun–Sat week vs the one before):
+- **User Pipeline** — contacts entering each stage this period vs last (Flagged → Initial Outreach → Qualified → Converted to Opportunity), split Warm vs Cold. *Initial Outreach counts contacts actually emailed; the later stages count when you move the contact's stage — so keeping stages current is what makes this scorecard true.*
+- **Activity Pipeline** — sends by channel (direct email / LinkedIn / facilitated intros), engagements (meetings + calls + replies), and direct email response rates.
+- **Deep dive** — per-sender breakdown, warm/cold origin comparison, targeting mix (industry, company size, lead source), and the account working list.
+- Every row drills down to the underlying contacts and emails. Warm = the company had a Bedrock presence before that contact's first touch.
 
 ---
 
