@@ -39,7 +39,7 @@ import { JobsTasks } from "@/components/jobs/JobsTasks";
 import { JobsComments } from "@/components/jobs/JobsComments";
 import { CommittedRolesModal } from "@/components/jobs/CommittedRolesModal";
 import { RowExpandPanel, type ExpandTab } from "@/components/RowExpandPanel";
-import { InlineText, InlineSelect } from "@/components/ui/InlineEdit";
+import { InlineText, InlineSelect, InlineDate } from "@/components/ui/InlineEdit";
 import { useSort, sortBy, type SortState } from "@/lib/sort";
 import { SortableHeader } from "@/components/ui/SortableHeader";
 import { SavedViewsPicker } from "@/components/ui/SavedViewsPicker";
@@ -633,6 +633,9 @@ function DealContextStrip({ deal }: { deal: JobsOpportunity }) {
         <div className="min-w-[160px]">
           <StaffPicker value={deal.owner_email} onChange={(email) => patch({ owner_email: email })} />
         </div>
+      </Field>
+      <Field label="Target close">
+        <InlineDate value={deal.target_close_date} onSave={(v) => patch({ target_close_date: v || null })} />
       </Field>
       <Field label="Warm intro by">
         <InlineText value={deal.intro_by} placeholder="—" onSave={(v) => patch({ intro_by: v || null })} />
@@ -1298,26 +1301,26 @@ const DEAL_TYPE_OPTIONS: { value: DealType; label: string }[] = (
 
 type OppColKey =
   | "company" | "role" | "salary" | "stage" | "status" | "deal_type"
-  | "priority" | "segment" | "likelihood" | "num_roles" | "owner" | "tasks" | "recent" | "updated";
+  | "priority" | "segment" | "likelihood" | "num_roles" | "owner" | "target_close" | "tasks" | "recent" | "updated";
 
 const OPP_COLUMN_ORDER: OppColKey[] = [
   "company", "role", "salary", "stage", "status", "deal_type",
-  "priority", "segment", "likelihood", "num_roles", "owner", "tasks", "recent", "updated",
+  "priority", "segment", "likelihood", "num_roles", "owner", "target_close", "tasks", "recent", "updated",
 ];
 
 const OPP_DEFAULT_VISIBLE: OppColKey[] = [
-  "company", "role", "salary", "stage", "status", "deal_type", "priority", "segment", "owner", "tasks",
+  "company", "role", "salary", "stage", "status", "deal_type", "priority", "segment", "owner", "target_close", "tasks",
 ];
 
 const OPP_COL_LABELS: Record<OppColKey, string> = {
   company: "Company", role: "Role", salary: "Salary", stage: "Stage", status: "Status",
   deal_type: "Deal Type", priority: "Priority", segment: "Segment", likelihood: "Likelihood",
-  num_roles: "# Roles", owner: "Owner", tasks: "Open tasks", recent: "Recent activity", updated: "Updated",
+  num_roles: "# Roles", owner: "Owner", target_close: "Target close", tasks: "Open tasks", recent: "Recent activity", updated: "Updated",
 };
 
 const OPP_DEFAULT_WIDTHS: Record<OppColKey, number> = {
   company: 280, role: 210, salary: 120, stage: 210, status: 104, deal_type: 140,
-  priority: 96, segment: 150, likelihood: 116, num_roles: 84, owner: 190, tasks: 96, recent: 120, updated: 120,
+  priority: 96, segment: 150, likelihood: 116, num_roles: 84, owner: 190, target_close: 118, tasks: 96, recent: 120, updated: 120,
 };
 
 const LIKELIHOOD_RANK: Record<Likelihood, number> = { low: 1, medium: 2, high: 3 };
@@ -1336,6 +1339,7 @@ function extractOpp(d: JobsOpportunity, key: OppColKey): string | number {
     case "likelihood": return d.likelihood ? LIKELIHOOD_RANK[d.likelihood] : 0;
     case "num_roles":  return d.num_roles ?? 0;
     case "owner":      return d.owner_email ?? "";
+    case "target_close": return d.target_close_date ?? "";
     case "tasks":      return d.open_tasks ?? 0;
     case "recent":     return d.recent_activity_count ?? 0;
     case "updated":    return d.updated_at ?? "";
@@ -1346,7 +1350,7 @@ function extractOpp(d: JobsOpportunity, key: OppColKey): string | number {
 
 type OppField =
   | "company" | "role" | "stage" | "status" | "deal_type" | "segment"
-  | "priority" | "likelihood" | "owner" | "salary" | "num_roles" | "recent" | "updated";
+  | "priority" | "likelihood" | "owner" | "salary" | "num_roles" | "target_close" | "recent" | "updated";
 
 const OPP_FILTERABLE: Record<OppField, FieldMeta<JobsOpportunity>> = {
   company:    { label: "Company",    type: "text",   getValue: (d) => d.account_name ?? "" },
@@ -1358,6 +1362,7 @@ const OPP_FILTERABLE: Record<OppField, FieldMeta<JobsOpportunity>> = {
   priority:   { label: "Priority",   type: "select", getValue: (d) => (d.priority != null ? String(d.priority) : "") },
   likelihood: { label: "Likelihood", type: "select", getValue: (d) => d.likelihood ?? "" },
   owner:      { label: "Owner",      type: "select", getValue: (d) => d.owner_email ?? "" },
+  target_close: { label: "Target close date", type: "date", getValue: (d) => d.target_close_date ?? "" },
   salary:     { label: "Salary",     type: "number", getValue: (d) => d.salary_expected ?? null },
   num_roles:  { label: "# Roles",    type: "number", getValue: (d) => d.num_roles ?? null },
   recent:     { label: "Recent activity (7d)", type: "number", getValue: (d) => d.recent_activity_count ?? 0 },
@@ -1376,7 +1381,7 @@ const OPP_GROUP_OPTIONS: { value: string; label: string }[] = [
 // Columns whose <td> should swallow clicks (inline editors) so editing
 // doesn't toggle the row's expand.
 const OPP_EDITABLE_COLS = new Set<OppColKey>([
-  "role", "salary", "stage", "deal_type", "likelihood", "priority", "segment", "num_roles", "owner",
+  "role", "salary", "stage", "deal_type", "likelihood", "priority", "segment", "num_roles", "owner", "target_close",
 ]);
 
 function DealRow({
@@ -1523,6 +1528,7 @@ function DealRow({
       />
     ),
     owner: <StaffPicker value={deal.owner_email} onChange={(email) => patch({ owner_email: email })} />,
+    target_close: <InlineDate value={deal.target_close_date} onSave={(v) => patch({ target_close_date: v || null })} />,
     tasks: (deal.open_tasks ?? 0) > 0
       ? <span className="inline-flex items-center gap-1 text-[12px] text-ink-2"><CheckSquare size={11} className="text-ink-4" />{deal.open_tasks}</span>
       : <span className="text-ink-4">—</span>,

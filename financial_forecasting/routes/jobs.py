@@ -165,6 +165,7 @@ class OpportunityUpdate(BaseModel):
     sf_contact_ids: Optional[list[str]] = None
     builder_ids: Optional[list[str]] = None
     follow_up_date: Optional[datetime] = None
+    target_close_date: Optional[date] = None
     touch_count: Optional[int] = None
     sf_opportunity_id: Optional[str] = None
     note: Optional[str] = None  # optional note when changing stage
@@ -4221,7 +4222,7 @@ async def update_opportunity(
     for field in ("stage", "deal_type", "title", "description", "salary_expected",
                   "num_roles", "likelihood",
                   "source", "owner_email", "relationship_owner", "sf_contact_ids", "builder_ids",
-                  "follow_up_date", "touch_count", "sf_opportunity_id",
+                  "follow_up_date", "target_close_date", "touch_count", "sf_opportunity_id",
                   "closed_lost_reason", "closed_lost_note", "priority", "segment", "intro_by"):
         if field not in fields_set:
             continue

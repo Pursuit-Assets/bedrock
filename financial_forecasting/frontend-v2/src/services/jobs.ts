@@ -55,6 +55,7 @@ export interface JobsOpportunity {
   sf_opportunity_id: string | null;
   touch_count: number;
   follow_up_date: string | null;
+  target_close_date: string | null;
   airtable_id: string | null;
   num_roles: number | null;
   likelihood: "low" | "medium" | "high" | null;
