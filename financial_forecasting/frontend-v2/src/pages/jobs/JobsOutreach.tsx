@@ -292,7 +292,7 @@ function OriginComparison({ sc }: { sc: OutreachScorecard }) {
   return (
     <div className="rounded-xl border border-border-strong bg-surface p-4">
       {/* Single stacked warm/cold bar */}
-      <div className="flex h-8 w-full overflow-hidden rounded-lg bg-surface-2">
+      <div className="flex h-8 w-[72%] overflow-hidden rounded-lg bg-surface-2">
         {warmShare > 0 && (
           <div className="flex h-full items-center justify-center bg-amber text-[12px] font-bold text-white" style={{ width: `${warmShare}%` }}>
             {warmShare >= 12 && `${Math.round(warmShare)}%`}
@@ -307,14 +307,14 @@ function OriginComparison({ sc }: { sc: OutreachScorecard }) {
 
       {/* Origin details table */}
       <div className="mt-4">
-        <div className="grid grid-cols-[1fr_4.5rem_4.5rem_1fr] items-center gap-x-6 border-b border-border pb-2">
+        <div className="grid grid-cols-[1fr_5rem_5rem_1fr] items-center gap-x-12 border-b border-border pb-2">
           <span className="text-[13px] font-bold text-ink">Origin Details</span>
           <span className="flex items-center justify-center gap-1.5 text-[12px] text-ink-2"><span className="h-2.5 w-2.5 rounded-sm bg-amber" />Warm</span>
           <span className="flex items-center justify-center gap-1.5 text-[12px] text-ink-2"><span className="h-2.5 w-2.5 rounded-sm bg-ink-3" />Cold</span>
           <span />
         </div>
         {rows.map((r) => (
-          <div key={r.l} className="grid grid-cols-[1fr_4.5rem_4.5rem_1fr] items-center gap-x-6 border-b border-border py-2 last:border-b-0">
+          <div key={r.l} className="grid grid-cols-[1fr_5rem_5rem_1fr] items-center gap-x-12 border-b border-border py-2 last:border-b-0">
             <span className="text-[13px] text-ink-2">{r.l}</span>
             <span className="text-center text-[13.5px] font-semibold tabular-nums text-ink">{r.warm}</span>
             <span className="text-center text-[13.5px] font-semibold tabular-nums text-ink">{r.cold}</span>
