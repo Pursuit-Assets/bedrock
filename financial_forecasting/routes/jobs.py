@@ -2238,7 +2238,7 @@ async def activity_trends_detail(
 
 _OUTREACH_STAGE_META = [
     ("flagged",          "Flagged"),
-    ("initial_outreach", "Outreached"),
+    ("initial_outreach", "Initial Outreach"),
     ("qualified",        "Qualified"),
     ("converted_to_opportunity", "Converted to Opportunity"),
 ]
