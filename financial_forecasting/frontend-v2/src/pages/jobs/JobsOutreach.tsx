@@ -43,10 +43,6 @@ function fmtRange(startISO: string, endISO: string) {
   const y = end.getFullYear();
   return `${fmtDate(startISO)} – ${end.toLocaleDateString(undefined, { month: "short", day: "numeric" })}, ${y}`;
 }
-function pct(num: number, den: number) {
-  return den ? `${((num / den) * 100).toFixed(1)}%` : "—";
-}
-
 function Trend({ current, prior, unit = "pct" }: { current: number; prior: number; unit?: "pct" | "pt" }) {
   if (unit === "pct") {
     if (!prior) return <span className="text-ink-4">—</span>;
@@ -133,11 +129,11 @@ function ScorecardTable({
       <table className="w-full border-collapse">
         <thead>
           <tr className="bg-surface-2 text-[10.5px] uppercase tracking-wide text-ink-3">
-            <th className="px-3.5 py-2.5 text-left font-bold">{firstColHeader}</th>
-            <th className="px-3.5 py-2.5 text-right font-bold">This Period</th>
-            <th className="px-3.5 py-2.5 text-right font-bold">Last Period</th>
-            <th className="px-3.5 py-2.5 text-right font-bold">Trend</th>
-            <th className="px-3.5 py-2.5 text-right font-bold">Δ Target</th>
+            <th className="py-2.5 pl-3.5 pr-2 text-left font-bold">{firstColHeader}</th>
+            <th className="whitespace-nowrap px-2 py-2.5 text-right font-bold">This</th>
+            <th className="whitespace-nowrap px-2 py-2.5 text-right font-bold">Last</th>
+            <th className="whitespace-nowrap px-2 py-2.5 text-right font-bold">Trend</th>
+            <th className="whitespace-nowrap px-3.5 py-2.5 text-right font-bold">Δ Target</th>
           </tr>
         </thead>
         <tbody>
@@ -146,14 +142,10 @@ function ScorecardTable({
             const id = `${idPrefix}-${rowKey}`;
             const isOpen = open === id;
             const isLast = idx === rows.length - 1;
-            // Funnel tiers (activity table): 1 = sent · 2 = engaged · 3 = replied.
-            // A new tier gets a stronger top rule + a small indent to read as one funnel.
+            // Funnel tiers (activity table): a new tier just gets a stronger top
+            // rule so the three sends read as one level, then Engaged, then Replied.
             const prevTier = idx > 0 ? rows[idx - 1].tier : undefined;
             const tierStart = r.tier != null && r.tier !== prevTier && idx > 0;
-            const indent = r.tier != null ? (r.tier - 1) * 16 : 0;
-            const tierLabel = tierStart
-              ? (r.tier === 2 ? "Engaged" : r.tier === 3 ? "Replied" : "")
-              : "";
             return (
               <Fragment key={id}>
                 <tr
@@ -162,8 +154,7 @@ function ScorecardTable({
                     !isLast && "border-b border-border",
                     tierStart && "border-t-2 border-border-strong")}
                 >
-                  <td className="px-3.5 py-2.5 text-left font-semibold" style={{ paddingLeft: 14 + indent }}>
-                    {tierLabel && <span className="mr-2 text-[9.5px] font-bold uppercase tracking-wider text-ink-4">{tierLabel}</span>}
+                  <td className="px-3.5 py-2.5 text-left font-semibold">
                     <span className="mr-1 inline-block w-3.5 text-ink-4">
                       {isOpen ? <ChevronDown size={12} className="inline" /> : <ChevronRight size={12} className="inline" />}
                     </span>
@@ -285,28 +276,57 @@ function OriginComparison({ sc }: { sc: OutreachScorecard }) {
   const resp = (a.direct_email_response ?? { this_period: EMPTY } as ScorecardRow).this_period;
   const qual = (u.active ?? { this_period: EMPTY } as ScorecardRow).this_period;
 
-  const Card = ({ label, w }: { label: string; w: "warm" | "cold" }) => (
-    <div className="rounded-xl border border-border-strong bg-surface p-4">
-      <div className="mb-3 text-[13px] font-bold text-ink">{label}</div>
-      <div className="grid grid-cols-4 gap-2">
-        {[
-          { n: String(flagged[w]), l: "Sourced" },
-          { n: String(email[w]), l: "Sent" },
-          { n: pct(resp[w], email[w]), l: "Response" },
-          { n: pct(qual[w], flagged[w]), l: "Qual. Rate" },
-        ].map((s, i) => (
-          <div key={i}>
-            <div className="text-[19px] font-bold tabular-nums text-ink">{s.n}</div>
-            <div className="text-[11px] uppercase tracking-wide text-ink-3">{s.l}</div>
+  const rate = (num: number, den: number) => (den ? (num / den) * 100 : 0);
+  const metrics: { l: string; warm: number; cold: number; display: (v: number) => string }[] = [
+    { l: "Sourced", warm: flagged.warm, cold: flagged.cold, display: (v) => String(Math.round(v)) },
+    { l: "Sent", warm: email.warm, cold: email.cold, display: (v) => String(Math.round(v)) },
+    { l: "Response rate", warm: rate(resp.warm, email.warm), cold: rate(resp.cold, email.cold), display: (v) => `${Math.round(v)}%` },
+    { l: "Qual. rate", warm: rate(qual.warm, flagged.warm), cold: rate(qual.cold, flagged.cold), display: (v) => `${Math.round(v)}%` },
+  ];
+
+  // Overall warm/cold share of total sends, for the headline split bar.
+  const totalSent = email.warm + email.cold;
+  const warmShare = totalSent ? (email.warm / totalSent) * 100 : 0;
+
+  const Bar = ({ l, warm, cold, display }: (typeof metrics)[number]) => {
+    const max = Math.max(1, warm, cold);
+    return (
+      <div>
+        <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-ink-3">{l}</div>
+        <div className="flex flex-col gap-1">
+          <div className="flex items-center gap-2">
+            <div className="h-[14px] flex-1 rounded bg-surface-2">
+              <div className="h-full rounded bg-amber" style={{ width: `${Math.max(2, (warm / max) * 100)}%` }} />
+            </div>
+            <div className="w-11 shrink-0 text-right text-[12.5px] font-bold tabular-nums text-ink">{display(warm)}</div>
           </div>
-        ))}
+          <div className="flex items-center gap-2">
+            <div className="h-[14px] flex-1 rounded bg-surface-2">
+              <div className="h-full rounded bg-ink-3" style={{ width: `${Math.max(2, (cold / max) * 100)}%` }} />
+            </div>
+            <div className="w-11 shrink-0 text-right text-[12.5px] font-bold tabular-nums text-ink-2">{display(cold)}</div>
+          </div>
+        </div>
       </div>
-    </div>
-  );
+    );
+  };
+
   return (
-    <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-      <Card label="Warm" w="warm" />
-      <Card label="Cold" w="cold" />
+    <div className="rounded-xl border border-border-strong bg-surface p-4">
+      {/* Headline: share of sends that are warm vs cold */}
+      <div className="mb-4 flex items-center gap-4">
+        <div className="flex h-2.5 flex-1 overflow-hidden rounded-full bg-surface-2">
+          <div className="h-full bg-amber" style={{ width: `${warmShare}%` }} />
+          <div className="h-full bg-ink-3" style={{ width: `${100 - warmShare}%` }} />
+        </div>
+        <div className="flex shrink-0 items-center gap-3 text-[12px]">
+          <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-sm bg-amber" /><b className="text-ink">{Math.round(warmShare)}%</b> Warm</span>
+          <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-sm bg-ink-3" /><b className="text-ink">{Math.round(100 - warmShare)}%</b> Cold</span>
+        </div>
+      </div>
+      <div className="grid grid-cols-2 gap-x-6 gap-y-4">
+        {metrics.map((m) => <Bar key={m.l} {...m} />)}
+      </div>
     </div>
   );
 }
