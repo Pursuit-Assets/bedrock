@@ -311,6 +311,7 @@ async def metric_drilldown(
                 "builder": r["builder"] or "—",
                 "status": "Full-time placed",
                 "role": r["role_title"] or "—",
+                "counted": "✓",
             })
         # (2) committed active trials — builder in a trial (converts to the open FT req below)
         trials = await conn.fetch("""
@@ -326,8 +327,9 @@ async def metric_drilldown(
             out.append({
                 "company": tr["account_name"] or "—",
                 "builder": tr["builder"] or "—",
-                "status": "Committed: trial active",
+                "status": "Trial active — counts on conversion",
                 "role": tr["title"] or "Trial",
+                "counted": "—",
             })
         # (3) committed FT roles still open — no builder placed yet
         committed = await conn.fetch("""
@@ -345,12 +347,17 @@ async def metric_drilldown(
                 "builder": "—",
                 "status": "Committed – open req",
                 "role": cr["title"] or "FT role",
+                "counted": "✓",
             })
+        # Sort so one company's rows sit together — a trial + its conversion seat
+        # read as one story instead of a confusing duplicate (JPMC, Fowler).
+        out.sort(key=lambda r: (r["company"].lower(), r["counted"] != "✓"))
         cols = [
             {"key": "company", "label": "Company"},
             {"key": "builder", "label": "Builder"},
             {"key": "status",  "label": "Status"},
             {"key": "role",    "label": "Role"},
+            {"key": "counted", "label": "In FT #"},
         ]
         return cols, out, "placement"
 
@@ -395,17 +402,18 @@ async def metric_drilldown(
             WHERE payment_amount > 0
                OR (coalesce(payment_amount, 0) = 0 AND employment_type IN ('contract','freelance','part_time'))
             ORDER BY builder""")
-        seen: dict = {}
-        for r in rows:
-            seen.setdefault(r["user_id"], r)
+        # One row PER PAID ROLE: builders with several paid engagements show each
+        # (the headline still counts distinct builders). Grouped by builder.
+        rows = sorted(rows, key=lambda r: ((r["builder"] or "").lower(),
+                                           r["employment_type"] != "full_time"))
         out = [{
             "builder": r["builder"],
             "company": r["company_name"] or "—",
             "role": r["role_title"] or "—",
             "type": ("Full-Time" if r["employment_type"] == "full_time"
                      else (r["employment_type"] or "—").replace("_", " ").title()),
-            "salary": f"${int(r['payment_amount']):,}" if r["payment_amount"] else "—",
-        } for r in seen.values()]
+            "salary": f"${int(r['payment_amount']):,}" if r["payment_amount"] else "— (pay unrecorded)",
+        } for r in rows]
         cols = [{"key": "builder", "label": "Builder"}, {"key": "company", "label": "Company"},
                 {"key": "role", "label": "Role"}, {"key": "type", "label": "Type"}, {"key": "salary", "label": "Pay"}]
         return cols, out, "builder"
@@ -1562,17 +1570,31 @@ async def get_funnel(
             {"key": "name", "label": "Company"},
             {"key": "deal_type", "label": "Type"},
             {"key": "owner", "label": "Owner"},
+            {"key": "roles", "label": "Roles (commitment)"},
         ]
+        # Per-opp roles rollup so the drill shows what "Opportunity Confirmed"
+        # actually contains — each role with its status and whether it's a
+        # committed seat or open-market (feedback 2026-07-16).
         rows = await conn.fetch("""
-            SELECT stage, account_name AS name, deal_type, owner_email AS owner
-            FROM bedrock.jobs_opportunity
-            WHERE deleted_at IS NULL AND ($1::text IS NULL OR deal_type = $1)
-            ORDER BY account_name
+            SELECT o.stage, o.account_name AS name, o.deal_type, o.owner_email AS owner,
+                   (SELECT string_agg(
+                            coalesce(r.title, 'Role') || ' — ' ||
+                            CASE WHEN r.status = 'cancelled' THEN 'cancelled'
+                                 WHEN r.status = 'filled' AND r.is_trial THEN 'trial active'
+                                 WHEN r.status = 'filled' THEN 'filled'
+                                 WHEN r.commitment = 'committed' THEN 'committed · open'
+                                 ELSE 'open market' END,
+                            '  ·  ' ORDER BY r.created_at)
+                      FROM bedrock.jobs_role r WHERE r.opportunity_id = o.id) AS roles
+            FROM bedrock.jobs_opportunity o
+            WHERE o.deleted_at IS NULL AND ($1::text IS NULL OR o.deal_type = $1)
+            ORDER BY o.account_name
         """, dt)
         by_stage: dict = {}
         for r in rows:
             by_stage.setdefault(r["stage"], []).append(
-                {"name": r["name"], "deal_type": r["deal_type"], "owner": r["owner"]}
+                {"name": r["name"], "deal_type": r["deal_type"], "owner": r["owner"],
+                 "roles": r["roles"] or "—"}
             )
 
         idx = {k: i for i, (k, _) in enumerate(stage_order)}
