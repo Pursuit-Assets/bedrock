@@ -399,11 +399,14 @@ function TargetingChart({ dim }: { dim: TargetingDim }) {
       <div className="flex flex-col gap-2">
         {rows.map((r) => {
           const share = totalSent ? Math.round((r.sent / totalSent) * 100) : 0;
+          // "(unknown)" = outreach with no value tagged for this dimension; render
+          // grey so it reads clearly as untagged rather than a real segment.
+          const isUnknown = /^\(?unknown\)?$/i.test(r.bucket.trim());
           return (
             <div key={r.bucket} className="flex items-center gap-2">
-              <div className="w-[130px] shrink-0 truncate text-right text-[12.5px] text-ink-2" title={r.bucket}>{r.bucket}</div>
+              <div className={cn("w-[130px] shrink-0 truncate text-right text-[12.5px]", isUnknown ? "italic text-ink-4" : "text-ink-2")} title={r.bucket}>{r.bucket}</div>
               <div className="h-[18px] flex-1 rounded bg-surface-2">
-                <div className="h-full rounded bg-accent" style={{ width: `${Math.max(2, (r.sent / max) * 100)}%`, opacity: 0.85 }} />
+                <div className={cn("h-full rounded", isUnknown ? "bg-ink-4" : "bg-accent")} style={{ width: `${Math.max(2, (r.sent / max) * 100)}%`, opacity: isUnknown ? 0.55 : 0.85 }} />
               </div>
               <div className="w-[92px] shrink-0 text-[12px] tabular-nums text-ink-2">
                 <b>{r.sent}</b> <span className="text-ink-4">· {share}%</span>
