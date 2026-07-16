@@ -194,8 +194,8 @@ function ConversionTables({ sc }: { sc: OutreachScorecard }) {
   const a = byKey(sc.activity_pipeline, "metric");
   const leads = u.flagged ?? { this_period: EMPTY, last_period: EMPTY } as ScorecardRow;
   const out = u.initial_outreach ?? { this_period: EMPTY, last_period: EMPTY } as ScorecardRow;
-  const qual = u.active ?? { this_period: EMPTY, last_period: EMPTY } as ScorecardRow;
-  const comm = u.handed_off ?? { this_period: EMPTY, last_period: EMPTY } as ScorecardRow;
+  const qual = u.qualified ?? { this_period: EMPTY, last_period: EMPTY } as ScorecardRow;
+  const comm = u.converted_to_opportunity ?? { this_period: EMPTY, last_period: EMPTY } as ScorecardRow;
   const email = a.direct_email_sent ?? { this_period: EMPTY, last_period: EMPTY } as ScorecardRow;
   const resp = a.direct_email_response ?? { this_period: EMPTY, last_period: EMPTY } as ScorecardRow;
   const eng = a.engagement ?? { this_period: EMPTY, last_period: EMPTY } as ScorecardRow;
@@ -274,7 +274,7 @@ function OriginComparison({ sc }: { sc: OutreachScorecard }) {
   const flagged = (u.flagged ?? { this_period: EMPTY } as ScorecardRow).this_period;
   const email = (a.direct_email_sent ?? { this_period: EMPTY } as ScorecardRow).this_period;
   const resp = (a.direct_email_response ?? { this_period: EMPTY } as ScorecardRow).this_period;
-  const qual = (u.active ?? { this_period: EMPTY } as ScorecardRow).this_period;
+  const qual = (u.qualified ?? { this_period: EMPTY } as ScorecardRow).this_period;
 
   const rate = (num: number, den: number) => (den ? `${Math.round((num / den) * 100)}%` : "—");
   const rows: { l: string; warm: string; cold: string }[] = [

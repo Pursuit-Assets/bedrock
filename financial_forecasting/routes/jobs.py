@@ -1638,8 +1638,8 @@ async def get_funnel(
         stage_order = [
             ("flagged", "Flagged"),
             ("initial_outreach", "Initial Outreach"),
-            ("active", "Active"),
-            ("handed_off", "Handed Off"),
+            ("qualified", "Qualified"),
+            ("converted_to_opportunity", "Converted to Opportunity"),
             ("on_hold", "On Hold"),
         ]
         record_columns = [
@@ -2237,10 +2237,10 @@ async def activity_trends_detail(
 # activity row for that contact inherits that label (never recomputed per row).
 
 _OUTREACH_STAGE_META = [
-    ("flagged",          "Lead Sourced"),
+    ("flagged",          "Flagged"),
     ("initial_outreach", "Outreached"),
-    ("active",           "Qualified Lead"),
-    ("handed_off",       "Committed"),
+    ("qualified",        "Qualified"),
+    ("converted_to_opportunity", "Converted to Opportunity"),
 ]
 _OUTREACH_ACTIVITY_META = [
     ("direct_email_sent",      "Direct Email Sent"),
@@ -2257,7 +2257,7 @@ _ACTIVITY_TIER = {
 }
 _STAGE_ENTERED_COL = {
     "flagged": "flagged_at", "initial_outreach": "first_outreach_at",
-    "active": "active_at", "handed_off": "handed_off_at",
+    "qualified": "qualified_at", "converted_to_opportunity": "converted_at",
 }
 
 
@@ -2431,7 +2431,7 @@ async def outreach_scorecard(
         """SELECT column_name FROM information_schema.columns
            WHERE table_schema='bedrock' AND table_name='jobs_contact_membership'
              AND column_name = ANY($1::text[])""",
-        ["active_at", "handed_off_at"],
+        ["qualified_at", "converted_at"],
     )}
     # 'initial_outreach' (Outreached) is NOT taken from the membership stage
     # timestamp (unpopulated) — it's derived from actual outreach email activity
@@ -2440,14 +2440,14 @@ async def outreach_scorecard(
         "SELECT contact_id, 'flagged' AS stage, flagged_at AS entered_at "
         "FROM bedrock.jobs_contact_membership WHERE flagged_at IS NOT NULL",
     ]
-    if "active_at" in have_cols:
+    if "qualified_at" in have_cols:
         stage_event_parts.append(
-            "SELECT contact_id, 'active', active_at "
-            "FROM bedrock.jobs_contact_membership WHERE active_at IS NOT NULL")
-    if "handed_off_at" in have_cols:
+            "SELECT contact_id, 'qualified', qualified_at "
+            "FROM bedrock.jobs_contact_membership WHERE qualified_at IS NOT NULL")
+    if "converted_at" in have_cols:
         stage_event_parts.append(
-            "SELECT contact_id, 'handed_off', handed_off_at "
-            "FROM bedrock.jobs_contact_membership WHERE handed_off_at IS NOT NULL")
+            "SELECT contact_id, 'converted_to_opportunity', converted_at "
+            "FROM bedrock.jobs_contact_membership WHERE converted_at IS NOT NULL")
     stage_events_sql = "\n        UNION ALL\n        ".join(stage_event_parts)
 
     # One query, warmth computed once, two labelled result sets unioned.
@@ -3419,7 +3419,7 @@ async def jobs_accounts(
             SELECT lower(trim(c.current_company)) AS key, count(*) AS n
             FROM bedrock.jobs_contact_membership m
             JOIN public.contacts c ON c.contact_id = m.contact_id
-            WHERE m.stage IN ('flagged','initial_outreach','active')
+            WHERE m.stage IN ('flagged','initial_outreach','qualified')
               AND coalesce(trim(c.current_company), '') <> ''
             GROUP BY 1
             """),
@@ -3794,7 +3794,7 @@ async def account_prospects(
 
 
 # ── Jobs contact activation (flag + funnel membership) ────────────────────────
-_MEMBERSHIP_STAGES = ('flagged', 'initial_outreach', 'active', 'handed_off', 'on_hold', 'not_a_fit')
+_MEMBERSHIP_STAGES = ('flagged', 'initial_outreach', 'qualified', 'converted_to_opportunity', 'on_hold', 'not_a_fit')
 
 
 def _user_email(user) -> Optional[str]:
@@ -3811,19 +3811,19 @@ async def _flag_contacts(conn, contact_ids: list[int], owner_email: Optional[str
         return 0
     stg = stage or "flagged"
     # When bulk-advancing to an explicit stage, stamp the stage-entry timestamp
-    # for active/handed_off too (mirrors the single-contact PATCH path) so the
+    # for qualified/converted too (mirrors the single-contact PATCH path) so the
     # scorecard flow count sees these transitions. On a fresh insert the CASE on
     # $6 stamps directly; on conflict it stamps only on a genuine stage change.
     if stage:
         conflict_stage = "stage = EXCLUDED.stage,"
-        stamp_cols = ", active_at, handed_off_at"
-        stamp_vals = (", CASE WHEN $6 = 'active' THEN now() END"
-                      ", CASE WHEN $6 = 'handed_off' THEN now() END")
+        stamp_cols = ", qualified_at, converted_at"
+        stamp_vals = (", CASE WHEN $6 = 'qualified' THEN now() END"
+                      ", CASE WHEN $6 = 'converted_to_opportunity' THEN now() END")
         conflict_stamp = (
-            "active_at = CASE WHEN EXCLUDED.stage = 'active' AND jobs_contact_membership.stage "
-            "IS DISTINCT FROM 'active' THEN now() ELSE jobs_contact_membership.active_at END,"
-            "handed_off_at = CASE WHEN EXCLUDED.stage = 'handed_off' AND jobs_contact_membership.stage "
-            "IS DISTINCT FROM 'handed_off' THEN now() ELSE jobs_contact_membership.handed_off_at END,")
+            "qualified_at = CASE WHEN EXCLUDED.stage = 'qualified' AND jobs_contact_membership.stage "
+            "IS DISTINCT FROM 'qualified' THEN now() ELSE jobs_contact_membership.qualified_at END,"
+            "converted_at = CASE WHEN EXCLUDED.stage = 'converted_to_opportunity' AND jobs_contact_membership.stage "
+            "IS DISTINCT FROM 'converted_to_opportunity' THEN now() ELSE jobs_contact_membership.converted_at END,")
     else:
         conflict_stage = stamp_cols = stamp_vals = conflict_stamp = ""
     await conn.execute(
@@ -3894,12 +3894,12 @@ async def update_jobs_membership(contact_id: int, body: MembershipPatch,
         # `jobs_contact_membership.stage` here is the OLD stage. Re-stamps on a
         # genuine re-entry (e.g. active → on_hold → active), which is what the
         # scorecard's "entered this period" flow count wants.
-        if body.stage == "active":
-            sets.append("active_at = CASE WHEN jobs_contact_membership.stage "
-                        "IS DISTINCT FROM 'active' THEN now() ELSE jobs_contact_membership.active_at END")
-        if body.stage == "handed_off":
-            sets.append("handed_off_at = CASE WHEN jobs_contact_membership.stage "
-                        "IS DISTINCT FROM 'handed_off' THEN now() ELSE jobs_contact_membership.handed_off_at END")
+        if body.stage == "qualified":
+            sets.append("qualified_at = CASE WHEN jobs_contact_membership.stage "
+                        "IS DISTINCT FROM 'qualified' THEN now() ELSE jobs_contact_membership.qualified_at END")
+        if body.stage == "converted_to_opportunity":
+            sets.append("converted_at = CASE WHEN jobs_contact_membership.stage "
+                        "IS DISTINCT FROM 'converted_to_opportunity' THEN now() ELSE jobs_contact_membership.converted_at END")
     if body.owner_email is not None:
         sets.append(f"owner_email = ${i}"); params.append(body.owner_email); i += 1
     if body.opportunity_id is not None:
