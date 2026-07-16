@@ -227,11 +227,11 @@ export interface JobContactWithDeal extends JobContact {
   builder_apps?: number;      // jobs builders applied to at this company (job_applications)
 }
 
-export type MembershipStage = "flagged" | "initial_outreach" | "active" | "handed_off" | "on_hold" | "not_a_fit";
-export const MEMBERSHIP_STAGES: MembershipStage[] = ["flagged", "initial_outreach", "active", "handed_off", "on_hold", "not_a_fit"];
+export type MembershipStage = "flagged" | "initial_outreach" | "qualified" | "converted_to_opportunity" | "on_hold" | "not_a_fit";
+export const MEMBERSHIP_STAGES: MembershipStage[] = ["flagged", "initial_outreach", "qualified", "converted_to_opportunity", "on_hold", "not_a_fit"];
 export const MEMBERSHIP_STAGE_LABELS: Record<MembershipStage, string> = {
-  flagged: "Flagged", initial_outreach: "Initial outreach", active: "Active",
-  handed_off: "Handed off", on_hold: "On hold", not_a_fit: "Not a fit",
+  flagged: "Flagged", initial_outreach: "Initial outreach", qualified: "Qualified",
+  converted_to_opportunity: "Converted to opportunity", on_hold: "On hold", not_a_fit: "Not a fit",
 };
 
 export interface ContactFilters {
@@ -984,6 +984,154 @@ export function useActivityTrends(granularity: "day" | "week" | "month", channel
       if (owner) p.set("owner", owner);
       if (range) { p.set("date_from", range.from); p.set("date_to", range.to); }
       const { data } = await api.get<ApiResponse<ActivityTrends>>(`/api/jobs/activity-trends?${p}`);
+      return data.data;
+    },
+    staleTime: 60_000,
+  });
+}
+
+// ── Outreach Dashboard scorecard ──────────────────────────────────────────────
+
+export type OutreachGranularity = "day" | "week" | "month";
+export type OutreachScopeKind = "pursuit" | "team" | "staff";
+export interface OutreachDateRange { from: string; to: string }
+
+export interface ScorecardCell { warm: number; cold: number; total: number }
+
+/** One row of either scorecard table. `stage` is set for user-pipeline rows,
+ *  `metric` for activity-pipeline rows. `target` is null when unconfigured. */
+export interface ScorecardRow {
+  stage?: string;
+  metric?: string;
+  tier?: number;   // activity funnel tier: 1 = sent, 2 = engaged, 3 = replied
+  label: string;
+  this_period: ScorecardCell;
+  last_period: ScorecardCell;
+  target: number | null;
+}
+
+export interface ScorecardPeriod {
+  this_start: string; this_end: string; last_start: string; last_end: string;
+}
+export interface BySenderRow {
+  staff: string;
+  sent: { this: number; last: number };
+  warm: number;
+  cold: number;
+}
+
+export interface OutreachScorecard {
+  granularity: OutreachGranularity;
+  scope: OutreachScopeKind;
+  period: ScorecardPeriod;
+  user_pipeline: ScorecardRow[];
+  activity_pipeline: ScorecardRow[];
+  by_sender: BySenderRow[];
+}
+
+function outreachParams(granularity: OutreachGranularity, scope: OutreachScopeKind, owner?: string, range?: OutreachDateRange) {
+  const p = new URLSearchParams({ granularity, scope });
+  if (owner) p.set("owner", owner);
+  if (range) { p.set("date_from", range.from); p.set("date_to", range.to); }
+  return p;
+}
+
+export function useOutreachScorecard(granularity: OutreachGranularity, scope: OutreachScopeKind, owner?: string, range?: OutreachDateRange) {
+  const rangeKey = range ? `${range.from}..${range.to}` : "";
+  return useQuery<OutreachScorecard>({
+    queryKey: ["jobs", "outreach-scorecard", granularity, scope, owner ?? "", rangeKey],
+    queryFn: async () => {
+      const { data } = await api.get<ApiResponse<OutreachScorecard>>(
+        `/api/jobs/outreach/scorecard?${outreachParams(granularity, scope, owner, range)}`,
+      );
+      return data.data;
+    },
+    staleTime: 60_000,
+  });
+}
+
+export interface TargetingBucket { bucket: string; sent: number; responses: number }
+export interface TargetingDim { key: string; label: string; rows: TargetingBucket[] }
+
+/** Targeting Mix — outreach volume + replies cut by lead source / industry / size / stage. */
+export function useOutreachTargetingMix(granularity: OutreachGranularity, scope: OutreachScopeKind, owner?: string, range?: OutreachDateRange) {
+  const rangeKey = range ? `${range.from}..${range.to}` : "";
+  return useQuery<{ dims: TargetingDim[] }>({
+    queryKey: ["jobs", "outreach-targeting", granularity, scope, owner ?? "", rangeKey],
+    queryFn: async () => {
+      const { data } = await api.get<ApiResponse<{ dims: TargetingDim[] }>>(
+        `/api/jobs/outreach/targeting-mix?${outreachParams(granularity, scope, owner, range)}`,
+      );
+      return data.data;
+    },
+    staleTime: 60_000,
+  });
+}
+
+export interface OutreachAccountComment { author: string | null; content: string; date: string | null }
+export interface OutreachAccountTask { title: string; status: string; deadline: string | null; owner: string | null }
+export interface OutreachAccountContact { name: string | null; title: string | null }
+export interface OutreachAccount {
+  account: string;
+  owner: string | null;
+  last_activity: string | null;
+  comment_count: number;
+  open_task_count: number;
+  contact_count: number;
+  comments: OutreachAccountComment[];
+  open_tasks: OutreachAccountTask[];
+  contacts: OutreachAccountContact[];
+}
+
+/** Account working list — accounts with comments/open tasks for the deep-dive discussion.
+ *  With `owner`, restricts to accounts that staffer is involved with. */
+export function useOutreachAccounts(owner?: string) {
+  return useQuery<{ accounts: OutreachAccount[] }>({
+    queryKey: ["jobs", "outreach-accounts", owner ?? ""],
+    queryFn: async () => {
+      const qs = owner ? `?owner=${encodeURIComponent(owner)}` : "";
+      const { data } = await api.get<ApiResponse<{ accounts: OutreachAccount[] }>>(`/api/jobs/outreach/accounts${qs}`);
+      return data.data;
+    },
+    staleTime: 60_000,
+  });
+}
+
+export interface OutreachDrillTouch {
+  date: string | null;
+  type: string;
+  subject: string | null;
+  snippet: string | null;
+  direction: string;
+}
+export interface OutreachDrillContact {
+  contact_id: number;
+  name: string | null;
+  company: string | null;
+  entered_at: string | null;
+  touches: OutreachDrillTouch[];
+}
+export interface OutreachDrill {
+  kind: "user" | "activity";
+  key: string;
+  period: "this" | "last";
+  count: number;
+  contacts: OutreachDrillContact[];
+}
+
+/** Drill-down behind one scorecard row. `enabled` false until the row is expanded. */
+export function useOutreachDrill(
+  args: { kind: "user" | "activity"; key: string; period: "this" | "last";
+          granularity: OutreachGranularity; scope: OutreachScopeKind; owner?: string; range?: OutreachDateRange } | null,
+) {
+  const rangeKey = args?.range ? `${args.range.from}..${args.range.to}` : "";
+  return useQuery<OutreachDrill>({
+    enabled: !!args,
+    queryKey: ["jobs", "outreach-drill", args?.kind, args?.key, args?.period, args?.granularity, args?.scope, args?.owner ?? "", rangeKey],
+    queryFn: async () => {
+      const p = outreachParams(args!.granularity, args!.scope, args!.owner, args!.range);
+      p.set("kind", args!.kind); p.set("key", args!.key); p.set("period", args!.period);
+      const { data } = await api.get<ApiResponse<OutreachDrill>>(`/api/jobs/outreach/scorecard/detail?${p}`);
       return data.data;
     },
     staleTime: 60_000,

@@ -30,14 +30,14 @@
 1. **Existing partnerships.** Funders and program partners who meet our builders (demo days, grants, workshops) and get interested in hiring. These arrive warm through the fundraising side.
 2. **Staff network.** Pursuit staff's combined LinkedIn networks — 40,000+ people — scraped into the contact base. The team filters by industry/role, flags targets, and requests warm intros from the connected staffer.
 
-**When to move levels:** work at the **contact** level until there's a real conversation. Once an employer is genuinely engaged, manage at the **account** level; on any signal of hiring interest, create the **opportunity**; when they commit to specific seats, create the **roles**. Don't keep working a contact's stage after the account has a live opportunity — hand it off.
+**When to move levels:** work at the **contact** level until there's a real conversation. Once an employer is genuinely engaged, manage at the **account** level; on any signal of hiring interest, create the **opportunity**; when they commit to specific seats, create the **roles**. Don't keep working a contact's stage after the account has a live opportunity — mark them Converted to Opportunity and manage the opportunity.
 
 ---
 
 ## Section 3 · Contacts — the activation pipeline
 
 - Anyone can live in the contact base; **flagging** a contact makes them a *lead* — they enter the funnel.
-- Stages: **Flagged → Initial Outreach → Active → Handed Off**, with **On Hold** and **Not a fit** as parking/exit dispositions.
+- Stages: **Flagged → Initial Outreach → Qualified → Converted to Opportunity**, with **On Hold** and **Not a fit** as parking/exit dispositions.
 - *Definitions the funnel uses:* a **lead** is a contact someone deliberately flagged (or requested an intro to). **Outreach** starts when the first real touch happens. Being in the database is neither.
 - **Intro requests** are how the network gets activated: request an intro from the connected staffer → they're notified in Slack and on their Home page → they accept/decline/make the intro → the contact moves through the funnel. Every staffer also has a **My Network** view to pre-mark their own connections ("would reach out" / "not a fit") — do this once and the team's lead list builds itself.
 
