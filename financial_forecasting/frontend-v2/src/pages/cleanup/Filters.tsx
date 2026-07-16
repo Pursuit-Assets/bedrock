@@ -192,6 +192,31 @@ export function ruleApplies<T, F extends string>(
   return true;
 }
 
+/** Serialize rules for server-side filtering (the list endpoints translate
+ *  them into SQL so filters constrain the QUERY, not the loaded page).
+ *  Resolves date presets (in_range) into concrete between-dates so the
+ *  server never needs the preset table; drops rules with no usable value. */
+export function serializeRulesForServer<F extends string>(
+  rules: FilterRule<F>[],
+): { field: F; op: string; values: string[] }[] {
+  const out: { field: F; op: string; values: string[] }[] = [];
+  for (const r of rules) {
+    if (r.op === "in_range") {
+      const win = presetWindow(r.values[0] ?? "");
+      if (!win) continue;
+      const iso = (ms: number) => new Date(ms).toISOString().slice(0, 10);
+      // client windows are [start, end) with a day of padding — the server's
+      // `between` is end-inclusive, so hand it the last padded day directly.
+      out.push({ field: r.field, op: "between", values: [iso(win[0]), iso(win[1] - 86_400_000)] });
+      continue;
+    }
+    const needsValue = r.op !== "is_empty" && r.op !== "is_not_empty";
+    if (needsValue && r.values.length === 0) continue;
+    out.push({ field: r.field, op: r.op, values: r.values });
+  }
+  return out;
+}
+
 export function describeRule<T, F extends string>(
   r: FilterRule<F>,
   filterable: Record<F, FieldMeta<T>>,

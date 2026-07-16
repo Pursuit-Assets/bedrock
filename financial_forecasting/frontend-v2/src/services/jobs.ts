@@ -55,6 +55,7 @@ export interface JobsOpportunity {
   sf_opportunity_id: string | null;
   touch_count: number;
   follow_up_date: string | null;
+  target_close_date: string | null;
   airtable_id: string | null;
   num_roles: number | null;
   likelihood: "low" | "medium" | "high" | null;
@@ -242,6 +243,9 @@ export interface ContactFilters {
   membership_stage?: string;
   industry?: string;
   has_open_roles?: boolean;
+  /** Serialized Filter-menu rules — translated to SQL server-side so filters
+   *  see the full 47k universe, never just the loaded page. */
+  rules?: { field: string; op: string; values: string[] }[];
 }
 
 export interface ConnectedStaff {
@@ -329,6 +333,7 @@ export function useJobsContacts(filters: ContactFilters = {}) {
   if (filters.membership_stage) params.set("membership_stage", filters.membership_stage);
   if (filters.industry) params.set("industry", filters.industry);
   if (filters.has_open_roles) params.set("has_open_roles", "true");
+  if (filters.rules && filters.rules.length > 0) params.set("filters", JSON.stringify(filters.rules));
   params.set("limit", String(filters.limit ?? 200));
 
   return useQuery<{ data: JobContactWithDeal[]; total: number }>({

@@ -39,9 +39,14 @@ async def relink_jobs_prospect_activity(conn, days_back: Optional[int] = None) -
     # (the participant column is singular; multi-recipient emails link to one).
     sql = f"""
     WITH jp AS (
+        -- ALL contacts, not just is_jobs_contact: the participant link is
+        -- identity resolution, not jobs classification (metrics gate on
+        -- jobs_relevance separately). Restricting to flagged contacts left
+        -- follow-up emails unlinked whenever the contact was flagged later
+        -- than the email was synced (TKT-124: 115 orphaned emails).
         SELECT contact_id, lower(email) AS em
         FROM public.contacts
-        WHERE is_jobs_contact = true AND email IS NOT NULL AND email <> ''
+        WHERE email IS NOT NULL AND email <> ''
     ),
     act_part AS (
         SELECT a.id, lower(a.email_from) AS em

@@ -128,6 +128,7 @@ export function LogActivityForm({
 }) {
   const [type, setType] = useState<ActivityType>("call");
   const [description, setDescription] = useState("");
+  const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [submitting, setSubmitting] = useState(false);
   const { mutateAsync: logActivity } = useLogProspectActivity();
 
@@ -140,6 +141,7 @@ export function LogActivityForm({
         contact_id: contactId,
         type,
         description: description.trim(),
+        activity_date: date || undefined,
       });
       onClose();
     } finally {
@@ -165,6 +167,17 @@ export function LogActivityForm({
             {opt.label}
           </button>
         ))}
+      </div>
+
+      <div>
+        <label className="mb-0.5 block text-[10px] font-semibold uppercase tracking-wide text-ink-4">Date</label>
+        <input
+          type="date"
+          value={date}
+          max={new Date().toISOString().slice(0, 10)}
+          onChange={(e) => setDate(e.target.value)}
+          className="rounded border border-border-strong bg-surface px-2 py-1.5 text-[12px] text-ink focus:outline-none focus:ring-1 focus:ring-accent"
+        />
       </div>
 
       <div>

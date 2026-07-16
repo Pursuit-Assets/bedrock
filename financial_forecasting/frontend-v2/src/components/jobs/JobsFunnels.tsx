@@ -16,19 +16,19 @@ import { cn } from "@/lib/utils";
 
 const FUNNEL_TABS: { type: FunnelType; label: string }[] = [
   { type: "opportunities", label: "Opportunities" },
-  { type: "prospects", label: "Prospects" },
+  { type: "prospects", label: "Contacts" },
   { type: "builders", label: "Builders" },
 ];
 
 const FUNNEL_TITLE: Record<FunnelType, string> = {
   opportunities: "Opportunities",
-  prospects: "Prospects",
+  prospects: "Contacts",
   builders: "Builders",
 };
 
 const FUNNEL_SUBTITLE: Record<FunnelType, string> = {
   opportunities: "Employer deals by stage · transitions in the last 30d",
-  prospects: "Outreach contacts by stage",
+  prospects: "Jobs-pipeline contacts by stage",
   builders: "Builder applications by stage",
 };
 
@@ -95,7 +95,11 @@ export function JobsFunnels({ builderSegment }: { builderSegment?: string } = {}
           })}
         </div>
 
-        {/* Deal-type lens — defaults to Full-Time */}
+        {/* Deal-type lens — defaults to Full-Time. Hidden on the Builders
+            funnel: that funnel is the L3+ pool scoped by cohort segment, and
+            the lens never applied to it — showing selected-but-inert pills
+            read as "PT shows full-time hires too" (TKT-129). */}
+        {funnel !== "builders" && (
         <div className="flex items-center gap-1.5">
           <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-4">Deal type</span>
           <div className="inline-flex flex-wrap rounded-full border border-border-strong bg-surface-2 p-0.5">
@@ -117,6 +121,7 @@ export function JobsFunnels({ builderSegment }: { builderSegment?: string } = {}
             })}
           </div>
         </div>
+        )}
       </div>
 
       {/* Funnel card */}
