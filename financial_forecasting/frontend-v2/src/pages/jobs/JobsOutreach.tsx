@@ -152,7 +152,7 @@ function ScorecardTable({
                   onClick={() => setOpen(isOpen ? null : id)}
                   className={cn("cursor-pointer text-[13.5px] hover:bg-surface-2",
                     !isLast && "border-b border-border",
-                    tierStart && "border-t-2 border-border-strong")}
+                    tierStart && "border-t-2 border-border")}
                 >
                   <td className="px-3.5 py-2.5 text-left font-semibold">
                     <span className="mr-1 inline-block w-3.5 text-ink-4">
@@ -276,56 +276,49 @@ function OriginComparison({ sc }: { sc: OutreachScorecard }) {
   const resp = (a.direct_email_response ?? { this_period: EMPTY } as ScorecardRow).this_period;
   const qual = (u.active ?? { this_period: EMPTY } as ScorecardRow).this_period;
 
-  const rate = (num: number, den: number) => (den ? (num / den) * 100 : 0);
-  const metrics: { l: string; warm: number; cold: number; display: (v: number) => string }[] = [
-    { l: "Sourced", warm: flagged.warm, cold: flagged.cold, display: (v) => String(Math.round(v)) },
-    { l: "Sent", warm: email.warm, cold: email.cold, display: (v) => String(Math.round(v)) },
-    { l: "Response rate", warm: rate(resp.warm, email.warm), cold: rate(resp.cold, email.cold), display: (v) => `${Math.round(v)}%` },
-    { l: "Qual. rate", warm: rate(qual.warm, flagged.warm), cold: rate(qual.cold, flagged.cold), display: (v) => `${Math.round(v)}%` },
+  const rate = (num: number, den: number) => (den ? `${Math.round((num / den) * 100)}%` : "—");
+  const rows: { l: string; warm: string; cold: string }[] = [
+    { l: "Sourced", warm: String(flagged.warm), cold: String(flagged.cold) },
+    { l: "Sent", warm: String(email.warm), cold: String(email.cold) },
+    { l: "Response rate", warm: rate(resp.warm, email.warm), cold: rate(resp.cold, email.cold) },
+    { l: "Qual. rate", warm: rate(qual.warm, flagged.warm), cold: rate(qual.cold, flagged.cold) },
   ];
 
-  // Overall warm/cold share of total sends, for the headline split bar.
+  // One stacked bar: share of sends that are warm vs cold.
   const totalSent = email.warm + email.cold;
   const warmShare = totalSent ? (email.warm / totalSent) * 100 : 0;
-
-  const Bar = ({ l, warm, cold, display }: (typeof metrics)[number]) => {
-    const max = Math.max(1, warm, cold);
-    return (
-      <div>
-        <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-ink-3">{l}</div>
-        <div className="flex flex-col gap-1">
-          <div className="flex items-center gap-2">
-            <div className="h-[14px] flex-1 rounded bg-surface-2">
-              <div className="h-full rounded bg-amber" style={{ width: `${Math.max(2, (warm / max) * 100)}%` }} />
-            </div>
-            <div className="w-11 shrink-0 text-right text-[12.5px] font-bold tabular-nums text-ink">{display(warm)}</div>
-          </div>
-          <div className="flex items-center gap-2">
-            <div className="h-[14px] flex-1 rounded bg-surface-2">
-              <div className="h-full rounded bg-ink-3" style={{ width: `${Math.max(2, (cold / max) * 100)}%` }} />
-            </div>
-            <div className="w-11 shrink-0 text-right text-[12.5px] font-bold tabular-nums text-ink-2">{display(cold)}</div>
-          </div>
-        </div>
-      </div>
-    );
-  };
+  const coldShare = 100 - warmShare;
 
   return (
     <div className="rounded-xl border border-border-strong bg-surface p-4">
-      {/* Headline: share of sends that are warm vs cold */}
-      <div className="mb-4 flex items-center gap-4">
-        <div className="flex h-2.5 flex-1 overflow-hidden rounded-full bg-surface-2">
-          <div className="h-full bg-amber" style={{ width: `${warmShare}%` }} />
-          <div className="h-full bg-ink-3" style={{ width: `${100 - warmShare}%` }} />
-        </div>
-        <div className="flex shrink-0 items-center gap-3 text-[12px]">
-          <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-sm bg-amber" /><b className="text-ink">{Math.round(warmShare)}%</b> Warm</span>
-          <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-sm bg-ink-3" /><b className="text-ink">{Math.round(100 - warmShare)}%</b> Cold</span>
-        </div>
+      {/* Single stacked warm/cold bar */}
+      <div className="flex h-8 w-full overflow-hidden rounded-lg bg-surface-2">
+        {warmShare > 0 && (
+          <div className="flex h-full items-center justify-center bg-amber text-[12px] font-bold text-white" style={{ width: `${warmShare}%` }}>
+            {warmShare >= 12 && `${Math.round(warmShare)}%`}
+          </div>
+        )}
+        {coldShare > 0 && (
+          <div className="flex h-full items-center justify-center bg-ink-3 text-[12px] font-bold text-white" style={{ width: `${coldShare}%` }}>
+            {coldShare >= 12 && `${Math.round(coldShare)}%`}
+          </div>
+        )}
       </div>
-      <div className="grid grid-cols-2 gap-x-6 gap-y-4">
-        {metrics.map((m) => <Bar key={m.l} {...m} />)}
+
+      {/* Origin details table */}
+      <div className="mt-4">
+        <div className="grid grid-cols-[1fr_auto_auto] items-center gap-x-8 border-b border-border pb-2">
+          <span className="text-[13px] font-bold text-ink">Origin Details</span>
+          <span className="flex items-center gap-1.5 text-[12px] text-ink-2"><span className="h-2.5 w-2.5 rounded-sm bg-amber" />Warm</span>
+          <span className="flex items-center gap-1.5 text-[12px] text-ink-2"><span className="h-2.5 w-2.5 rounded-sm bg-ink-3" />Cold</span>
+        </div>
+        {rows.map((r) => (
+          <div key={r.l} className="grid grid-cols-[1fr_auto_auto] items-center gap-x-8 border-b border-border py-2 last:border-b-0">
+            <span className="text-[13px] text-ink-2">{r.l}</span>
+            <span className="w-12 text-right text-[13.5px] font-semibold tabular-nums text-ink">{r.warm}</span>
+            <span className="w-12 text-right text-[13.5px] font-semibold tabular-nums text-ink">{r.cold}</span>
+          </div>
+        ))}
       </div>
     </div>
   );
