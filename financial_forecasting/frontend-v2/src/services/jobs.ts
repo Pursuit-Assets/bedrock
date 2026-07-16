@@ -998,6 +998,7 @@ export interface ScorecardCell { warm: number; cold: number; total: number }
 export interface ScorecardRow {
   stage?: string;
   metric?: string;
+  tier?: number;   // activity funnel tier: 1 = sent, 2 = engaged, 3 = replied
   label: string;
   this_period: ScorecardCell;
   last_period: ScorecardCell;
@@ -1064,14 +1065,17 @@ export function useOutreachTargetingMix(granularity: OutreachGranularity, scope:
 
 export interface OutreachAccountComment { author: string | null; content: string; date: string | null }
 export interface OutreachAccountTask { title: string; status: string; deadline: string | null; owner: string | null }
+export interface OutreachAccountContact { name: string | null; title: string | null }
 export interface OutreachAccount {
   account: string;
   owner: string | null;
   last_activity: string | null;
   comment_count: number;
   open_task_count: number;
+  contact_count: number;
   comments: OutreachAccountComment[];
   open_tasks: OutreachAccountTask[];
+  contacts: OutreachAccountContact[];
 }
 
 /** Account working list — accounts with comments/open tasks for the deep-dive discussion.

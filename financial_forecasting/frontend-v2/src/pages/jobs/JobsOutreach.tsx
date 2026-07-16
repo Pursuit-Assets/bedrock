@@ -1,5 +1,5 @@
 import { Fragment, useMemo, useState } from "react";
-import { ChevronRight, ChevronDown, Loader2 } from "lucide-react";
+import { ChevronRight, ChevronDown, Loader2, Search, Users } from "lucide-react";
 
 import {
   useOutreachScorecard,
@@ -146,13 +146,24 @@ function ScorecardTable({
             const id = `${idPrefix}-${rowKey}`;
             const isOpen = open === id;
             const isLast = idx === rows.length - 1;
+            // Funnel tiers (activity table): 1 = sent · 2 = engaged · 3 = replied.
+            // A new tier gets a stronger top rule + a small indent to read as one funnel.
+            const prevTier = idx > 0 ? rows[idx - 1].tier : undefined;
+            const tierStart = r.tier != null && r.tier !== prevTier && idx > 0;
+            const indent = r.tier != null ? (r.tier - 1) * 16 : 0;
+            const tierLabel = tierStart
+              ? (r.tier === 2 ? "Engaged" : r.tier === 3 ? "Replied" : "")
+              : "";
             return (
               <Fragment key={id}>
                 <tr
                   onClick={() => setOpen(isOpen ? null : id)}
-                  className={cn("cursor-pointer text-[13.5px] hover:bg-surface-2", !isLast && "border-b border-border")}
+                  className={cn("cursor-pointer text-[13.5px] hover:bg-surface-2",
+                    !isLast && "border-b border-border",
+                    tierStart && "border-t-2 border-border-strong")}
                 >
-                  <td className="px-3.5 py-2.5 text-left font-semibold">
+                  <td className="px-3.5 py-2.5 text-left font-semibold" style={{ paddingLeft: 14 + indent }}>
+                    {tierLabel && <span className="mr-2 text-[9.5px] font-bold uppercase tracking-wider text-ink-4">{tierLabel}</span>}
                     <span className="mr-1 inline-block w-3.5 text-ink-4">
                       {isOpen ? <ChevronDown size={12} className="inline" /> : <ChevronRight size={12} className="inline" />}
                     </span>
@@ -196,6 +207,12 @@ function ConversionTables({ sc }: { sc: OutreachScorecard }) {
   const comm = u.handed_off ?? { this_period: EMPTY, last_period: EMPTY } as ScorecardRow;
   const email = a.direct_email_sent ?? { this_period: EMPTY, last_period: EMPTY } as ScorecardRow;
   const resp = a.direct_email_response ?? { this_period: EMPTY, last_period: EMPTY } as ScorecardRow;
+  const eng = a.engagement ?? { this_period: EMPTY, last_period: EMPTY } as ScorecardRow;
+  const li = a.linkedin_message_sent ?? { this_period: EMPTY, last_period: EMPTY } as ScorecardRow;
+  const intro = a.facilitated_intro_sent ?? { this_period: EMPTY, last_period: EMPTY } as ScorecardRow;
+  // All outreach sent (level 1 of the funnel) = email + linkedin + facilitated intro.
+  const sentTotal = (w: "this_period" | "last_period") => email[w].total + li[w].total + intro[w].total;
+  const engRate = (w: "this_period" | "last_period") => { const d = sentTotal(w); return d ? eng[w].total / d : null; };
 
   const ratio = (numRow: ScorecardRow, denRow: ScorecardRow, when: "this_period" | "last_period") => {
     const d = denRow[when].total; return d ? numRow[when].total / d : null;
@@ -242,15 +259,18 @@ function ConversionTables({ sc }: { sc: OutreachScorecard }) {
       </RatioTable>
       <RatioTable title="Activity">
         {(() => {
-          const t = ratio(resp, email, "this_period"), l = ratio(resp, email, "last_period");
-          return (
-            <tr className="text-[13px] border-t border-border">
-              <td className="px-3.5 py-2 text-left">Direct Email Responses / Emails Sent</td>
-              <td className="px-3.5 py-2 text-right tabular-nums">{fmt(t)}</td>
-              <td className="px-3.5 py-2 text-right tabular-nums">{fmt(l)}</td>
-              <td className="px-3.5 py-2 text-right text-[12px]">{t != null && l != null ? <Trend current={t} prior={l} unit="pt" /> : <span className="text-ink-4">—</span>}</td>
+          const rows = [
+            { label: "Engagements / Touches Sent", t: engRate("this_period"), l: engRate("last_period") },
+            { label: "Direct Email Responses / Emails Sent", t: ratio(resp, email, "this_period"), l: ratio(resp, email, "last_period") },
+          ];
+          return rows.map((r, i) => (
+            <tr key={i} className="text-[13px] border-t border-border">
+              <td className="px-3.5 py-2 text-left">{r.label}</td>
+              <td className="px-3.5 py-2 text-right tabular-nums">{fmt(r.t)}</td>
+              <td className="px-3.5 py-2 text-right tabular-nums">{fmt(r.l)}</td>
+              <td className="px-3.5 py-2 text-right text-[12px]">{r.t != null && r.l != null ? <Trend current={r.t} prior={r.l} unit="pt" /> : <span className="text-ink-4">—</span>}</td>
             </tr>
-          );
+          ));
         })()}
       </RatioTable>
     </div>
@@ -291,10 +311,11 @@ function OriginComparison({ sc }: { sc: OutreachScorecard }) {
   );
 }
 
-function BySenderTable({ sc, selectedOwner, onPick }: {
+function BySenderTable({ sc, selectedOwner, onPick, nameOf }: {
   sc: OutreachScorecard;
   selectedOwner: string;
   onPick: (email: string) => void;
+  nameOf: (email: string) => string;
 }) {
   if (sc.by_sender.length === 0) return <div className="rounded-xl border border-border-strong bg-surface px-4 py-6 text-center text-[13px] text-ink-4">No sends by this group in the period.</div>;
   return (
@@ -322,7 +343,7 @@ function BySenderTable({ sc, selectedOwner, onPick }: {
                   active && "bg-accent-soft")}
               >
                 <td className="px-3.5 py-2.5 text-left font-medium">
-                  {s.staff}
+                  {nameOf(s.staff)}
                   {active && <span className="ml-2 rounded bg-surface px-1.5 py-0.5 text-[10px] font-bold uppercase text-accent-ink">filtering</span>}
                 </td>
                 <td className="px-3.5 py-2.5 text-right tabular-nums">{s.sent.this}</td>
@@ -351,24 +372,30 @@ function BySenderTable({ sc, selectedOwner, onPick }: {
 // ── Targeting Mix (horizontal bar charts, 2×2) ────────────────────────────────
 function TargetingChart({ dim }: { dim: TargetingDim }) {
   const rows = dim.rows.slice(0, 8);
+  const totalSent = dim.rows.reduce((s, r) => s + r.sent, 0);
   const max = Math.max(1, ...rows.map((r) => r.sent));
   return (
     <div className="flex flex-col rounded-xl border border-border-strong bg-surface p-4">
-      <div className="mb-3 text-[13px] font-bold text-ink-2">{dim.label}</div>
+      <div className="mb-3 flex items-baseline justify-between">
+        <span className="text-[13px] font-bold text-ink-2">{dim.label}</span>
+        <span className="text-[11px] text-ink-4">{totalSent} sent total</span>
+      </div>
       {rows.length === 0 && <div className="py-4 text-center text-[12.5px] text-ink-4">No contact-linked outreach in this period.</div>}
       <div className="flex flex-col gap-2">
-        {rows.map((r) => (
-          <div key={r.bucket} className="flex items-center gap-2">
-            <div className="w-[130px] shrink-0 truncate text-right text-[12.5px] text-ink-2" title={r.bucket}>{r.bucket}</div>
-            <div className="h-[18px] flex-1 rounded bg-surface-2">
-              <div className="h-full rounded bg-accent" style={{ width: `${Math.max(2, (r.sent / max) * 100)}%`, opacity: 0.85 }} />
+        {rows.map((r) => {
+          const share = totalSent ? Math.round((r.sent / totalSent) * 100) : 0;
+          return (
+            <div key={r.bucket} className="flex items-center gap-2">
+              <div className="w-[130px] shrink-0 truncate text-right text-[12.5px] text-ink-2" title={r.bucket}>{r.bucket}</div>
+              <div className="h-[18px] flex-1 rounded bg-surface-2">
+                <div className="h-full rounded bg-accent" style={{ width: `${Math.max(2, (r.sent / max) * 100)}%`, opacity: 0.85 }} />
+              </div>
+              <div className="w-[92px] shrink-0 text-[12px] tabular-nums text-ink-2">
+                <b>{r.sent}</b> <span className="text-ink-4">· {share}%</span>
+              </div>
             </div>
-            <div className="w-[110px] shrink-0 text-[12px] tabular-nums text-ink-2">
-              <b>{r.sent}</b>
-              <span className="text-ink-4"> sent · {r.responses} repl{r.responses === 1 ? "y" : "ies"}</span>
-            </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
       {dim.rows.length > 8 && <div className="mt-2 text-[11px] text-ink-4">+{dim.rows.length - 8} smaller buckets not shown</div>}
     </div>
@@ -397,16 +424,36 @@ function AccountsPanel({ owner }: { owner?: string }) {
   const { data, isLoading } = useOutreachAccounts(owner);
   const [showAll, setShowAll] = useState(false);
   const [open, setOpen] = useState<Set<string>>(new Set());
+  const [q, setQ] = useState("");
 
   if (isLoading) return <div className="h-40 animate-pulse rounded-xl border border-border-strong bg-surface-2" />;
   const accounts = data?.accounts ?? [];
-  if (accounts.length === 0) return <div className="rounded-xl border border-border-strong bg-surface px-4 py-6 text-center text-[13px] text-ink-4">{owner ? `No accounts with notes or open tasks for ${owner.split("@")[0]} yet.` : "No accounts with comments or open tasks yet."}</div>;
-
-  const shown = showAll ? accounts : accounts.slice(0, ACCOUNTS_PAGE);
   const fmtD = (iso: string | null) => (iso ? new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : "");
+
+  const filtered = q.trim()
+    ? accounts.filter((a) => a.account.toLowerCase().includes(q.trim().toLowerCase()))
+    : accounts;
+  const shown = showAll ? filtered : filtered.slice(0, ACCOUNTS_PAGE);
+
+  const searchBar = (
+    <div className="flex items-center gap-2 border-b border-border bg-surface-2 px-3 py-2">
+      <Search size={14} className="text-ink-4" />
+      <input
+        value={q}
+        onChange={(e) => { setQ(e.target.value); setShowAll(true); }}
+        placeholder="Search accounts…"
+        className="w-full bg-transparent text-[13px] text-ink outline-none placeholder:text-ink-4"
+      />
+      {q && <button onClick={() => setQ("")} className="text-[11.5px] text-ink-4 hover:text-ink">clear</button>}
+    </div>
+  );
+
+  if (accounts.length === 0) return <div className="rounded-xl border border-border-strong bg-surface px-4 py-6 text-center text-[13px] text-ink-4">{owner ? `No accounts with notes or open tasks for ${owner.split("@")[0]} yet.` : "No accounts with comments or open tasks yet."}</div>;
 
   return (
     <div className="flex flex-col overflow-hidden rounded-xl border border-border-strong bg-surface">
+      {searchBar}
+      {shown.length === 0 && <div className="px-4 py-6 text-center text-[13px] text-ink-4">No accounts match “{q}”.</div>}
       {shown.map((a, idx) => {
         const isOpen = open.has(a.account);
         const latest = a.comments[0];
@@ -437,6 +484,11 @@ function AccountsPanel({ owner }: { owner?: string }) {
                 <span className="rounded-full bg-surface-2 px-2 py-0.5 text-[11px] font-semibold text-ink-3">
                   {a.comment_count} note{a.comment_count === 1 ? "" : "s"}
                 </span>
+                {a.contact_count > 0 && (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-accent-soft px-2 py-0.5 text-[11px] font-semibold text-accent-ink">
+                    <Users size={11} /> {a.contact_count}
+                  </span>
+                )}
                 <span className="w-[52px] text-right text-[11.5px] tabular-nums text-ink-4">{fmtD(a.last_activity)}</span>
               </div>
             </button>
@@ -466,14 +518,29 @@ function AccountsPanel({ owner }: { owner?: string }) {
                     ))}
                   </div>
                 )}
+                {a.contacts.length > 0 && (
+                  <div>
+                    <div className="mb-1 text-[10.5px] font-bold uppercase tracking-wide text-accent-ink">Contacts ({a.contact_count})</div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {a.contacts.map((c, i) => (
+                        <span key={i} className="rounded-md border border-border bg-surface px-2 py-1 text-[12px] text-ink-2" title={c.title || ""}>
+                          {c.name || "—"}{c.title ? <span className="text-ink-4"> · {c.title}</span> : null}
+                        </span>
+                      ))}
+                      {a.contact_count > a.contacts.length && (
+                        <span className="px-1 py-1 text-[11.5px] text-ink-4">+{a.contact_count - a.contacts.length} more</span>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </div>
         );
       })}
-      {!showAll && accounts.length > ACCOUNTS_PAGE && (
+      {!showAll && filtered.length > ACCOUNTS_PAGE && (
         <button onClick={() => setShowAll(true)} className="border-t border-border px-4 py-2.5 text-left text-[12.5px] font-medium text-accent-ink hover:underline">
-          Show more ({accounts.length - ACCOUNTS_PAGE} more accounts)
+          Show more ({filtered.length - ACCOUNTS_PAGE} more accounts)
         </button>
       )}
     </div>
@@ -500,6 +567,7 @@ export function JobsOutreach() {
   const range: OutreachDateRange | undefined = from && to ? { from, to } : undefined;
 
   const { data: staff = [] } = useJobsStaff();
+  const nameOf = (email: string) => staff.find((s) => s.email.toLowerCase() === email.toLowerCase())?.name || email.split("@")[0];
   const { data: sc, isLoading, isError } = useOutreachScorecard(granularity, scope, owner || undefined, range);
   const rangeLabel = useMemo(() => (sc ? fmtRange(sc.period.this_start, sc.period.this_end) : ""), [sc]);
 
@@ -574,7 +642,7 @@ export function JobsOutreach() {
           </div>
 
           <SectionHead title="By Sender" note="Sent volume & warm/cold, per staff — click a row to filter" />
-          <BySenderTable sc={sc} selectedOwner={owner} onPick={setOwner} />
+          <BySenderTable sc={sc} selectedOwner={owner} onPick={setOwner} nameOf={nameOf} />
 
           <SectionHead title="Targeting Mix" note={`Outreach & replies by segment${owner ? ` · ${owner.split("@")[0]}` : ""} · this period`} />
           <TargetingMix granularity={granularity} scope={scope} owner={owner || undefined} range={range} />

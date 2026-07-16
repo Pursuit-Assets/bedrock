@@ -2196,10 +2196,16 @@ _OUTREACH_STAGE_META = [
 _OUTREACH_ACTIVITY_META = [
     ("direct_email_sent",      "Direct Email Sent"),
     ("linkedin_message_sent",  "LinkedIn Messages Sent"),
-    ("facilitated_intro_sent", "Facilitated Intro (warm)"),
+    ("facilitated_intro_sent", "Facilitated Intro"),
     ("engagement",             "Engagements"),
     ("direct_email_response",  "Direct Email Responses"),
 ]
+# Funnel tier per activity metric — the frontend uses this to visually group the
+# rows: sent touches (1) → engagements (2) → email replies (3).
+_ACTIVITY_TIER = {
+    "direct_email_sent": 1, "linkedin_message_sent": 1, "facilitated_intro_sent": 1,
+    "engagement": 2, "direct_email_response": 3,
+}
 _STAGE_ENTERED_COL = {
     "flagged": "flagged_at", "initial_outreach": "first_outreach_at",
     "active": "active_at", "handed_off": "handed_off_at",
@@ -2411,15 +2417,7 @@ async def outreach_scorecard(
         FROM bedrock.activity a
         WHERE a.deleted_at IS NULL AND a.type = 'linkedin' AND {_activity_actor('a', scope, owner)} AND {_jobs_relevant('a')}
         UNION ALL
-        -- Engagements = the counterpart engaging: a meeting, a call, or an inbound
-        -- email (from outside Pursuit). Jobs-relevant, non-auto-reply. Not scoped
-        -- by author (it's them, not our staff).
-        SELECT 'engagement', a.activity_date, a.participant_public_contact_id
-        FROM bedrock.activity a
-        WHERE a.deleted_at IS NULL AND {_jobs_relevant('a')} AND {_not_autoreply('a')}
-          AND (a.type IN ('meeting','call') OR (a.type = 'email' AND a.email_from NOT ILIKE '%@pursuit.org%'))
-        UNION ALL
-        -- Facilitated intro (warm intro) that was acted on.
+        -- Facilitated intro that was acted on.
         SELECT 'facilitated_intro_sent', coalesce(ir.responded_at, ir.created_at), ir.contact_id
         FROM bedrock.intro_request ir
         WHERE ir.status IN ('accepted','completed') AND {_scope_intro_pred(scope, owner)}
@@ -2455,6 +2453,16 @@ async def outreach_scorecard(
           AND a.email_from NOT ILIKE '%@pursuit.org%'
         GROUP BY 1
     ),
+    -- Engagements = the counterpart engaging back: a meeting or call, OR a direct
+    -- email response. Built so Direct Email Responses always nest inside it.
+    engagement_events AS (
+        SELECT a.activity_date AS ts, a.participant_public_contact_id AS contact_id
+        FROM bedrock.activity a
+        WHERE a.deleted_at IS NULL AND a.type IN ('meeting','call')
+          AND {_jobs_relevant('a')} AND {_not_autoreply('a')}
+        UNION ALL
+        SELECT fr.reply_date AS ts, fr.contact_id FROM first_reply fr
+    ),
     stage_counts AS (
         SELECT 'user' AS kind, se.stage AS key, coalesce(cw.warmth,'cold') AS warmth,
                count(*) FILTER (WHERE se.entered_at >= $1 AND se.entered_at < $2) AS this_period,
@@ -2479,6 +2487,14 @@ async def outreach_scorecard(
         LEFT JOIN contact_warmth cw ON cw.contact_id = ae.contact_id
         GROUP BY ae.metric, coalesce(cw.warmth,'cold')
     ),
+    engagement_counts AS (
+        SELECT 'activity' AS kind, 'engagement' AS key, coalesce(cw.warmth,'cold') AS warmth,
+               count(*) FILTER (WHERE ee.ts >= $1 AND ee.ts < $2) AS this_period,
+               count(*) FILTER (WHERE ee.ts >= $3 AND ee.ts < $4) AS last_period
+        FROM engagement_events ee
+        LEFT JOIN contact_warmth cw ON cw.contact_id = ee.contact_id
+        GROUP BY coalesce(cw.warmth,'cold')
+    ),
     response_counts AS (
         SELECT 'activity' AS kind, 'direct_email_response' AS key, coalesce(cw.warmth,'cold') AS warmth,
                count(*) FILTER (WHERE fr.reply_date >= $1 AND fr.reply_date < $2) AS this_period,
@@ -2490,6 +2506,7 @@ async def outreach_scorecard(
     SELECT * FROM stage_counts
     UNION ALL SELECT * FROM outreached_counts
     UNION ALL SELECT * FROM activity_counts
+    UNION ALL SELECT * FROM engagement_counts
     UNION ALL SELECT * FROM response_counts
     """
     rows = await conn.fetch(sql, this_start, this_end, last_start, last_end)
@@ -2553,7 +2570,7 @@ async def outreach_scorecard(
         for s, label in _OUTREACH_STAGE_META
     ]
     activity_pipeline = [
-        {"metric": m, **_row("activity", m, label, activity_pipeline_target(m, granularity))}
+        {"metric": m, "tier": _ACTIVITY_TIER.get(m), **_row("activity", m, label, activity_pipeline_target(m, granularity))}
         for m, label in _OUTREACH_ACTIVITY_META
     ]
     return {"success": True, "data": {
@@ -2662,9 +2679,8 @@ async def outreach_scorecard_detail(
                     f"a.type = 'email' AND {_activity_actor('a', scope, owner)} AND {_not_autoreply('a')} AND {_jobs_relevant('a')}",
                 "linkedin_message_sent":
                     f"a.type = 'linkedin' AND {_activity_actor('a', scope, owner)} AND {_jobs_relevant('a')}",
-                "engagement":
-                    f"{_jobs_relevant('a')} AND {_not_autoreply('a')} "
-                    f"AND (a.type IN ('meeting','call') OR (a.type = 'email' AND a.email_from NOT ILIKE '%@pursuit.org%'))",
+                "engagement":  # meetings/calls only here; email replies appended below
+                    f"a.type IN ('meeting','call') AND {_jobs_relevant('a')} AND {_not_autoreply('a')}",
             }.get(key)
             if where is None:
                 raise HTTPException(400, "invalid activity key")
@@ -2682,6 +2698,32 @@ async def outreach_scorecard_detail(
                     "date": r["activity_date"].isoformat() if r["activity_date"] else None,
                     "type": r["type"], "subject": r["subject"], "snippet": r["email_snippet"],
                     "direction": _touch_direction(r["type"], r["email_from"])})
+            if key == "engagement":
+                # Engagements also include direct email responses — append them.
+                reps = await conn.fetch(f"""
+                    WITH sent_out AS (
+                        SELECT lower(e) AS addr, min(a.activity_date) AS first_out
+                        FROM bedrock.activity a, unnest(coalesce(a.email_to,'{{}}') || coalesce(a.email_cc,'{{}}')) e
+                        WHERE a.deleted_at IS NULL AND a.type='email' AND {_activity_actor('a', scope, owner)}
+                          AND {_jobs_relevant('a')} AND lower(e) NOT LIKE '%@pursuit.org%'
+                        GROUP BY 1
+                    ),
+                    first_reply AS (
+                        SELECT {_email_addr('a')} AS addr, min(a.activity_date) AS reply_date, max(a.participant_public_contact_id) AS contact_id
+                        FROM bedrock.activity a JOIN sent_out s ON s.addr = {_email_addr('a')} AND a.activity_date >= s.first_out
+                        WHERE a.deleted_at IS NULL AND a.type='email' AND {_not_autoreply('a')} AND a.email_from NOT ILIKE '%@pursuit.org%'
+                        GROUP BY 1
+                    )
+                    SELECT fr.addr, fr.reply_date, fr.contact_id, c.full_name, c.current_company
+                    FROM first_reply fr LEFT JOIN public.contacts c ON c.contact_id = fr.contact_id
+                    WHERE fr.reply_date >= $1 AND fr.reply_date < $2 ORDER BY fr.reply_date DESC LIMIT 500
+                """, start, end)
+                for idx, r in enumerate(reps):
+                    cid = r["contact_id"] if r["contact_id"] is not None else -(idx + 1)
+                    g = _contact(cid, r["full_name"] or r["addr"], r["current_company"])
+                    g["touches"].append({
+                        "date": r["reply_date"].isoformat() if r["reply_date"] else None,
+                        "type": "email", "subject": "Email reply", "snippet": r["addr"], "direction": "received"})
     else:  # kind == "user"
         if key == "initial_outreach":
             # Activity-driven: distinct contacts emailed by the scope this period.
@@ -2897,7 +2939,12 @@ async def outreach_accounts(
            (SELECT json_agg(json_build_object('author', cc.author, 'content', cc.content, 'date', cc.created_at) ORDER BY cc.created_at DESC)
             FROM comments cc WHERE cc.acct=a.acct) AS comments,
            (SELECT json_agg(json_build_object('title', tt.title, 'status', tt.status, 'deadline', tt.deadline, 'owner', tt.owner) ORDER BY tt.deadline NULLS LAST)
-            FROM tasks tt WHERE tt.acct=a.acct) AS open_tasks
+            FROM tasks tt WHERE tt.acct=a.acct) AS open_tasks,
+           (SELECT count(*) FROM public.contacts pc WHERE lower(trim(pc.current_company))=a.acct AND pc.is_jobs_contact = true) AS contact_count,
+           (SELECT json_agg(json_build_object('name', x.full_name, 'title', x.current_title))
+            FROM (SELECT full_name, current_title FROM public.contacts pc2
+                  WHERE lower(trim(pc2.current_company))=a.acct AND pc2.is_jobs_contact = true
+                  ORDER BY pc2.updated_at DESC LIMIT 30) x) AS contacts
     FROM accts a
     LEFT JOIN bedrock.jobs_account ja ON ja.account_key = a.acct
     LEFT JOIN owners ow ON ow.acct = a.acct
@@ -2909,11 +2956,13 @@ async def outreach_accounts(
     for r in rows:
         comments = _jsonb(r["comments"]) or []
         tasks = _jsonb(r["open_tasks"]) or []
+        contacts_l = _jsonb(r["contacts"]) or []
         items.append({
             "account": r["display"], "owner": r["owner"],
             "last_activity": r["last_activity"].isoformat() if r["last_activity"] else None,
             "comment_count": len(comments), "open_task_count": len(tasks),
-            "comments": comments, "open_tasks": tasks,
+            "contact_count": r["contact_count"] or 0,
+            "comments": comments, "open_tasks": tasks, "contacts": contacts_l,
         })
     return {"success": True, "data": {"accounts": items}}
 
