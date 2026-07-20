@@ -176,27 +176,47 @@ async def auto_advance_outreached(conn) -> dict[str, Any]:
     after the activity relink, and inline after a manual activity log.
     """
     result = await conn.execute("""
-        WITH outreach AS (
-            SELECT m.contact_id,
-                   min(a.activity_date) AS first_out,
-                   (array_agg(coalesce(a.email_from, a.logged_by)
-                              ORDER BY a.activity_date))[1] AS author
+        WITH touches AS (
+            -- Manual touches + meetings evidence at the activity level; EMAIL
+            -- evidence at the MESSAGE level (thread rows carry the first
+            -- message's date, so a staff reply post-flag inside an older
+            -- thread would otherwise never qualify).
+            SELECT m.contact_id, a.activity_date AS ts,
+                   coalesce(a.email_from, a.logged_by) AS author
             FROM bedrock.jobs_contact_membership m
             JOIN bedrock.activity a ON a.participant_public_contact_id = m.contact_id
             WHERE m.stage = 'flagged'
               AND a.deleted_at IS NULL
               AND a.activity_date >= m.flagged_at
-              AND (a.jobs_relevance = 'jobs' OR a.type NOT IN ('email','meeting'))
+              AND a.type NOT IN ('email')
+              AND (a.jobs_relevance = 'jobs' OR a.type <> 'meeting')
               AND (
                     a.type IN ('call', 'text', 'linkedin')
-                 OR (a.type IN ('email', 'meeting') AND EXISTS (
+                 OR (a.type = 'meeting' AND EXISTS (
                         SELECT 1 FROM public.org_users o
                         WHERE o.is_active
                           AND (a.email_from ILIKE '%'||o.email||'%'
                                OR a.logged_by ILIKE '%'||o.email||'%'
                                OR a.meeting_attendees::text ILIKE '%'||o.email||'%')))
               )
-            GROUP BY m.contact_id
+            UNION ALL
+            SELECT m.contact_id, aem.sent_at AS ts, aem.from_email AS author
+            FROM bedrock.jobs_contact_membership m
+            JOIN bedrock.activity a ON a.participant_public_contact_id = m.contact_id
+            JOIN bedrock.activity_email_message aem ON aem.activity_id = a.id
+            WHERE m.stage = 'flagged'
+              AND a.deleted_at IS NULL
+              AND a.type = 'email'
+              AND a.jobs_relevance = 'jobs'
+              AND aem.sent_at >= m.flagged_at
+              AND EXISTS (SELECT 1 FROM public.org_users o
+                          WHERE o.is_active AND aem.from_email ILIKE '%'||o.email||'%')
+        ),
+        outreach AS (
+            SELECT contact_id, min(ts) AS first_out,
+                   (array_agg(author ORDER BY ts))[1] AS author
+            FROM touches
+            GROUP BY contact_id
         )
         UPDATE bedrock.jobs_contact_membership m
         SET stage = 'initial_outreach',

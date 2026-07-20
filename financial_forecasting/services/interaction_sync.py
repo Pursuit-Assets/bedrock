@@ -122,6 +122,23 @@ async def run_interaction_sync(
     except Exception as e:
         logger.error("jobs-prospect activity link failed: %s", e)
 
+    # Message-level index — explode this run's synced threads into per-message
+    # rows so outreach metrics date each send correctly (replies/follow-ups
+    # otherwise inherit the thread's first-message date and vanish from weekly
+    # counts). Window matches the sync's own incremental horizon.
+    messages_indexed = 0
+    try:
+        from services.email_message_index import refresh_email_message_index
+        idx_conn = await _get_conn()
+        try:
+            idx_result = await refresh_email_message_index(idx_conn, days_back=(since_days or 7))
+            messages_indexed = idx_result.get("inserted", 0)
+        finally:
+            await _release_conn(idx_conn)
+        logger.info("email message index: %d new message rows", messages_indexed)
+    except Exception as e:
+        logger.error("email message index failed: %s", e)
+
     # Auto-add pass — flag EXISTING contacts the jobs team has engaged as jobs
     # prospects so the dashboard picks them up without manual tagging.
     prospects_flagged = 0

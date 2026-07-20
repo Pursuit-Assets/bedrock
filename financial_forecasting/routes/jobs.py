@@ -2333,6 +2333,26 @@ def _activity_actor(alias, scope, owner):
     return _scope_author(alias, scope)
 
 
+def _message_actor(scope, owner, aem: str = "aem") -> str:
+    """Author filter applied to a PARSED per-message sender
+    (bedrock.activity_email_message.from_email — bare, lowercased). Mirrors
+    _activity_actor's owner/scope semantics at message granularity, so replies
+    and follow-ups count on the day they were sent and for the person who sent
+    them (thread rows carry only the first message's author/date)."""
+    if owner and _SAFE_EMAIL.match(owner):
+        return f"{aem}.from_email ILIKE '%{owner}%'"
+    team = " OR ".join(f"{aem}.from_email ILIKE '%{e}%'" for e in JOBS_TEAM_EMAILS)
+    excl = ",".join(f"'{e.lower()}'" for e in JOBS_TEAM_EMAILS)
+    staff = (f"EXISTS (SELECT 1 FROM public.org_users o WHERE o.is_active "
+             f"AND o.email IS NOT NULL AND lower(o.email) NOT IN ({excl}) "
+             f"AND {aem}.from_email ILIKE '%'||o.email||'%')")
+    if scope == "team":
+        return f"({team})"
+    if scope == "staff":
+        return f"({staff})"
+    return f"(({team}) OR {staff})"
+
+
 def _scope_intro_pred(scope, owner):
     """requested_by_email filter for facilitated intros — owner overrides scope."""
     if owner and _SAFE_EMAIL.match(owner):
@@ -2475,11 +2495,19 @@ async def outreach_scorecard(
     stage_events AS (
         {stage_events_sql}
     ),
-    activity_events AS (
-        SELECT 'direct_email_sent' AS metric, a.activity_date AS ts, a.participant_public_contact_id AS contact_id
+    -- Message-level sends: every email the scope actually authored, dated by the
+    -- message itself (thread rows are dated/attributed to the FIRST message, which
+    -- made replies and follow-ups invisible to weekly counts).
+    sent_msgs AS (
+        SELECT aem.sent_at AS ts, a.participant_public_contact_id AS contact_id
         FROM bedrock.activity a
-        WHERE a.deleted_at IS NULL AND a.type = 'email' AND {_activity_actor('a', scope, owner)}
+        JOIN bedrock.activity_email_message aem ON aem.activity_id = a.id
+        WHERE a.deleted_at IS NULL AND a.type = 'email' AND {_message_actor(scope, owner)}
           AND {_not_autoreply('a')} AND {_jobs_relevant('a')}
+    ),
+    activity_events AS (
+        SELECT 'direct_email_sent' AS metric, sm.ts, sm.contact_id
+        FROM sent_msgs sm
         UNION ALL
         SELECT 'linkedin_message_sent', a.activity_date, a.participant_public_contact_id
         FROM bedrock.activity a
@@ -2493,32 +2521,31 @@ async def outreach_scorecard(
     -- Outreached (activity-driven): distinct jobs contacts who RECEIVED an outreach
     -- email from the selected scope in the period (not the empty membership stamp).
     outreach_emails AS (
-        SELECT a.participant_public_contact_id AS contact_id, a.activity_date AS ts
-        FROM bedrock.activity a
-        WHERE a.deleted_at IS NULL AND a.type = 'email' AND {_activity_actor('a', scope, owner)}
-          AND {_not_autoreply('a')} AND {_jobs_relevant('a')}
-          AND a.participant_public_contact_id IS NOT NULL
+        SELECT sm.contact_id, sm.ts FROM sent_msgs sm WHERE sm.contact_id IS NOT NULL
     ),
     -- Direct Email Responses: an external address that got a jobs outreach email
     -- from the scope, then sent its FIRST inbound email back afterwards. Counted in
     -- the period of that first reply.
     sent_out AS (
-        SELECT lower(e) AS addr, min(a.activity_date) AS first_out
-        FROM bedrock.activity a,
-             unnest(coalesce(a.email_to,'{{}}') || coalesce(a.email_cc,'{{}}')) e
-        WHERE a.deleted_at IS NULL AND a.type = 'email' AND {_activity_actor('a', scope, owner)}
+        SELECT lower(e) AS addr, min(aem.sent_at) AS first_out
+        FROM bedrock.activity a
+        JOIN bedrock.activity_email_message aem ON aem.activity_id = a.id
+        CROSS JOIN unnest(coalesce(a.email_to,'{{}}') || coalesce(a.email_cc,'{{}}')) e
+        WHERE a.deleted_at IS NULL AND a.type = 'email' AND {_message_actor(scope, owner)}
           AND {_jobs_relevant('a')} AND lower(e) NOT LIKE '%@pursuit.org%'
         GROUP BY 1
     ),
     first_reply AS (
         -- Reply need not be classified (the OUTREACH was jobs-relevant, via sent_out);
-        -- just an inbound email from that address after we emailed them.
-        SELECT {_email_addr('a')} AS addr, min(a.activity_date) AS reply_date,
+        -- just an inbound MESSAGE from that address after we emailed them — including
+        -- replies inside threads WE started, which the thread row never surfaces.
+        SELECT aem.from_email AS addr, min(aem.sent_at) AS reply_date,
                max(a.participant_public_contact_id) AS contact_id
         FROM bedrock.activity a
-        JOIN sent_out s ON s.addr = {_email_addr('a')} AND a.activity_date >= s.first_out
+        JOIN bedrock.activity_email_message aem ON aem.activity_id = a.id
+        JOIN sent_out s ON s.addr = aem.from_email AND aem.sent_at >= s.first_out
         WHERE a.deleted_at IS NULL AND a.type = 'email' AND {_not_autoreply('a')}
-          AND a.email_from NOT ILIKE '%@pursuit.org%'
+          AND aem.from_email NOT LIKE '%@pursuit.org%'
         GROUP BY 1
     ),
     -- Engagements = the counterpart engaging back: a meeting or call, OR a direct
@@ -2712,20 +2739,22 @@ async def outreach_scorecard_detail(
         elif key == "direct_email_response":
             rows = await conn.fetch(f"""
                 WITH sent_out AS (
-                    SELECT lower(e) AS addr, min(a.activity_date) AS first_out
-                    FROM bedrock.activity a,
-                         unnest(coalesce(a.email_to,'{{}}') || coalesce(a.email_cc,'{{}}')) e
-                    WHERE a.deleted_at IS NULL AND a.type = 'email' AND {_activity_actor('a', scope, owner)}
+                    SELECT lower(e) AS addr, min(aem.sent_at) AS first_out
+                    FROM bedrock.activity a
+                    JOIN bedrock.activity_email_message aem ON aem.activity_id = a.id
+                    CROSS JOIN unnest(coalesce(a.email_to,'{{}}') || coalesce(a.email_cc,'{{}}')) e
+                    WHERE a.deleted_at IS NULL AND a.type = 'email' AND {_message_actor(scope, owner)}
                       AND {_jobs_relevant('a')} AND lower(e) NOT LIKE '%@pursuit.org%'
                     GROUP BY 1
                 ),
                 first_reply AS (
-                    SELECT {_email_addr('a')} AS addr, min(a.activity_date) AS reply_date,
+                    SELECT aem.from_email AS addr, min(aem.sent_at) AS reply_date,
                            max(a.participant_public_contact_id) AS contact_id
                     FROM bedrock.activity a
-                    JOIN sent_out s ON s.addr = {_email_addr('a')} AND a.activity_date >= s.first_out
+                    JOIN bedrock.activity_email_message aem ON aem.activity_id = a.id
+                    JOIN sent_out s ON s.addr = aem.from_email AND aem.sent_at >= s.first_out
                     WHERE a.deleted_at IS NULL AND a.type = 'email' AND {_not_autoreply('a')}
-                      AND a.email_from NOT ILIKE '%@pursuit.org%'
+                      AND aem.from_email NOT LIKE '%@pursuit.org%'
                     GROUP BY 1
                 )
                 SELECT fr.addr, fr.reply_date, fr.contact_id, c.full_name, c.current_company
@@ -2743,8 +2772,12 @@ async def outreach_scorecard_detail(
             rows = []  # already consumed
         else:
             where = {
+                # Window + actor applied per MESSAGE — a follow-up sent this week in an
+                # old thread must appear in this week's drill.
                 "direct_email_sent":
-                    f"a.type = 'email' AND {_activity_actor('a', scope, owner)} AND {_not_autoreply('a')} AND {_jobs_relevant('a')}",
+                    f"a.type = 'email' AND {_not_autoreply('a')} AND {_jobs_relevant('a')} AND EXISTS ("
+                    f"  SELECT 1 FROM bedrock.activity_email_message aem WHERE aem.activity_id = a.id"
+                    f"  AND {_message_actor(scope, owner)} AND aem.sent_at >= $1 AND aem.sent_at < $2)",
                 "linkedin_message_sent":
                     f"a.type = 'linkedin' AND {_activity_actor('a', scope, owner)} AND {_jobs_relevant('a')}",
                 "engagement":  # meetings/calls only here; email replies appended below
@@ -2752,12 +2785,16 @@ async def outreach_scorecard_detail(
             }.get(key)
             if where is None:
                 raise HTTPException(400, "invalid activity key")
+            # direct_email_sent windows on the message timestamps inside `where`;
+            # the other keys window on the activity row itself.
+            date_pred = ("TRUE" if key == "direct_email_sent"
+                         else "a.activity_date >= $1 AND a.activity_date < $2")
             rows = await conn.fetch(f"""
                 SELECT a.participant_public_contact_id AS contact_id, c.full_name, c.current_company,
                        a.activity_date, a.type, a.subject, a.email_snippet, a.email_from
                 FROM bedrock.activity a
                 JOIN public.contacts c ON c.contact_id = a.participant_public_contact_id
-                WHERE a.deleted_at IS NULL AND a.activity_date >= $1 AND a.activity_date < $2 AND {where}
+                WHERE a.deleted_at IS NULL AND {date_pred} AND {where}
                 ORDER BY c.current_company NULLS LAST, a.activity_date DESC LIMIT 500
             """, start, end)
             for r in rows:
@@ -2770,16 +2807,20 @@ async def outreach_scorecard_detail(
                 # Engagements also include direct email responses — append them.
                 reps = await conn.fetch(f"""
                     WITH sent_out AS (
-                        SELECT lower(e) AS addr, min(a.activity_date) AS first_out
-                        FROM bedrock.activity a, unnest(coalesce(a.email_to,'{{}}') || coalesce(a.email_cc,'{{}}')) e
-                        WHERE a.deleted_at IS NULL AND a.type='email' AND {_activity_actor('a', scope, owner)}
+                        SELECT lower(e) AS addr, min(aem.sent_at) AS first_out
+                        FROM bedrock.activity a
+                        JOIN bedrock.activity_email_message aem ON aem.activity_id = a.id
+                        CROSS JOIN unnest(coalesce(a.email_to,'{{}}') || coalesce(a.email_cc,'{{}}')) e
+                        WHERE a.deleted_at IS NULL AND a.type='email' AND {_message_actor(scope, owner)}
                           AND {_jobs_relevant('a')} AND lower(e) NOT LIKE '%@pursuit.org%'
                         GROUP BY 1
                     ),
                     first_reply AS (
-                        SELECT {_email_addr('a')} AS addr, min(a.activity_date) AS reply_date, max(a.participant_public_contact_id) AS contact_id
-                        FROM bedrock.activity a JOIN sent_out s ON s.addr = {_email_addr('a')} AND a.activity_date >= s.first_out
-                        WHERE a.deleted_at IS NULL AND a.type='email' AND {_not_autoreply('a')} AND a.email_from NOT ILIKE '%@pursuit.org%'
+                        SELECT aem.from_email AS addr, min(aem.sent_at) AS reply_date, max(a.participant_public_contact_id) AS contact_id
+                        FROM bedrock.activity a
+                        JOIN bedrock.activity_email_message aem ON aem.activity_id = a.id
+                        JOIN sent_out s ON s.addr = aem.from_email AND aem.sent_at >= s.first_out
+                        WHERE a.deleted_at IS NULL AND a.type='email' AND {_not_autoreply('a')} AND aem.from_email NOT LIKE '%@pursuit.org%'
                         GROUP BY 1
                     )
                     SELECT fr.addr, fr.reply_date, fr.contact_id, c.full_name, c.current_company
