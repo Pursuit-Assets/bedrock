@@ -189,7 +189,7 @@ async def auto_advance_outreached(conn) -> dict[str, Any]:
               AND a.deleted_at IS NULL
               AND a.activity_date >= m.flagged_at
               AND a.type NOT IN ('email')
-              AND (a.jobs_relevance = 'jobs' OR a.type <> 'meeting')
+              AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type <> 'meeting')
               AND (
                     a.type IN ('call', 'text', 'linkedin')
                  OR (a.type = 'meeting' AND EXISTS (
@@ -207,7 +207,7 @@ async def auto_advance_outreached(conn) -> dict[str, Any]:
             WHERE m.stage = 'flagged'
               AND a.deleted_at IS NULL
               AND a.type = 'email'
-              AND a.jobs_relevance = 'jobs'
+              AND coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs'
               AND aem.sent_at >= m.flagged_at
               AND EXISTS (SELECT 1 FROM public.org_users o
                           WHERE o.is_active AND aem.from_email ILIKE '%'||o.email||'%')

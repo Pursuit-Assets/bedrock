@@ -895,6 +895,37 @@ async def update_placement(
     return {"success": True, "data": {"id": placement_id, **fields}}
 
 
+class RelevanceOverride(BaseModel):
+    override: Optional[str] = None  # 'jobs' | 'not_jobs' | None (clear → back to AI verdict)
+
+
+@router.patch("/activity/{activity_id}/relevance")
+async def set_activity_relevance(
+    activity_id: str,
+    body: RelevanceOverride,
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Human override of the jobs-relevance classifier. Open to ALL staff —
+    the person who had the conversation knows better than the model. Metrics
+    gate on coalesce(override, classifier verdict); clearing restores the AI
+    verdict. Audit-trailed (who/when)."""
+    if body.override not in (None, "jobs", "not_jobs"):
+        raise HTTPException(400, "override must be 'jobs', 'not_jobs', or null")
+    who = user.get("email") if isinstance(user, dict) else getattr(user, "email", None)
+    result = await conn.execute(
+        """UPDATE bedrock.activity
+           SET jobs_relevance_override = $1::text,
+               jobs_relevance_override_by = CASE WHEN $1::text IS NULL THEN NULL ELSE $2::text END,
+               jobs_relevance_override_at = CASE WHEN $1::text IS NULL THEN NULL ELSE now() END,
+               updated_at = now()
+           WHERE id = $3::uuid AND deleted_at IS NULL""",
+        body.override, who, activity_id)
+    if result == "UPDATE 0":
+        raise HTTPException(404, "Activity not found")
+    return {"success": True, "data": {"id": activity_id, "override": body.override}}
+
+
 # ── Roles (jobs_role) — open roles on an opportunity ──────────────────────────
 
 VALID_ROLE_STATUSES = {"open", "filled", "cancelled"}
@@ -1985,7 +2016,8 @@ def _jobs_relevant(alias: str) -> str:
     rows are gated by the content classifier (jobs_relevance='jobs'); manually
     logged touches (call/text/linkedin/note entered in the jobs tool) are
     deliberate jobs outreach and always count. See services/activity_classifier.py."""
-    return f"({alias}.jobs_relevance = 'jobs' OR {alias}.type NOT IN ('email','meeting'))"
+    return (f"(coalesce({alias}.jobs_relevance_override, {alias}.jobs_relevance) = 'jobs' "
+            f"OR {alias}.type NOT IN ('email','meeting'))")
 
 
 # Canonical placement-status derivation for a jobs_role, so every screen (Home,
@@ -3370,6 +3402,7 @@ async def jobs_accounts(
         opp_rows, prospect_rows, ja_rows, task_rows,
         act1_rows, act2_rows, role_resp_rows, er_resp_rows,
         hires_rows, name_sf_rows, flagged_rows, listings_rows,
+        industry_rows,
     ) = await asyncio.gather(
         pool.fetch(
             """
@@ -3497,6 +3530,15 @@ async def jobs_accounts(
               WHERE coalesce(trim(company_name),'') <> '' AND coalesce(trim(role_title),'') <> '' GROUP BY 1
             ) s GROUP BY k
             """),
+        # Company industry by normalized name (enriched via claude_ai / the
+        # SERP-verified PE-VC pass) — powers the accounts Industry filter.
+        pool.fetch(
+            """
+            SELECT lower(trim(name)) AS key, max(industry) AS industry
+            FROM public.companies
+            WHERE coalesce(trim(name),'') <> '' AND coalesce(industry,'') <> ''
+            GROUP BY 1
+            """),
     )
 
     accounts: dict = {}
@@ -3551,6 +3593,7 @@ async def jobs_accounts(
         prospect_counts[key] = r["n"]
 
     ja = {r["account_key"]: r for r in ja_rows}
+    industry_by_key = {r["key"]: r["industry"] for r in industry_rows}
     # Manually-created accounts (a jobs_account row with no opps/prospects yet)
     # still need to appear on the hub, so seed a bucket for each.
     for k, rec in ja.items():
@@ -3640,6 +3683,7 @@ async def jobs_accounts(
         g["account_status"] = status
         g["opp_count"] = len(opps)
         g["prospect_count"] = prospect_counts.get(key, 0)
+        g["industry"] = industry_by_key.get(key)
         _src, _app = listings_by_key.get(key, (0, 0))
         g["roles_sourced"] = _src
         g["roles_applied"] = _app
@@ -4031,7 +4075,10 @@ async def account_activity(
                a.synced_at, a.email_from, a.email_to, a.email_snippet,
                left(a.email_body_text, 2000) AS email_body_text,  -- cap body: the rollup of 250 rows was ~1.9MB
                a.meeting_duration_minutes,
-               """ + _jobs_activity_flag("a") + """ AS is_jobs,
+               a.jobs_relevance, a.jobs_relevance_override,
+               a.jobs_relevance, a.jobs_relevance_override,
+            a.jobs_relevance, a.jobs_relevance_override,
+            """ + _jobs_activity_flag("a") + """ AS is_jobs,
                a.deleted_at
         FROM bedrock.activity a
         WHERE a.deleted_at IS NULL AND (
@@ -4249,7 +4296,7 @@ async def list_contacts(
     # mirrors the page's column semantics exactly; unknown fields/ops 400
     # instead of silently under-filtering. The frontend normalizes date
     # presets (in_range → between) before sending.
-    _ACT_GATE = "(a.jobs_relevance = 'jobs' OR a.type NOT IN ('email','meeting'))"
+    _ACT_GATE = "(coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type NOT IN ('email','meeting'))"
     _ACT_LAST = ("(SELECT max(a.activity_date) FROM bedrock.activity a "
                  "WHERE a.participant_public_contact_id = c.contact_id "
                  f"AND a.deleted_at IS NULL AND {_ACT_GATE})")
@@ -4640,6 +4687,7 @@ async def get_contact(
         SELECT a.id, a.type, a.subject, a.description, a.activity_date,
                a.logged_by, a.source, a.email_from, a.email_snippet,
                a.meeting_duration_minutes, a.deleted_at,
+               a.jobs_relevance, a.jobs_relevance_override,
                """ + _jobs_activity_flag("a") + """ AS is_jobs
         FROM bedrock.activity a
         WHERE a.deleted_at IS NULL

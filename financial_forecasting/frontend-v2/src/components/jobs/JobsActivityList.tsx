@@ -15,7 +15,7 @@ import { ChevronDown, ChevronRight, Search } from "lucide-react";
 
 import { ActivitySourceIcon } from "@/components/ActivitySourceIcon";
 import { cn } from "@/lib/utils";
-import type { ActivityEntry } from "@/services/jobs";
+import { useSetActivityRelevance, type ActivityEntry } from "@/services/jobs";
 
 function decode(s: string | null): string {
   if (!s) return "";
@@ -43,6 +43,53 @@ function dayKey(iso: string | null): string {
   return iso.slice(0, 10);
 }
 
+/** Jobs-relevance chip on synced email/meeting rows. Shows the effective
+ * verdict (human override wins over the AI label); one click flips it, and an
+ * overridden chip offers "auto" to restore the AI verdict. Open to all staff —
+ * whoever had the conversation knows better than the model. */
+function RelevanceChip({ a }: { a: ActivityEntry }) {
+  const set = useSetActivityRelevance();
+  if (a.type !== "email" && a.type !== "meeting") return null;
+  if (a.jobs_relevance === undefined && a.jobs_relevance_override === undefined) return null;
+  const effective = a.jobs_relevance_override ?? a.jobs_relevance ?? "unclear";
+  const overridden = a.jobs_relevance_override != null;
+  const isJobs = effective === "jobs";
+  const label = isJobs ? "Jobs" : effective === "not_jobs" ? "Not jobs" : "Unclear";
+  return (
+    <span className="inline-flex shrink-0 items-center gap-1" onClick={(e) => e.stopPropagation()}>
+      <button
+        type="button"
+        disabled={set.isPending}
+        title={overridden
+          ? "Set manually — click to flip"
+          : `AI verdict: ${label} — click to ${isJobs ? "mark not jobs" : "mark as jobs outreach"}`}
+        onClick={() => set.mutate({ id: a.id, override: isJobs ? "not_jobs" : "jobs" })}
+        className={cn(
+          "rounded-full border px-1.5 py-0.5 text-[9.5px] font-semibold uppercase tracking-wide leading-none transition-colors disabled:opacity-50",
+          isJobs
+            ? "border-accent/40 bg-accent/10 text-accent hover:border-accent"
+            : effective === "not_jobs"
+              ? "border-border-strong bg-surface-2 text-ink-4 hover:border-ink-3 hover:text-ink-2"
+              : "border-amber-300 bg-amber-50 text-amber-700 hover:border-amber-500",
+        )}
+      >
+        {label}{overridden ? " ✎" : ""}
+      </button>
+      {overridden && (
+        <button
+          type="button"
+          disabled={set.isPending}
+          title="Clear override — back to the AI verdict"
+          onClick={() => set.mutate({ id: a.id, override: null })}
+          className="text-[9.5px] text-ink-4 hover:text-ink-2"
+        >
+          auto
+        </button>
+      )}
+    </span>
+  );
+}
+
 /** One activity row — every row expands (uniform) to show From / To / When / body. */
 function Row({ a, depth = 0 }: { a: ActivityEntry; depth?: number }) {
   const [open, setOpen] = useState(false);
@@ -63,6 +110,7 @@ function Row({ a, depth = 0 }: { a: ActivityEntry; depth?: number }) {
         <span className="min-w-0 flex-1">
           <span className="flex items-baseline gap-2">
             <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-ink">{decode(a.subject) || a.type || "Activity"}</span>
+            <RelevanceChip a={a} />
             <span className="shrink-0 whitespace-nowrap text-[11px] text-ink-4">{fmtDate(a.activity_date)}</span>
           </span>
           {a.email_from && !open && <span className="block truncate text-[11px] text-ink-4">{decode(a.email_from)}</span>}

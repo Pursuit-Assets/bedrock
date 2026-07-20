@@ -88,11 +88,12 @@ function extract(a: JobsAccount, key: ColKey): string | number {
 }
 
 // ── filters + grouping ───────────────────────────────────────────────────────
-type Field = "account" | "status" | "owner" | "deal_type" | "has_opps" | "has_contacts" | "last_activity" | "first_contact_date" | "last_contact_date";
+type Field = "account" | "status" | "owner" | "industry" | "deal_type" | "has_opps" | "has_contacts" | "last_activity" | "first_contact_date" | "last_contact_date";
 const FILTERABLE: Record<Field, FieldMeta<JobsAccount>> = {
   account:      { label: "Account",  type: "text",   getValue: (a) => a.account },
   status:       { label: "Status",   type: "select", getValue: (a) => a.account_status },
   owner:        { label: "Owner",    type: "select", getValue: (a) => a.owner_email ?? "" },
+  industry:     { label: "Industry", type: "select", getValue: (a) => a.industry ?? "" },
   // An account can have several opportunities of different types; join code +
   // label so a "contains" filter matches on either ("ft", "contract", "Part-time").
   deal_type:    { label: "Deal type", type: "text", getValue: (a) => dealTypesOf(a).map((t) => `${t} ${DEAL_TYPE_LABELS[t as keyof typeof DEAL_TYPE_LABELS] ?? ""}`).join(" | ") },
@@ -228,12 +229,17 @@ export function JobsAccountHub({ initialQuery }: { initialQuery?: string } = {})
     const emails = [...new Set(accounts.map((a) => a.owner_email).filter(Boolean) as string[])];
     return emails.map((e) => ({ value: e, label: staff.find((s) => s.email === e)?.name ?? e.split("@")[0] }));
   }, [accounts, staff]);
+  const industryOptions = useMemo(() => {
+    const vals = [...new Set(accounts.map((a) => a.industry).filter(Boolean) as string[])].sort();
+    return vals.map((v) => ({ value: v, label: v }));
+  }, [accounts]);
   const selectOptions: Partial<Record<Field, { value: string; label: string }[]>> = useMemo(() => ({
     status: STATUSES.map((s) => ({ value: s, label: s })),
     owner: ownerOptions,
+    industry: industryOptions,
     has_opps: YESNO, has_contacts: YESNO,
     last_activity: RECENCY_OPTIONS,
-  }), [ownerOptions]);
+  }), [ownerOptions, industryOptions]);
 
   const collapsedSet = useMemo(() => new Set(collapsedGroups), [collapsedGroups]);
   const toggleGroup = useCallback((k: string) => setCollapsedGroups((p) => p.includes(k) ? p.filter((x) => x !== k) : [...p, k]), [setCollapsedGroups]);

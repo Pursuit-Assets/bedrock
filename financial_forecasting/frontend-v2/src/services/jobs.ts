@@ -138,6 +138,8 @@ export interface ActivityEntry {
   email_body_text: string | null;
   meeting_duration_minutes: number | null;
   is_jobs: boolean;
+  jobs_relevance?: string | null;           // AI verdict: jobs | not_jobs | unclear
+  jobs_relevance_override?: string | null;  // human override: jobs | not_jobs
   deleted_at: string | null;
 }
 
@@ -461,6 +463,7 @@ export interface JobsAccount {
   sf_account_id?: string | null;
   owner_email: string | null;
   account_status: JobsAccountStatus;
+  industry?: string | null;
   opportunities: JobsAccountOpp[];
   /** Prospects are NOT nested in the list payload (~38k rows) — fetch them
    *  lazily per account via useAccountProspects. Only the count ships here. */
@@ -872,6 +875,20 @@ export function useUpdatePlacementSalary() {
       qc.invalidateQueries({ queryKey: ["jobs", "placements"] });
       qc.invalidateQueries({ queryKey: ["jobs", "metric"] });
       toast.success("Salary updated");
+    },
+    onError: () => toast.error("Update failed"),
+  });
+}
+
+export function useSetActivityRelevance() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, override }: { id: string; override: "jobs" | "not_jobs" | null }) => {
+      await api.patch(`/api/jobs/activity/${id}/relevance`, { override });
+    },
+    onSuccess: (_d, vars) => {
+      qc.invalidateQueries({ queryKey: ["jobs"] });
+      toast.success(vars.override == null ? "Restored AI verdict" : (vars.override === "jobs" ? "Marked as jobs outreach" : "Marked not jobs"));
     },
     onError: () => toast.error("Update failed"),
   });
