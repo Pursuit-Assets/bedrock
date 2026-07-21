@@ -4249,20 +4249,20 @@ async def list_contacts(
     membership_stage: Optional[str] = Query(None, description="funnel stage on the jobs membership"),
     industry: Optional[str] = Query(None),
     has_open_roles: Optional[bool] = Query(None, description="only contacts whose company has open job postings"),
+    scope: str = Query("jobs", pattern="^(jobs|all)$", description="'jobs' = jobs prospects only (default); 'all' = every contact"),
     filter_rules: Optional[str] = Query(None, alias="filters", description="JSON array of {field,op,values} rules — applied in SQL so filters see the full universe, not the loaded page"),
     limit: int = Query(200, le=5000),
     offset: int = Query(0),
     user=Depends(require_auth),
     conn=Depends(get_db),
 ):
-    """All contacts in the jobs pipeline (is_jobs_contact=true).
-
-    Opp-linked contacts are kept in sync by setting is_jobs_contact=true at
-    create/link time (and a one-time backfill), so we filter on the flag alone
-    instead of an `OR EXISTS(... sf_contact_ids ...)` that defeated the index and
-    scanned all ~33k contacts (~1.7s).
+    """Contacts list. Default scope='jobs' keeps today's working view
+    (is_jobs_contact=true — kept in sync at opp create/link time so the flag
+    alone is filterable without the index-defeating EXISTS). scope='all' opens
+    the full contact universe so any contact can be promoted to a jobs
+    prospect from the table.
     """
-    filters = ["c.is_jobs_contact = true"]
+    filters = ["c.is_jobs_contact = true"] if scope == "jobs" else ["true"]
     params: list = []
     i = 1
 
@@ -4307,6 +4307,9 @@ async def list_contacts(
         "company":  ("text", "c.current_company"),
         "industry": ("text", "(SELECT co2.industry FROM public.companies co2 WHERE co2.company_id = c.company_id)"),
         "stage":    ("select", "c.contact_stage"),
+        "owner":    ("select", "c.owner_email"),
+        "tags":     ("tags",   "c.tags"),
+        "is_jobs":  ("boolean", "(c.is_jobs_contact = true)"),
         "flag":     ("select", "(SELECT m2.stage FROM bedrock.jobs_contact_membership m2 WHERE m2.contact_id = c.contact_id)"),
         "connected":        ("text", "(SELECT string_agg(sm.display_name, ', ') FROM public.staff_contact_relationships scr "
                                      "JOIN bedrock.staff_user_id_map sm ON sm.staff_user_id = scr.staff_user_id "
@@ -4363,10 +4366,24 @@ async def list_contacts(
                 filter_joins[_RULE_JOINS[field]] = field
             ftype, expr = spec
             first = values[0] if values else ""
+            _TAGS_ANY = ("EXISTS (SELECT 1 FROM unnest(coalesce(c.tags, '{}'::text[])) t "
+                         "WHERE t IN (SELECT slug FROM bedrock.contact_tag_catalog))")
             if op == "is_empty":
-                filters.append(f"({expr} IS NULL OR ({expr})::text = '')" if ftype != "number" else f"coalesce({expr}, 0) = 0")
+                if ftype == "tags":
+                    filters.append(f"NOT {_TAGS_ANY}")
+                else:
+                    filters.append(f"({expr} IS NULL OR ({expr})::text = '')" if ftype != "number" else f"coalesce({expr}, 0) = 0")
             elif op == "is_not_empty":
-                filters.append(f"({expr} IS NOT NULL AND ({expr})::text <> '')" if ftype != "number" else f"coalesce({expr}, 0) > 0")
+                if ftype == "tags":
+                    filters.append(_TAGS_ANY)
+                else:
+                    filters.append(f"({expr} IS NOT NULL AND ({expr})::text <> '')" if ftype != "number" else f"coalesce({expr}, 0) > 0")
+            elif ftype == "tags" and op in ("equals", "contains", "has_any", "not_equals"):
+                if not values:
+                    continue
+                neg = "NOT " if op == "not_equals" else ""
+                filters.append(f"{neg}(coalesce(c.tags, '{{}}'::text[]) && ${i}::text[])")
+                params.append(values); i += 1
             elif ftype == "select" and op in ("equals", "not_equals"):
                 if not values:
                     continue
@@ -4440,6 +4457,12 @@ async def list_contacts(
             c.contact_stage,
             c.linkedin_url,
             c.airtable_id,
+            c.is_jobs_contact,
+            c.owner_email,
+            -- user-facing tags only: intersection with the curated catalog, so
+            -- system markers (email_review) never reach the UI
+            ARRAY(SELECT t FROM unnest(coalesce(c.tags, '{{}}'::text[])) t
+                  WHERE t IN (SELECT slug FROM bedrock.contact_tag_catalog)) AS crm_tags,
             -- linked deal via sf_contact_ids
             jo.id           AS deal_id,
             jo.account_name AS deal_account,
@@ -5254,6 +5277,18 @@ async def list_builders(
     }
 
 
+@router.get("/contact-tags")
+async def contact_tag_catalog(
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Curated contact-tag vocabulary (drives the tags picker + filter).
+    Slugs are what's stored on contacts.tags; labels are display-only."""
+    rows = await conn.fetch(
+        "SELECT slug, label FROM bedrock.contact_tag_catalog WHERE active ORDER BY sort_order, label")
+    return {"success": True, "data": [{"slug": r["slug"], "label": r["label"]} for r in rows]}
+
+
 @router.post("/contacts/{contact_id}/add-to-jobs")
 async def add_contact_to_jobs(
     contact_id: int,
@@ -5293,6 +5328,8 @@ class ContactUpdate(BaseModel):
     current_company: Optional[str] = None
     contact_stage:   Optional[str] = None
     linkedin_url:    Optional[str] = None
+    owner_email:     Optional[str] = None
+    tags:            Optional[list[str]] = None   # curated slugs only; system markers preserved server-side
 
 
 class ContactsMerge(BaseModel):
@@ -5343,7 +5380,7 @@ async def update_contact(
     # silent no-op.
     fields_set = body.model_fields_set
     for field in ("full_name", "email", "current_title", "current_company",
-                  "contact_stage", "linkedin_url"):
+                  "contact_stage", "linkedin_url", "owner_email"):
         if field not in fields_set:
             continue
         val = getattr(body, field, None)
@@ -5354,6 +5391,21 @@ async def update_contact(
         if field == "full_name" and val is None:
             continue
         sets.append(f"{field} = ${i}"); params.append(val); i += 1
+
+    if "tags" in fields_set:
+        new_tags = sorted({t.strip() for t in (body.tags or []) if t and t.strip()})
+        valid = {r["slug"] for r in await conn.fetch(
+            "SELECT slug FROM bedrock.contact_tag_catalog WHERE active")}
+        unknown = [t for t in new_tags if t not in valid]
+        if unknown:
+            raise HTTPException(400, f"Unknown tags (not in catalog): {unknown}")
+        # Replace only the curated tags; system markers (email_review) survive.
+        sets.append(
+            "tags = (SELECT coalesce(array_agg(t), '{}'::text[]) "
+            "        FROM unnest(coalesce(tags, '{}'::text[])) t "
+            "        WHERE t NOT IN (SELECT slug FROM bedrock.contact_tag_catalog)) "
+            f"|| ${i}::text[]")
+        params.append(new_tags); i += 1
 
     if not sets:
         row = await conn.fetchrow("SELECT * FROM public.contacts WHERE contact_id=$1", contact_id)

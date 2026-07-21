@@ -35,6 +35,7 @@ import {
   useJobsContacts, useAddContactToJobs,
   useContactDetail, useCreateContact, STAGE_LABELS,
   useFlagContactsForJobs, useUnflagJobsContact, useUpdateJobsMembership, MEMBERSHIP_STAGE_LABELS, MEMBERSHIP_STAGES,
+  useContactTagCatalog, useStaff, useUpdateContact,
   type JobStage, type JobContactWithDeal, type ContactSearchResult, type ContactCreateBody, type MembershipStage,
 } from "@/services/jobs";
 
@@ -65,24 +66,26 @@ function Warmth({ c }: { c: JobContactWithDeal }) {
 }
 
 // ── columns ──────────────────────────────────────────────────────────────────
-type ColKey = "name" | "flag" | "title" | "company" | "industry" | "warmth" | "listings" | "tasks" | "connected" | "deal" | "email" | "linkedin";
-const COLUMN_ORDER: ColKey[] = ["name", "flag", "title", "company", "industry", "warmth", "listings", "tasks", "connected", "deal", "email", "linkedin"];
-const DEFAULT_VISIBLE: ColKey[] = ["name", "flag", "title", "company", "connected", "warmth", "listings"];
+type ColKey = "name" | "prospect" | "flag" | "title" | "company" | "tags" | "owner" | "industry" | "warmth" | "listings" | "tasks" | "connected" | "deal" | "email" | "linkedin";
+const COLUMN_ORDER: ColKey[] = ["name", "prospect", "flag", "title", "company", "tags", "owner", "industry", "warmth", "listings", "tasks", "connected", "deal", "email", "linkedin"];
+const DEFAULT_VISIBLE: ColKey[] = ["name", "prospect", "flag", "title", "company", "tags", "owner", "connected", "warmth", "listings"];
 const COL_LABELS: Record<ColKey, string> = {
-  name: "Name", flag: "Jobs stage", title: "Title", company: "Company", industry: "Industry",
+  name: "Name", prospect: "Jobs prospect", flag: "Jobs stage", title: "Title", company: "Company", tags: "Tags", owner: "Owner", industry: "Industry",
   warmth: "Warmth", listings: "Job listings", tasks: "Open tasks", connected: "Connected staff", deal: "Linked deal", email: "Email", linkedin: "LinkedIn",
 };
 // Default pixel widths — user-resizable via drag handles (useColumnWidths),
 // same grid components as the Opportunities table.
 const DEFAULT_WIDTHS: Record<ColKey, number> = {
-  name: 190, flag: 130, title: 150, company: 160, industry: 130, warmth: 95, listings: 105, tasks: 85, connected: 155, deal: 145, email: 170, linkedin: 60,
+  name: 190, prospect: 90, flag: 130, title: 150, company: 160, tags: 190, owner: 150, industry: 130, warmth: 95, listings: 105, tasks: 85, connected: 155, deal: 145, email: 170, linkedin: 60,
 };
-const SORTABLE = new Set<ColKey>(["name", "flag", "title", "company", "industry", "warmth", "listings", "tasks"]);
+const SORTABLE = new Set<ColKey>(["name", "prospect", "flag", "title", "company", "owner", "industry", "warmth", "listings", "tasks"]);
 const MEMBERSHIP_STAGE_OPTIONS = MEMBERSHIP_STAGES.map((s) => ({ value: s, label: MEMBERSHIP_STAGE_LABELS[s] }));
 
 function extract(c: JobContactWithDeal, key: ColKey): string | number {
   switch (key) {
     case "name": return (c.full_name ?? "").toLowerCase();
+    case "prospect": return c.is_jobs_contact ? 0 : 1;
+    case "owner": return (c.owner_email ?? "").toLowerCase();
     case "flag": return c.membership_stage ?? "";
     case "title": return (c.current_title ?? "").toLowerCase();
     case "company": return (c.current_company ?? "").toLowerCase();
@@ -95,7 +98,7 @@ function extract(c: JobContactWithDeal, key: ColKey): string | number {
 }
 
 // ── filters + grouping ─────────────────────────────────────────────────────────
-type Field = "name" | "title" | "company" | "industry" | "stage" | "flag" | "listings" | "has_deal" | "connected" | "connection_count" | "last_activity" | "first_contact_date" | "last_contact_date";
+type Field = "name" | "title" | "company" | "industry" | "stage" | "flag" | "is_jobs" | "owner" | "tags" | "listings" | "has_deal" | "connected" | "connection_count" | "last_activity" | "first_contact_date" | "last_contact_date";
 const FILTERABLE: Record<Field, FieldMeta<JobContactWithDeal>> = {
   name: { label: "Name", type: "text", getValue: (c) => c.full_name ?? "" },
   title: { label: "Title", type: "text", getValue: (c) => c.current_title ?? "" },
@@ -103,6 +106,9 @@ const FILTERABLE: Record<Field, FieldMeta<JobContactWithDeal>> = {
   industry: { label: "Industry", type: "text", getValue: (c) => c.company_industry ?? "" },
   stage: { label: "Contact stage", type: "select", getValue: (c) => c.contact_stage ?? "" },
   flag: { label: "Jobs stage", type: "select", getValue: (c) => c.membership_stage ?? "" },
+  is_jobs: { label: "Jobs prospect", type: "select", getValue: (c) => (c.is_jobs_contact ? "yes" : "no") },
+  owner: { label: "Owner", type: "select", getValue: (c) => c.owner_email ?? "" },
+  tags: { label: "Tags", type: "tags", getValue: (c) => (c.crm_tags ?? []).join(",") },
   listings: { label: "Job listings (sourced + applied)", type: "number", getValue: (c) => (c.open_roles ?? 0) + (c.builder_apps ?? 0) },
   has_deal: { label: "Linked deal", type: "select", getValue: (c) => (c.deal ? "yes" : "no") },
   // Text: filter "Connected staff contains <person>" (a SPECIFIC staffer), plus
@@ -179,10 +185,70 @@ function NewContactModal({ onClose }: { onClose: () => void }) {
   );
 }
 
+// ── tags cell (chips + fixed-position popover editor) ────────────────────────
+function TagsCell({ contact }: { contact: JobContactWithDeal }) {
+  const { data: catalog = [] } = useContactTagCatalog();
+  const update = useUpdateContact();
+  const [open, setOpen] = useState(false);
+  const [pos, setPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
+  const [draft, setDraft] = useState<string[]>([]);
+  const labels = useMemo(() => Object.fromEntries(catalog.map((t) => [t.slug, t.label])), [catalog]);
+  const tags = contact.crm_tags ?? [];
+  return (
+    <div onClick={(e) => e.stopPropagation()}>
+      <button
+        type="button"
+        title="Edit tags"
+        onClick={(e) => {
+          const r = e.currentTarget.getBoundingClientRect();
+          setPos({ top: r.bottom + 4, left: r.left });
+          setDraft(tags);
+          setOpen((v) => !v);
+        }}
+        className="flex min-h-[20px] w-full flex-wrap items-center gap-1 text-left"
+      >
+        {tags.length > 0
+          ? tags.map((t) => <span key={t} className="truncate rounded-full bg-violet-50 px-1.5 py-0.5 text-[10px] font-medium text-violet-700">{labels[t] ?? t}</span>)
+          : <span className="text-[12px] text-ink-4">—</span>}
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+          <div style={{ position: "fixed", top: pos.top, left: pos.left }} className="z-50 max-h-72 w-60 overflow-auto rounded-md border border-border-strong bg-surface p-2 shadow-xl">
+            {catalog.map((t) => (
+              <label key={t.slug} className="flex cursor-pointer items-center gap-2 rounded px-1 py-1 text-[12px] text-ink-2 hover:bg-surface-2">
+                <input type="checkbox" checked={draft.includes(t.slug)} onChange={() => setDraft((d) => d.includes(t.slug) ? d.filter((x) => x !== t.slug) : [...d, t.slug])} className="h-3.5 w-3.5 accent-[color:var(--accent,#4242EA)]" />
+                {t.label}
+              </label>
+            ))}
+            <div className="mt-1 flex items-center justify-end gap-2 border-t border-border-strong pt-1.5">
+              <button type="button" onClick={() => setOpen(false)} className="text-[12px] text-ink-3 hover:text-ink">Cancel</button>
+              <button type="button" disabled={update.isPending}
+                onClick={() => update.mutate({ id: contact.contact_id, tags: draft }, { onSuccess: () => setOpen(false) })}
+                className="rounded bg-accent px-2.5 py-1 text-[12px] font-medium text-white hover:opacity-90 disabled:opacity-50">
+                {update.isPending ? "Saving…" : "Save"}
+              </button>
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 // ── row ──────────────────────────────────────────────────────────────────────
 function ContactRow({ contact, expanded, onOpen, visibleCols, selected, onToggleSelect }: { contact: JobContactWithDeal; expanded: boolean; onOpen: () => void; visibleCols: ColKey[]; selected: boolean; onToggleSelect: () => void }) {
   const updateMembership = useUpdateJobsMembership();
   const flagOne = useFlagContactsForJobs();
+  const addToJobs = useAddContactToJobs();
+  const updateContact = useUpdateContact();
+  const { data: staffList = [] } = useStaff();
+  const staffOptions = useMemo(
+    () => [{ value: "", label: "—" }, ...staffList.map((s) => ({ value: s.email, label: s.name }))],
+    [staffList],
+  );
+  const staffName = (email: string | null | undefined) =>
+    staffList.find((s) => s.email === email)?.name ?? email ?? "—";
   const staff = contact.connected_staff_names ?? [];
   const cells: Record<ColKey, React.ReactNode> = {
     name: (
@@ -193,6 +259,28 @@ function ContactRow({ contact, expanded, onOpen, visibleCols, selected, onToggle
         <Link to={jobsContactPath(contact.contact_id)} state={withReferrer({ pathname: "/jobs", label: "Jobs" })} onClick={(e) => e.stopPropagation()} className="shrink-0 text-ink-4 hover:text-accent" title="Open contact detail"><ExternalLink size={12} /></Link>
       </span>
     ),
+    prospect: (
+      <span className="flex items-center justify-center" title={contact.is_jobs_contact ? "Jobs prospect — click to remove" : "Mark as jobs prospect"}>
+        <input
+          type="checkbox"
+          checked={!!contact.is_jobs_contact}
+          disabled={addToJobs.isPending}
+          onClick={(e) => e.stopPropagation()}
+          onChange={() => addToJobs.mutate({ id: contact.contact_id, add: !contact.is_jobs_contact })}
+          className="h-4 w-4 cursor-pointer accent-[color:var(--accent,#4242EA)]"
+          aria-label="Jobs prospect"
+        />
+      </span>
+    ),
+    owner: (
+      <InlineSelect<string>
+        value={contact.owner_email ?? ""}
+        options={staffOptions}
+        renderValue={(v) => <span className={cn("truncate text-[12.5px]", (v ?? contact.owner_email) ? "text-ink-2" : "text-ink-4")}>{staffName(v ?? contact.owner_email)}</span>}
+        onSave={(v) => new Promise<void>((res, rej) => updateContact.mutate({ id: contact.contact_id, owner_email: v || null }, { onSuccess: () => res(), onError: rej }))}
+      />
+    ),
+    tags: <TagsCell contact={contact} />,
     title: <span className="truncate text-[12.5px] text-ink-2">{contact.current_title || "—"}</span>,
     company: <span className="truncate text-[12.5px] text-ink-2">{contact.current_company || "—"}</span>,
     flag: contact.membership_stage
@@ -229,7 +317,7 @@ function ContactRow({ contact, expanded, onOpen, visibleCols, selected, onToggle
     <Fragment>
       <tr id={`contact-${contact.contact_id}`} className={cn("cursor-pointer border-t border-border-strong hover:bg-surface-2/40", expanded && "bg-surface-2/40")} onClick={onOpen}>
         {visibleCols.map((key, i) => (
-          <td key={key} className={cn("overflow-hidden px-3 py-1.5 align-middle", i === 0 && "sticky left-0 z-10 bg-surface")} onClick={key === "flag" ? (e) => e.stopPropagation() : undefined}>{cells[key]}</td>
+          <td key={key} className={cn("overflow-hidden px-3 py-1.5 align-middle", i === 0 && "sticky left-0 z-10 bg-surface")} onClick={["flag", "prospect", "owner", "tags"].includes(key) ? (e) => e.stopPropagation() : undefined}>{cells[key]}</td>
         ))}
       </tr>
       {expanded && <tr className="bg-surface-2/20"><td colSpan={visibleCols.length} className="p-0"><ContactExpandTabs contactId={contact.contact_id} /></td></tr>}
@@ -245,6 +333,9 @@ export function JobsContacts({ initialQuery, initialContactId }: { initialQuery?
   const [showNewContact, setShowNewContact] = useState(false);
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [selected, setSelected] = useState<Set<number>>(new Set());
+  // Default = today's working view (jobs prospects only). "All contacts" opens
+  // the full universe so anyone can be promoted via the prospect checkmark.
+  const [scope, setScope] = useSessionState<"jobs" | "all">("jobs-contacts:scope", "jobs");
   const [flagView, setFlagView] = useState<"all" | "flagged" | "unflagged">("all");
   const [flagOwner, setFlagOwner] = useState("");
   const flagContacts = useFlagContactsForJobs();
@@ -280,6 +371,7 @@ export function JobsContacts({ initialQuery, initialContactId }: { initialQuery?
     limit: filteringActive ? 5000 : 500,
     search: debouncedQuery || undefined,
     flagged: flagView === "all" ? undefined : flagView === "flagged",
+    scope,
     rules: serverRules.length > 0 ? serverRules : undefined,
   });
   const allContacts: JobContactWithDeal[] = useMemo(() => rawData?.data ?? [], [rawData]);
@@ -301,10 +393,14 @@ export function JobsContacts({ initialQuery, initialContactId }: { initialQuery?
     openContact({ contact_id: d.contact_id, full_name: d.full_name, email: d.email, current_title: d.current_title, current_company: d.current_company, source: null, airtable_id: d.airtable_id, contact_stage: d.contact_stage, in_sf: false, contact_ref: d.airtable_id ? `airtable:${d.airtable_id}` : `pub:${d.contact_id}` });
   }, [deepLinkDetail.data, openContact]);
 
+  const { data: tagCatalog = [] } = useContactTagCatalog();
+  const { data: staffForFilter = [] } = useStaff();
   const selectOptions: Partial<Record<Field, { value: string; label: string }[]>> = useMemo(() => ({
-    stage: CONTACT_STAGE_SELECT, has_deal: YESNO, last_activity: RECENCY_OPTIONS,
+    stage: CONTACT_STAGE_SELECT, has_deal: YESNO, is_jobs: YESNO, last_activity: RECENCY_OPTIONS,
     flag: MEMBERSHIP_STAGES.map((s) => ({ value: s, label: MEMBERSHIP_STAGE_LABELS[s] })),
-  }), []);
+    tags: tagCatalog.map((t) => ({ value: t.slug, label: t.label })),
+    owner: staffForFilter.map((s) => ({ value: s.email, label: s.name })),
+  }), [tagCatalog, staffForFilter]);
 
   const collapsedSet = useMemo(() => new Set(collapsedGroups), [collapsedGroups]);
   const toggleGroup = useCallback((k: string) => setCollapsedGroups((p) => p.includes(k) ? p.filter((x) => x !== k) : [...p, k]), [setCollapsedGroups]);
@@ -371,10 +467,14 @@ export function JobsContacts({ initialQuery, initialContactId }: { initialQuery?
           <input placeholder="Search name, company, title, email…" value={query} onChange={(e) => setQuery(e.target.value)} className="h-7 w-60 rounded border border-border-strong bg-surface pl-7 pr-3 text-[12.5px] font-medium text-ink-2 outline-none placeholder:font-normal placeholder:text-ink-3 focus:border-accent focus:text-ink" />
         </div>
         <AddFilterButton<Field> filterable={FILTERABLE as Record<Field, FieldMeta<unknown>>} selectOptions={selectOptions} onAdd={(r) => setRules((p) => [...p, r])} buttonLabel="Filter" />
-        <select value={flagView} onChange={(e) => setFlagView(e.target.value as typeof flagView)} title="Filter by jobs-activation flag" className="h-7 rounded border border-border-strong bg-surface px-2 text-[12.5px] text-ink-2 outline-none focus:border-accent">
+        <select value={scope} onChange={(e) => setScope(e.target.value as typeof scope)} title="Which contacts to show — jobs prospects only, or the entire contact universe" className={cn("h-7 rounded border px-2 text-[12.5px] outline-none focus:border-accent", scope === "all" ? "border-accent bg-accent-soft font-medium text-accent-ink" : "border-border-strong bg-surface text-ink-2")}>
+          <option value="jobs">Jobs prospects</option>
           <option value="all">All contacts</option>
-          <option value="flagged">Flagged for jobs</option>
-          <option value="unflagged">Not flagged</option>
+        </select>
+        <select value={flagView} onChange={(e) => setFlagView(e.target.value as typeof flagView)} title="Filter by jobs-activation stage flag" className="h-7 rounded border border-border-strong bg-surface px-2 text-[12.5px] text-ink-2 outline-none focus:border-accent">
+          <option value="all">Any jobs stage</option>
+          <option value="flagged">Has jobs stage</option>
+          <option value="unflagged">No jobs stage</option>
         </select>
         <select value={groupBy} onChange={(e) => { setGroupBy(e.target.value); setCollapsedGroups([]); }} title="Group rows by a field" className="h-7 rounded border border-border-strong bg-surface px-2 text-[12.5px] text-ink-2 outline-none focus:border-accent">
           {GROUP_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
@@ -403,7 +503,7 @@ export function JobsContacts({ initialQuery, initialContactId }: { initialQuery?
 
       {rules.length > 0 && (
         <div className="flex flex-wrap items-center gap-1.5 border-x border-t border-border-strong bg-surface px-3 py-2">
-          {rules.map((r) => <FilterChip key={r.id} label={describeRule(r, FILTERABLE, (f, v) => f === "stage" ? (CONTACT_STAGE_STYLES[v]?.label ?? v) : f === "flag" ? (MEMBERSHIP_STAGE_LABELS[v as MembershipStage] ?? v) : f === "last_activity" ? recencyLabel(v) : v)} onRemove={() => setRules((p) => p.filter((x) => x.id !== r.id))} />)}
+          {rules.map((r) => <FilterChip key={r.id} label={describeRule(r, FILTERABLE, (f, v) => f === "stage" ? (CONTACT_STAGE_STYLES[v]?.label ?? v) : f === "flag" ? (MEMBERSHIP_STAGE_LABELS[v as MembershipStage] ?? v) : f === "tags" ? (tagCatalog.find((t) => t.slug === v)?.label ?? v) : f === "owner" ? (staffForFilter.find((s) => s.email === v)?.name ?? v) : f === "last_activity" ? recencyLabel(v) : v)} onRemove={() => setRules((p) => p.filter((x) => x.id !== r.id))} />)}
           <button type="button" onClick={() => setRules([])} className="ml-1 text-[11.5px] font-medium text-ink-3 underline-offset-4 hover:text-ink-2 hover:underline">Clear all</button>
         </div>
       )}

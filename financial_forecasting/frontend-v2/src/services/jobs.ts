@@ -212,6 +212,9 @@ interface ListResponse<T> { success: boolean; data: T[]; total: number }
 
 export interface JobContactWithDeal extends JobContact {
   airtable_id: string | null;
+  is_jobs_contact?: boolean;
+  owner_email?: string | null;     // org-wide contact owner (distinct from membership_owner)
+  crm_tags?: string[];             // curated tags only — system markers never reach the UI
   deal: { id: string; account_name: string; stage: JobStage; owner_email?: string | null } | null;
   connected_staff_names?: string[];
   recent_activity_count?: number;
@@ -245,6 +248,8 @@ export interface ContactFilters {
   membership_stage?: string;
   industry?: string;
   has_open_roles?: boolean;
+  /** 'jobs' (default) = jobs prospects only; 'all' = the full contact universe. */
+  scope?: "jobs" | "all";
   /** Serialized Filter-menu rules — translated to SQL server-side so filters
    *  see the full 47k universe, never just the loaded page. */
   rules?: { field: string; op: string; values: string[] }[];
@@ -335,6 +340,7 @@ export function useJobsContacts(filters: ContactFilters = {}) {
   if (filters.membership_stage) params.set("membership_stage", filters.membership_stage);
   if (filters.industry) params.set("industry", filters.industry);
   if (filters.has_open_roles) params.set("has_open_roles", "true");
+  if (filters.scope) params.set("scope", filters.scope);
   if (filters.rules && filters.rules.length > 0) params.set("filters", JSON.stringify(filters.rules));
   params.set("limit", String(filters.limit ?? 200));
 
@@ -1327,6 +1333,21 @@ export function useStaff(q?: string) {
 }
 
 export interface Builder { user_id: number; email: string; name: string; cohort: string }
+
+export interface ContactTag { slug: string; label: string }
+
+/** Curated contact-tag vocabulary (bedrock.contact_tag_catalog) — drives the
+ *  tags picker and filter. */
+export function useContactTagCatalog() {
+  return useQuery<ContactTag[]>({
+    queryKey: ["jobs", "contact-tags"],
+    queryFn: async () => {
+      const { data } = await api.get<ApiResponse<ContactTag[]>>("/api/jobs/contact-tags");
+      return data.data;
+    },
+    staleTime: 300_000,
+  });
+}
 
 export function useAddContactToJobs() {
   const qc = useQueryClient();

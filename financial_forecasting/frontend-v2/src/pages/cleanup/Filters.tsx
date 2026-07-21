@@ -15,7 +15,7 @@ import { ChevronDown, Filter as FilterIcon, Plus, X } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 
-export type FieldType = "select" | "text" | "number" | "date" | "recency";
+export type FieldType = "select" | "text" | "number" | "date" | "recency" | "tags";
 
 export type Operator =
   | "equals"
@@ -112,6 +112,15 @@ export const OPS_BY_TYPE: Record<FieldType, { value: Operator; label: string }[]
   recency: [
     { value: "within", label: "within" },
   ],
+  // Multi-valued field (e.g. contact tags): getValue returns a comma-joined
+  // list; "is" matches when ANY selected value is present (array overlap
+  // server-side).
+  tags: [
+    { value: "equals", label: "has any of" },
+    { value: "not_equals", label: "has none of" },
+    { value: "is_empty", label: "is empty" },
+    { value: "is_not_empty", label: "has any value" },
+  ],
 };
 
 /** Pure predicate — does `item` satisfy filter rule `r`? Caller passes
@@ -135,6 +144,15 @@ export function ruleApplies<T, F extends string>(
       if (r.values.length === 0) return true;
       const inSet = r.values.includes(String(v ?? ""));
       return r.op === "equals" ? inSet : !inSet;
+    }
+  }
+
+  if (meta.type === "tags") {
+    if (r.op === "equals" || r.op === "not_equals") {
+      if (r.values.length === 0) return true;
+      const have = String(v ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+      const overlap = r.values.some((val) => have.includes(val));
+      return r.op === "equals" ? overlap : !overlap;
     }
   }
 
@@ -311,7 +329,7 @@ export function AddFilterButton<F extends string>({
   // Both "is" and "is not" use the multi-select picker so users can
   // pick any combination of values (or exclude a combination).
   const isMultiSelect =
-    meta.type === "select" && (op === "equals" || op === "not_equals");
+    (meta.type === "select" || meta.type === "tags") && (op === "equals" || op === "not_equals");
   const rawValueOptions = selectOptions[field] ?? null;
 
   // Inject an explicit "(empty)" sentinel at the top of every
