@@ -1763,6 +1763,230 @@ async def get_funnel(
     return {"success": True, "data": {"type": ftype, "stages": stages, "record_columns": record_columns}}
 
 
+# ── Opportunities weekly overview (Thursday pipeline meeting) ──────────────────
+# High-level, read-only view of the employer-deal pipeline. "Time in pipeline" is
+# time in the CURRENT stage (from jobs_stage_history), not age since sourced.
+# The active "set" = working-stage opps (initial_outreach + active_*).
+_OPP_INSET = "(o.stage = 'initial_outreach' OR o.stage LIKE 'active_%')"
+_OPP_STAGE_ORDER = [
+    "initial_outreach", "active_in_discussions",
+    "active_opportunity_confirmed", "active_builder_interview",
+]
+_OPP_AGE_BUCKETS = [
+    ("lt2w", "< 2 weeks"), ("2_4w", "2–4 weeks"), ("4_6w", "4–6 weeks"),
+    ("6_8w", "6–8 weeks"), ("8w", "8+ weeks"),
+]
+_OPP_STATUS_LABELS = {"new": "New (<1w)", "active": "Active", "stalled": "Stalled"}
+
+
+def _opp_age_bucket(days: int) -> int:
+    if days < 14: return 0
+    if days < 28: return 1
+    if days < 42: return 2
+    if days < 56: return 3
+    return 4
+
+
+@router.get("/opportunities/overview")
+async def opportunities_overview(
+    owner: Optional[str] = Query(None),
+    deal_type: Optional[str] = Query(None),
+    week_end: Optional[str] = Query(None, description="Week-ending Saturday (YYYY-MM-DD). Anchors the Sat–Sat week and time-in-stage ages. Defaults to now."),
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Weekly opportunity overview: summary cards, time-in-stage aging, a
+    switchable breakdown (status / deal type / segment / stage / owner), the
+    Priority×Time and Stage×Time concentration heatmaps, and the needs-attention
+    list. Read-only. `owner`/`deal_type` scope the whole view; `week_end` sets the
+    as-of reference (Saturday-to-Saturday) — ages and the net-new / moved-to-committed
+    windows are measured back from it."""
+    owner_f = owner if owner and owner != "all" else None
+    dt_f = deal_type if deal_type and deal_type != "all" else None
+    # `ref` = the as-of instant: midnight after the selected week-ending Saturday,
+    # so the trailing 7-day window is that Sat–Sat week. Defaults to now.
+    if week_end:
+        try:
+            d = date.fromisoformat(week_end)
+            ref = datetime(d.year, d.month, d.day, tzinfo=timezone.utc) + timedelta(days=1)
+        except ValueError:
+            ref = datetime.now(timezone.utc)
+    else:
+        ref = datetime.now(timezone.utc)
+
+    rows = await conn.fetch(f"""
+        SELECT o.id, o.account_name, o.stage, o.deal_type, o.segment, o.owner_email,
+               o.priority, o.created_at,
+               COALESCE((SELECT max(h.changed_at) FROM bedrock.jobs_stage_history h
+                         WHERE h.opportunity_id = o.id AND h.to_stage = o.stage),
+                        o.created_at) AS entered_stage,
+               (SELECT max(a.activity_date) FROM bedrock.activity a
+                WHERE a.jobs_opportunity_id = o.id AND a.deleted_at IS NULL) AS last_activity
+        FROM bedrock.jobs_opportunity o
+        WHERE o.deleted_at IS NULL AND {_OPP_INSET}
+          AND o.created_at < $3
+          AND ($1::text IS NULL OR o.owner_email = $1)
+          AND ($2::text IS NULL OR o.deal_type = $2)
+    """, owner_f, dt_f, ref)
+
+    # Week-over-week, anchored to `ref` (Sat–Sat): net-new = entered the set this
+    # week (created_at proxy); prev = the prior 7-day window; moved-to-committed =
+    # →closed_won in the week.
+    net_new_prev = await conn.fetchval(f"""
+        SELECT count(*) FROM bedrock.jobs_opportunity o
+        WHERE o.deleted_at IS NULL
+          AND o.created_at >= $3 - interval '14 days' AND o.created_at < $3 - interval '7 days'
+          AND ($1::text IS NULL OR o.owner_email = $1)
+          AND ($2::text IS NULL OR o.deal_type = $2)
+    """, owner_f, dt_f, ref)
+    moved_committed = await conn.fetchval(f"""
+        SELECT count(DISTINCT h.opportunity_id)
+        FROM bedrock.jobs_stage_history h
+        JOIN bedrock.jobs_opportunity o ON o.id = h.opportunity_id
+        WHERE h.to_stage = 'closed_won'
+          AND h.changed_at >= $3 - interval '7 days' AND h.changed_at < $3
+          AND o.deleted_at IS NULL
+          AND ($1::text IS NULL OR o.owner_email = $1)
+          AND ($2::text IS NULL OR o.deal_type = $2)
+    """, owner_f, dt_f, ref)
+
+    def _days(dt):
+        return None if dt is None else max(0, (ref - dt).days)
+
+    in_set = len(rows)
+    net_new = 0
+    age_counts = [0, 0, 0, 0, 0]
+    bd: dict = {"status": {}, "deal_type": {}, "segment": {}, "stage": {}, "owner": {}}
+    stage_heat: dict = {}
+    prio_heat: dict = {}
+    prio_unset = 0
+    needs = []
+
+    def _inc(dim: str, key: str):
+        bd[dim][key] = bd[dim].get(key, 0) + 1
+
+    for r in rows:
+        c_days = _days(r["created_at"])
+        if c_days is not None and c_days < 7:
+            net_new += 1
+        stage_days = _days(r["entered_stage"]) or 0
+        bi = _opp_age_bucket(stage_days)
+        age_counts[bi] += 1
+
+        recency = min([d for d in (_days(r["entered_stage"]), _days(r["last_activity"])) if d is not None],
+                      default=None)
+        if c_days is not None and c_days < 7:
+            status = "new"
+        elif recency is not None and recency > 14:
+            status = "stalled"
+        else:
+            status = "active"
+
+        _inc("status", status)
+        _inc("deal_type", r["deal_type"] or "(unset)")
+        _inc("segment", r["segment"] or "(unset)")
+        _inc("stage", r["stage"])
+        _inc("owner", r["owner_email"] or "(unassigned)")
+
+        stage_heat.setdefault(r["stage"], [0, 0, 0, 0, 0])[bi] += 1
+        if r["priority"] in (1, 2, 3, 4, 5):
+            prio_heat.setdefault(r["priority"], [0, 0, 0, 0, 0])[bi] += 1
+        else:
+            prio_unset += 1
+
+        if stage_days >= 21 or status == "stalled":
+            act_days = _days(r["last_activity"])
+            why_bits = []
+            if stage_days >= 21:
+                why_bits.append(f"{stage_days}d in {STAGE_LABELS.get(r['stage'], r['stage'])}")
+            why_bits.append("no logged activity" if act_days is None else f"last activity {act_days}d ago")
+            needs.append({
+                "opportunity_id": str(r["id"]),
+                "account": r["account_name"], "owner": r["owner_email"],
+                "stage": r["stage"], "stage_label": STAGE_LABELS.get(r["stage"], r["stage"]),
+                "days_in_stage": stage_days, "days_since_activity": act_days,
+                "why": " · ".join(why_bits),
+            })
+
+    carried = in_set - net_new
+
+    def _bd_list(dim: str, labels: Optional[dict] = None):
+        return [{"key": k, "label": (labels.get(k, k) if labels else k), "count": v}
+                for k, v in sorted(bd[dim].items(), key=lambda kv: -kv[1])]
+
+    # Heatmaps
+    buckets = [{"key": k, "label": lbl} for k, lbl in _OPP_AGE_BUCKETS]
+    stage_rows = [
+        {"key": s, "label": STAGE_LABELS.get(s, s), "cells": stage_heat[s], "total": sum(stage_heat[s])}
+        for s in _OPP_STAGE_ORDER if s in stage_heat
+    ]
+    prio_rows = [
+        {"key": f"P{p}", "label": f"P{p}",
+         "cells": prio_heat.get(p, [0, 0, 0, 0, 0]), "total": sum(prio_heat.get(p, [0, 0, 0, 0, 0]))}
+        for p in (1, 2, 3, 4, 5)
+    ]
+    def _col_totals(rws):
+        return [sum(r["cells"][i] for r in rws) for i in range(5)]
+
+    needs.sort(key=lambda n: -n["days_in_stage"])
+
+    # Recently added to the set — when each opp was created and who added it
+    # (creator = the earliest stage-history actor, falling back to the owner).
+    radd = await conn.fetch(f"""
+        SELECT o.id, o.account_name, o.deal_type, o.stage, o.created_at,
+               COALESCE(
+                 (SELECT h.changed_by FROM bedrock.jobs_stage_history h
+                    WHERE h.opportunity_id = o.id AND h.changed_by IS NOT NULL
+                    ORDER BY h.changed_at ASC LIMIT 1),
+                 o.owner_email) AS added_by
+        FROM bedrock.jobs_opportunity o
+        WHERE o.deleted_at IS NULL AND {_OPP_INSET}
+          AND o.created_at < $3
+          AND ($1::text IS NULL OR o.owner_email = $1)
+          AND ($2::text IS NULL OR o.deal_type = $2)
+        ORDER BY o.created_at DESC
+        LIMIT 50
+    """, owner_f, dt_f, ref)
+    recent_additions = [{
+        "opportunity_id": str(r["id"]),
+        "account": r["account_name"], "deal_type": r["deal_type"],
+        "stage": r["stage"], "stage_label": STAGE_LABELS.get(r["stage"], r["stage"]),
+        "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+        "added_by": r["added_by"],
+    } for r in radd]
+
+    return {"success": True, "data": {
+        "filters": {"owner": owner_f, "deal_type": dt_f, "week_end": week_end},
+        "aging_basis": "time_in_stage",
+        "summary": {
+            "in_set": in_set, "net_new": net_new, "net_new_prev": net_new_prev,
+            "carried": carried, "carried_pct": round(100 * carried / in_set) if in_set else 0,
+            "moved_committed": moved_committed,
+        },
+        "aging": {"buckets": [
+            {"key": k, "label": lbl, "count": age_counts[i],
+             "pct": round(100 * age_counts[i] / in_set) if in_set else 0}
+            for i, (k, lbl) in enumerate(_OPP_AGE_BUCKETS)
+        ]},
+        "breakdowns": {
+            "status": _bd_list("status", _OPP_STATUS_LABELS),
+            "deal_type": _bd_list("deal_type"),
+            "segment": _bd_list("segment"),
+            "stage": _bd_list("stage", STAGE_LABELS),
+            "owner": _bd_list("owner"),
+        },
+        "heatmaps": {
+            "buckets": buckets,
+            "priority": {"rows": prio_rows, "col_totals": _col_totals(prio_rows),
+                         "unset": prio_unset, "populated": prio_unset < in_set},
+            "stage": {"rows": stage_rows, "col_totals": _col_totals(stage_rows)},
+        },
+        "needs_attention": needs[:30],
+        "recent_additions": recent_additions,
+    }}
+
+
+
 @router.get("/roles")
 async def get_roles(user=Depends(require_auth), conn=Depends(get_db)):
     """Jobs / roles view — hired counts (from placements) + pipeline rows.

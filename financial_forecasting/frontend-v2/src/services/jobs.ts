@@ -1964,3 +1964,70 @@ export function useUpdateBuilderProfile() {
     onError: () => toast.error("Update failed"),
   });
 }
+
+// ── Opportunities weekly overview (Thursday pipeline meeting) ────────────────
+// Read-only. High-level employer-deal pipeline health. "Time in pipeline" =
+// time in the current stage. Backed by /api/jobs/opportunities/overview.
+
+export type OppBreakdownDim = "status" | "deal_type" | "segment" | "stage" | "owner";
+
+export interface OppBreakdownItem { key: string; label: string; count: number }
+export interface OppAgingBucket { key: string; label: string; count: number; pct: number }
+export interface OppHeatRow { key: string; label: string; cells: number[]; total: number }
+export interface OppHeatmap { rows: OppHeatRow[]; col_totals: number[]; unset?: number; populated?: boolean }
+export interface OppNeedsRow {
+  opportunity_id: string;
+  account: string | null;
+  owner: string | null;
+  stage: string;
+  stage_label: string;
+  days_in_stage: number;
+  days_since_activity: number | null;
+  why: string;
+}
+
+export interface OppRecentAddition {
+  opportunity_id: string;
+  account: string | null;
+  deal_type: string | null;
+  stage: string;
+  stage_label: string;
+  created_at: string;
+  added_by: string | null;
+}
+
+export interface OpportunitiesOverview {
+  filters: { owner: string | null; deal_type: string | null; week_end: string | null };
+  aging_basis: string;
+  summary: {
+    in_set: number; net_new: number; net_new_prev: number;
+    carried: number; carried_pct: number; moved_committed: number;
+  };
+  aging: { buckets: OppAgingBucket[] };
+  breakdowns: Record<OppBreakdownDim, OppBreakdownItem[]>;
+  heatmaps: {
+    buckets: { key: string; label: string }[];
+    priority: OppHeatmap;
+    stage: OppHeatmap;
+  };
+  needs_attention: OppNeedsRow[];
+  recent_additions: OppRecentAddition[];
+}
+
+export function useOpportunitiesOverview(owner?: string, dealType?: string, weekEnd?: string) {
+  const o = owner && owner !== "all" ? owner : undefined;
+  const dt = dealType && dealType !== "all" ? dealType : undefined;
+  return useQuery<OpportunitiesOverview>({
+    queryKey: ["jobs", "opportunities", "overview", o ?? "all", dt ?? "all", weekEnd ?? "current"],
+    queryFn: async () => {
+      const p = new URLSearchParams();
+      if (o) p.set("owner", o);
+      if (dt) p.set("deal_type", dt);
+      if (weekEnd) p.set("week_end", weekEnd);
+      const qs = p.toString() ? `?${p}` : "";
+      const { data } = await api.get<ApiResponse<OpportunitiesOverview>>(`/api/jobs/opportunities/overview${qs}`);
+      return data.data;
+    },
+    staleTime: 30_000,
+  });
+}

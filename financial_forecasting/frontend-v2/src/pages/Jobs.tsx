@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { useSearchParams } from "react-router-dom";
-import { Home, BarChart3, Building2, Kanban, Users, GraduationCap, Send } from "lucide-react";
+import { Home, BarChart3, Building2, Kanban, Users, GraduationCap, Send, LayoutDashboard } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { useSessionState } from "@/lib/useSessionState";
 import { cn } from "@/lib/utils";
@@ -11,20 +11,22 @@ import { JobsLeadership } from "./jobs/JobsLeadership";
 import { JobsContacts } from "./jobs/JobsContacts";
 import { JobsBuilders } from "./jobs/JobsBuilders";
 import { JobsOutreach } from "./jobs/JobsOutreach";
+import { JobsOpportunitiesOverview } from "./jobs/JobsOpportunitiesOverview";
 
-type View = "home" | "accounts" | "performance" | "outreach" | "team" | "contacts" | "builders";
+type View = "home" | "accounts" | "performance" | "outreach" | "overview" | "team" | "contacts" | "builders";
 
 const VIEWS = [
   { id: "home" as View,        label: "Home",        icon: Home,      desc: "Daily command center — tasks, interviews, triage" },
   { id: "performance" as View, label: "Performance", icon: BarChart3, desc: "Pipeline health & metrics" },
   { id: "outreach" as View,    label: "Outreach",    icon: Send,      desc: "Team outreach scorecard — pipeline & activity" },
+  { id: "overview" as View,    label: "Overview",    icon: LayoutDashboard, desc: "Weekly opportunity overview — pipeline health for the meeting" },
   { id: "accounts" as View,    label: "Accounts",    icon: Building2, desc: "Account-level hub — opps + contacts" },
   { id: "team" as View,        label: "Opportunities", icon: Kanban,  desc: "Day-to-day deal management" },
   { id: "contacts" as View,    label: "Contacts",    icon: Users,     desc: "All employer contacts" },
   { id: "builders" as View,    label: "Builders",    icon: GraduationCap, desc: "Per-builder job search" },
 ];
 
-const VALID_VIEWS = new Set<View>(["home", "accounts", "performance", "outreach", "team", "contacts", "builders"]);
+const VALID_VIEWS = new Set<View>(["home", "accounts", "performance", "outreach", "overview", "team", "contacts", "builders"]);
 
 export function JobsPage() {
   const [searchParams] = useSearchParams();
@@ -81,6 +83,7 @@ export function JobsPage() {
         {view === "accounts"    && <JobsAccountHub initialQuery={initialQuery} />}
         {view === "performance" && <JobsLeadership />}
         {view === "outreach"    && <JobsOutreach />}
+        {view === "overview"    && <JobsOpportunitiesOverview />}
         {view === "team"        && <JobsTeam />}
         {view === "contacts"    && <JobsContacts initialQuery={initialQuery} initialContactId={initialContactId} />}
         {view === "builders"    && <JobsBuilders />}
