@@ -1,5 +1,14 @@
 -- One-time scrub (2026-07-21, Jac): contacts with real staff jobs-outreach
 -- activity but no (or a lagging) pipeline stage.
+--
+-- AMENDED same day (Jac's call): only outreach from the jobs team proper —
+-- damon.kornhauser@ and avni@ — counts as pipeline outreach. The scrub below
+-- originally counted all 44 staff mailboxes; a follow-up pass (applied
+-- directly, recorded here) deleted the 161 memberships whose only outreach
+-- was other staff, reverted 5 advanced rows to 'assigned', restamped the
+-- keepers to Damon/Avni's first touch, and unflagged 58 contacts. Net result:
+-- the staff list in the CTE below should be read as ('damon.kornhauser@
+-- pursuit.org','avni@pursuit.org') for pipeline-stage purposes.
 --   A. Touched contacts with NO membership row → initial_outreach, with
 --      assigned_at/first_outreach_at stamped from the earliest touch and the
 --      contact's owner carried onto the membership. (The nightly auto-advance
