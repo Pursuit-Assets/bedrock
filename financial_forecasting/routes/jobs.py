@@ -1768,9 +1768,11 @@ async def get_funnel(
 # time in the CURRENT stage (from jobs_stage_history), not age since sourced.
 # The active "set" = working-stage opps (initial_outreach + active_*).
 _OPP_INSET = "(o.stage = 'initial_outreach' OR o.stage LIKE 'active_%')"
+# Stage×Time heatmap rows. Initial Outreach is intentionally omitted from the
+# heatmap — the team is retiring that stage; it stays in the data (and in_set),
+# just isn't surfaced as a row here.
 _OPP_STAGE_ORDER = [
-    "initial_outreach", "active_in_discussions",
-    "active_opportunity_confirmed", "active_builder_interview",
+    "active_in_discussions", "active_opportunity_confirmed", "active_builder_interview",
 ]
 _OPP_AGE_BUCKETS = [
     ("lt2w", "< 2 weeks"), ("2_4w", "2–4 weeks"), ("4_6w", "4–6 weeks"),
@@ -1855,6 +1857,16 @@ async def opportunities_overview(
           AND ($1::text IS NULL OR o.owner_email = $1)
           AND ($2::text IS NULL OR o.deal_type = $2)
     """, owner_f, dt_f, ref)
+    closed_lost = await conn.fetchval(f"""
+        SELECT count(DISTINCT h.opportunity_id)
+        FROM bedrock.jobs_stage_history h
+        JOIN bedrock.jobs_opportunity o ON o.id = h.opportunity_id
+        WHERE h.to_stage = 'closed_lost'
+          AND h.changed_at >= $3::timestamptz - interval '7 days' AND h.changed_at < $3::timestamptz
+          AND o.deleted_at IS NULL
+          AND ($1::text IS NULL OR o.owner_email = $1)
+          AND ($2::text IS NULL OR o.deal_type = $2)
+    """, owner_f, dt_f, ref)
 
     def _days(dt):
         return None if dt is None else max(0, (ref - dt).days)
@@ -1934,37 +1946,71 @@ async def opportunities_overview(
 
     needs.sort(key=lambda n: -n["days_in_stage"])
 
-    # Recently added to the set — when each opp was created and who added it
-    # (creator = the earliest stage-history actor, falling back to the owner).
-    radd = await conn.fetch(f"""
-        SELECT o.id, o.account_name, o.deal_type, o.stage, o.created_at,
-               COALESCE(
-                 (SELECT h.changed_by FROM bedrock.jobs_stage_history h
-                    WHERE h.opportunity_id = o.id AND h.changed_by IS NOT NULL
-                    ORDER BY h.changed_at ASC LIMIT 1),
-                 o.owner_email) AS added_by
+    # Recent activity in the selected Sat–Sat week: opportunities added, stage
+    # moves (incl. won/lost), and opps crossing the 6-week "stalled" threshold.
+    added_rows = await conn.fetch(f"""
+        SELECT o.id, o.account_name, o.deal_type, o.stage, o.created_at AS at,
+               COALESCE((SELECT h.changed_by FROM bedrock.jobs_stage_history h
+                         WHERE h.opportunity_id = o.id AND h.changed_by IS NOT NULL
+                         ORDER BY h.changed_at ASC LIMIT 1), o.owner_email) AS actor
         FROM bedrock.jobs_opportunity o
-        WHERE o.deleted_at IS NULL AND {_OPP_INSET}
-          AND o.created_at < $3::timestamptz
+        WHERE o.deleted_at IS NULL
+          AND o.created_at >= $3::timestamptz - interval '7 days' AND o.created_at < $3::timestamptz
           AND ($1::text IS NULL OR o.owner_email = $1)
           AND ($2::text IS NULL OR o.deal_type = $2)
-        ORDER BY o.created_at DESC
-        LIMIT 50
     """, owner_f, dt_f, ref)
-    recent_additions = [{
-        "opportunity_id": str(r["id"]),
-        "account": r["account_name"], "deal_type": r["deal_type"],
-        "stage": r["stage"], "stage_label": STAGE_LABELS.get(r["stage"], r["stage"]),
-        "created_at": r["created_at"].isoformat() if r["created_at"] else None,
-        "added_by": r["added_by"],
-    } for r in radd]
+    moved_rows = await conn.fetch(f"""
+        SELECT o.id, o.account_name, o.deal_type, h.from_stage, h.to_stage,
+               h.changed_at AS at, h.changed_by AS actor
+        FROM bedrock.jobs_stage_history h
+        JOIN bedrock.jobs_opportunity o ON o.id = h.opportunity_id
+        WHERE o.deleted_at IS NULL AND h.from_stage IS NOT NULL
+          AND h.changed_at >= $3::timestamptz - interval '7 days' AND h.changed_at < $3::timestamptz
+          AND ($1::text IS NULL OR o.owner_email = $1)
+          AND ($2::text IS NULL OR o.deal_type = $2)
+    """, owner_f, dt_f, ref)
+    stalled_rows = await conn.fetch(f"""
+        SELECT o.id, o.account_name, o.deal_type, o.stage, o.created_at, o.owner_email AS actor
+        FROM bedrock.jobs_opportunity o
+        WHERE o.deleted_at IS NULL AND {_OPP_INSET}
+          AND o.created_at >= $3::timestamptz - interval '49 days' AND o.created_at < $3::timestamptz - interval '42 days'
+          AND ($1::text IS NULL OR o.owner_email = $1)
+          AND ($2::text IS NULL OR o.deal_type = $2)
+    """, owner_f, dt_f, ref)
+
+    recent_activity = []
+    for r in added_rows:
+        recent_activity.append({
+            "type": "added", "opportunity_id": str(r["id"]), "account": r["account_name"],
+            "deal_type": r["deal_type"], "stage_label": STAGE_LABELS.get(r["stage"], r["stage"]),
+            "detail": "Added to the set", "at": r["at"].isoformat() if r["at"] else None,
+            "actor": r["actor"],
+        })
+    for r in moved_rows:
+        to = r["to_stage"]
+        recent_activity.append({
+            "type": "won" if to == "closed_won" else "lost" if to == "closed_lost" else "moved",
+            "opportunity_id": str(r["id"]), "account": r["account_name"], "deal_type": r["deal_type"],
+            "stage_label": STAGE_LABELS.get(to, to),
+            "detail": f"{STAGE_LABELS.get(r['from_stage'], r['from_stage'])} → {STAGE_LABELS.get(to, to)}",
+            "at": r["at"].isoformat() if r["at"] else None, "actor": r["actor"],
+        })
+    for r in stalled_rows:
+        crossed = (r["created_at"] + timedelta(days=42)) if r["created_at"] else None
+        recent_activity.append({
+            "type": "stalled", "opportunity_id": str(r["id"]), "account": r["account_name"],
+            "deal_type": r["deal_type"], "stage_label": STAGE_LABELS.get(r["stage"], r["stage"]),
+            "detail": "Became stalled — 6+ weeks in the set",
+            "at": crossed.isoformat() if crossed else None, "actor": r["actor"],
+        })
+    recent_activity = sorted((e for e in recent_activity if e["at"]), key=lambda e: e["at"], reverse=True)
 
     return {"success": True, "data": {
         "filters": {"owner": owner_f, "deal_type": dt_f, "week_end": week_end},
         "aging_basis": "time_in_stage",
         "summary": {
             "in_set": in_set, "net_new": net_new, "net_new_prev": net_new_prev,
-            "moved_committed": moved_committed, "stalled_6wk": stalled_6wk,
+            "moved_committed": moved_committed, "closed_lost": closed_lost, "stalled_6wk": stalled_6wk,
         },
         "aging": {"buckets": [
             {"key": k, "label": lbl, "count": age_counts[i],
@@ -1985,7 +2031,7 @@ async def opportunities_overview(
             "stage": {"rows": stage_rows, "col_totals": _col_totals(stage_rows)},
         },
         "needs_attention": needs[:30],
-        "recent_additions": recent_additions,
+        "recent_activity": recent_activity,
     }}
 
 

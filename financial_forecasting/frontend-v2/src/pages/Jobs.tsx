@@ -53,7 +53,7 @@ export function JobsPage() {
       <PageHeader
         title="Jobs Pipeline"
         subtitle="Employer outreach, builder matching, and placement tracking."
-        actions={
+        actions={view === "opportunities" ? undefined :
           <div className="flex items-center gap-1 rounded-lg border border-border-strong bg-surface-2 p-1">
             {VIEWS.map((v) => {
               const Icon = v.icon;

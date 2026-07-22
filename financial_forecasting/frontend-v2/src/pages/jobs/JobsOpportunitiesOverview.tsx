@@ -13,7 +13,7 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { addDays, format } from "date-fns";
-import { AlertTriangle, ChevronLeft, ChevronRight, Clock, Minus, TrendingDown, TrendingUp } from "lucide-react";
+import { AlertTriangle, ArrowRight, ChevronLeft, ChevronRight, Clock, Minus, Plus, TrendingDown, TrendingUp, Trophy, XCircle } from "lucide-react";
 
 import {
   useOpportunitiesOverview,
@@ -23,7 +23,7 @@ import {
   type OppBreakdownDim,
   type OppHeatmap,
   type OppNeedsRow,
-  type OppRecentAddition,
+  type OppActivityEvent,
 } from "@/services/jobs";
 import { cn } from "@/lib/utils";
 
@@ -144,15 +144,19 @@ export function JobsOpportunitiesOverview() {
       </div>
 
       {/* ── Summary cards ─────────────────────────────────────────────── */}
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+      <div className="grid grid-cols-2 items-stretch gap-4 lg:grid-cols-4">
         <SummaryCard tone="ink" label="In the set" value={s?.in_set} isLoading={isLoading}
           sub="All active opportunities" />
         <SummaryCard tone="accent" label="Net new" value={s?.net_new} isLoading={isLoading}
           delta={s ? { n: netDelta, prev: s.net_new_prev } : undefined} />
-        <SummaryCard tone="green" label="Moved to Committed" value={s?.moved_committed} isLoading={isLoading}
-          sub="→ Closed-Won this week" />
         <SummaryCard tone="amber" label="Stalled" value={s?.stalled_6wk} isLoading={isLoading}
           sub="Open opportunity 6+ weeks" />
+        {/* 4th cell: two stacked outcome boxes for the week — Closed won (the goal,
+            subtly highlighted) over Closed lost (context to understand, not a red flag). */}
+        <div className="flex flex-col gap-4">
+          <OutcomeBox tone="green" highlight label="Closed won" value={s?.moved_committed} isLoading={isLoading} />
+          <OutcomeBox tone="ink" label="Closed lost" value={s?.closed_lost} isLoading={isLoading} />
+        </div>
       </div>
 
       {/* ── Aging + Breakdown ─────────────────────────────────────────── */}
@@ -210,12 +214,12 @@ export function JobsOpportunitiesOverview() {
         <NeedsTable rows={data?.needs_attention ?? []} isLoading={isLoading} />
       </Panel>
 
-      {/* ── Recently added to the set ─────────────────────────────────── */}
+      {/* ── Recent activity ───────────────────────────────────────────── */}
       <Panel
-        title="Recently added to the set"
-        desc="When each opportunity was created and who added it — newest first"
+        title="Recent activity"
+        desc="Added, moved, won/lost, or stalled this week — newest first"
       >
-        <RecentAdditions rows={data?.recent_additions ?? []} isLoading={isLoading} />
+        <RecentActivity events={data?.recent_activity ?? []} isLoading={isLoading} />
       </Panel>
     </div>
   );
@@ -261,6 +265,42 @@ function SummaryCard({
       ) : !isLoading && sub ? (
         <div className="mt-2 text-[11.5px] text-ink-4">{sub}</div>
       ) : null}
+    </div>
+  );
+}
+
+// ── Outcome box (half-height; stacked for won / lost) ─────────────────────────
+
+function OutcomeBox({
+  tone, label, value, highlight, isLoading,
+}: {
+  tone: keyof typeof TONE | string;
+  label: string;
+  value: number | undefined;
+  highlight?: boolean;
+  isLoading: boolean;
+}) {
+  return (
+    <div
+      className={cn(
+        "flex flex-1 items-center justify-between rounded-xl border border-border-strong px-4 py-2.5",
+        highlight ? "bg-[var(--green-soft)]" : "bg-surface",
+      )}
+    >
+      <div>
+        <div className="flex items-center gap-1 text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
+          {highlight ? <Trophy size={11} className="text-[var(--green)]" /> : null}
+          {label}
+        </div>
+        <div className="text-[10.5px] text-ink-4">this week</div>
+      </div>
+      {isLoading ? (
+        <div className="h-6 w-8 animate-pulse rounded bg-surface-2" />
+      ) : (
+        <div className={cn("text-[22px] font-bold leading-none tabular-nums", TONE[tone] ?? "text-ink")}>
+          {value ?? 0}
+        </div>
+      )}
     </div>
   );
 }
@@ -437,6 +477,7 @@ function Heatmap({
 // ── Needs-attention table ─────────────────────────────────────────────────────
 
 function NeedsTable({ rows, isLoading }: { rows: OppNeedsRow[]; isLoading: boolean }) {
+  const [showAll, setShowAll] = useState(false);
   if (isLoading) return <div className="h-32 animate-pulse rounded-lg bg-surface-2" />;
   if (rows.length === 0) {
     return (
@@ -445,6 +486,7 @@ function NeedsTable({ rows, isLoading }: { rows: OppNeedsRow[]; isLoading: boole
       </div>
     );
   }
+  const shown = showAll ? rows : rows.slice(0, 5);
   return (
     <div className="overflow-x-auto">
       <table className="w-full min-w-[560px] border-collapse text-[13px]">
@@ -456,7 +498,7 @@ function NeedsTable({ rows, isLoading }: { rows: OppNeedsRow[]; isLoading: boole
           </tr>
         </thead>
         <tbody>
-          {rows.map((r) => (
+          {shown.map((r) => (
             <tr key={r.opportunity_id} className="border-b border-border-strong last:border-b-0">
               <td className="px-2.5 py-2.5 font-semibold text-ink">
                 <Link to={`/jobs/opportunities/${r.opportunity_id}`} className="hover:text-accent">
@@ -478,47 +520,68 @@ function NeedsTable({ rows, isLoading }: { rows: OppNeedsRow[]; isLoading: boole
           ))}
         </tbody>
       </table>
+      {rows.length > 5 ? (
+        <button type="button" onClick={() => setShowAll((v) => !v)}
+          className="mt-2 text-[12px] font-medium text-accent hover:underline">
+          {showAll ? "Show less" : `Show ${rows.length - 5} more`}
+        </button>
+      ) : null}
     </div>
   );
 }
 
-// ── Recently added to the set ─────────────────────────────────────────────────
+// ── Recent activity feed ──────────────────────────────────────────────────────
 
-function RecentAdditions({ rows, isLoading }: { rows: OppRecentAddition[]; isLoading: boolean }) {
+const ACTIVITY_META: Record<OppActivityEvent["type"], { label: string; color: string; icon: React.ReactNode }> = {
+  added:   { label: "Added",   color: "var(--accent)", icon: <Plus size={11} /> },
+  moved:   { label: "Moved",   color: "var(--sky)",    icon: <ArrowRight size={11} /> },
+  won:     { label: "Won",     color: "var(--green)",  icon: <Trophy size={11} /> },
+  lost:    { label: "Lost",    color: "var(--ink-3)",  icon: <XCircle size={11} /> },
+  stalled: { label: "Stalled", color: "var(--amber)",  icon: <Clock size={11} /> },
+};
+
+function RecentActivity({ events, isLoading }: { events: OppActivityEvent[]; isLoading: boolean }) {
+  const [showAll, setShowAll] = useState(false);
   if (isLoading) return <div className="h-32 animate-pulse rounded-lg bg-surface-2" />;
-  if (rows.length === 0) {
+  if (events.length === 0) {
     return (
       <div className="flex items-center justify-center rounded-lg border border-dashed border-border-strong px-4 py-8 text-[12px] text-ink-4">
-        No opportunities in the set yet.
+        No activity in this week.
       </div>
     );
   }
+  const shown = showAll ? events : events.slice(0, 10);
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full min-w-[560px] border-collapse text-[13px]">
-        <thead>
-          <tr className="border-b border-border-strong">
-            {["Account", "Deal type", "Stage", "Date added", "Added by"].map((h) => (
-              <th key={h} className="px-2.5 pb-2 text-left text-[10.5px] font-semibold uppercase tracking-wider text-ink-4">{h}</th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((r) => (
-            <tr key={r.opportunity_id} className="border-b border-border-strong last:border-b-0">
-              <td className="px-2.5 py-2.5 font-semibold text-ink">
-                <Link to={`/jobs/opportunities/${r.opportunity_id}`} className="hover:text-accent">{r.account || "—"}</Link>
-              </td>
-              <td className="px-2.5 py-2.5 text-ink-2">{r.deal_type ? (DEAL_TYPE_LABELS[r.deal_type as DealType] ?? r.deal_type) : "—"}</td>
-              <td className="px-2.5 py-2.5">
-                <span className="rounded-full bg-surface-2 px-2 py-0.5 text-[11px] font-medium text-ink-2">{r.stage_label}</span>
-              </td>
-              <td className="px-2.5 py-2.5 tabular-nums text-ink-2">{r.created_at ? format(new Date(r.created_at), "MMM d, yyyy") : "—"}</td>
-              <td className="px-2.5 py-2.5 text-ink-2">{ownerShort(r.added_by)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+    <div className="flex flex-col">
+      {shown.map((e, i) => {
+        const m = ACTIVITY_META[e.type];
+        return (
+          <div key={`${e.opportunity_id}-${i}`} className="flex items-center gap-3 border-b border-border-strong py-2 last:border-b-0">
+            <span
+              className="inline-flex w-[76px] flex-shrink-0 items-center gap-1 rounded-full bg-surface-2 px-2 py-0.5 text-[10.5px] font-semibold"
+              style={{ color: m.color }}
+            >
+              {m.icon}{m.label}
+            </span>
+            <div className="min-w-0 flex-1 truncate">
+              <Link to={`/jobs/opportunities/${e.opportunity_id}`} className="text-[13px] font-semibold text-ink hover:text-accent">
+                {e.account || "—"}
+              </Link>
+              <span className="ml-2 text-[12px] text-ink-3">{e.detail}</span>
+            </div>
+            <span className="flex-shrink-0 text-[11px] text-ink-4">{ownerShort(e.actor)}</span>
+            <span className="w-[56px] flex-shrink-0 text-right text-[11px] text-ink-4">
+              {e.at ? format(new Date(e.at), "MMM d") : "—"}
+            </span>
+          </div>
+        );
+      })}
+      {events.length > 10 ? (
+        <button type="button" onClick={() => setShowAll((v) => !v)}
+          className="mt-2 self-start text-[12px] font-medium text-accent hover:underline">
+          {showAll ? "Show less" : `Show ${events.length - 10} more`}
+        </button>
+      ) : null}
     </div>
   );
 }

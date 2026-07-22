@@ -1986,14 +1986,17 @@ export interface OppNeedsRow {
   why: string;
 }
 
-export interface OppRecentAddition {
+export type OppActivityType = "added" | "moved" | "won" | "lost" | "stalled";
+
+export interface OppActivityEvent {
+  type: OppActivityType;
   opportunity_id: string;
   account: string | null;
   deal_type: string | null;
-  stage: string;
   stage_label: string;
-  created_at: string;
-  added_by: string | null;
+  detail: string;
+  at: string | null;
+  actor: string | null;
 }
 
 export interface OpportunitiesOverview {
@@ -2001,7 +2004,7 @@ export interface OpportunitiesOverview {
   aging_basis: string;
   summary: {
     in_set: number; net_new: number; net_new_prev: number;
-    moved_committed: number; stalled_6wk: number;
+    moved_committed: number; closed_lost: number; stalled_6wk: number;
   };
   aging: { buckets: OppAgingBucket[] };
   breakdowns: Record<OppBreakdownDim, OppBreakdownItem[]>;
@@ -2011,7 +2014,7 @@ export interface OpportunitiesOverview {
     stage: OppHeatmap;
   };
   needs_attention: OppNeedsRow[];
-  recent_additions: OppRecentAddition[];
+  recent_activity: OppActivityEvent[];
 }
 
 export function useOpportunitiesOverview(owner?: string, dealType?: string, weekEnd?: string) {
