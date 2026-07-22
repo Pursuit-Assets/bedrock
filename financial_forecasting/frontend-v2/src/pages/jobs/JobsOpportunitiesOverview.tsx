@@ -412,8 +412,7 @@ function BreakdownBars({ items, dim, isLoading }: { items: { key: string; label:
 // ── Heatmap ───────────────────────────────────────────────────────────────────
 
 // Colour encodes VOLUME only — a blue that deepens with the count in the cell.
-// The red "!" (below) is driven by TIME, not volume: cells in the 6+ week
-// columns get flagged, because those are the ones sitting too long.
+// No concern-shading or flags; the gradient is the only signal.
 function heatBlue(n: number, max: number): { background: string; color: string } {
   if (n <= 0) return { background: "var(--surface-2)", color: "var(--ink-4)" };
   const t = max > 0 ? n / max : 0;
@@ -423,9 +422,6 @@ function heatBlue(n: number, max: number): { background: string; color: string }
     color: alpha > 0.5 ? "#ffffff" : "var(--ink)",
   };
 }
-
-// Bucket index ≥ 3 == 6+ weeks in the pipeline → flag as stalled-too-long.
-const STALE_BUCKET_FROM = 3;
 
 function Heatmap({
   heatmap, buckets, rowHeader, isLoading,
@@ -458,20 +454,13 @@ function Heatmap({
               <td className="whitespace-nowrap py-1 pr-2 text-[12.5px] font-semibold text-ink">{row.label}</td>
               {row.cells.map((n, i) => {
                 const st = heatBlue(n, max);
-                const stale = i >= STALE_BUCKET_FROM && n > 0;
                 return (
                   <td key={i} className="p-1">
                     <div
-                      className="relative flex h-11 items-center justify-center rounded-lg text-[14px] font-bold"
+                      className="flex h-11 items-center justify-center rounded-lg text-[14px] font-bold"
                       style={{ background: st.background, color: st.color }}
                     >
                       {n}
-                      {stale ? (
-                        <span
-                          className="absolute -right-1.5 -top-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-[var(--red)] text-[10px] font-extrabold text-white shadow-[0_0_0_2px_var(--surface)]"
-                          title="6+ weeks in the pipeline — worth a look"
-                        >!</span>
-                      ) : null}
                     </div>
                   </td>
                 );
@@ -488,15 +477,9 @@ function Heatmap({
           </tr>
         </tbody>
       </table>
-      <div className="mt-2.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-ink-4">
-        <span className="flex items-center gap-1.5">
-          <span className="h-2.5 w-8 rounded-sm" style={{ background: "linear-gradient(90deg, rgba(47,127,224,0.16), rgba(47,127,224,1))" }} />
-          fewer → more opportunities
-        </span>
-        <span className="flex items-center gap-1">
-          <span className="flex h-3.5 w-3.5 items-center justify-center rounded-full bg-[var(--red)] text-[9px] font-extrabold text-white">!</span>
-          6+ weeks in the pipeline
-        </span>
+      <div className="mt-2.5 flex items-center gap-1.5 text-[11px] text-ink-4">
+        <span className="h-2.5 w-8 rounded-sm" style={{ background: "linear-gradient(90deg, rgba(47,127,224,0.16), rgba(47,127,224,1))" }} />
+        fewer → more opportunities
       </div>
     </div>
   );
