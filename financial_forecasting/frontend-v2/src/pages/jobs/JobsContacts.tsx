@@ -10,6 +10,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { Briefcase, CheckSquare, ExternalLink, Linkedin, Plus, Search, X, Zap } from "lucide-react";
+import { toast } from "sonner";
 
 import { ContactDetail, initials } from "@/components/jobs/ProspectAccountExpandPanel";
 import { ContactExpandTabs, jobsContactPath } from "@/components/jobs/jobsEntity";
@@ -252,7 +253,7 @@ function ContactRow({ contact, expanded, onOpen, visibleCols, selected, onToggle
       <InlineSelect<string>
         value={contact.owner_email ?? ""}
         options={staffOptions}
-        renderValue={(v) => <span className={cn("truncate text-[12.5px]", (v ?? contact.owner_email) ? "text-ink-2" : "text-ink-4")}>{staffName(v ?? contact.owner_email)}</span>}
+        renderValue={(v) => { const email = (v || contact.owner_email) || null; return <span className={cn("truncate text-[12.5px]", email ? "text-ink-2" : "text-ink-4")}>{email ? staffName(email) : "—"}</span>; }}
         onSave={(v) => new Promise<void>((res, rej) => updateContact.mutate({ id: contact.contact_id, owner_email: v || null }, { onSuccess: () => res(), onError: rej }))}
       />
     ),
@@ -313,6 +314,7 @@ export function JobsContacts({ initialQuery, initialContactId }: { initialQuery?
   const [showNewContact, setShowNewContact] = useState(false);
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
   // Default = today's working view (jobs prospects only). "All contacts" opens
   // the full universe so anyone can be promoted via the prospect checkmark.
   const [scope, setScope] = useSessionState<"jobs" | "all">("jobs-contacts:scope", "jobs");
@@ -345,6 +347,10 @@ export function JobsContacts({ initialQuery, initialContactId }: { initialQuery?
   // rule like "connected staff contains jac" scans all 47k contacts — the old
   // client-only filtering silently sifted just the loaded page. Client-side
   // ruleApplies still runs on top for instant feedback while typing.
+  // Clear any selection when the visible set changes — otherwise a bulk action
+  // would apply to rows the user can no longer see (scope/filter/search change).
+  useEffect(() => { setSelected(new Set()); }, [scope, flagView, debouncedQuery]);
+
   const serverRules = useMemo(() => serializeRulesForServer(rules), [rules]);
   const filteringActive = serverRules.length > 0 || !!debouncedQuery;
   const { data: rawData, isLoading, isError, refetch } = useJobsContacts({
@@ -469,17 +475,19 @@ export function JobsContacts({ initialQuery, initialContactId }: { initialQuery?
       {selected.size > 0 && (
         <div className="flex flex-wrap items-center gap-2 border-x border-t border-accent bg-accent-soft px-3 py-2 text-[12.5px]">
           <span className="font-semibold text-accent-ink">{selected.size} selected</span>
-          <select defaultValue="" onChange={(e) => { const st = e.target.value; if (!st) return; flagContacts.mutate({ contact_ids: [...selected], stage: st }, { onSuccess: () => setSelected(new Set()) }); e.currentTarget.value = ""; }} className="h-7 rounded border border-border-strong bg-surface px-2 text-[12px] text-ink-2 outline-none focus:border-accent">
+          {/* Bulk mutations confirm first — native selects fire onChange on arrow-key
+              navigation, so an unconfirmed change could hit hundreds of rows. */}
+          <select value="" disabled={bulkBusy} onChange={(e) => { const st = e.target.value; e.currentTarget.value = ""; if (!st) return; if (!window.confirm(`Set stage to "${MEMBERSHIP_STAGE_LABELS[st as MembershipStage] ?? st}" on ${selected.size} contact${selected.size === 1 ? "" : "s"}?`)) return; flagContacts.mutate({ contact_ids: [...selected], stage: st }, { onSuccess: () => setSelected(new Set()) }); }} className="h-7 rounded border border-border-strong bg-surface px-2 text-[12px] text-ink-2 outline-none focus:border-accent disabled:opacity-50">
             <option value="">Set stage…</option>
             {MEMBERSHIP_STAGE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
           </select>
-          <select defaultValue="" disabled={bulkOwner.isPending} onChange={(e) => { const v = e.target.value; if (!v) return; bulkOwner.mutate({ contact_ids: [...selected], owner_email: v === "__clear__" ? null : v }, { onSuccess: () => setSelected(new Set()) }); e.currentTarget.value = ""; }} className="h-7 max-w-[220px] rounded border border-border-strong bg-surface px-2 text-[12px] text-ink-2 outline-none focus:border-accent disabled:opacity-50">
+          <select value="" disabled={bulkBusy} onChange={(e) => { const v = e.target.value; e.currentTarget.value = ""; if (!v) return; const who = v === "__clear__" ? "no one" : (staffForFilter.find((s) => s.email === v)?.name ?? v); if (!window.confirm(`Set owner to ${who} on ${selected.size} contact${selected.size === 1 ? "" : "s"}?`)) return; bulkOwner.mutate({ contact_ids: [...selected], owner_email: v === "__clear__" ? null : v }, { onSuccess: () => setSelected(new Set()) }); }} className="h-7 max-w-[220px] rounded border border-border-strong bg-surface px-2 text-[12px] text-ink-2 outline-none focus:border-accent disabled:opacity-50">
             <option value="">Set owner…</option>
             {staffForFilter.map((s) => <option key={s.email} value={s.email}>{s.name}</option>)}
             <option value="__clear__">(clear owner)</option>
           </select>
-          <button type="button" disabled={flagContacts.isPending} onClick={() => flagContacts.mutate({ contact_ids: [...selected] }, { onSuccess: () => setSelected(new Set()) })} className="inline-flex h-7 items-center gap-1 rounded bg-accent px-3 font-medium text-white hover:opacity-90 disabled:opacity-50"><Zap size={12} /> Assign to jobs</button>
-          <button type="button" onClick={() => { [...selected].forEach((id) => unflag.mutate(id)); setSelected(new Set()); }} className="h-7 rounded border border-border-strong bg-surface px-3 text-ink-2 hover:text-ink" title="Remove the jobs stage (membership) from the selected contacts">Clear stage</button>
+          <button type="button" disabled={bulkBusy} onClick={() => flagContacts.mutate({ contact_ids: [...selected] }, { onSuccess: () => setSelected(new Set()) })} className="inline-flex h-7 items-center gap-1 rounded bg-accent px-3 font-medium text-white hover:opacity-90 disabled:opacity-50"><Zap size={12} /> Assign to jobs</button>
+          <button type="button" disabled={bulkBusy} onClick={async () => { const ids = [...selected]; if (!window.confirm(`Clear the jobs stage from ${ids.length} contact${ids.length === 1 ? "" : "s"}?`)) return; setBulkBusy(true); const r = await Promise.allSettled(ids.map((id) => unflag.mutateAsync(id))); setBulkBusy(false); const failed = r.filter((x) => x.status === "rejected").length; if (failed) toast.error(`${failed} of ${ids.length} could not be cleared`); setSelected(new Set()); }} className="h-7 rounded border border-border-strong bg-surface px-3 text-ink-2 hover:text-ink disabled:opacity-50" title="Remove the jobs stage (membership) from the selected contacts">Clear stage</button>
           <button type="button" onClick={() => setSelected(new Set())} className="ml-1 text-[11.5px] font-medium text-ink-3 underline-offset-4 hover:text-ink-2 hover:underline">Clear selection</button>
         </div>
       )}
