@@ -39,18 +39,6 @@ import {
   type JobStage, type JobContactWithDeal, type ContactSearchResult, type ContactCreateBody, type MembershipStage,
 } from "@/services/jobs";
 
-// ── stage metadata ────────────────────────────────────────────────────────────
-const CONTACT_STAGE_SELECT = [
-  { value: "active", label: "Active" }, { value: "initial_outreach", label: "Initial Outreach" },
-  { value: "lead", label: "Lead" }, { value: "on_hold", label: "On Hold" },
-];
-const CONTACT_STAGE_STYLES: Record<string, { label: string; className: string }> = {
-  active: { label: "Active", className: "bg-green-50 text-green-700" },
-  initial_outreach: { label: "Outreach", className: "bg-accent-soft text-accent-ink" },
-  lead: { label: "Lead", className: "bg-stone-100 text-stone-500" },
-  on_hold: { label: "On Hold", className: "bg-amber-50 text-amber-600" },
-};
-
 // ── last touch: most recent jobs-relevant activity date ───────────────────────
 function relativeDays(iso: string | null | undefined): string {
   if (!iso) return "—";
@@ -96,13 +84,12 @@ function extract(c: JobContactWithDeal, key: ColKey): string | number {
 }
 
 // ── filters + grouping ─────────────────────────────────────────────────────────
-type Field = "name" | "title" | "company" | "industry" | "stage" | "flag" | "is_jobs" | "owner" | "tags" | "listings" | "has_deal" | "connected" | "connection_count" | "last_activity" | "first_contact_date" | "last_contact_date";
+type Field = "name" | "title" | "company" | "industry" | "flag" | "is_jobs" | "owner" | "tags" | "listings" | "has_deal" | "connected" | "connection_count" | "last_activity" | "first_contact_date" | "last_contact_date";
 const FILTERABLE: Record<Field, FieldMeta<JobContactWithDeal>> = {
   name: { label: "Name", type: "text", getValue: (c) => c.full_name ?? "" },
   title: { label: "Title", type: "text", getValue: (c) => c.current_title ?? "" },
   company: { label: "Company", type: "text", getValue: (c) => c.current_company ?? "" },
   industry: { label: "Industry", type: "text", getValue: (c) => c.company_industry ?? "" },
-  stage: { label: "Contact stage", type: "select", getValue: (c) => c.contact_stage ?? "" },
   flag: { label: "Jobs stage", type: "select", getValue: (c) => c.membership_stage ?? "" },
   is_jobs: { label: "Jobs prospect", type: "select", getValue: (c) => (c.is_jobs_contact ? "yes" : "no") },
   owner: { label: "Owner", type: "select", getValue: (c) => c.owner_email ?? "" },
@@ -122,7 +109,6 @@ const FILTERABLE: Record<Field, FieldMeta<JobContactWithDeal>> = {
 };
 const GROUP_OPTIONS = [
   { value: "", label: "No grouping" },
-  { value: "stage", label: "Group by Stage" },
   { value: "company", label: "Group by Company" },
   { value: "has_deal", label: "Group by Linked deal" },
 ];
@@ -134,13 +120,8 @@ interface JobsContactsView {
 const EMPTY: string[] = [];
 
 // ── New Contact modal (unchanged) ────────────────────────────────────────────────
-type ContactStageValue = "active" | "initial_outreach" | "lead" | "on_hold";
-const NEW_CONTACT_STAGE_OPTIONS: { value: ContactStageValue; label: string }[] = [
-  { value: "lead", label: "Lead" }, { value: "initial_outreach", label: "Initial Outreach" },
-  { value: "active", label: "Active" }, { value: "on_hold", label: "On Hold" },
-];
-interface NewContactForm { fullName: string; email: string; title: string; company: string; linkedIn: string; stage: ContactStageValue; }
-const DEFAULT_NEW_CONTACT_FORM: NewContactForm = { fullName: "", email: "", title: "", company: "", linkedIn: "", stage: "lead" };
+interface NewContactForm { fullName: string; email: string; title: string; company: string; linkedIn: string; }
+const DEFAULT_NEW_CONTACT_FORM: NewContactForm = { fullName: "", email: "", title: "", company: "", linkedIn: "" };
 function Spinner() {
   return <svg className="h-3 w-3 animate-spin" viewBox="0 0 24 24" fill="none"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" /></svg>;
 }
@@ -155,7 +136,7 @@ function NewContactModal({ onClose }: { onClose: () => void }) {
     const body: ContactCreateBody = {
       full_name: form.fullName.trim(), email: form.email.trim() || undefined, current_title: form.title.trim() || undefined,
       current_company: form.company.trim() || undefined, linkedin_url: form.linkedIn.trim() || undefined,
-      contact_stage: form.stage,
+      contact_stage: "active",
     };
     const created = await createContact.mutateAsync(body);
     onClose();
@@ -167,10 +148,7 @@ function NewContactModal({ onClose }: { onClose: () => void }) {
         <div className="flex items-center justify-between border-b border-border-strong px-5 py-4"><h2 className="text-[15px] font-semibold text-ink">New Contact</h2><button type="button" onClick={onClose} className="text-ink-3 hover:text-ink"><X size={16} /></button></div>
         <form onSubmit={(e) => void handleSubmit(e)} className="flex flex-col gap-4 px-5 py-4">
           <div className="flex flex-col gap-1"><label className="text-[11px] font-semibold uppercase tracking-wider text-ink-4">Full Name *</label><input required value={form.fullName} onChange={(e) => set("fullName", e.target.value)} placeholder="Jane Smith" className="w-full rounded-md border border-border-strong bg-surface px-3 py-2 text-[13px] text-ink focus:outline-none focus:ring-1 focus:ring-accent/40" /></div>
-          <div className="grid grid-cols-2 gap-3">
-            <div className="flex flex-col gap-1"><label className="text-[11px] font-semibold uppercase tracking-wider text-ink-4">Email</label><input type="email" value={form.email} onChange={(e) => set("email", e.target.value)} className="w-full rounded-md border border-border-strong bg-surface px-3 py-2 text-[13px] text-ink focus:outline-none focus:ring-1 focus:ring-accent/40" /></div>
-            <div className="flex flex-col gap-1"><label className="text-[11px] font-semibold uppercase tracking-wider text-ink-4">Stage</label><select value={form.stage} onChange={(e) => set("stage", e.target.value as ContactStageValue)} className="w-full rounded-md border border-border-strong bg-surface px-3 py-2 text-[13px] text-ink focus:outline-none focus:ring-1 focus:ring-accent/40">{NEW_CONTACT_STAGE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}</select></div>
-          </div>
+          <div className="flex flex-col gap-1"><label className="text-[11px] font-semibold uppercase tracking-wider text-ink-4">Email</label><input type="email" value={form.email} onChange={(e) => set("email", e.target.value)} className="w-full rounded-md border border-border-strong bg-surface px-3 py-2 text-[13px] text-ink focus:outline-none focus:ring-1 focus:ring-accent/40" /></div>
           <div className="grid grid-cols-2 gap-3">
             <div className="flex flex-col gap-1"><label className="text-[11px] font-semibold uppercase tracking-wider text-ink-4">Title</label><input value={form.title} onChange={(e) => set("title", e.target.value)} className="w-full rounded-md border border-border-strong bg-surface px-3 py-2 text-[13px] text-ink focus:outline-none focus:ring-1 focus:ring-accent/40" /></div>
             <div className="flex flex-col gap-1"><label className="text-[11px] font-semibold uppercase tracking-wider text-ink-4">Company</label><CompanyPicker value={form.company} onChange={(v) => set("company", v)} /></div>
@@ -398,7 +376,7 @@ export function JobsContacts({ initialQuery, initialContactId }: { initialQuery?
   const { data: tagCatalog = [] } = useContactTagCatalog();
   const { data: staffForFilter = [] } = useStaff();
   const selectOptions: Partial<Record<Field, { value: string; label: string }[]>> = useMemo(() => ({
-    stage: CONTACT_STAGE_SELECT, has_deal: YESNO, is_jobs: YESNO, last_activity: RECENCY_OPTIONS,
+    has_deal: YESNO, is_jobs: YESNO, last_activity: RECENCY_OPTIONS,
     flag: MEMBERSHIP_STAGES.map((s) => ({ value: s, label: MEMBERSHIP_STAGE_LABELS[s] })),
     tags: tagCatalog.map((t) => ({ value: t.slug, label: t.label })),
     owner: staffForFilter.map((s) => ({ value: s.email, label: s.name })),
@@ -420,7 +398,6 @@ export function JobsContacts({ initialQuery, initialContactId }: { initialQuery?
 
   const groupLabel = useCallback((k: string) => {
     if (k === "") return "—";
-    if (groupBy === "stage") return CONTACT_STAGE_STYLES[k]?.label ?? k;
     if (groupBy === "has_deal") return k === "yes" ? "Has linked deal" : "No linked deal";
     return k;
   }, [groupBy]);
@@ -509,7 +486,7 @@ export function JobsContacts({ initialQuery, initialContactId }: { initialQuery?
 
       {rules.length > 0 && (
         <div className="flex flex-wrap items-center gap-1.5 border-x border-t border-border-strong bg-surface px-3 py-2">
-          {rules.map((r) => <FilterChip key={r.id} label={describeRule(r, FILTERABLE, (f, v) => f === "stage" ? (CONTACT_STAGE_STYLES[v]?.label ?? v) : f === "flag" ? (MEMBERSHIP_STAGE_LABELS[v as MembershipStage] ?? v) : f === "tags" ? (tagCatalog.find((t) => t.slug === v)?.label ?? v) : f === "owner" ? (staffForFilter.find((s) => s.email === v)?.name ?? v) : f === "last_activity" ? recencyLabel(v) : v)} onRemove={() => setRules((p) => p.filter((x) => x.id !== r.id))} />)}
+          {rules.map((r) => <FilterChip key={r.id} label={describeRule(r, FILTERABLE, (f, v) => f === "flag" ? (MEMBERSHIP_STAGE_LABELS[v as MembershipStage] ?? v) : f === "tags" ? (tagCatalog.find((t) => t.slug === v)?.label ?? v) : f === "owner" ? (staffForFilter.find((s) => s.email === v)?.name ?? v) : f === "last_activity" ? recencyLabel(v) : v)} onRemove={() => setRules((p) => p.filter((x) => x.id !== r.id))} />)}
           <button type="button" onClick={() => setRules([])} className="ml-1 text-[11.5px] font-medium text-ink-3 underline-offset-4 hover:text-ink-2 hover:underline">Clear all</button>
         </div>
       )}

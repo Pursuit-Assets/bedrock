@@ -19,7 +19,6 @@ import { cn } from "@/lib/utils";
 import {
   useContactDetail,
   useContactOpportunities,
-  useUpdateContact,
   useUpdateOpportunity,
   type OpenRole,
   type CompanyBuilderRole,
@@ -31,10 +30,6 @@ import {
 
 export const DEAL_TYPE_OPTIONS = (["ft", "pt_contract", "capstone", "volunteer", "workshop", "pilot"] as DealType[])
   .map((v) => ({ value: v, label: { ft: "FT", pt_contract: "Contract", capstone: "Capstone", volunteer: "Volunteer", workshop: "Workshop", pilot: "Pilot" }[v] }));
-const CONTACT_STAGE_OPTIONS = [
-  { value: "active", label: "Active" }, { value: "initial_outreach", label: "Initial Outreach" },
-  { value: "lead", label: "Lead" }, { value: "on_hold", label: "On Hold" },
-];
 
 /** Display name for an opportunity — role title, else deal-type, else generic. */
 export function oppRoleLabel(opp: { title?: string | null; deal_type?: DealType | null }): string {
@@ -156,16 +151,12 @@ export interface ContactRowData {
 
 /** Inline-editable contact row (stage) with name link to detail. */
 export function JobsContactRow({ contact, source }: { contact: ContactRowData; source?: "jobs" | "sf" | "linkedin" }) {
-  const update = useUpdateContact();
   return (
     <div className="flex items-center gap-2.5 rounded-md border border-border-strong/70 bg-surface px-3 py-2 hover:border-accent/50">
       <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-accent-soft text-[10px] font-bold leading-none text-accent-ink">{initials(contact.full_name)}</span>
       <Link to={jobsContactPath(contact.contact_id)} state={jobsRef} className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-ink hover:text-accent">{contact.full_name || "—"}</Link>
       {contact.current_title && <span className="hidden max-w-[35%] truncate text-[12px] text-ink-3 sm:block">{contact.current_title}</span>}
       <SourceBadge source={source} />
-      <span onClick={(e) => e.stopPropagation()} className="shrink-0">
-        <InlineSelect<string> value={contact.contact_stage} options={CONTACT_STAGE_OPTIONS} emptyLabel="—" renderValue={(v) => <ContactStagePill stage={v ?? null} />} onSave={(v) => update.mutateAsync({ id: contact.contact_id, contact_stage: v || null }).then(() => undefined)} />
-      </span>
       {contact.linkedin_url
         ? <a href={contact.linkedin_url} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} className="shrink-0 text-ink-3 hover:text-accent"><Linkedin size={13} /></a>
         : <span className="w-[13px] shrink-0" />}

@@ -10,7 +10,6 @@ import {
   useDeleteActivity,
   useBuilders,
   useContactSearch,
-  useUpdateContact,
   useContactDetail,
   useOppPlacements,
   useUnlinkedPlacements,
@@ -1106,22 +1105,7 @@ function ActivityTab({
   );
 }
 
-// ── Contact stage pill ────────────────────────────────────────────────────────
 
-const CONTACT_STAGE_STYLES: Record<
-  string,
-  { label: string; className: string }
-> = {
-  active:           { label: "Active",           className: "bg-green-50 text-green-700" },
-  initial_outreach: { label: "Initial Outreach", className: "bg-accent-soft text-accent-ink" },
-  lead:             { label: "Lead",             className: "bg-stone-100 text-stone-500" },
-  on_hold:          { label: "On Hold",          className: "bg-amber-50 text-amber-600" },
-};
-
-const CONTACT_STAGE_OPTIONS = Object.entries(CONTACT_STAGE_STYLES).map(([value, s]) => ({
-  value,
-  label: s.label,
-}));
 
 function contactInitials(contact: JobContact): string {
   if (contact.first_name && contact.last_name) {
@@ -1140,7 +1124,6 @@ function contactInitials(contact: JobContact): string {
 /** A single linked contact: inline stage editor + expandable per-contact activity. */
 function ContactRow({ contact }: { contact: JobContact }) {
   const [expanded, setExpanded] = useState(false);
-  const updateContact = useUpdateContact();
   const detailQ = useContactDetail(expanded ? contact.contact_id : null);
   const activity = detailQ.data?.activity ?? [];
 
@@ -1164,21 +1147,6 @@ function ContactRow({ contact }: { contact: JobContact }) {
         </div>
 
         <div className="flex shrink-0 items-center gap-2">
-          {/* Inline stage editor */}
-          <select
-            value={contact.contact_stage ?? ""}
-            onChange={(e) =>
-              updateContact.mutate({ id: contact.contact_id, contact_stage: e.target.value })
-            }
-            disabled={updateContact.isPending}
-            className="rounded-full border border-border-strong bg-surface-2 px-2 py-0.5 text-[10px] font-medium text-ink-2 focus:outline-none focus:ring-1 focus:ring-accent/40"
-            title="Update contact stage"
-          >
-            <option value="">— stage —</option>
-            {CONTACT_STAGE_OPTIONS.map((s) => (
-              <option key={s.value} value={s.value}>{s.label}</option>
-            ))}
-          </select>
           {contact.email ? (
             <a href={`mailto:${contact.email}`} title={contact.email} className="text-ink-3 hover:text-accent">
               <Mail size={14} />

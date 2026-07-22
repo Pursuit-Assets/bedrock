@@ -4507,7 +4507,7 @@ async def list_contacts(
         ) jo2 ON true
         {filter_join_sql}
         WHERE {where}
-        ORDER BY c.contact_stage NULLS LAST, c.full_name
+        ORDER BY c.full_name NULLS LAST
         LIMIT ${i} OFFSET ${i+1}
         """,
         *params, limit, offset,

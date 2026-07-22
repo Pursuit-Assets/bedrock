@@ -5,7 +5,6 @@ import { Drawer } from "@/components/ui/Drawer";
 import {
   useMetricDrill,
   useUpdateOpportunity,
-  useUpdateContact,
   useUpdatePlacementSalary,
   useUpdatePlacementTitle,
   STAGES_ORDERED,
@@ -43,12 +42,6 @@ function formatCell(colKey: string, value: string | null): string {
 }
 
 // Contact-stage options (value/label).
-const CONTACT_STAGE_OPTIONS: { value: string; label: string }[] = [
-  { value: "active", label: "Active" },
-  { value: "initial_outreach", label: "Outreach" },
-  { value: "lead", label: "Lead" },
-  { value: "on_hold", label: "On Hold" },
-];
 
 const selectClass =
   "border border-border-strong rounded px-1.5 py-0.5 text-[12px] bg-surface " +
@@ -70,7 +63,6 @@ export function MetricDrawer({
 }) {
   const { data, isLoading } = useMetricDrill(metricKey);
   const updateOpportunity = useUpdateOpportunity();
-  const updateContact = useUpdateContact();
   const updatePlacementSalary = useUpdatePlacementSalary();
   const updatePlacementTitle = useUpdatePlacementTitle();
   const updateRole = useUpdateRole();
@@ -138,16 +130,6 @@ export function MetricDrawer({
       };
     }
 
-    if (entity === "contact" && colKey === "contact_stage") {
-      return {
-        value: row[colKey] ?? "",
-        options: CONTACT_STAGE_OPTIONS,
-        onChange: async (newValue) => {
-          await updateContact.mutateAsync({ id: Number(id), contact_stage: newValue });
-          queryClient.invalidateQueries({ queryKey: ["jobs"] });
-        },
-      };
-    }
 
     return null;
   }

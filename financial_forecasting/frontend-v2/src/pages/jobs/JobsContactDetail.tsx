@@ -16,18 +16,14 @@ import { RequestIntroDialog } from "@/components/jobs/RequestIntroDialog";
 import {
   ContactActivityTab,
   ContactOppsTab,
-  ContactStagePill,
 } from "@/components/jobs/jobsEntity";
-import { InlineSelect, InlineText } from "@/components/ui/InlineEdit";
-import { useContactConnectors, useContactDetail, useUpdateContact } from "@/services/jobs";
+import { InlineText } from "@/components/ui/InlineEdit";
+import {
+  useContactConnectors, useContactDetail, useUpdateContact,
+  MEMBERSHIP_STAGE_LABELS, type MembershipStage,
+} from "@/services/jobs";
 import { useContactSfStatus } from "@/services/jobsSf";
 
-const STAGE_OPTIONS = [
-  { value: "active",           label: "Active" },
-  { value: "initial_outreach", label: "Initial Outreach" },
-  { value: "lead",             label: "Lead" },
-  { value: "on_hold",          label: "On Hold" },
-];
 
 function relativeDays(iso: string | null | undefined): string {
   if (!iso) return "—";
@@ -86,7 +82,6 @@ export function JobsContactDetailPage() {
           <div className="mt-1 flex flex-wrap items-center gap-2 text-[12.5px] text-ink-3">
             {c.current_title ? <span>{c.current_title}</span> : null}
             {c.current_company ? <span>· {c.current_company}</span> : null}
-            <ContactStagePill stage={c.contact_stage} />
           </div>
           <div className="mt-2 flex flex-wrap items-center gap-3 text-[12.5px]">
             {c.email && <a href={`mailto:${c.email}`} className="inline-flex items-center gap-1 text-ink-2 hover:text-accent"><Mail size={13} /> {c.email}</a>}
@@ -98,7 +93,7 @@ export function JobsContactDetailPage() {
 
       {/* Stats */}
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-        <Stat label="Stage" value={c.contact_stage ?? "—"} />
+        <Stat label="Jobs stage" value={c.membership_stage ? (MEMBERSHIP_STAGE_LABELS[c.membership_stage as MembershipStage] ?? c.membership_stage) : "—"} />
         <Stat label="Linked deal" value={c.deal?.account_name ?? "—"} />
         <Stat label="Last activity" value={relativeDays(lastActivity)} />
         <Stat label="Connections" value={String(connectedStaff.length)} />
@@ -109,9 +104,6 @@ export function JobsContactDetailPage() {
         <div className="grid grid-cols-2 gap-x-8 gap-y-3 px-5 py-4 md:grid-cols-3">
           <EditField label="Title"><InlineText value={c.current_title} onSave={(v) => patch("current_title", v)} placeholder="—" /></EditField>
           <EditField label="Company"><InlineText value={c.current_company} onSave={(v) => patch("current_company", v)} placeholder="—" /></EditField>
-          <EditField label="Stage">
-            <InlineSelect<string> value={c.contact_stage} options={STAGE_OPTIONS} emptyLabel="—" renderValue={(v) => <ContactStagePill stage={v ?? null} />} onSave={(v) => patch("contact_stage", v || null)} />
-          </EditField>
           <EditField label="Email"><InlineText value={c.email} onSave={(v) => patch("email", v)} placeholder="—" /></EditField>
           <EditField label="LinkedIn"><InlineText value={c.linkedin_url} onSave={(v) => patch("linkedin_url", v)} placeholder="—" /></EditField>
         </div>

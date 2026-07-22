@@ -32,7 +32,7 @@ import { JobsComments } from "@/components/jobs/JobsComments";
 import { JobsTasks } from "@/components/jobs/JobsTasks";
 import { RequestIntroDialog } from "@/components/jobs/RequestIntroDialog";
 import { RowExpandPanel } from "@/components/RowExpandPanel";
-import { InlineSelect, InlineText } from "@/components/ui/InlineEdit";
+import { InlineText } from "@/components/ui/InlineEdit";
 import { cn } from "@/lib/utils";
 import {
   STAGE_LABELS,
@@ -63,12 +63,6 @@ export const CONTACT_STAGE_LABELS: Record<string, string> = {
   on_hold:          "On Hold",
 };
 
-const CONTACT_STAGE_EDIT_OPTIONS = [
-  { value: "active",           label: "Active" },
-  { value: "initial_outreach", label: "Outreach" },
-  { value: "lead",             label: "Lead" },
-  { value: "on_hold",          label: "On Hold" },
-] as const;
 
 const DEAL_STAGE_STYLES: Record<string, string> = {
   active_in_discussions:        "bg-amber-50 text-amber-700",
@@ -298,23 +292,6 @@ export function ContactDetail({ contactId }: { contactId: number }) {
                 placeholder="Full name"
                 className="text-[14px] font-semibold text-ink"
               />
-              <div className="mt-0.5 px-1.5">
-                <InlineSelect
-                  value={data.contact_stage ?? undefined}
-                  options={CONTACT_STAGE_EDIT_OPTIONS as unknown as { value: string; label: string }[]}
-                  onSave={save("contact_stage")}
-                  emptyLabel="Set stage"
-                  renderValue={(v) =>
-                    v ? (
-                      <span className={cn("inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium leading-4", CONTACT_STAGE_STYLES[v] ?? "bg-stone-100 text-stone-500")}>
-                        {CONTACT_STAGE_LABELS[v] ?? v}
-                      </span>
-                    ) : (
-                      <span className="text-[10px] italic text-ink-4">Set stage</span>
-                    )
-                  }
-                />
-              </div>
             </div>
           </div>
 
@@ -548,8 +525,6 @@ function NestedContactRow({
   expanded: boolean;
   onToggle: () => void;
 }) {
-  const { mutateAsync: updateContact } = useUpdateContact();
-
   return (
     <>
       <div
@@ -576,26 +551,6 @@ function NestedContactRow({
           </div>
         </div>
 
-        {/* Inline-editable stage */}
-        <div className="flex-shrink-0" onClick={(e) => e.stopPropagation()}>
-          <InlineSelect
-            value={contact.contact_stage ?? undefined}
-            options={CONTACT_STAGE_EDIT_OPTIONS as unknown as { value: string; label: string }[]}
-            onSave={async (v) => {
-              await updateContact({ id: contact.contact_id, contact_stage: v });
-            }}
-            emptyLabel="Set stage"
-            renderValue={(v) =>
-              v ? (
-                <span className={cn("inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium leading-4", CONTACT_STAGE_STYLES[v] ?? "bg-stone-100 text-stone-500")}>
-                  {CONTACT_STAGE_LABELS[v] ?? v}
-                </span>
-              ) : (
-                <span className="text-[10px] italic text-ink-4">Set stage</span>
-              )
-            }
-          />
-        </div>
 
         {/* Links — stop propagation so clicks don't toggle the row */}
         <div className="flex flex-shrink-0 items-center gap-2" onClick={(e) => e.stopPropagation()}>
