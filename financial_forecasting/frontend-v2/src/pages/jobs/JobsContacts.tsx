@@ -71,7 +71,7 @@ const COL_LABELS: Record<ColKey, string> = {
 const DEFAULT_WIDTHS: Record<ColKey, number> = {
   name: 190, prospect: 90, flag: 130, title: 150, company: 160, tags: 190, owner: 150, industry: 130, last_touch: 105, listings: 105, tasks: 85, connected: 155, deal: 145, email: 170, linkedin: 60,
 };
-const SORTABLE = new Set<ColKey>(["name", "prospect", "flag", "title", "company", "owner", "industry", "last_touch", "listings", "tasks"]);
+const SORTABLE = new Set<ColKey>(["name", "prospect", "flag", "title", "company", "tags", "owner", "industry", "last_touch", "listings", "tasks"]);
 const MEMBERSHIP_STAGE_OPTIONS = MEMBERSHIP_STAGES.map((s) => ({ value: s, label: MEMBERSHIP_STAGE_LABELS[s] }));
 
 function extract(c: JobContactWithDeal, key: ColKey): string | number {
@@ -390,6 +390,13 @@ export function JobsContacts({ initialQuery, initialContactId }: { initialQuery?
 
   const { data: tagCatalog = [] } = useContactTagCatalog();
   const { data: staffForFilter = [] } = useStaff();
+  // slug → campaign priority (lower = higher priority); a contact's priority is
+  // its best (lowest) tag order. Untagged contacts sort last.
+  const tagOrder = useMemo(() => Object.fromEntries(tagCatalog.map((t) => [t.slug, t.sort_order])), [tagCatalog]);
+  const contactPriority = useCallback((c: JobContactWithDeal) => {
+    const orders = (c.crm_tags ?? []).map((t) => tagOrder[t] ?? Infinity);
+    return orders.length ? Math.min(...orders) : Infinity;
+  }, [tagOrder]);
   const selectOptions: Partial<Record<Field, { value: string; label: string }[]>> = useMemo(() => ({
     has_deal: YESNO, is_jobs: YESNO, last_activity: RECENCY_OPTIONS,
     flag: MEMBERSHIP_STAGES.map((s) => ({ value: s, label: MEMBERSHIP_STAGE_LABELS[s] })),
@@ -408,8 +415,13 @@ export function JobsContacts({ initialQuery, initialContactId }: { initialQuery?
       return (c.full_name ?? "").toLowerCase().includes(q) || (c.email ?? "").toLowerCase().includes(q)
         || (c.current_company ?? "").toLowerCase().includes(q) || (c.current_title ?? "").toLowerCase().includes(q);
     });
+    if (sort.key === "tags") {
+      // Sort by campaign priority (best tag), not the raw tag string.
+      const dir = sort.direction === "desc" ? -1 : 1;
+      return [...f].sort((a, b) => (contactPriority(a) - contactPriority(b)) * dir);
+    }
     return sort.key == null ? f : sortBy(f, sort, (c, k) => extract(c, k));
-  }, [allContacts, q, rules, sort]);
+  }, [allContacts, q, rules, sort, contactPriority]);
 
   // Select-all operates on the full filtered set (every loaded row that matches
   // the current filters), not just the 300 shown.

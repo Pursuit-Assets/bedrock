@@ -5321,10 +5321,71 @@ async def contact_tag_catalog(
     conn=Depends(get_db),
 ):
     """Curated contact-tag vocabulary (drives the tags picker + filter).
-    Slugs are what's stored on contacts.tags; labels are display-only."""
+    Slugs are what's stored on contacts.tags; labels are display-only.
+    sort_order is the campaign priority (lower = higher priority)."""
     rows = await conn.fetch(
-        "SELECT slug, label FROM bedrock.contact_tag_catalog WHERE active ORDER BY sort_order, label")
-    return {"success": True, "data": [{"slug": r["slug"], "label": r["label"]} for r in rows]}
+        "SELECT slug, label, sort_order FROM bedrock.contact_tag_catalog WHERE active ORDER BY sort_order, label")
+    return {"success": True, "data": [{"slug": r["slug"], "label": r["label"], "sort_order": r["sort_order"]} for r in rows]}
+
+
+# ── Tag campaigns (Performance → prioritize outreach) ─────────────────────────
+# A "campaign" is one prioritizable tag; all alumni cohorts collapse into a
+# single "Fellow Alumni" campaign (key 'alumni'). Priority = catalog.sort_order.
+def _campaign_key(slug: str) -> str:
+    return "alumni" if slug.startswith("alumni") else slug
+
+
+@router.get("/tag-campaigns")
+async def tag_campaigns(user=Depends(require_auth), conn=Depends(get_db)):
+    """Each tag as a prioritizable campaign with contact + account counts,
+    ordered by priority. Alumni cohorts are merged into one 'Fellow Alumni' row."""
+    rows = await conn.fetch("""
+        WITH tagged AS (
+          SELECT c.contact_id,
+                 CASE WHEN t LIKE 'alumni%' THEN 'alumni' ELSE t END AS campaign,
+                 nullif(lower(trim(c.current_company)), '') AS company
+          FROM public.contacts c, unnest(c.tags) t
+          WHERE t IN (SELECT slug FROM bedrock.contact_tag_catalog WHERE active)
+        )
+        SELECT campaign,
+               count(DISTINCT contact_id) AS contacts,
+               count(DISTINCT company)    AS accounts
+        FROM tagged GROUP BY campaign
+    """)
+    counts = {r["campaign"]: (r["contacts"], r["accounts"]) for r in rows}
+    cat = await conn.fetch(
+        "SELECT slug, label, sort_order FROM bedrock.contact_tag_catalog WHERE active")
+    camps: dict = {}
+    for r in cat:
+        key = _campaign_key(r["slug"])
+        c = camps.setdefault(key, {"key": key, "label": "Fellow Alumni" if key == "alumni" else r["label"],
+                                   "slugs": [], "sort_order": r["sort_order"]})
+        c["slugs"].append(r["slug"])
+        c["sort_order"] = min(c["sort_order"], r["sort_order"])
+    out = []
+    for c in camps.values():
+        cnt = counts.get(c["key"], (0, 0))
+        out.append({**c, "contacts": cnt[0], "accounts": cnt[1]})
+    out.sort(key=lambda x: (x["sort_order"], x["label"]))
+    return {"success": True, "data": out}
+
+
+class CampaignOrder(BaseModel):
+    order: list[str]   # campaign keys, top = highest priority
+
+
+@router.put("/tag-campaigns/order")
+async def set_tag_campaign_order(body: CampaignOrder, user=Depends(require_auth), conn=Depends(get_db)):
+    """Persist a new campaign priority order → catalog.sort_order (10, 20, …).
+    A campaign key maps to its slug (or all alumni_* slugs for 'alumni')."""
+    async with conn.transaction():
+        for i, key in enumerate(body.order):
+            so = (i + 1) * 10
+            if key == "alumni":
+                await conn.execute("UPDATE bedrock.contact_tag_catalog SET sort_order=$1 WHERE slug LIKE 'alumni%'", so)
+            else:
+                await conn.execute("UPDATE bedrock.contact_tag_catalog SET sort_order=$1 WHERE slug=$2", so, key)
+    return {"success": True, "data": {"updated": len(body.order)}}
 
 
 @router.post("/contacts/{contact_id}/add-to-jobs")

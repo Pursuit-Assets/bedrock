@@ -1364,10 +1364,10 @@ export function useBulkProspect() {
   });
 }
 
-export interface ContactTag { slug: string; label: string }
+export interface ContactTag { slug: string; label: string; sort_order: number }
 
 /** Curated contact-tag vocabulary (bedrock.contact_tag_catalog) — drives the
- *  tags picker and filter. */
+ *  tags picker and filter. sort_order is the campaign priority. */
 export function useContactTagCatalog() {
   return useQuery<ContactTag[]>({
     queryKey: ["jobs", "contact-tags"],
@@ -1376,6 +1376,40 @@ export function useContactTagCatalog() {
       return data.data;
     },
     staleTime: 300_000,
+  });
+}
+
+export interface TagCampaign {
+  key: string; label: string; slugs: string[]; sort_order: number;
+  contacts: number; accounts: number;
+}
+
+/** Tags as prioritizable outreach campaigns (Performance) — counts + order. */
+export function useTagCampaigns() {
+  return useQuery<TagCampaign[]>({
+    queryKey: ["jobs", "tag-campaigns"],
+    queryFn: async () => {
+      const { data } = await api.get<ApiResponse<TagCampaign[]>>("/api/jobs/tag-campaigns");
+      return data.data;
+    },
+    staleTime: 60_000,
+  });
+}
+
+export function useSetTagCampaignOrder() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (order: string[]) => {
+      const { data } = await api.put<ApiResponse<{ updated: number }>>("/api/jobs/tag-campaigns/order", { order });
+      return data.data;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["jobs", "tag-campaigns"] });
+      qc.invalidateQueries({ queryKey: ["jobs", "contact-tags"] });
+      qc.invalidateQueries({ queryKey: ["jobs", "contacts"] });
+      toast.success("Priority saved");
+    },
+    onError: () => toast.error("Couldn't save priority"),
   });
 }
 

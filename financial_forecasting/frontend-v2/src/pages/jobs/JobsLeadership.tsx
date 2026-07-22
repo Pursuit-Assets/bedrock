@@ -7,6 +7,7 @@ import {
 } from "@/services/jobs";
 import { JobsFunnels } from "@/components/jobs/JobsFunnels";
 import { ActivityTrends } from "@/components/jobs/ActivityTrends";
+import { TagCampaigns } from "@/components/jobs/TagCampaigns";
 import { MetricDrawer } from "@/components/jobs/MetricDrawer";
 import { JobsStatBubble } from "@/components/jobs/JobsStatBubble";
 
@@ -127,6 +128,11 @@ export function JobsLeadership() {
 
       {/* ── ZONE 3a · Outreach & activation over time ─────────────────── */}
       <ActivityTrends />
+
+      {/* ── ZONE 3b · Tag campaigns · prioritize outreach ─────────────── */}
+      <SectionWrap title="Campaigns">
+        <TagCampaigns />
+      </SectionWrap>
 
       <MetricDrawer metricKey={openMetric} onClose={() => setOpenMetric(null)} />
     </div>
