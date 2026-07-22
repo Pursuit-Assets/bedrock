@@ -123,6 +123,11 @@ export function AppShell() {
     "/projects",
     "/feedback",
     "/awards/",
+    // The Jobs area is bedrock-DB-backed; its Salesforce calls are link-only
+    // and degrade gracefully (never required to render). Don't hard-gate it
+    // behind an SF connection — this also lets local dev (no SF creds) use the
+    // jobs tool without a workaround.
+    "/jobs",
   ];
   const sfOptional = SF_OPTIONAL_PREFIXES.some((p) => pathname.startsWith(p));
   const sfNotConnected = !sf.isLoading && sf.data?.connected === false;
