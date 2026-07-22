@@ -10,7 +10,7 @@
  * Backed by /api/jobs/opportunities/overview. Priority×Time renders an empty
  * state until opps carry a priority — it lights up as the team populates it.
  */
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { addDays, format } from "date-fns";
 import { AlertTriangle, ArrowRight, ChevronLeft, ChevronRight, Clock, Minus, Plus, TrendingDown, TrendingUp, Trophy, XCircle } from "lucide-react";
@@ -41,6 +41,9 @@ const DEAL_TYPE_FILTERS: { value: string; label: string }[] = [
 ];
 
 const ownerShort = (e: string | null) => (e ? e.split("@")[0] : "—");
+// Fallback full-ish name when staff lookup misses: "avni.nahar@…" → "Avni Nahar".
+const titleCaseEmail = (e: string) =>
+  e.split("@")[0].replace(/[._-]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 
 /** The most recent Saturday on or before `d` (weeks run Saturday-to-Saturday). */
 function mostRecentSaturday(d: Date): Date {
@@ -66,6 +69,11 @@ export function JobsOpportunitiesOverview() {
   const weekStart = addDays(weekEnd, -7);
 
   const staffQ = useJobsStaff();
+  const nameOf = useMemo(() => {
+    const m = new Map<string, string>();
+    (staffQ.data ?? []).forEach((st) => m.set(st.email, st.name));
+    return (email: string | null) => (email ? m.get(email) ?? titleCaseEmail(email) : "—");
+  }, [staffQ.data]);
   const { data, isLoading } = useOpportunitiesOverview(owner, dealType, fmtDateInput(weekEnd));
 
   const s = data?.summary;
@@ -78,7 +86,7 @@ export function JobsOpportunitiesOverview() {
         <div>
           <h2 className="text-[18px] font-semibold tracking-tight text-ink">Opportunities — Weekly Overview</h2>
           <p className="mt-0.5 text-[12.5px] text-ink-3">
-            Employer pipeline health · rolls up into the Thursday pipeline meeting
+            Employer pipeline health
           </p>
         </div>
         <div className="flex items-center gap-1 rounded-lg border border-border-strong bg-surface px-1.5 py-1 text-[12.5px]">
@@ -90,8 +98,7 @@ export function JobsOpportunitiesOverview() {
           >
             <ChevronLeft size={15} />
           </button>
-          <span className="px-1 text-[10px] font-semibold uppercase tracking-wider text-ink-4">Sat–Sat</span>
-          <span className="whitespace-nowrap font-semibold text-ink">
+          <span className="whitespace-nowrap px-1 font-semibold text-ink">
             {format(weekStart, "MMM d")} – {format(weekEnd, "MMM d")}
           </span>
           <button
@@ -205,21 +212,21 @@ export function JobsOpportunitiesOverview() {
         <Heatmap heatmap={data?.heatmaps.stage} buckets={data?.heatmaps.buckets ?? []} rowHeader="Stage" isLoading={isLoading} />
       </Panel>
 
+      {/* ── Recent activity ───────────────────────────────────────────── */}
+      <Panel
+        title="Recent activity"
+        desc="Added, moved, won/lost, or stalled this week — newest first"
+      >
+        <RecentActivity events={data?.recent_activity ?? []} isLoading={isLoading} nameOf={nameOf} />
+      </Panel>
+
       {/* ── Needs attention ───────────────────────────────────────────── */}
       <Panel
         title="Needs attention this week"
         desc="3+ weeks in the current stage, or gone quiet — pre-loaded for the meeting"
         badge={data ? `${data.needs_attention.length}` : undefined}
       >
-        <NeedsTable rows={data?.needs_attention ?? []} isLoading={isLoading} />
-      </Panel>
-
-      {/* ── Recent activity ───────────────────────────────────────────── */}
-      <Panel
-        title="Recent activity"
-        desc="Added, moved, won/lost, or stalled this week — newest first"
-      >
-        <RecentActivity events={data?.recent_activity ?? []} isLoading={isLoading} />
+        <NeedsTable rows={data?.needs_attention ?? []} isLoading={isLoading} nameOf={nameOf} />
       </Panel>
     </div>
   );
@@ -404,13 +411,21 @@ function BreakdownBars({ items, dim, isLoading }: { items: { key: string; label:
 
 // ── Heatmap ───────────────────────────────────────────────────────────────────
 
-function heatStyle(n: number, max: number): { background: string; color: string } {
+// Colour encodes VOLUME only — a blue that deepens with the count in the cell.
+// The red "!" (below) is driven by TIME, not volume: cells in the 6+ week
+// columns get flagged, because those are the ones sitting too long.
+function heatBlue(n: number, max: number): { background: string; color: string } {
   if (n <= 0) return { background: "var(--surface-2)", color: "var(--ink-4)" };
-  const r = max ? n / max : 0;
-  if (r < 0.25) return { background: "var(--sky-soft)", color: "var(--sky)" };
-  if (r < 0.55) return { background: "var(--amber-soft)", color: "var(--amber)" };
-  return { background: "var(--red-soft)", color: "var(--red)" };
+  const t = max > 0 ? n / max : 0;
+  const alpha = 0.16 + 0.84 * t; // light → deep blue as volume grows
+  return {
+    background: `rgba(47, 127, 224, ${alpha.toFixed(2)})`, // --sky base (#2F7FE0)
+    color: alpha > 0.5 ? "#ffffff" : "var(--ink)",
+  };
 }
+
+// Bucket index ≥ 3 == 6+ weeks in the pipeline → flag as stalled-too-long.
+const STALE_BUCKET_FROM = 3;
 
 function Heatmap({
   heatmap, buckets, rowHeader, isLoading,
@@ -442,8 +457,8 @@ function Heatmap({
             <tr key={row.key}>
               <td className="whitespace-nowrap py-1 pr-2 text-[12.5px] font-semibold text-ink">{row.label}</td>
               {row.cells.map((n, i) => {
-                const st = heatStyle(n, max);
-                const hot = max ? n / max >= 0.55 : false;
+                const st = heatBlue(n, max);
+                const stale = i >= STALE_BUCKET_FROM && n > 0;
                 return (
                   <td key={i} className="p-1">
                     <div
@@ -451,8 +466,11 @@ function Heatmap({
                       style={{ background: st.background, color: st.color }}
                     >
                       {n}
-                      {hot ? (
-                        <span className="absolute -right-1.5 -top-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-[var(--red)] text-[10px] font-extrabold text-white shadow-[0_0_0_2px_var(--surface)]">!</span>
+                      {stale ? (
+                        <span
+                          className="absolute -right-1.5 -top-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-[var(--red)] text-[10px] font-extrabold text-white shadow-[0_0_0_2px_var(--surface)]"
+                          title="6+ weeks in the pipeline — worth a look"
+                        >!</span>
                       ) : null}
                     </div>
                   </td>
@@ -470,13 +488,23 @@ function Heatmap({
           </tr>
         </tbody>
       </table>
+      <div className="mt-2.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-ink-4">
+        <span className="flex items-center gap-1.5">
+          <span className="h-2.5 w-8 rounded-sm" style={{ background: "linear-gradient(90deg, rgba(47,127,224,0.16), rgba(47,127,224,1))" }} />
+          fewer → more opportunities
+        </span>
+        <span className="flex items-center gap-1">
+          <span className="flex h-3.5 w-3.5 items-center justify-center rounded-full bg-[var(--red)] text-[9px] font-extrabold text-white">!</span>
+          6+ weeks in the pipeline
+        </span>
+      </div>
     </div>
   );
 }
 
 // ── Needs-attention table ─────────────────────────────────────────────────────
 
-function NeedsTable({ rows, isLoading }: { rows: OppNeedsRow[]; isLoading: boolean }) {
+function NeedsTable({ rows, isLoading, nameOf }: { rows: OppNeedsRow[]; isLoading: boolean; nameOf: (e: string | null) => string }) {
   const [showAll, setShowAll] = useState(false);
   if (isLoading) return <div className="h-32 animate-pulse rounded-lg bg-surface-2" />;
   if (rows.length === 0) {
@@ -505,7 +533,7 @@ function NeedsTable({ rows, isLoading }: { rows: OppNeedsRow[]; isLoading: boole
                   {r.account || "—"}
                 </Link>
               </td>
-              <td className="px-2.5 py-2.5 text-ink-2">{ownerShort(r.owner)}</td>
+              <td className="px-2.5 py-2.5 text-ink-2">{nameOf(r.owner)}</td>
               <td className="px-2.5 py-2.5">
                 <span className="rounded-full bg-surface-2 px-2 py-0.5 text-[11px] font-medium text-ink-2">{r.stage_label}</span>
               </td>
@@ -540,7 +568,7 @@ const ACTIVITY_META: Record<OppActivityEvent["type"], { label: string; color: st
   stalled: { label: "Stalled", color: "var(--amber)",  icon: <Clock size={11} /> },
 };
 
-function RecentActivity({ events, isLoading }: { events: OppActivityEvent[]; isLoading: boolean }) {
+function RecentActivity({ events, isLoading, nameOf }: { events: OppActivityEvent[]; isLoading: boolean; nameOf: (e: string | null) => string }) {
   const [showAll, setShowAll] = useState(false);
   if (isLoading) return <div className="h-32 animate-pulse rounded-lg bg-surface-2" />;
   if (events.length === 0) {
@@ -569,7 +597,7 @@ function RecentActivity({ events, isLoading }: { events: OppActivityEvent[]; isL
               </Link>
               <span className="ml-2 text-[12px] text-ink-3">{e.detail}</span>
             </div>
-            <span className="flex-shrink-0 text-[11px] text-ink-4">{ownerShort(e.actor)}</span>
+            <span className="flex-shrink-0 text-[11px] text-ink-4">{nameOf(e.actor)}</span>
             <span className="w-[56px] flex-shrink-0 text-right text-[11px] text-ink-4">
               {e.at ? format(new Date(e.at), "MMM d") : "—"}
             </span>

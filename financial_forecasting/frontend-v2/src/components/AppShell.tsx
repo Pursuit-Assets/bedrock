@@ -70,6 +70,19 @@ const NAV_GROUPS = [
   },
 ] as const;
 
+// The two /jobs?view= items share the /jobs pathname, so NavLink's default
+// (pathname-only) active state highlights both at once. Resolve active state
+// from the ?view query instead. Returns null for non-/jobs? links (use the
+// NavLink default, which keeps sub-path highlighting for the other sections).
+function jobsNavActive(to: string, pathname: string, search: string): boolean | null {
+  if (!to.startsWith("/jobs?")) return null;
+  if (pathname !== "/jobs") return false;
+  const toView = new URLSearchParams(to.split("?")[1]).get("view");
+  const curView = new URLSearchParams(search).get("view");
+  if (toView === "opportunities") return curView === "opportunities";
+  return curView !== "opportunities"; // the "Jobs" link — any non-opportunities jobs view
+}
+
 const NAV_COLLAPSED_W = 52;
 const NAV_EXPANDED_W = 232;
 
@@ -215,6 +228,7 @@ function Sidebar({
 }) {
   const { data: user } = useCurrentUser();
   const sf = useSalesforceStatus();
+  const location = useLocation();
 
   return (
     <aside
@@ -270,16 +284,19 @@ function Sidebar({
                   key={item.to}
                   to={item.to}
                   title={collapsed ? item.label : undefined}
-                  className={({ isActive }) =>
-                    cn(
+                  end={item.to.startsWith("/jobs?")}
+                  className={({ isActive }) => {
+                    const jobsActive = jobsNavActive(item.to, location.pathname, location.search);
+                    const active = jobsActive === null ? isActive : jobsActive;
+                    return cn(
                       "flex select-none items-center rounded-md text-[13px] font-medium text-ink-2 hover:bg-black/[0.04] hover:text-ink",
                       collapsed
                         ? "h-9 w-9 justify-center"
                         : "gap-2.5 px-2.5 py-1.5",
-                      isActive &&
+                      active &&
                         "border border-border-strong bg-surface text-ink shadow-sm",
-                    )
-                  }
+                    );
+                  }}
                 >
                   <item.icon size={16} className="flex-shrink-0 opacity-70" />
                   {!collapsed && <span>{item.label}</span>}

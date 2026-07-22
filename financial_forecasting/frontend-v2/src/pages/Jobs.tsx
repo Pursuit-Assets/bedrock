@@ -10,7 +10,7 @@ import { JobsLeadership } from "./jobs/JobsLeadership";
 import { JobsContacts } from "./jobs/JobsContacts";
 import { JobsBuilders } from "./jobs/JobsBuilders";
 import { JobsOutreach } from "./jobs/JobsOutreach";
-import { JobsOpportunities } from "./jobs/JobsOpportunities";
+import { JobsOpportunities, type OppsSub } from "./jobs/JobsOpportunities";
 
 // "opportunities" (Overview + Opportunities set) is a valid view but lives in the
 // left nav (Jobs → Opportunities), not the top-tab row — so it's not in VIEWS.
@@ -27,6 +27,13 @@ const VIEWS = [
 
 const VALID_VIEWS = new Set<View>(["home", "accounts", "performance", "outreach", "opportunities", "contacts", "builders"]);
 
+// Sub-views inside the Opportunities view; the toggle renders in the header
+// (to the right of the title), replacing the top-tab row on that view.
+const OPPS_SUBS: { id: OppsSub; label: string }[] = [
+  { id: "overview", label: "Overview" },
+  { id: "set", label: "Opportunities set" },
+];
+
 export function JobsPage() {
   const [searchParams] = useSearchParams();
   // Deep-link support (e.g. from global search):
@@ -42,6 +49,11 @@ export function JobsPage() {
   const initialContactId = contactParam && /^\d+$/.test(contactParam) ? Number(contactParam) : undefined;
   // Persisted so returning (Back) from a detail page restores the same tab.
   const [view, setView] = useSessionState<View>("jobs:view", initialView);
+  const oppsParam = searchParams.get("opps");
+  const [oppsSub, setOppsSub] = useSessionState<OppsSub>(
+    "jobs:opps-sub",
+    oppsParam === "set" ? "set" : "overview",
+  );
   // An explicit ?view= deep-link still wins.
   useEffect(() => {
     if (paramView && VALID_VIEWS.has(paramView)) setView(paramView);
@@ -53,7 +65,22 @@ export function JobsPage() {
       <PageHeader
         title="Jobs Pipeline"
         subtitle="Employer outreach, builder matching, and placement tracking."
-        actions={view === "opportunities" ? undefined :
+        actions={view === "opportunities" ? (
+          <div className="flex items-center gap-1 rounded-lg border border-border-strong bg-surface-2 p-1">
+            {OPPS_SUBS.map((t) => (
+              <button
+                key={t.id}
+                onClick={() => setOppsSub(t.id)}
+                className={cn(
+                  "flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[13px] font-medium transition-colors",
+                  oppsSub === t.id ? "bg-surface text-ink shadow-sm" : "text-ink-3 hover:text-ink-2",
+                )}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+        ) : (
           <div className="flex items-center gap-1 rounded-lg border border-border-strong bg-surface-2 p-1">
             {VIEWS.map((v) => {
               const Icon = v.icon;
@@ -74,7 +101,7 @@ export function JobsPage() {
               );
             })}
           </div>
-        }
+        )}
       />
 
       <div className="mt-1">
@@ -82,7 +109,7 @@ export function JobsPage() {
         {view === "accounts"      && <JobsAccountHub initialQuery={initialQuery} />}
         {view === "performance"   && <JobsLeadership />}
         {view === "outreach"      && <JobsOutreach />}
-        {view === "opportunities" && <JobsOpportunities />}
+        {view === "opportunities" && <JobsOpportunities sub={oppsSub} />}
         {view === "contacts"      && <JobsContacts initialQuery={initialQuery} initialContactId={initialContactId} />}
         {view === "builders"      && <JobsBuilders />}
       </div>
