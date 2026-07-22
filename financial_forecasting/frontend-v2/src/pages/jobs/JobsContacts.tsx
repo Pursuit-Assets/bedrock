@@ -321,6 +321,8 @@ export function JobsContacts({ initialQuery, initialContactId }: { initialQuery?
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
+  const [pendingStage, setPendingStage] = useState("");   // "" = leave unchanged
+  const [pendingOwner, setPendingOwner] = useState("");   // "" = leave, "__clear__" = clear owner
   // Default = today's working view (jobs prospects only). "All contacts" opens
   // the full universe so anyone can be promoted via the prospect checkmark.
   const [scope, setScope] = useSessionState<"jobs" | "all">("jobs-contacts:scope", "jobs");
@@ -409,6 +411,17 @@ export function JobsContacts({ initialQuery, initialContactId }: { initialQuery?
     return sort.key == null ? f : sortBy(f, sort, (c, k) => extract(c, k));
   }, [allContacts, q, rules, sort]);
 
+  // Select-all operates on the full filtered set (every loaded row that matches
+  // the current filters), not just the 300 shown.
+  const filteredIds = useMemo(() => filtered.map((c) => c.contact_id), [filtered]);
+  const allFilteredSelected = filteredIds.length > 0 && filteredIds.every((id) => selected.has(id));
+  const toggleSelectAll = useCallback(() => {
+    setSelected((prev) => {
+      const everySelected = filteredIds.length > 0 && filteredIds.every((id) => prev.has(id));
+      return everySelected ? new Set() : new Set(filteredIds);
+    });
+  }, [filteredIds]);
+
   const groupLabel = useCallback((k: string) => {
     if (k === "") return "—";
     if (groupBy === "has_deal") return k === "yes" ? "Has linked deal" : "No linked deal";
@@ -481,20 +494,42 @@ export function JobsContacts({ initialQuery, initialContactId }: { initialQuery?
 
       {selected.size > 0 && (
         <div className="flex flex-wrap items-center gap-2 border-x border-t border-accent bg-accent-soft px-3 py-2 text-[12.5px]">
-          <span className="font-semibold text-accent-ink">{selected.size} selected</span>
-          {/* Bulk mutations confirm first — native selects fire onChange on arrow-key
-              navigation, so an unconfirmed change could hit hundreds of rows. */}
-          <select value="" disabled={bulkBusy} onChange={(e) => { const st = e.target.value; e.currentTarget.value = ""; if (!st) return; if (!window.confirm(`Set stage to "${MEMBERSHIP_STAGE_LABELS[st as MembershipStage] ?? st}" on ${selected.size} contact${selected.size === 1 ? "" : "s"}?`)) return; flagContacts.mutate({ contact_ids: [...selected], stage: st }, { onSuccess: () => setSelected(new Set()) }); }} className="h-7 rounded border border-border-strong bg-surface px-2 text-[12px] text-ink-2 outline-none focus:border-accent disabled:opacity-50">
-            <option value="">Set stage…</option>
+          <span className="font-semibold text-accent-ink">{selected.size} selected{allFilteredSelected && filteredIds.length > 1 ? " (all)" : ""}</span>
+          {!allFilteredSelected && filteredIds.length > selected.size && (
+            <button type="button" onClick={() => setSelected(new Set(filteredIds))} className="text-[11.5px] font-medium text-accent underline-offset-4 hover:underline">Select all {filteredIds.length}</button>
+          )}
+          {universeTruncated && allFilteredSelected && (
+            <span className="text-[11px] text-amber-700">of {allContacts.length.toLocaleString()} loaded — {serverTotal.toLocaleString()} match; refine to act on all</span>
+          )}
+          <span className="mx-1 h-4 w-px bg-accent/30" />
+          {/* Set values, then apply once with Bulk update — no auto-fire. */}
+          <select value={pendingStage} disabled={bulkBusy} onChange={(e) => setPendingStage(e.target.value)} className="h-7 rounded border border-border-strong bg-surface px-2 text-[12px] text-ink-2 outline-none focus:border-accent disabled:opacity-50">
+            <option value="">Stage: no change</option>
             {MEMBERSHIP_STAGE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
           </select>
-          <select value="" disabled={bulkBusy} onChange={(e) => { const v = e.target.value; e.currentTarget.value = ""; if (!v) return; const who = v === "__clear__" ? "no one" : (staffForFilter.find((s) => s.email === v)?.name ?? v); if (!window.confirm(`Set owner to ${who} on ${selected.size} contact${selected.size === 1 ? "" : "s"}?`)) return; bulkOwner.mutate({ contact_ids: [...selected], owner_email: v === "__clear__" ? null : v }, { onSuccess: () => setSelected(new Set()) }); }} className="h-7 max-w-[220px] rounded border border-border-strong bg-surface px-2 text-[12px] text-ink-2 outline-none focus:border-accent disabled:opacity-50">
-            <option value="">Set owner…</option>
+          <select value={pendingOwner} disabled={bulkBusy} onChange={(e) => setPendingOwner(e.target.value)} className="h-7 max-w-[220px] rounded border border-border-strong bg-surface px-2 text-[12px] text-ink-2 outline-none focus:border-accent disabled:opacity-50">
+            <option value="">Owner: no change</option>
             {staffForFilter.map((s) => <option key={s.email} value={s.email}>{s.name}</option>)}
             <option value="__clear__">(clear owner)</option>
           </select>
+          <button type="button" disabled={bulkBusy || (!pendingStage && !pendingOwner)}
+            onClick={async () => {
+              const ids = [...selected];
+              const parts = [
+                pendingStage ? `stage → ${MEMBERSHIP_STAGE_LABELS[pendingStage as MembershipStage] ?? pendingStage}` : null,
+                pendingOwner ? `owner → ${pendingOwner === "__clear__" ? "none" : (staffForFilter.find((s) => s.email === pendingOwner)?.name ?? pendingOwner)}` : null,
+              ].filter(Boolean);
+              if (!window.confirm(`Update ${ids.length} contact${ids.length === 1 ? "" : "s"}: ${parts.join(", ")}?`)) return;
+              setBulkBusy(true);
+              try {
+                if (pendingStage) await flagContacts.mutateAsync({ contact_ids: ids, stage: pendingStage });
+                if (pendingOwner) await bulkOwner.mutateAsync({ contact_ids: ids, owner_email: pendingOwner === "__clear__" ? null : pendingOwner });
+                setSelected(new Set()); setPendingStage(""); setPendingOwner("");
+              } finally { setBulkBusy(false); }
+            }}
+            className="inline-flex h-7 items-center gap-1 rounded bg-accent px-3 font-medium text-white hover:opacity-90 disabled:opacity-50"><Zap size={12} /> {bulkBusy ? "Updating…" : "Bulk update"}</button>
+          <span className="mx-1 h-4 w-px bg-accent/30" />
           <button type="button" disabled={bulkBusy || bulkProspect.isPending} onClick={() => bulkProspect.mutate({ contact_ids: [...selected], value: true }, { onSuccess: () => setSelected(new Set()) })} className="inline-flex h-7 items-center gap-1 rounded border border-accent bg-surface px-3 font-medium text-accent hover:bg-accent-soft disabled:opacity-50" title="Mark as jobs prospects (no pipeline stage)"><Plus size={12} /> Add as prospect</button>
-          <button type="button" disabled={bulkBusy} onClick={() => flagContacts.mutate({ contact_ids: [...selected] }, { onSuccess: () => setSelected(new Set()) })} className="inline-flex h-7 items-center gap-1 rounded bg-accent px-3 font-medium text-white hover:opacity-90 disabled:opacity-50" title="Add to the pipeline at the Assigned stage"><Zap size={12} /> Assign to jobs</button>
           <button type="button" disabled={bulkBusy} onClick={async () => { const ids = [...selected]; if (!window.confirm(`Clear the jobs stage from ${ids.length} contact${ids.length === 1 ? "" : "s"}?`)) return; setBulkBusy(true); const r = await Promise.allSettled(ids.map((id) => unflag.mutateAsync(id))); setBulkBusy(false); const failed = r.filter((x) => x.status === "rejected").length; if (failed) toast.error(`${failed} of ${ids.length} could not be cleared`); setSelected(new Set()); }} className="h-7 rounded border border-border-strong bg-surface px-3 text-ink-2 hover:text-ink disabled:opacity-50" title="Remove the jobs stage (membership) from the selected contacts">Clear stage</button>
           <button type="button" onClick={() => setSelected(new Set())} className="ml-1 text-[11.5px] font-medium text-ink-3 underline-offset-4 hover:text-ink-2 hover:underline">Clear selection</button>
         </div>
@@ -531,7 +566,12 @@ export function JobsContacts({ initialQuery, initialContactId }: { initialQuery?
                 isLast={idx === visibleCols.length - 1}
                 className={cn("py-1.5 font-semibold", idx === 0 && "sticky left-0 z-30")}
               >
-                {SORTABLE.has(key) ? <SortableHeader label={COL_LABELS[key]} sortKey={key} sort={sort} onToggle={toggle} /> : COL_LABELS[key]}
+                {key === "name" ? (
+                  <span className="flex items-center gap-2">
+                    <input type="checkbox" checked={allFilteredSelected} ref={(el) => { if (el) el.indeterminate = !allFilteredSelected && selected.size > 0; }} onChange={toggleSelectAll} className="h-3.5 w-3.5 shrink-0 accent-[color:var(--accent,#4242EA)]" title={allFilteredSelected ? "Clear selection" : `Select all ${filteredIds.length}`} aria-label="Select all filtered contacts" />
+                    <SortableHeader label={COL_LABELS[key]} sortKey={key} sort={sort} onToggle={toggle} />
+                  </span>
+                ) : SORTABLE.has(key) ? <SortableHeader label={COL_LABELS[key]} sortKey={key} sort={sort} onToggle={toggle} /> : COL_LABELS[key]}
               </ResizableTh>
             ))}</tr>
           </thead>
