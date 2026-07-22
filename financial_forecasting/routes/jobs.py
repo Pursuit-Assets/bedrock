@@ -1686,7 +1686,7 @@ async def get_funnel(
         # on_hold shows as a terminal parking stage; not_a_fit is a dead
         # disposition and stays out of the funnel.
         stage_order = [
-            ("flagged", "Flagged"),
+            ("assigned", "Assigned"),
             ("initial_outreach", "Initial Outreach"),
             ("qualified", "Qualified"),
             ("converted_to_opportunity", "Converted to Opportunity"),
@@ -2279,7 +2279,7 @@ async def activity_trends_detail(
 # ── Outreach Dashboard scorecard ──────────────────────────────────────────────
 # Two tables, both split Warm/Cold, this-period vs last-period, with a target:
 #   User/Contact Pipeline — contacts ENTERING each funnel stage in the period
-#       (flow, keyed by the stage-entry timestamps flagged_at / first_outreach_at
+#       (flow, keyed by the stage-entry timestamps assigned_at / first_outreach_at
 #        / active_at / handed_off_at).
 #   Activity Pipeline     — raw activity-row counts (email/linkedin/intro/response).
 # Warm/Cold is decided ONCE per contact: warm iff their company already had a
@@ -2288,7 +2288,7 @@ async def activity_trends_detail(
 # activity row for that contact inherits that label (never recomputed per row).
 
 _OUTREACH_STAGE_META = [
-    ("flagged",          "Flagged"),
+    ("assigned",          "Assigned"),
     ("initial_outreach", "Initial Outreach"),
     ("qualified",        "Qualified"),
     ("converted_to_opportunity", "Converted to Opportunity"),
@@ -2307,7 +2307,7 @@ _ACTIVITY_TIER = {
     "engagement": 2, "direct_email_response": 3,
 }
 _STAGE_ENTERED_COL = {
-    "flagged": "flagged_at", "initial_outreach": "first_outreach_at",
+    "assigned": "assigned_at", "initial_outreach": "first_outreach_at",
     "qualified": "qualified_at", "converted_to_opportunity": "converted_at",
 }
 
@@ -2423,10 +2423,10 @@ _OUTREACH_WARMTH_CTES = """
         WHERE deleted_at IS NULL AND coalesce(trim(account_name),'') <> ''
         GROUP BY 1
         UNION ALL
-        SELECT lower(trim(c.current_company)) AS company, min(m.flagged_at) AS first_seen
+        SELECT lower(trim(c.current_company)) AS company, min(m.assigned_at) AS first_seen
         FROM bedrock.jobs_contact_membership m
         JOIN public.contacts c ON c.contact_id = m.contact_id
-        WHERE coalesce(trim(c.current_company),'') <> '' AND m.flagged_at IS NOT NULL
+        WHERE coalesce(trim(c.current_company),'') <> '' AND m.assigned_at IS NOT NULL
         GROUP BY 1
     ),
     company_first_seen AS (
@@ -2452,7 +2452,7 @@ _OUTREACH_WARMTH_CTES = """
                LEAST(
                    coalesce(caf.first_activity,   'infinity'::timestamptz),
                    coalesce(m.first_outreach_at,  'infinity'::timestamptz),
-                   coalesce(m.flagged_at,         'infinity'::timestamptz)
+                   coalesce(m.assigned_at,         'infinity'::timestamptz)
                ) AS first_touch
         FROM contact_universe u
         JOIN public.contacts c ON c.contact_id = u.contact_id
@@ -2508,8 +2508,8 @@ async def outreach_scorecard(
     # timestamp (unpopulated) — it's derived from actual outreach email activity
     # below. flagged / active / handed_off stay membership-driven.
     stage_event_parts = [
-        "SELECT contact_id, 'flagged' AS stage, flagged_at AS entered_at "
-        "FROM bedrock.jobs_contact_membership WHERE flagged_at IS NOT NULL",
+        "SELECT contact_id, 'assigned' AS stage, assigned_at AS entered_at "
+        "FROM bedrock.jobs_contact_membership WHERE assigned_at IS NOT NULL",
     ]
     if "qualified_at" in have_cols:
         stage_event_parts.append(
@@ -3512,7 +3512,7 @@ async def jobs_accounts(
             SELECT lower(trim(c.current_company)) AS key, count(*) AS n
             FROM bedrock.jobs_contact_membership m
             JOIN public.contacts c ON c.contact_id = m.contact_id
-            WHERE m.stage IN ('flagged','initial_outreach','qualified')
+            WHERE m.stage IN ('assigned','initial_outreach','qualified')
               AND coalesce(trim(c.current_company), '') <> ''
             GROUP BY 1
             """),
@@ -3898,7 +3898,7 @@ async def account_prospects(
 
 
 # ── Jobs contact activation (flag + funnel membership) ────────────────────────
-_MEMBERSHIP_STAGES = ('flagged', 'initial_outreach', 'qualified', 'converted_to_opportunity', 'on_hold', 'not_a_fit')
+_MEMBERSHIP_STAGES = ('assigned', 'initial_outreach', 'qualified', 'converted_to_opportunity', 'on_hold', 'not_a_fit')
 
 
 def _user_email(user) -> Optional[str]:
@@ -3908,12 +3908,12 @@ def _user_email(user) -> Optional[str]:
 async def _flag_contacts(conn, contact_ids: list[int], owner_email: Optional[str],
                          reason: str, note: Optional[str], by: Optional[str],
                          stage: Optional[str] = None) -> int:
-    """Create/keep a membership per contact. With no stage → 'flagged' and never
+    """Create/keep a membership per contact. With no stage → 'assigned' and never
     downgrades an existing further stage (plain flag). With an explicit stage →
     set it (bulk advance). Writes through is_jobs_contact=true for legacy views."""
     if not contact_ids:
         return 0
-    stg = stage or "flagged"
+    stg = stage or "assigned"
     # When bulk-advancing to an explicit stage, stamp the stage-entry timestamp
     # for qualified/converted too (mirrors the single-contact PATCH path) so the
     # scorecard flow count sees these transitions. On a fresh insert the CASE on
@@ -3933,7 +3933,7 @@ async def _flag_contacts(conn, contact_ids: list[int], owner_email: Optional[str
     await conn.execute(
         f"""
         INSERT INTO bedrock.jobs_contact_membership
-            (contact_id, stage, owner_email, activation_reason, activation_note, flagged_by{stamp_cols})
+            (contact_id, stage, owner_email, activation_reason, activation_note, assigned_by{stamp_cols})
         SELECT cid, $6, $2, $3, $4, $5{stamp_vals} FROM unnest($1::int[]) AS cid
         ON CONFLICT (contact_id) DO UPDATE SET
             {conflict_stage}
@@ -3955,7 +3955,7 @@ class FlagJobsBody(BaseModel):
     owner_email: Optional[str] = None
     activation_reason: str = "manual"
     note: Optional[str] = None
-    stage: Optional[str] = None   # bulk-advance to this funnel stage; None = 'flagged'
+    stage: Optional[str] = None   # bulk-advance to this funnel stage; None = 'assigned'
 
 
 @router.post("/contacts/flag-jobs")
@@ -6207,7 +6207,7 @@ async def log_activity(
                 first_outreach_at = COALESCE(first_outreach_at, $2),
                 first_outreach_by = COALESCE(first_outreach_by, $3),
                 updated_at = now()
-            WHERE contact_id = $1 AND stage = 'flagged'
+            WHERE contact_id = $1 AND stage = 'assigned'
             """,
             body.contact_id, body.activity_date or datetime.now(timezone.utc), user_email,
         )

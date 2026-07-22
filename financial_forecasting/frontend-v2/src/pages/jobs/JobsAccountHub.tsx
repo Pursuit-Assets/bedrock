@@ -15,7 +15,7 @@ import { AccountAvatar } from "@/components/AccountAvatar";
 import { withReferrer } from "@/components/detail";
 import { AccountExpandTabs } from "@/components/jobs/accountTabs";
 import { NewAccountDialog } from "@/components/jobs/NewAccountDialog";
-import { AccountWarmth, DEAL_TYPE_LABELS, OwnerSelect, jobsAccountPath, warmthRank } from "@/components/jobs/jobsEntity";
+import { DEAL_TYPE_LABELS, OwnerSelect, jobsAccountPath } from "@/components/jobs/jobsEntity";
 import { ColumnChooser } from "@/components/ui/ColumnChooser";
 import { SavedViewsPicker } from "@/components/ui/SavedViewsPicker";
 import { SortableHeader } from "@/components/ui/SortableHeader";
@@ -54,19 +54,19 @@ const dealTypesOf = (a: JobsAccount) =>
   [...new Set(a.opportunities.map((o) => o.deal_type).filter(Boolean))] as string[];
 
 // ── columns ──────────────────────────────────────────────────────────────────
-type ColKey = "account" | "status" | "warmth" | "owner" | "opps" | "contacts" | "listings" | "hired" | "tasks" | "deal_types" | "last_activity";
-const COLUMN_ORDER: ColKey[] = ["account", "status", "warmth", "owner", "opps", "contacts", "listings", "hired", "tasks", "deal_types", "last_activity"];
-const DEFAULT_VISIBLE: ColKey[] = ["account", "status", "warmth", "owner", "opps", "contacts", "listings", "hired", "tasks", "last_activity"];
+type ColKey = "account" | "status" | "owner" | "opps" | "contacts" | "listings" | "hired" | "tasks" | "deal_types" | "last_activity";
+const COLUMN_ORDER: ColKey[] = ["account", "status", "owner", "opps", "contacts", "listings", "hired", "tasks", "deal_types", "last_activity"];
+const DEFAULT_VISIBLE: ColKey[] = ["account", "status", "owner", "opps", "contacts", "listings", "hired", "tasks", "last_activity"];
 const COL_LABELS: Record<ColKey, string> = {
-  account: "Account", status: "Status", warmth: "Warmth", owner: "Owner", opps: "Opps",
-  contacts: "Contacts", listings: "Roles", hired: "Hired", tasks: "Open tasks", deal_types: "Deal types", last_activity: "Last activity",
+  account: "Account", status: "Status", owner: "Owner", opps: "Opps",
+  contacts: "Contacts", listings: "Roles", hired: "Hired", tasks: "Open tasks", deal_types: "Deal types", last_activity: "Last touch",
 };
 // Default pixel widths — user-resizable via drag handles (useColumnWidths),
 // same grid components as the Opportunities table.
 const DEFAULT_WIDTHS: Record<ColKey, number> = {
-  account: 250, status: 125, warmth: 95, owner: 135, opps: 75, contacts: 90, listings: 80, hired: 80, tasks: 90, deal_types: 115, last_activity: 100,
+  account: 250, status: 125, owner: 135, opps: 75, contacts: 90, listings: 80, hired: 80, tasks: 90, deal_types: 115, last_activity: 100,
 };
-const SORTABLE = new Set<ColKey>(["account", "status", "warmth", "owner", "opps", "contacts", "listings", "hired", "tasks", "last_activity"]);
+const SORTABLE = new Set<ColKey>(["account", "status", "owner", "opps", "contacts", "listings", "hired", "tasks", "last_activity"]);
 
 // Total hired = builders we placed (our DB) + historical Pursuit fellows (SF).
 const totalHired = (a: JobsAccount) => (a.builders_hired ?? 0) + (a.fellows_hired ?? 0);
@@ -75,7 +75,6 @@ function extract(a: JobsAccount, key: ColKey): string | number {
   switch (key) {
     case "account":       return a.account.toLowerCase();
     case "status":        return a.account_status;
-    case "warmth":        return warmthRank({ recent: a.recent_activity_count, last_activity_at: a.last_activity_at, responded: a.responded });
     case "owner":         return a.owner_email ?? "";
     case "opps":          return a.opp_count;
     case "contacts":      return a.prospect_count;
@@ -100,7 +99,7 @@ const FILTERABLE: Record<Field, FieldMeta<JobsAccount>> = {
   has_opps:     { label: "Has opportunities", type: "select", getValue: (a) => (a.opp_count > 0 ? "yes" : "no") },
   has_contacts: { label: "Has contacts",      type: "select", getValue: (a) => (a.prospect_count > 0 ? "yes" : "no") },
   // Top-of-funnel triage: filter by activity recency (Last 7/30/90 days dropdown).
-  last_activity: { label: "Last activity", type: "recency", getValue: (a) => a.last_activity_at ?? "" },
+  last_activity: { label: "Last touch", type: "recency", getValue: (a) => a.last_activity_at ?? "" },
   // Exact-date windows on the touch history (before/after a calendar date).
   first_contact_date: { label: "Initial outreach date", type: "date", getValue: (a) => a.first_activity_at ?? "" },
   last_contact_date: { label: "Last contact date", type: "date", getValue: (a) => a.last_activity_at ?? "" },
@@ -139,7 +138,6 @@ function AccountRow({
       </span>
     ),
     status: <Tag variant={accountStatusVariant(account.account_status)}>{account.account_status}</Tag>,
-    warmth: <AccountWarmth recent={account.recent_activity_count} last_activity_at={account.last_activity_at} responded={account.responded} />,
     tasks: (account.open_tasks ?? 0) > 0
       ? <span className="inline-flex items-center gap-1 text-[12px] text-ink-2"><CheckSquare size={11} className="text-ink-4" />{account.open_tasks}</span>
       : <span className="text-ink-4">—</span>,

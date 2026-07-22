@@ -232,10 +232,10 @@ export interface JobContactWithDeal extends JobContact {
   builder_apps?: number;      // jobs builders applied to at this company (job_applications)
 }
 
-export type MembershipStage = "flagged" | "initial_outreach" | "qualified" | "converted_to_opportunity" | "on_hold" | "not_a_fit";
-export const MEMBERSHIP_STAGES: MembershipStage[] = ["flagged", "initial_outreach", "qualified", "converted_to_opportunity", "on_hold", "not_a_fit"];
+export type MembershipStage = "assigned" | "initial_outreach" | "qualified" | "converted_to_opportunity" | "on_hold" | "not_a_fit";
+export const MEMBERSHIP_STAGES: MembershipStage[] = ["assigned", "initial_outreach", "qualified", "converted_to_opportunity", "on_hold", "not_a_fit"];
 export const MEMBERSHIP_STAGE_LABELS: Record<MembershipStage, string> = {
-  flagged: "Flagged", initial_outreach: "Initial outreach", qualified: "Qualified",
+  assigned: "Assigned", initial_outreach: "Initial outreach", qualified: "Qualified",
   converted_to_opportunity: "Converted to opportunity", on_hold: "On hold", not_a_fit: "Not a fit",
 };
 

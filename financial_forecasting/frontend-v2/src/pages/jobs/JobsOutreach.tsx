@@ -192,7 +192,7 @@ const EMPTY: ScorecardCell = { warm: 0, cold: 0, total: 0 };
 function ConversionTables({ sc }: { sc: OutreachScorecard }) {
   const u = byKey(sc.user_pipeline, "stage");
   const a = byKey(sc.activity_pipeline, "metric");
-  const leads = u.flagged ?? { this_period: EMPTY, last_period: EMPTY } as ScorecardRow;
+  const leads = u.assigned ?? { this_period: EMPTY, last_period: EMPTY } as ScorecardRow;
   const out = u.initial_outreach ?? { this_period: EMPTY, last_period: EMPTY } as ScorecardRow;
   const qual = u.qualified ?? { this_period: EMPTY, last_period: EMPTY } as ScorecardRow;
   const comm = u.converted_to_opportunity ?? { this_period: EMPTY, last_period: EMPTY } as ScorecardRow;
@@ -271,17 +271,17 @@ function ConversionTables({ sc }: { sc: OutreachScorecard }) {
 function OriginComparison({ sc }: { sc: OutreachScorecard }) {
   const u = byKey(sc.user_pipeline, "stage");
   const a = byKey(sc.activity_pipeline, "metric");
-  const flagged = (u.flagged ?? { this_period: EMPTY } as ScorecardRow).this_period;
+  const assigned = (u.assigned ?? { this_period: EMPTY } as ScorecardRow).this_period;
   const email = (a.direct_email_sent ?? { this_period: EMPTY } as ScorecardRow).this_period;
   const resp = (a.direct_email_response ?? { this_period: EMPTY } as ScorecardRow).this_period;
   const qual = (u.qualified ?? { this_period: EMPTY } as ScorecardRow).this_period;
 
   const rate = (num: number, den: number) => (den ? `${Math.round((num / den) * 100)}%` : "—");
   const rows: { l: string; warm: string; cold: string }[] = [
-    { l: "Sourced", warm: String(flagged.warm), cold: String(flagged.cold) },
+    { l: "Sourced", warm: String(assigned.warm), cold: String(assigned.cold) },
     { l: "Sent", warm: String(email.warm), cold: String(email.cold) },
     { l: "Response rate", warm: rate(resp.warm, email.warm), cold: rate(resp.cold, email.cold) },
-    { l: "Qual. rate", warm: rate(qual.warm, flagged.warm), cold: rate(qual.cold, flagged.cold) },
+    { l: "Qual. rate", warm: rate(qual.warm, assigned.warm), cold: rate(qual.cold, assigned.cold) },
   ];
 
   // One stacked bar: share of sends that are warm vs cold.
@@ -673,7 +673,7 @@ export function JobsOutreach() {
 
           <p className="text-[11px] italic text-ink-4">
             Warm = outreach to a company Bedrock already knew before the contact's first touch; Cold = the company's first appearance.
-            <strong> Lead Sourced</strong> = contacts newly flagged into the pipeline; <strong>Outreached</strong> = distinct contacts who
+            <strong> Lead Sourced</strong> = contacts newly assigned into the pipeline; <strong>Outreached</strong> = distinct contacts who
             received a jobs outreach email this period (activity-driven). <strong>Engagements</strong> = meetings, calls, or inbound emails
             from outside Pursuit. <strong>Direct Email Responses</strong> = external addresses that replied for the first time after we
             emailed them. <strong>Facilitated Intro</strong> = a warm intro (someone introduced us). Activity is gated to jobs-classified

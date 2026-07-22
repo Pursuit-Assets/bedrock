@@ -170,9 +170,9 @@ async def auto_advance_outreached(conn) -> dict[str, Any]:
     flagged: a staff-sent email, a meeting, or a manually logged call/text/
     LinkedIn touch (manual types always count as jobs outreach). Pre-flag
     activity does NOT auto-advance — it would leapfrog the Flagged stage and
-    put first_outreach_at before flagged_at, breaking the scorecard's flow
+    put first_outreach_at before assigned_at, breaking the scorecard's flow
     counts; a human can still set the stage for those. Never downgrades:
-    only stage='flagged' rows move. Idempotent — runs in the nightly sync
+    only stage='assigned' rows move. Idempotent — runs in the nightly sync
     after the activity relink, and inline after a manual activity log.
     """
     result = await conn.execute("""
@@ -185,9 +185,9 @@ async def auto_advance_outreached(conn) -> dict[str, Any]:
                    coalesce(a.email_from, a.logged_by) AS author
             FROM bedrock.jobs_contact_membership m
             JOIN bedrock.activity a ON a.participant_public_contact_id = m.contact_id
-            WHERE m.stage = 'flagged'
+            WHERE m.stage = 'assigned'
               AND a.deleted_at IS NULL
-              AND a.activity_date >= m.flagged_at
+              AND a.activity_date >= m.assigned_at
               AND a.type NOT IN ('email')
               AND (coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs' OR a.type <> 'meeting')
               AND (
@@ -204,11 +204,11 @@ async def auto_advance_outreached(conn) -> dict[str, Any]:
             FROM bedrock.jobs_contact_membership m
             JOIN bedrock.activity a ON a.participant_public_contact_id = m.contact_id
             JOIN bedrock.activity_email_message aem ON aem.activity_id = a.id
-            WHERE m.stage = 'flagged'
+            WHERE m.stage = 'assigned'
               AND a.deleted_at IS NULL
               AND a.type = 'email'
               AND coalesce(a.jobs_relevance_override, a.jobs_relevance) = 'jobs'
-              AND aem.sent_at >= m.flagged_at
+              AND aem.sent_at >= m.assigned_at
               AND EXISTS (SELECT 1 FROM public.org_users o
                           WHERE o.is_active AND aem.from_email ILIKE '%'||o.email||'%')
         ),
@@ -224,7 +224,7 @@ async def auto_advance_outreached(conn) -> dict[str, Any]:
             first_outreach_by = COALESCE(m.first_outreach_by, o.author),
             updated_at = now()
         FROM outreach o
-        WHERE o.contact_id = m.contact_id AND m.stage = 'flagged'
+        WHERE o.contact_id = m.contact_id AND m.stage = 'assigned'
     """)
     advanced = int(result.split()[-1]) if result and result.split()[-1].isdigit() else 0
     logger.info("auto-advanced %d flagged contacts to initial_outreach", advanced)

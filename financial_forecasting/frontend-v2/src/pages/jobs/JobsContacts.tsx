@@ -12,7 +12,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { Briefcase, CheckSquare, ExternalLink, Linkedin, Plus, Search, X, Zap } from "lucide-react";
 
 import { ContactDetail, initials } from "@/components/jobs/ProspectAccountExpandPanel";
-import { ContactExpandTabs, jobsContactPath, warmthTier, warmthRank } from "@/components/jobs/jobsEntity";
+import { ContactExpandTabs, jobsContactPath } from "@/components/jobs/jobsEntity";
 import { CompanyPicker } from "@/components/jobs/CompanyPicker";
 import { withReferrer } from "@/components/detail";
 import { ColumnChooser } from "@/components/ui/ColumnChooser";
@@ -51,34 +51,32 @@ const CONTACT_STAGE_STYLES: Record<string, { label: string; className: string }>
   on_hold: { label: "On Hold", className: "bg-amber-50 text-amber-600" },
 };
 
-// ── warmth: recency + responsiveness (shared model with accounts) ──────────────
-function warmthInput(c: JobContactWithDeal) {
-  return { recent: c.recent_activity_count, last_activity_at: c.last_activity_at, responded: c.responded };
-}
-function Warmth({ c }: { c: JobContactWithDeal }) {
-  const t = warmthTier(warmthInput(c));
-  return (
-    <span className="flex items-center gap-1.5" title={t.hint}>
-      <span className={cn("inline-block h-2 w-2 shrink-0 rounded-full", t.dot)} />
-      <span className={cn("text-[11.5px] font-medium", t.txt)}>{t.label}</span>
-    </span>
-  );
+// ── last touch: most recent jobs-relevant activity date ───────────────────────
+function relativeDays(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return "—";
+  const days = Math.floor((Date.now() - then) / 86_400_000);
+  if (days <= 0) return "today";
+  if (days < 30) return `${days}d ago`;
+  if (days < 365) return `${Math.floor(days / 30)}mo ago`;
+  return `${Math.floor(days / 365)}y ago`;
 }
 
 // ── columns ──────────────────────────────────────────────────────────────────
-type ColKey = "name" | "prospect" | "flag" | "title" | "company" | "tags" | "owner" | "industry" | "warmth" | "listings" | "tasks" | "connected" | "deal" | "email" | "linkedin";
-const COLUMN_ORDER: ColKey[] = ["name", "prospect", "flag", "title", "company", "tags", "owner", "industry", "warmth", "listings", "tasks", "connected", "deal", "email", "linkedin"];
-const DEFAULT_VISIBLE: ColKey[] = ["name", "prospect", "flag", "title", "company", "tags", "owner", "connected", "warmth", "listings"];
+type ColKey = "name" | "prospect" | "flag" | "title" | "company" | "tags" | "owner" | "industry" | "last_touch" | "listings" | "tasks" | "connected" | "deal" | "email" | "linkedin";
+const COLUMN_ORDER: ColKey[] = ["name", "prospect", "flag", "title", "company", "tags", "owner", "industry", "last_touch", "listings", "tasks", "connected", "deal", "email", "linkedin"];
+const DEFAULT_VISIBLE: ColKey[] = ["name", "prospect", "flag", "title", "company", "tags", "owner", "connected", "last_touch", "listings"];
 const COL_LABELS: Record<ColKey, string> = {
   name: "Name", prospect: "Jobs prospect", flag: "Jobs stage", title: "Title", company: "Company", tags: "Tags", owner: "Owner", industry: "Industry",
-  warmth: "Warmth", listings: "Job listings", tasks: "Open tasks", connected: "Connected staff", deal: "Linked deal", email: "Email", linkedin: "LinkedIn",
+  last_touch: "Last touch", listings: "Job listings", tasks: "Open tasks", connected: "Connected staff", deal: "Linked deal", email: "Email", linkedin: "LinkedIn",
 };
 // Default pixel widths — user-resizable via drag handles (useColumnWidths),
 // same grid components as the Opportunities table.
 const DEFAULT_WIDTHS: Record<ColKey, number> = {
-  name: 190, prospect: 90, flag: 130, title: 150, company: 160, tags: 190, owner: 150, industry: 130, warmth: 95, listings: 105, tasks: 85, connected: 155, deal: 145, email: 170, linkedin: 60,
+  name: 190, prospect: 90, flag: 130, title: 150, company: 160, tags: 190, owner: 150, industry: 130, last_touch: 105, listings: 105, tasks: 85, connected: 155, deal: 145, email: 170, linkedin: 60,
 };
-const SORTABLE = new Set<ColKey>(["name", "prospect", "flag", "title", "company", "owner", "industry", "warmth", "listings", "tasks"]);
+const SORTABLE = new Set<ColKey>(["name", "prospect", "flag", "title", "company", "owner", "industry", "last_touch", "listings", "tasks"]);
 const MEMBERSHIP_STAGE_OPTIONS = MEMBERSHIP_STAGES.map((s) => ({ value: s, label: MEMBERSHIP_STAGE_LABELS[s] }));
 
 function extract(c: JobContactWithDeal, key: ColKey): string | number {
@@ -90,7 +88,7 @@ function extract(c: JobContactWithDeal, key: ColKey): string | number {
     case "title": return (c.current_title ?? "").toLowerCase();
     case "company": return (c.current_company ?? "").toLowerCase();
     case "industry": return (c.company_industry ?? "").toLowerCase();
-    case "warmth": return warmthRank(warmthInput(c));
+    case "last_touch": return c.last_activity_at ? Date.parse(c.last_activity_at) : 0;
     case "listings": return (c.open_roles ?? 0) + (c.builder_apps ?? 0);
     case "tasks": return c.open_tasks ?? 0;
     default: return "";
@@ -296,7 +294,11 @@ function ContactRow({ contact, expanded, onOpen, visibleCols, selected, onToggle
         ? <span className="inline-flex items-center gap-1 text-[12px] text-ink-2" title={`${src} team-sourced · ${app} builder-applied`}><Briefcase size={11} className="text-ink-4" />{tot}</span>
         : <span className="text-ink-4">—</span>;
     })(),
-    warmth: <Warmth c={contact} />,
+    last_touch: (
+      <span className="whitespace-nowrap text-[11.5px] text-ink-4" title={contact.last_activity_at ? new Date(contact.last_activity_at).toLocaleDateString() : undefined}>
+        {relativeDays(contact.last_activity_at)}
+      </span>
+    ),
     tasks: (contact.open_tasks ?? 0) > 0
       ? <span className="inline-flex items-center gap-1 text-[12px] text-ink-2"><CheckSquare size={11} className="text-ink-4" />{contact.open_tasks}</span>
       : <span className="text-ink-4">—</span>,
