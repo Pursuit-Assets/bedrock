@@ -1824,14 +1824,20 @@ async def opportunities_overview(
                 WHERE a.jobs_opportunity_id = o.id AND a.deleted_at IS NULL) AS last_activity
         FROM bedrock.jobs_opportunity o
         WHERE o.deleted_at IS NULL AND {_OPP_INSET}
-          AND o.created_at < $3
+          AND ($1::text IS NULL OR o.owner_email = $1)
+          AND ($2::text IS NULL OR o.deal_type = $2)
+    """, owner_f, dt_f)
+
+    # Week-over-week, anchored to `ref` (Sat–Sat): net-new = opportunities created
+    # in the selected week; prev = the prior 7-day window; moved-to-committed =
+    # →closed_won in the week.
+    net_new = await conn.fetchval(f"""
+        SELECT count(*) FROM bedrock.jobs_opportunity o
+        WHERE o.deleted_at IS NULL
+          AND o.created_at >= $3 - interval '7 days' AND o.created_at < $3
           AND ($1::text IS NULL OR o.owner_email = $1)
           AND ($2::text IS NULL OR o.deal_type = $2)
     """, owner_f, dt_f, ref)
-
-    # Week-over-week, anchored to `ref` (Sat–Sat): net-new = entered the set this
-    # week (created_at proxy); prev = the prior 7-day window; moved-to-committed =
-    # →closed_won in the week.
     net_new_prev = await conn.fetchval(f"""
         SELECT count(*) FROM bedrock.jobs_opportunity o
         WHERE o.deleted_at IS NULL
@@ -1854,7 +1860,7 @@ async def opportunities_overview(
         return None if dt is None else max(0, (ref - dt).days)
 
     in_set = len(rows)
-    net_new = 0
+    stalled_6wk = 0  # active opps that have been an opportunity for >6 weeks (since created)
     age_counts = [0, 0, 0, 0, 0]
     bd: dict = {"status": {}, "deal_type": {}, "segment": {}, "stage": {}, "owner": {}}
     stage_heat: dict = {}
@@ -1867,8 +1873,8 @@ async def opportunities_overview(
 
     for r in rows:
         c_days = _days(r["created_at"])
-        if c_days is not None and c_days < 7:
-            net_new += 1
+        if c_days is not None and c_days > 42:
+            stalled_6wk += 1
         stage_days = _days(r["entered_stage"]) or 0
         bi = _opp_age_bucket(stage_days)
         age_counts[bi] += 1
@@ -1907,8 +1913,6 @@ async def opportunities_overview(
                 "days_in_stage": stage_days, "days_since_activity": act_days,
                 "why": " · ".join(why_bits),
             })
-
-    carried = in_set - net_new
 
     def _bd_list(dim: str, labels: Optional[dict] = None):
         return [{"key": k, "label": (labels.get(k, k) if labels else k), "count": v}
@@ -1960,8 +1964,7 @@ async def opportunities_overview(
         "aging_basis": "time_in_stage",
         "summary": {
             "in_set": in_set, "net_new": net_new, "net_new_prev": net_new_prev,
-            "carried": carried, "carried_pct": round(100 * carried / in_set) if in_set else 0,
-            "moved_committed": moved_committed,
+            "moved_committed": moved_committed, "stalled_6wk": stalled_6wk,
         },
         "aging": {"buckets": [
             {"key": k, "label": lbl, "count": age_counts[i],

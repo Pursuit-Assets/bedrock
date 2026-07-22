@@ -4,6 +4,7 @@ import {
   LayoutDashboard,
   Building2,
   Briefcase,
+  Kanban,
   UserSearch,
   GitBranch,
   Trophy,
@@ -63,6 +64,7 @@ const NAV_GROUPS = [
     label: "Jobs",
     items: [
       { to: "/jobs", label: "Jobs", icon: Briefcase },
+      { to: "/jobs?view=opportunities", label: "Opportunities", icon: Kanban },
       { to: "/jobs/candidates", label: "Candidates", icon: UserSearch },
     ],
   },

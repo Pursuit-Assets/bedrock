@@ -2001,7 +2001,7 @@ export interface OpportunitiesOverview {
   aging_basis: string;
   summary: {
     in_set: number; net_new: number; net_new_prev: number;
-    carried: number; carried_pct: number; moved_committed: number;
+    moved_committed: number; stalled_6wk: number;
   };
   aging: { buckets: OppAgingBucket[] };
   breakdowns: Record<OppBreakdownDim, OppBreakdownItem[]>;

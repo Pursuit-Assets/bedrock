@@ -1,32 +1,31 @@
 import { useEffect } from "react";
 import { useSearchParams } from "react-router-dom";
-import { Home, BarChart3, Building2, Kanban, Users, GraduationCap, Send, LayoutDashboard } from "lucide-react";
+import { Home, BarChart3, Building2, Users, GraduationCap, Send } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { useSessionState } from "@/lib/useSessionState";
 import { cn } from "@/lib/utils";
 import { JobsHome } from "./jobs/JobsHome";
 import { JobsAccountHub } from "./jobs/JobsAccountHub";
-import { JobsTeam } from "./jobs/JobsTeam";
 import { JobsLeadership } from "./jobs/JobsLeadership";
 import { JobsContacts } from "./jobs/JobsContacts";
 import { JobsBuilders } from "./jobs/JobsBuilders";
 import { JobsOutreach } from "./jobs/JobsOutreach";
-import { JobsOpportunitiesOverview } from "./jobs/JobsOpportunitiesOverview";
+import { JobsOpportunities } from "./jobs/JobsOpportunities";
 
-type View = "home" | "accounts" | "performance" | "outreach" | "overview" | "team" | "contacts" | "builders";
+// "opportunities" (Overview + Opportunities set) is a valid view but lives in the
+// left nav (Jobs → Opportunities), not the top-tab row — so it's not in VIEWS.
+type View = "home" | "accounts" | "performance" | "outreach" | "opportunities" | "contacts" | "builders";
 
 const VIEWS = [
   { id: "home" as View,        label: "Home",        icon: Home,      desc: "Daily command center — tasks, interviews, triage" },
   { id: "performance" as View, label: "Performance", icon: BarChart3, desc: "Pipeline health & metrics" },
   { id: "outreach" as View,    label: "Outreach",    icon: Send,      desc: "Team outreach scorecard — pipeline & activity" },
-  { id: "overview" as View,    label: "Overview",    icon: LayoutDashboard, desc: "Weekly opportunity overview — pipeline health for the meeting" },
   { id: "accounts" as View,    label: "Accounts",    icon: Building2, desc: "Account-level hub — opps + contacts" },
-  { id: "team" as View,        label: "Opportunities", icon: Kanban,  desc: "Day-to-day deal management" },
   { id: "contacts" as View,    label: "Contacts",    icon: Users,     desc: "All employer contacts" },
   { id: "builders" as View,    label: "Builders",    icon: GraduationCap, desc: "Per-builder job search" },
 ];
 
-const VALID_VIEWS = new Set<View>(["home", "accounts", "performance", "outreach", "overview", "team", "contacts", "builders"]);
+const VALID_VIEWS = new Set<View>(["home", "accounts", "performance", "outreach", "opportunities", "contacts", "builders"]);
 
 export function JobsPage() {
   const [searchParams] = useSearchParams();
@@ -36,7 +35,7 @@ export function JobsPage() {
   // The tab LABELED "Opportunities" has internal id "team" — accept the label
   // as a deep-link alias so ?view=opportunities doesn't silently land on Home.
   const rawView = searchParams.get("view");
-  const paramView = (rawView === "opportunities" ? "team" : rawView) as View | null;
+  const paramView = ((rawView === "team" || rawView === "overview") ? "opportunities" : rawView) as View | null;
   const initialView: View = paramView && VALID_VIEWS.has(paramView) ? paramView : "home";
   const initialQuery = searchParams.get("q") ?? undefined;
   const contactParam = searchParams.get("contact");
@@ -79,14 +78,13 @@ export function JobsPage() {
       />
 
       <div className="mt-1">
-        {view === "home"        && <JobsHome />}
-        {view === "accounts"    && <JobsAccountHub initialQuery={initialQuery} />}
-        {view === "performance" && <JobsLeadership />}
-        {view === "outreach"    && <JobsOutreach />}
-        {view === "overview"    && <JobsOpportunitiesOverview />}
-        {view === "team"        && <JobsTeam />}
-        {view === "contacts"    && <JobsContacts initialQuery={initialQuery} initialContactId={initialContactId} />}
-        {view === "builders"    && <JobsBuilders />}
+        {view === "home"          && <JobsHome />}
+        {view === "accounts"      && <JobsAccountHub initialQuery={initialQuery} />}
+        {view === "performance"   && <JobsLeadership />}
+        {view === "outreach"      && <JobsOutreach />}
+        {view === "opportunities" && <JobsOpportunities />}
+        {view === "contacts"      && <JobsContacts initialQuery={initialQuery} initialContactId={initialContactId} />}
+        {view === "builders"      && <JobsBuilders />}
       </div>
     </div>
   );

@@ -145,14 +145,14 @@ export function JobsOpportunitiesOverview() {
 
       {/* ── Summary cards ─────────────────────────────────────────────── */}
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <SummaryCard tone="ink" label="In the set this week" value={s?.in_set} isLoading={isLoading}
-          sub="Active working stages" />
+        <SummaryCard tone="ink" label="In the set" value={s?.in_set} isLoading={isLoading}
+          sub="All active opportunities" />
         <SummaryCard tone="accent" label="Net new" value={s?.net_new} isLoading={isLoading}
           delta={s ? { n: netDelta, prev: s.net_new_prev } : undefined} />
-        <SummaryCard tone="sky" label="Carried from last week" value={s?.carried} isLoading={isLoading}
-          sub={s ? `${s.carried_pct}% of this week's set` : undefined} />
         <SummaryCard tone="green" label="Moved to Committed" value={s?.moved_committed} isLoading={isLoading}
-          sub="→ Closed-Won in last 7 days" />
+          sub="→ Closed-Won this week" />
+        <SummaryCard tone="amber" label="Stalled" value={s?.stalled_6wk} isLoading={isLoading}
+          sub="Open opportunity 6+ weeks" />
       </div>
 
       {/* ── Aging + Breakdown ─────────────────────────────────────────── */}
@@ -224,7 +224,8 @@ export function JobsOpportunitiesOverview() {
 // ── Summary card ────────────────────────────────────────────────────────────
 
 const TONE: Record<string, string> = {
-  ink: "text-ink", accent: "text-[var(--accent)]", sky: "text-[var(--sky)]", green: "text-[var(--green)]",
+  ink: "text-ink", accent: "text-[var(--accent)]", sky: "text-[var(--sky)]",
+  green: "text-[var(--green)]", amber: "text-[var(--amber)]",
 };
 
 function SummaryCard({
