@@ -36,9 +36,15 @@ import {
   useJobsContacts, useAddContactToJobs,
   useContactDetail, useCreateContact, STAGE_LABELS,
   useFlagContactsForJobs, useUnflagJobsContact, useUpdateJobsMembership, MEMBERSHIP_STAGE_LABELS, MEMBERSHIP_STAGES,
-  useContactTagCatalog, useStaff, useUpdateContact, useBulkContactOwner,
+  useContactTagCatalog, useStaff, useUpdateContact, useBulkContactOwner, useBulkProspect,
   type JobStage, type JobContactWithDeal, type ContactSearchResult, type ContactCreateBody, type MembershipStage,
 } from "@/services/jobs";
+
+// Humanize a tag slug so chips never flash the raw slug (e.g. "prior_commit_partner")
+// while the catalog query is still loading — reads as the friendly label instantly.
+function humanizeTag(slug: string): string {
+  return slug.replace(/_/g, " ").replace(/\b\w/g, (m) => m.toUpperCase());
+}
 
 // ── last touch: most recent jobs-relevant activity date ───────────────────────
 function relativeDays(iso: string | null | undefined): string {
@@ -185,7 +191,7 @@ function TagsCell({ contact }: { contact: JobContactWithDeal }) {
         className="flex min-h-[20px] w-full flex-wrap items-center gap-1 text-left"
       >
         {tags.length > 0
-          ? tags.map((t) => <span key={t} className="truncate rounded-full bg-violet-50 px-1.5 py-0.5 text-[10px] font-medium text-violet-700">{labels[t] ?? t}</span>)
+          ? tags.map((t) => <span key={t} className="truncate rounded-full bg-violet-50 px-1.5 py-0.5 text-[10px] font-medium text-violet-700">{labels[t] ?? humanizeTag(t)}</span>)
           : <span className="text-[12px] text-ink-4">—</span>}
       </button>
       {open && (
@@ -321,6 +327,7 @@ export function JobsContacts({ initialQuery, initialContactId }: { initialQuery?
   const [flagView, setFlagView] = useState<"all" | "flagged" | "unflagged">("all");
   const flagContacts = useFlagContactsForJobs();
   const bulkOwner = useBulkContactOwner();
+  const bulkProspect = useBulkProspect();
   const unflag = useUnflagJobsContact();
   const toggleSelect = useCallback((id: number) => setSelected((p) => { const n = new Set(p); n.has(id) ? n.delete(id) : n.add(id); return n; }), []);
   const { sort, toggle, setSort } = useSort<ColKey>({ key: "name", direction: "asc" });
@@ -486,7 +493,8 @@ export function JobsContacts({ initialQuery, initialContactId }: { initialQuery?
             {staffForFilter.map((s) => <option key={s.email} value={s.email}>{s.name}</option>)}
             <option value="__clear__">(clear owner)</option>
           </select>
-          <button type="button" disabled={bulkBusy} onClick={() => flagContacts.mutate({ contact_ids: [...selected] }, { onSuccess: () => setSelected(new Set()) })} className="inline-flex h-7 items-center gap-1 rounded bg-accent px-3 font-medium text-white hover:opacity-90 disabled:opacity-50"><Zap size={12} /> Assign to jobs</button>
+          <button type="button" disabled={bulkBusy || bulkProspect.isPending} onClick={() => bulkProspect.mutate({ contact_ids: [...selected], value: true }, { onSuccess: () => setSelected(new Set()) })} className="inline-flex h-7 items-center gap-1 rounded border border-accent bg-surface px-3 font-medium text-accent hover:bg-accent-soft disabled:opacity-50" title="Mark as jobs prospects (no pipeline stage)"><Plus size={12} /> Add as prospect</button>
+          <button type="button" disabled={bulkBusy} onClick={() => flagContacts.mutate({ contact_ids: [...selected] }, { onSuccess: () => setSelected(new Set()) })} className="inline-flex h-7 items-center gap-1 rounded bg-accent px-3 font-medium text-white hover:opacity-90 disabled:opacity-50" title="Add to the pipeline at the Assigned stage"><Zap size={12} /> Assign to jobs</button>
           <button type="button" disabled={bulkBusy} onClick={async () => { const ids = [...selected]; if (!window.confirm(`Clear the jobs stage from ${ids.length} contact${ids.length === 1 ? "" : "s"}?`)) return; setBulkBusy(true); const r = await Promise.allSettled(ids.map((id) => unflag.mutateAsync(id))); setBulkBusy(false); const failed = r.filter((x) => x.status === "rejected").length; if (failed) toast.error(`${failed} of ${ids.length} could not be cleared`); setSelected(new Set()); }} className="h-7 rounded border border-border-strong bg-surface px-3 text-ink-2 hover:text-ink disabled:opacity-50" title="Remove the jobs stage (membership) from the selected contacts">Clear stage</button>
           <button type="button" onClick={() => setSelected(new Set())} className="ml-1 text-[11.5px] font-medium text-ink-3 underline-offset-4 hover:text-ink-2 hover:underline">Clear selection</button>
         </div>

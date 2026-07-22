@@ -5291,6 +5291,30 @@ async def bulk_set_contact_owner(
     return {"success": True, "data": {"updated": n}}
 
 
+class BulkProspect(BaseModel):
+    contact_ids: list[int]
+    value: bool = True   # true = mark as jobs prospect; false = remove the flag
+
+
+@router.post("/contacts/bulk-prospect")
+async def bulk_set_prospect(
+    body: BulkProspect,
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Bulk mark (or unmark) contacts as jobs prospects — sets is_jobs_contact
+    without creating a pipeline stage (that's what /flag-jobs does)."""
+    ids = [int(i) for i in body.contact_ids]
+    if not ids:
+        return {"success": True, "data": {"updated": 0}}
+    res = await conn.execute(
+        "UPDATE public.contacts SET is_jobs_contact = $2, updated_at = now() "
+        "WHERE contact_id = ANY($1::int[]) AND is_jobs_contact IS DISTINCT FROM $2",
+        ids, body.value)
+    n = int(res.split()[-1]) if res and res.split()[-1].isdigit() else 0
+    return {"success": True, "data": {"updated": n}}
+
+
 @router.get("/contact-tags")
 async def contact_tag_catalog(
     user=Depends(require_auth),

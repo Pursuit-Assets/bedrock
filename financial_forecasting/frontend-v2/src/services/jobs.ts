@@ -1349,6 +1349,21 @@ export function useStaff(q?: string) {
 
 export interface Builder { user_id: number; email: string; name: string; cohort: string }
 
+export function useBulkProspect() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (body: { contact_ids: number[]; value: boolean }) => {
+      const { data } = await api.post<ApiResponse<{ updated: number }>>("/api/jobs/contacts/bulk-prospect", body);
+      return data.data;
+    },
+    onSuccess: (d, vars) => {
+      qc.invalidateQueries({ queryKey: ["jobs", "contacts"] });
+      toast.success(`${vars.value ? "Added" : "Removed"} ${d?.updated ?? 0} ${(d?.updated ?? 0) === 1 ? "prospect" : "prospects"}`);
+    },
+    onError: () => toast.error("Failed to update prospects"),
+  });
+}
+
 export interface ContactTag { slug: string; label: string }
 
 /** Curated contact-tag vocabulary (bedrock.contact_tag_catalog) — drives the
