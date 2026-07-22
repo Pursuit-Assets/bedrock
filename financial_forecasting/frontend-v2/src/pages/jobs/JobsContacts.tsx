@@ -35,7 +35,7 @@ import {
   useJobsContacts, useAddContactToJobs,
   useContactDetail, useCreateContact, STAGE_LABELS,
   useFlagContactsForJobs, useUnflagJobsContact, useUpdateJobsMembership, MEMBERSHIP_STAGE_LABELS, MEMBERSHIP_STAGES,
-  useContactTagCatalog, useStaff, useUpdateContact,
+  useContactTagCatalog, useStaff, useUpdateContact, useBulkContactOwner,
   type JobStage, type JobContactWithDeal, type ContactSearchResult, type ContactCreateBody, type MembershipStage,
 } from "@/services/jobs";
 
@@ -286,7 +286,7 @@ function ContactRow({ contact, expanded, onOpen, visibleCols, selected, onToggle
           renderValue={(v) => <span className="rounded-full bg-accent-soft px-1.5 py-0.5 text-[10.5px] font-medium text-accent-ink">{MEMBERSHIP_STAGE_LABELS[(v ?? contact.membership_stage) as MembershipStage] ?? v}</span>}
           onSave={(v) => new Promise<void>((res, rej) => updateMembership.mutate({ contact_id: contact.contact_id, stage: v || undefined }, { onSuccess: () => res(), onError: rej }))} />
       : <button type="button" onClick={(e) => { e.stopPropagation(); flagOne.mutate({ contact_ids: [contact.contact_id] }); }}
-          className="inline-flex items-center gap-1 rounded border border-dashed border-border-strong px-2 py-0.5 text-[11px] text-ink-3 hover:border-accent hover:text-accent"><Zap size={10} /> Flag</button>,
+          className="inline-flex items-center gap-1 rounded border border-dashed border-border-strong px-2 py-0.5 text-[11px] text-ink-3 hover:border-accent hover:text-accent"><Zap size={10} /> Assign</button>,
     industry: <span className="truncate text-[12px] text-ink-3">{contact.company_industry || "—"}</span>,
     listings: (() => {
       const src = contact.open_roles ?? 0, app = contact.builder_apps ?? 0, tot = src + app;
@@ -339,8 +339,8 @@ export function JobsContacts({ initialQuery, initialContactId }: { initialQuery?
   // the full universe so anyone can be promoted via the prospect checkmark.
   const [scope, setScope] = useSessionState<"jobs" | "all">("jobs-contacts:scope", "jobs");
   const [flagView, setFlagView] = useState<"all" | "flagged" | "unflagged">("all");
-  const [flagOwner, setFlagOwner] = useState("");
   const flagContacts = useFlagContactsForJobs();
+  const bulkOwner = useBulkContactOwner();
   const unflag = useUnflagJobsContact();
   const toggleSelect = useCallback((id: number) => setSelected((p) => { const n = new Set(p); n.has(id) ? n.delete(id) : n.add(id); return n; }), []);
   const { sort, toggle, setSort } = useSort<ColKey>({ key: "name", direction: "asc" });
@@ -492,13 +492,17 @@ export function JobsContacts({ initialQuery, initialContactId }: { initialQuery?
       {selected.size > 0 && (
         <div className="flex flex-wrap items-center gap-2 border-x border-t border-accent bg-accent-soft px-3 py-2 text-[12.5px]">
           <span className="font-semibold text-accent-ink">{selected.size} selected</span>
-          <input value={flagOwner} onChange={(e) => setFlagOwner(e.target.value)} placeholder="owner email (optional)" className="h-7 w-56 rounded border border-border-strong bg-surface px-2 text-[12px] text-ink outline-none focus:border-accent" />
-          <button type="button" disabled={flagContacts.isPending} onClick={() => flagContacts.mutate({ contact_ids: [...selected], owner_email: flagOwner.trim() || undefined }, { onSuccess: () => setSelected(new Set()) })} className="inline-flex h-7 items-center gap-1 rounded bg-accent px-3 font-medium text-white hover:opacity-90 disabled:opacity-50"><Zap size={12} /> Flag for jobs activation</button>
-          <select defaultValue="" onChange={(e) => { const st = e.target.value; if (!st) return; flagContacts.mutate({ contact_ids: [...selected], owner_email: flagOwner.trim() || undefined, stage: st }, { onSuccess: () => setSelected(new Set()) }); e.currentTarget.value = ""; }} className="h-7 rounded border border-border-strong bg-surface px-2 text-[12px] text-ink-2 outline-none focus:border-accent">
+          <select defaultValue="" onChange={(e) => { const st = e.target.value; if (!st) return; flagContacts.mutate({ contact_ids: [...selected], stage: st }, { onSuccess: () => setSelected(new Set()) }); e.currentTarget.value = ""; }} className="h-7 rounded border border-border-strong bg-surface px-2 text-[12px] text-ink-2 outline-none focus:border-accent">
             <option value="">Set stage…</option>
             {MEMBERSHIP_STAGE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
           </select>
-          <button type="button" onClick={() => { [...selected].forEach((id) => unflag.mutate(id)); setSelected(new Set()); }} className="h-7 rounded border border-border-strong bg-surface px-3 text-ink-2 hover:text-ink">Unflag</button>
+          <select defaultValue="" disabled={bulkOwner.isPending} onChange={(e) => { const v = e.target.value; if (!v) return; bulkOwner.mutate({ contact_ids: [...selected], owner_email: v === "__clear__" ? null : v }, { onSuccess: () => setSelected(new Set()) }); e.currentTarget.value = ""; }} className="h-7 max-w-[220px] rounded border border-border-strong bg-surface px-2 text-[12px] text-ink-2 outline-none focus:border-accent disabled:opacity-50">
+            <option value="">Set owner…</option>
+            {staffForFilter.map((s) => <option key={s.email} value={s.email}>{s.name}</option>)}
+            <option value="__clear__">(clear owner)</option>
+          </select>
+          <button type="button" disabled={flagContacts.isPending} onClick={() => flagContacts.mutate({ contact_ids: [...selected] }, { onSuccess: () => setSelected(new Set()) })} className="inline-flex h-7 items-center gap-1 rounded bg-accent px-3 font-medium text-white hover:opacity-90 disabled:opacity-50"><Zap size={12} /> Assign to jobs</button>
+          <button type="button" onClick={() => { [...selected].forEach((id) => unflag.mutate(id)); setSelected(new Set()); }} className="h-7 rounded border border-border-strong bg-surface px-3 text-ink-2 hover:text-ink" title="Remove the jobs stage (membership) from the selected contacts">Clear stage</button>
           <button type="button" onClick={() => setSelected(new Set())} className="ml-1 text-[11.5px] font-medium text-ink-3 underline-offset-4 hover:text-ink-2 hover:underline">Clear selection</button>
         </div>
       )}

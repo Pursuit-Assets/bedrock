@@ -232,10 +232,10 @@ export interface JobContactWithDeal extends JobContact {
   builder_apps?: number;      // jobs builders applied to at this company (job_applications)
 }
 
-export type MembershipStage = "assigned" | "initial_outreach" | "qualified" | "converted_to_opportunity" | "on_hold" | "not_a_fit";
-export const MEMBERSHIP_STAGES: MembershipStage[] = ["assigned", "initial_outreach", "qualified", "converted_to_opportunity", "on_hold", "not_a_fit"];
+export type MembershipStage = "assigned" | "initial_outreach" | "converted_to_opportunity" | "on_hold" | "not_a_fit";
+export const MEMBERSHIP_STAGES: MembershipStage[] = ["assigned", "initial_outreach", "converted_to_opportunity", "on_hold", "not_a_fit"];
 export const MEMBERSHIP_STAGE_LABELS: Record<MembershipStage, string> = {
-  assigned: "Assigned", initial_outreach: "Initial outreach", qualified: "Qualified",
+  assigned: "Assigned", initial_outreach: "Initial outreach",
   converted_to_opportunity: "Converted to opportunity", on_hold: "On hold", not_a_fit: "Not a fit",
 };
 
@@ -390,6 +390,21 @@ export function useUpdateJobsMembership() {
 }
 
 /** Unflag — remove the jobs membership. */
+export function useBulkContactOwner() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (body: { contact_ids: number[]; owner_email?: string | null }) => {
+      const { data } = await api.post<ApiResponse<{ updated: number }>>("/api/jobs/contacts/bulk-owner", body);
+      return data.data;
+    },
+    onSuccess: (d) => {
+      qc.invalidateQueries({ queryKey: ["jobs", "contacts"] });
+      toast.success(`Owner set on ${d?.updated ?? 0} contact${(d?.updated ?? 0) === 1 ? "" : "s"}`);
+    },
+    onError: () => toast.error("Failed to set owner"),
+  });
+}
+
 export function useUnflagJobsContact() {
   const qc = useQueryClient();
   return useMutation({

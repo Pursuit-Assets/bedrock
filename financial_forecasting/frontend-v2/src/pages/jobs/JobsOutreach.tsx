@@ -194,7 +194,6 @@ function ConversionTables({ sc }: { sc: OutreachScorecard }) {
   const a = byKey(sc.activity_pipeline, "metric");
   const leads = u.assigned ?? { this_period: EMPTY, last_period: EMPTY } as ScorecardRow;
   const out = u.initial_outreach ?? { this_period: EMPTY, last_period: EMPTY } as ScorecardRow;
-  const qual = u.qualified ?? { this_period: EMPTY, last_period: EMPTY } as ScorecardRow;
   const comm = u.converted_to_opportunity ?? { this_period: EMPTY, last_period: EMPTY } as ScorecardRow;
   const email = a.direct_email_sent ?? { this_period: EMPTY, last_period: EMPTY } as ScorecardRow;
   const resp = a.direct_email_response ?? { this_period: EMPTY, last_period: EMPTY } as ScorecardRow;
@@ -210,9 +209,8 @@ function ConversionTables({ sc }: { sc: OutreachScorecard }) {
   };
   const convRows = [
     { label: "Leads → Outreached", n: out, d: leads },
-    { label: "Outreached → Qualified", n: qual, d: out },
-    { label: "Qualified → Committed", n: comm, d: qual },
-    { label: "Leads → Committed (Overall)", n: comm, d: leads, overall: true },
+    { label: "Outreached → Converted", n: comm, d: out },
+    { label: "Leads → Converted (Overall)", n: comm, d: leads, overall: true },
   ];
 
   const RatioTable = ({ title, children }: { title: string; children: React.ReactNode }) => (
@@ -274,14 +272,14 @@ function OriginComparison({ sc }: { sc: OutreachScorecard }) {
   const assigned = (u.assigned ?? { this_period: EMPTY } as ScorecardRow).this_period;
   const email = (a.direct_email_sent ?? { this_period: EMPTY } as ScorecardRow).this_period;
   const resp = (a.direct_email_response ?? { this_period: EMPTY } as ScorecardRow).this_period;
-  const qual = (u.qualified ?? { this_period: EMPTY } as ScorecardRow).this_period;
+  const conv = (u.converted_to_opportunity ?? { this_period: EMPTY } as ScorecardRow).this_period;
 
   const rate = (num: number, den: number) => (den ? `${Math.round((num / den) * 100)}%` : "—");
   const rows: { l: string; warm: string; cold: string }[] = [
     { l: "Sourced", warm: String(assigned.warm), cold: String(assigned.cold) },
     { l: "Sent", warm: String(email.warm), cold: String(email.cold) },
     { l: "Response rate", warm: rate(resp.warm, email.warm), cold: rate(resp.cold, email.cold) },
-    { l: "Qual. rate", warm: rate(qual.warm, assigned.warm), cold: rate(qual.cold, assigned.cold) },
+    { l: "Conv. rate", warm: rate(conv.warm, assigned.warm), cold: rate(conv.cold, assigned.cold) },
   ];
 
   // One stacked bar: share of sends that are warm vs cold.

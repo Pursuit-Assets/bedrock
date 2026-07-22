@@ -1688,7 +1688,6 @@ async def get_funnel(
         stage_order = [
             ("assigned", "Assigned"),
             ("initial_outreach", "Initial Outreach"),
-            ("qualified", "Qualified"),
             ("converted_to_opportunity", "Converted to Opportunity"),
             ("on_hold", "On Hold"),
         ]
@@ -2290,7 +2289,6 @@ async def activity_trends_detail(
 _OUTREACH_STAGE_META = [
     ("assigned",          "Assigned"),
     ("initial_outreach", "Initial Outreach"),
-    ("qualified",        "Qualified"),
     ("converted_to_opportunity", "Converted to Opportunity"),
 ]
 _OUTREACH_ACTIVITY_META = [
@@ -2308,7 +2306,7 @@ _ACTIVITY_TIER = {
 }
 _STAGE_ENTERED_COL = {
     "assigned": "assigned_at", "initial_outreach": "first_outreach_at",
-    "qualified": "qualified_at", "converted_to_opportunity": "converted_at",
+    "converted_to_opportunity": "converted_at",
 }
 
 
@@ -2511,10 +2509,6 @@ async def outreach_scorecard(
         "SELECT contact_id, 'assigned' AS stage, assigned_at AS entered_at "
         "FROM bedrock.jobs_contact_membership WHERE assigned_at IS NOT NULL",
     ]
-    if "qualified_at" in have_cols:
-        stage_event_parts.append(
-            "SELECT contact_id, 'qualified', qualified_at "
-            "FROM bedrock.jobs_contact_membership WHERE qualified_at IS NOT NULL")
     if "converted_at" in have_cols:
         stage_event_parts.append(
             "SELECT contact_id, 'converted_to_opportunity', converted_at "
@@ -3512,7 +3506,7 @@ async def jobs_accounts(
             SELECT lower(trim(c.current_company)) AS key, count(*) AS n
             FROM bedrock.jobs_contact_membership m
             JOIN public.contacts c ON c.contact_id = m.contact_id
-            WHERE m.stage IN ('assigned','initial_outreach','qualified')
+            WHERE m.stage IN ('assigned','initial_outreach','converted_to_opportunity')
               AND coalesce(trim(c.current_company), '') <> ''
             GROUP BY 1
             """),
@@ -3898,7 +3892,7 @@ async def account_prospects(
 
 
 # ── Jobs contact activation (flag + funnel membership) ────────────────────────
-_MEMBERSHIP_STAGES = ('assigned', 'initial_outreach', 'qualified', 'converted_to_opportunity', 'on_hold', 'not_a_fit')
+_MEMBERSHIP_STAGES = ('assigned', 'initial_outreach', 'converted_to_opportunity', 'on_hold', 'not_a_fit')
 
 
 def _user_email(user) -> Optional[str]:
@@ -3920,12 +3914,9 @@ async def _flag_contacts(conn, contact_ids: list[int], owner_email: Optional[str
     # $6 stamps directly; on conflict it stamps only on a genuine stage change.
     if stage:
         conflict_stage = "stage = EXCLUDED.stage,"
-        stamp_cols = ", qualified_at, converted_at"
-        stamp_vals = (", CASE WHEN $6 = 'qualified' THEN now() END"
-                      ", CASE WHEN $6 = 'converted_to_opportunity' THEN now() END")
+        stamp_cols = ", converted_at"
+        stamp_vals = ", CASE WHEN $6 = 'converted_to_opportunity' THEN now() END"
         conflict_stamp = (
-            "qualified_at = CASE WHEN EXCLUDED.stage = 'qualified' AND jobs_contact_membership.stage "
-            "IS DISTINCT FROM 'qualified' THEN now() ELSE jobs_contact_membership.qualified_at END,"
             "converted_at = CASE WHEN EXCLUDED.stage = 'converted_to_opportunity' AND jobs_contact_membership.stage "
             "IS DISTINCT FROM 'converted_to_opportunity' THEN now() ELSE jobs_contact_membership.converted_at END,")
     else:
@@ -3998,9 +3989,6 @@ async def update_jobs_membership(contact_id: int, body: MembershipPatch,
         # `jobs_contact_membership.stage` here is the OLD stage. Re-stamps on a
         # genuine re-entry (e.g. active → on_hold → active), which is what the
         # scorecard's "entered this period" flow count wants.
-        if body.stage == "qualified":
-            sets.append("qualified_at = CASE WHEN jobs_contact_membership.stage "
-                        "IS DISTINCT FROM 'qualified' THEN now() ELSE jobs_contact_membership.qualified_at END")
         if body.stage == "converted_to_opportunity":
             sets.append("converted_at = CASE WHEN jobs_contact_membership.stage "
                         "IS DISTINCT FROM 'converted_to_opportunity' THEN now() ELSE jobs_contact_membership.converted_at END")
@@ -5275,6 +5263,29 @@ async def list_builders(
             if r["email"]
         ],
     }
+
+
+class BulkOwner(BaseModel):
+    contact_ids: list[int]
+    owner_email: Optional[str] = None   # null/empty clears the owner
+
+
+@router.post("/contacts/bulk-owner")
+async def bulk_set_contact_owner(
+    body: BulkOwner,
+    user=Depends(require_auth),
+    conn=Depends(get_db),
+):
+    """Set (or clear) the org-wide owner on many contacts at once."""
+    ids = [int(i) for i in body.contact_ids]
+    if not ids:
+        return {"success": True, "data": {"updated": 0}}
+    owner = (body.owner_email or "").strip().lower() or None
+    res = await conn.execute(
+        "UPDATE public.contacts SET owner_email = $2, updated_at = now() WHERE contact_id = ANY($1::int[])",
+        ids, owner)
+    n = int(res.split()[-1]) if res and res.split()[-1].isdigit() else 0
+    return {"success": True, "data": {"updated": n}}
 
 
 @router.get("/contact-tags")
