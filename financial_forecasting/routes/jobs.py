@@ -1834,14 +1834,14 @@ async def opportunities_overview(
     net_new = await conn.fetchval(f"""
         SELECT count(*) FROM bedrock.jobs_opportunity o
         WHERE o.deleted_at IS NULL
-          AND o.created_at >= $3 - interval '7 days' AND o.created_at < $3
+          AND o.created_at >= $3::timestamptz - interval '7 days' AND o.created_at < $3::timestamptz
           AND ($1::text IS NULL OR o.owner_email = $1)
           AND ($2::text IS NULL OR o.deal_type = $2)
     """, owner_f, dt_f, ref)
     net_new_prev = await conn.fetchval(f"""
         SELECT count(*) FROM bedrock.jobs_opportunity o
         WHERE o.deleted_at IS NULL
-          AND o.created_at >= $3 - interval '14 days' AND o.created_at < $3 - interval '7 days'
+          AND o.created_at >= $3::timestamptz - interval '14 days' AND o.created_at < $3::timestamptz - interval '7 days'
           AND ($1::text IS NULL OR o.owner_email = $1)
           AND ($2::text IS NULL OR o.deal_type = $2)
     """, owner_f, dt_f, ref)
@@ -1850,7 +1850,7 @@ async def opportunities_overview(
         FROM bedrock.jobs_stage_history h
         JOIN bedrock.jobs_opportunity o ON o.id = h.opportunity_id
         WHERE h.to_stage = 'closed_won'
-          AND h.changed_at >= $3 - interval '7 days' AND h.changed_at < $3
+          AND h.changed_at >= $3::timestamptz - interval '7 days' AND h.changed_at < $3::timestamptz
           AND o.deleted_at IS NULL
           AND ($1::text IS NULL OR o.owner_email = $1)
           AND ($2::text IS NULL OR o.deal_type = $2)
@@ -1945,7 +1945,7 @@ async def opportunities_overview(
                  o.owner_email) AS added_by
         FROM bedrock.jobs_opportunity o
         WHERE o.deleted_at IS NULL AND {_OPP_INSET}
-          AND o.created_at < $3
+          AND o.created_at < $3::timestamptz
           AND ($1::text IS NULL OR o.owner_email = $1)
           AND ($2::text IS NULL OR o.deal_type = $2)
         ORDER BY o.created_at DESC
