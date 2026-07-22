@@ -305,16 +305,18 @@ function OriginComparison({ sc }: { sc: OutreachScorecard }) {
 
       {/* Origin details table */}
       <div className="mt-4">
-        <div className="grid grid-cols-[1fr_11rem_11rem] items-center gap-x-6 border-b border-border pb-2">
+        <div className="grid grid-cols-[1fr_11rem_11rem_1fr] items-center gap-x-6 border-b border-border pb-2">
           <span className="text-[13px] font-bold text-ink">Origin Details</span>
-          <span className="flex items-center justify-center gap-1.5 text-[12px] text-ink-2"><span className="h-2.5 w-2.5 flex-shrink-0 rounded-sm bg-amber" />Existing Relationship</span>
-          <span className="flex items-center justify-center gap-1.5 text-[12px] text-ink-2"><span className="h-2.5 w-2.5 flex-shrink-0 rounded-sm bg-ink-3" />No Relationship</span>
+          <span className="flex items-center justify-center gap-1.5 text-center text-[12px] text-ink-2"><span className="h-2.5 w-2.5 flex-shrink-0 rounded-sm bg-amber" />Existing Relationship</span>
+          <span className="flex items-center justify-center gap-1.5 text-center text-[12px] text-ink-2"><span className="h-2.5 w-2.5 flex-shrink-0 rounded-sm bg-ink-3" />No Relationship</span>
+          <span />
         </div>
         {rows.map((r) => (
-          <div key={r.l} className="grid grid-cols-[1fr_11rem_11rem] items-center gap-x-6 border-b border-border py-2 last:border-b-0">
+          <div key={r.l} className="grid grid-cols-[1fr_11rem_11rem_1fr] items-center gap-x-6 border-b border-border py-2 last:border-b-0">
             <span className="text-[13px] text-ink-2">{r.l}</span>
             <span className="text-center text-[13.5px] font-semibold tabular-nums text-ink">{r.warm}</span>
             <span className="text-center text-[13.5px] font-semibold tabular-nums text-ink">{r.cold}</span>
+            <span />
           </div>
         ))}
       </div>
