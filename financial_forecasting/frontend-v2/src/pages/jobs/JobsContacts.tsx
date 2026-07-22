@@ -354,7 +354,7 @@ export function JobsContacts({ initialQuery, initialContactId }: { initialQuery?
   const serverRules = useMemo(() => serializeRulesForServer(rules), [rules]);
   const filteringActive = serverRules.length > 0 || !!debouncedQuery;
   const { data: rawData, isLoading, isError, refetch } = useJobsContacts({
-    limit: filteringActive ? 5000 : 500,
+    limit: filteringActive ? 5000 : 1200,
     search: debouncedQuery || undefined,
     flagged: flagView === "all" ? undefined : flagView === "flagged",
     scope,

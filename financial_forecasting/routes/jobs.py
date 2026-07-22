@@ -4507,7 +4507,10 @@ async def list_contacts(
         ) jo2 ON true
         {filter_join_sql}
         WHERE {where}
-        ORDER BY c.full_name NULLS LAST
+        -- Pipeline-first: contacts with a jobs stage sort above the (large)
+        -- flagged-but-unstaged population, so every pipeline stage is visible
+        -- without paging through ~47k blank prospects. Alphabetical within each.
+        ORDER BY (m.stage IS NOT NULL) DESC, c.full_name NULLS LAST
         LIMIT ${i} OFFSET ${i+1}
         """,
         *params, limit, offset,
