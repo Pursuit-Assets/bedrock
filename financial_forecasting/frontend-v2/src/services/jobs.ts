@@ -232,11 +232,13 @@ export interface JobContactWithDeal extends JobContact {
   builder_apps?: number;      // jobs builders applied to at this company (job_applications)
 }
 
-export type MembershipStage = "assigned" | "initial_outreach" | "converted_to_opportunity" | "on_hold" | "not_a_fit";
-export const MEMBERSHIP_STAGES: MembershipStage[] = ["assigned", "initial_outreach", "converted_to_opportunity", "on_hold", "not_a_fit"];
+// Pipeline membership = a REAL funnel stage. "In the pipeline" itself is the
+// jobs-prospect flag (is_jobs_contact), not a membership — so there is no
+// placeholder 'assigned' stage.
+export type MembershipStage = "initial_outreach" | "converted_to_opportunity" | "on_hold" | "not_a_fit";
+export const MEMBERSHIP_STAGES: MembershipStage[] = ["initial_outreach", "converted_to_opportunity", "on_hold", "not_a_fit"];
 export const MEMBERSHIP_STAGE_LABELS: Record<MembershipStage, string> = {
-  // 'assigned' is the entry state = in pipeline, no jobs stage yet (shows blank/grey)
-  assigned: "In pipeline", initial_outreach: "Initial outreach",
+  initial_outreach: "Initial outreach",
   converted_to_opportunity: "Converted to opportunity", on_hold: "On hold", not_a_fit: "Not a fit",
 };
 
@@ -1384,7 +1386,7 @@ export interface TagCampaign {
   key: string; label: string; slugs: string[]; sort_order: number;
   contacts: number; accounts: number; in_pipeline: number;
   owner_email: string | null;
-  funnel: { untouched: number; assigned: number; contacted: number; converted: number; on_hold: number };
+  funnel: { not_yet: number; contacted: number; converted: number; on_hold: number };
 }
 
 /** Tags as prioritizable outreach campaigns (Performance) — counts + order. */

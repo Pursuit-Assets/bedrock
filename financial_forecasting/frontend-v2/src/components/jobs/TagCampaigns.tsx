@@ -28,12 +28,12 @@ const STAGE_LEGEND = [
   { label: "Not yet contacted", cls: "bg-stone-300" },
 ];
 function FunnelBar({ f }: { f: TagCampaign["funnel"] }) {
-  const inPipeline = f.assigned + f.contacted + f.converted + f.on_hold;
+  const inPipeline = f.not_yet + f.contacted + f.converted + f.on_hold;
   const parts = [
     { label: "Converted", cls: "bg-green-500", n: f.converted },
     { label: "Contacted", cls: "bg-accent", n: f.contacted },
     { label: "On hold", cls: "bg-amber-400", n: f.on_hold },
-    { label: "Not yet contacted", cls: "bg-stone-300", n: f.assigned },
+    { label: "Not yet contacted", cls: "bg-stone-300", n: f.not_yet },
   ];
   const d = inPipeline || 1;
   return (
@@ -43,7 +43,7 @@ function FunnelBar({ f }: { f: TagCampaign["funnel"] }) {
   );
 }
 
-const EMPTY_FUNNEL = { untouched: 0, assigned: 0, contacted: 0, converted: 0, on_hold: 0 };
+const EMPTY_FUNNEL = { not_yet: 0, contacted: 0, converted: 0, on_hold: 0 };
 function Row({ c, rank, staffOptions }: { c: TagCampaign; rank: number; staffOptions: { value: string; label: string }[] }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: c.key });
   const setOwner = useSetCampaignOwner();
@@ -90,7 +90,22 @@ export function TagCampaigns() {
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }));
   const staffOptions = [{ value: "", label: "— none —" }, ...staff.map((s) => ({ value: s.email, label: s.name }))];
 
-  useEffect(() => { if (data && !save.isPending) setItems(data); }, [data, save.isPending]);
+  // Sync from server WITHOUT clobbering an in-progress reorder: adopt the
+  // server order only on first load or when the set of campaigns changes;
+  // otherwise keep the current (possibly just-dragged) order and only refresh
+  // each row's counts. Prevents the drag from snapping back after save.
+  useEffect(() => {
+    if (!data) return;
+    setItems((prev) => {
+      const prevKeys = new Set(prev.map((i) => i.key));
+      const sameSet = prev.length === data.length && data.every((i) => prevKeys.has(i.key));
+      if (prev.length && sameSet) {
+        const byKey = Object.fromEntries(data.map((i) => [i.key, i]));
+        return prev.map((i) => byKey[i.key] ?? i);   // keep order, refresh counts
+      }
+      return data;                                    // first load / set changed
+    });
+  }, [data]);
 
   const onDragEnd = (e: DragEndEvent) => {
     const { active, over } = e;

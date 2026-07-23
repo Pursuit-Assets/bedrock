@@ -5614,7 +5614,7 @@ async def tag_campaigns(user=Depends(require_auth), conn=Depends(get_db)):
     ordered by priority. Alumni cohorts are merged into one 'Fellow Alumni' row."""
     rows = await conn.fetch("""
         WITH tagged AS (
-          SELECT c.contact_id,
+          SELECT c.contact_id, c.is_jobs_contact,
                  CASE WHEN t LIKE 'alumni%' THEN 'alumni' ELSE t END AS campaign,
                  nullif(lower(trim(c.current_company)), '') AS company,
                  (SELECT m.stage FROM bedrock.jobs_contact_membership m WHERE m.contact_id = c.contact_id) AS stage
@@ -5623,16 +5623,14 @@ async def tag_campaigns(user=Depends(require_auth), conn=Depends(get_db)):
         )
         SELECT campaign,
                count(DISTINCT contact_id) AS contacts,
-               -- accounts reflect the IN-PIPELINE population only (distinct
-               -- companies among contacts that have a membership)
-               count(DISTINCT company) FILTER (WHERE stage IS NOT NULL) AS accounts,
-               count(DISTINCT contact_id) FILTER (WHERE stage IS NOT NULL) AS in_pipeline,
-               -- disjoint stage buckets (no double-counting): in-pipeline-no-stage,
-               -- contacted = initial_outreach ONLY, converted, on_hold
-               count(DISTINCT contact_id) FILTER (WHERE stage = 'assigned') AS assigned,
-               count(DISTINCT contact_id) FILTER (WHERE stage = 'initial_outreach') AS contacted,
-               count(DISTINCT contact_id) FILTER (WHERE stage = 'converted_to_opportunity') AS converted,
-               count(DISTINCT contact_id) FILTER (WHERE stage = 'on_hold') AS on_hold
+               -- "in pipeline" = the jobs-prospect flag (is_jobs_contact), NOT a
+               -- membership. accounts/in_pipeline reflect that population.
+               count(DISTINCT company) FILTER (WHERE is_jobs_contact) AS accounts,
+               count(DISTINCT contact_id) FILTER (WHERE is_jobs_contact) AS in_pipeline,
+               -- disjoint REAL funnel stages (no placeholder 'assigned'):
+               count(DISTINCT contact_id) FILTER (WHERE is_jobs_contact AND stage = 'initial_outreach') AS contacted,
+               count(DISTINCT contact_id) FILTER (WHERE is_jobs_contact AND stage = 'converted_to_opportunity') AS converted,
+               count(DISTINCT contact_id) FILTER (WHERE is_jobs_contact AND stage = 'on_hold') AS on_hold
         FROM tagged GROUP BY campaign
     """)
     counts = {r["campaign"]: r for r in rows}
@@ -5651,19 +5649,21 @@ async def tag_campaigns(user=Depends(require_auth), conn=Depends(get_db)):
         r = counts.get(c["key"])
         contacts = r["contacts"] if r else 0
         in_pipeline = r["in_pipeline"] if r else 0
+        contacted = r["contacted"] if r else 0
+        converted = r["converted"] if r else 0
+        on_hold = r["on_hold"] if r else 0
         out.append({**c,
                     "contacts": contacts,
                     "accounts": r["accounts"] if r else 0,
                     "in_pipeline": in_pipeline,
-                    # funnel buckets — DISJOINT distinct-contact counts over the
-                    # in-pipeline set (sum to in_pipeline): assigned (no jobs stage),
-                    # contacted (initial_outreach ONLY), converted, on_hold.
+                    # funnel over the in-pipeline (jobs-prospect) population, DISJOINT:
+                    # not_yet (prospect w/ no real stage) + contacted + converted +
+                    # on_hold = in_pipeline. No placeholder 'assigned' stage.
                     "funnel": {
-                        "untouched": contacts - in_pipeline,   # not in pipeline (no membership)
-                        "assigned":  r["assigned"] if r else 0,
-                        "contacted": r["contacted"] if r else 0,
-                        "converted": r["converted"] if r else 0,
-                        "on_hold":   r["on_hold"] if r else 0,
+                        "not_yet":   max(0, in_pipeline - contacted - converted - on_hold),
+                        "contacted": contacted,
+                        "converted": converted,
+                        "on_hold":   on_hold,
                     }})
     out.sort(key=lambda x: (x["sort_order"], x["label"]))
     return {"success": True, "data": out}
