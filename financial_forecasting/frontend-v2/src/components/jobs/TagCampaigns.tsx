@@ -15,22 +15,23 @@ import { useTagCampaigns, useSetTagCampaignOrder, useSetCampaignOwner, useStaff,
 import { InlineSelect } from "@/components/ui/InlineEdit";
 import { cn } from "@/lib/utils";
 
-// Single funnel bar across the campaign's population: not-yet-assigned (gray) →
-// assigned (amber) → contacted (accent) → converted (green).
+// Single funnel bar over the IN-PIPELINE contacts only (those with a stage),
+// worked-first left→right: converted (green) → contacted (accent) → not-yet-
+// contacted (grey, the remaining assigned-but-unworked). Contacts with no
+// membership (not in pipeline) are excluded from the bar entirely.
 const STAGE_LEGEND = [
-  { label: "Not yet assigned", cls: "bg-stone-200" },
-  { label: "Assigned",  cls: "bg-amber-400" },
-  { label: "Contacted", cls: "bg-accent" },
   { label: "Converted", cls: "bg-green-500" },
+  { label: "Contacted", cls: "bg-accent" },
+  { label: "Not yet contacted", cls: "bg-stone-300" },
 ];
-function FunnelBar({ f, total }: { f: TagCampaign["funnel"]; total: number }) {
+function FunnelBar({ f }: { f: TagCampaign["funnel"] }) {
+  const inPipeline = f.assigned + f.contacted; // contacted already includes converted
   const parts = [
-    { label: "Not yet assigned", cls: "bg-stone-200", n: f.untouched },
-    { label: "Assigned", cls: "bg-amber-400", n: f.assigned },
-    { label: "Contacted", cls: "bg-accent", n: Math.max(0, f.contacted - f.converted) },
     { label: "Converted", cls: "bg-green-500", n: f.converted },
+    { label: "Contacted", cls: "bg-accent", n: Math.max(0, f.contacted - f.converted) },
+    { label: "Not yet contacted", cls: "bg-stone-300", n: f.assigned },
   ];
-  const d = total || 1;
+  const d = inPipeline || 1;
   return (
     <div className="flex h-3.5 w-full overflow-hidden rounded-full bg-surface-2" title={parts.map((p) => `${p.label}: ${p.n.toLocaleString()}`).join("  ·  ")}>
       {parts.map((p) => p.n > 0 && <div key={p.label} className={cn("h-full", p.cls)} style={{ width: `${(100 * p.n) / d}%` }} />)}
@@ -53,11 +54,12 @@ function Row({ c, rank, staffOptions }: { c: TagCampaign; rank: number; staffOpt
       <button type="button" {...attributes} {...listeners} className="cursor-grab touch-none text-ink-4 hover:text-ink-2 active:cursor-grabbing" aria-label={`Reorder ${c.label}`}><GripVertical size={14} /></button>
       <span className="w-5 text-right font-mono text-[11px] text-ink-4">{rank}</span>
       <span className="w-40 shrink-0 truncate font-medium text-ink" title={c.label}>{c.label}</span>
-      {/* single funnel bar across the campaign population */}
+      {/* single funnel bar over the in-pipeline contacts only */}
       <div className="flex min-w-0 flex-1 items-center gap-2">
-        <FunnelBar f={c.funnel} total={c.contacts} />
-        <span className="w-24 shrink-0 text-right tabular-nums text-[10.5px] text-ink-3" title="contacted (outreach or further) of total tagged">
-          {contacted.toLocaleString()}/{c.contacts.toLocaleString()} contacted
+        <FunnelBar f={c.funnel} />
+        <span className="w-28 shrink-0 text-right tabular-nums text-[10.5px] text-ink-3" title="contacted / in pipeline (of total tagged)">
+          {contacted.toLocaleString()}/{c.in_pipeline.toLocaleString()} in pipe
+          <span className="text-ink-4"> · {c.contacts.toLocaleString()} tagged</span>
         </span>
       </div>
       <span className="w-20 shrink-0 text-right tabular-nums text-ink-2" title="accounts">{c.accounts.toLocaleString()} <span className="text-ink-4">acct</span></span>
@@ -101,7 +103,7 @@ export function TagCampaigns() {
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">Campaigns · outreach priority</span>
         {save.isPending && <Loader2 size={12} className="animate-spin text-ink-4" />}
-        <span className="text-[11px] text-ink-4">drag to reorder · bar = pipeline funnel across the tagged population</span>
+        <span className="text-[11px] text-ink-4">drag to reorder · bar = funnel of contacts in the pipeline (worked → not yet)</span>
         {/* legend (stage funnel) */}
         <span className="ml-auto flex items-center gap-3 text-[10.5px] text-ink-4">
           {STAGE_LEGEND.map((s) => <span key={s.label} className="flex items-center gap-1"><span className={cn("inline-block h-2.5 w-2.5 rounded-sm", s.cls)} />{s.label}</span>)}
@@ -111,7 +113,7 @@ export function TagCampaigns() {
         <div className="flex items-center gap-3 border-b border-border-strong bg-surface-2 px-3 py-1.5 text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
           <span className="w-[14px]" /><span className="w-5 text-right">#</span>
           <span className="w-40 shrink-0">Campaign</span>
-          <span className="min-w-0 flex-1">Pipeline funnel</span>
+          <span className="min-w-0 flex-1">Pipeline funnel (in-pipeline only)</span>
           <span className="w-20 shrink-0 text-right">Accounts</span>
           <span className="w-36 shrink-0">Owner</span>
         </div>
