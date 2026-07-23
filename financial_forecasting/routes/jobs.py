@@ -5625,9 +5625,12 @@ async def tag_campaigns(user=Depends(require_auth), conn=Depends(get_db)):
                count(DISTINCT contact_id) AS contacts,
                count(DISTINCT company)    AS accounts,
                count(DISTINCT contact_id) FILTER (WHERE stage IS NOT NULL) AS in_pipeline,
+               -- disjoint stage buckets (no double-counting): in-pipeline-no-stage,
+               -- contacted = initial_outreach ONLY, converted, on_hold
                count(DISTINCT contact_id) FILTER (WHERE stage = 'assigned') AS assigned,
-               count(DISTINCT contact_id) FILTER (WHERE stage IN ('initial_outreach','converted_to_opportunity','on_hold')) AS contacted,
-               count(DISTINCT contact_id) FILTER (WHERE stage = 'converted_to_opportunity') AS converted
+               count(DISTINCT contact_id) FILTER (WHERE stage = 'initial_outreach') AS contacted,
+               count(DISTINCT contact_id) FILTER (WHERE stage = 'converted_to_opportunity') AS converted,
+               count(DISTINCT contact_id) FILTER (WHERE stage = 'on_hold') AS on_hold
         FROM tagged GROUP BY campaign
     """)
     counts = {r["campaign"]: r for r in rows}
@@ -5650,12 +5653,15 @@ async def tag_campaigns(user=Depends(require_auth), conn=Depends(get_db)):
                     "contacts": contacts,
                     "accounts": r["accounts"] if r else 0,
                     "in_pipeline": in_pipeline,
-                    # funnel buckets (distinct contacts): not-yet-in-pipeline, assigned, contacted, converted
+                    # funnel buckets — DISJOINT distinct-contact counts over the
+                    # in-pipeline set (sum to in_pipeline): assigned (no jobs stage),
+                    # contacted (initial_outreach ONLY), converted, on_hold.
                     "funnel": {
-                        "untouched": contacts - in_pipeline,
+                        "untouched": contacts - in_pipeline,   # not in pipeline (no membership)
                         "assigned":  r["assigned"] if r else 0,
                         "contacted": r["contacted"] if r else 0,
                         "converted": r["converted"] if r else 0,
+                        "on_hold":   r["on_hold"] if r else 0,
                     }})
     out.sort(key=lambda x: (x["sort_order"], x["label"]))
     return {"success": True, "data": out}

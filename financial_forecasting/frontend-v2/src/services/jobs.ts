@@ -1383,7 +1383,7 @@ export interface TagCampaign {
   key: string; label: string; slugs: string[]; sort_order: number;
   contacts: number; accounts: number; in_pipeline: number;
   owner_email: string | null;
-  funnel: { untouched: number; assigned: number; contacted: number; converted: number };
+  funnel: { untouched: number; assigned: number; contacted: number; converted: number; on_hold: number };
 }
 
 /** Tags as prioritizable outreach campaigns (Performance) — counts + order. */

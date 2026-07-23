@@ -19,16 +19,20 @@ import { cn } from "@/lib/utils";
 // worked-first left→right: converted (green) → contacted (accent) → not-yet-
 // contacted (grey, the remaining assigned-but-unworked). Contacts with no
 // membership (not in pipeline) are excluded from the bar entirely.
+// Disjoint stage buckets over the in-pipeline set, worked-first left→right:
+// Converted → Contacted (initial_outreach only) → On hold → Not yet contacted (grey).
 const STAGE_LEGEND = [
   { label: "Converted", cls: "bg-green-500" },
   { label: "Contacted", cls: "bg-accent" },
+  { label: "On hold", cls: "bg-amber-400" },
   { label: "Not yet contacted", cls: "bg-stone-300" },
 ];
 function FunnelBar({ f }: { f: TagCampaign["funnel"] }) {
-  const inPipeline = f.assigned + f.contacted; // contacted already includes converted
+  const inPipeline = f.assigned + f.contacted + f.converted + f.on_hold;
   const parts = [
     { label: "Converted", cls: "bg-green-500", n: f.converted },
-    { label: "Contacted", cls: "bg-accent", n: Math.max(0, f.contacted - f.converted) },
+    { label: "Contacted", cls: "bg-accent", n: f.contacted },
+    { label: "On hold", cls: "bg-amber-400", n: f.on_hold },
     { label: "Not yet contacted", cls: "bg-stone-300", n: f.assigned },
   ];
   const d = inPipeline || 1;
