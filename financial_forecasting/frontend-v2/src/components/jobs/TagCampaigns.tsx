@@ -28,14 +28,16 @@ const STAGE_LEGEND = [
   { label: "Not yet contacted", cls: "bg-stone-300" },
 ];
 function FunnelBar({ f }: { f: TagCampaign["funnel"] }) {
-  const inPipeline = f.not_yet + f.contacted + f.converted + f.on_hold;
+  // Coalesce each field — a stale cached response may carry an older funnel
+  // shape; never let an undefined value crash the bar.
+  const n = (v: number | undefined) => v ?? 0;
   const parts = [
-    { label: "Converted", cls: "bg-green-500", n: f.converted },
-    { label: "Contacted", cls: "bg-accent", n: f.contacted },
-    { label: "On hold", cls: "bg-amber-400", n: f.on_hold },
-    { label: "Not yet contacted", cls: "bg-stone-300", n: f.not_yet },
+    { label: "Converted", cls: "bg-green-500", n: n(f.converted) },
+    { label: "Contacted", cls: "bg-accent", n: n(f.contacted) },
+    { label: "On hold", cls: "bg-amber-400", n: n(f.on_hold) },
+    { label: "Not yet contacted", cls: "bg-stone-300", n: n(f.not_yet) },
   ];
-  const d = inPipeline || 1;
+  const d = parts.reduce((s, p) => s + p.n, 0) || 1;
   return (
     <div className="flex h-3.5 w-full overflow-hidden rounded-full bg-surface-2" title={parts.map((p) => `${p.label}: ${p.n.toLocaleString()}`).join("  ·  ")}>
       {parts.map((p) => p.n > 0 && <div key={p.label} className={cn("h-full", p.cls)} style={{ width: `${(100 * p.n) / d}%` }} />)}
@@ -49,7 +51,7 @@ function Row({ c, rank, staffOptions }: { c: TagCampaign; rank: number; staffOpt
   const setOwner = useSetCampaignOwner();
   const staffName = (email: string | null) => staffOptions.find((s) => s.value === email)?.label ?? email ?? "—";
   const f = c.funnel ?? EMPTY_FUNNEL;   // defensive: stale cache may lack funnel
-  const contacted = Math.max(0, f.contacted); // initial_outreach only
+  const contacted = Math.max(0, f.contacted ?? 0); // initial_outreach only
   return (
     <div
       ref={setNodeRef}
