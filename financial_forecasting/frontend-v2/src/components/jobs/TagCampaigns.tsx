@@ -63,9 +63,8 @@ function Row({ c, rank, staffOptions }: { c: TagCampaign; rank: number; staffOpt
       {/* single funnel bar over the in-pipeline contacts only */}
       <div className="flex min-w-0 flex-1 items-center gap-2">
         <FunnelBar f={f} />
-        <span className="w-28 shrink-0 text-right tabular-nums text-[10.5px] text-ink-3" title="contacted / in pipeline (of total tagged)">
+        <span className="w-24 shrink-0 text-right tabular-nums text-[10.5px] text-ink-3" title="contacted / in pipeline">
           {contacted.toLocaleString()}/{c.in_pipeline.toLocaleString()} in pipe
-          <span className="text-ink-4"> · {c.contacts.toLocaleString()} tagged</span>
         </span>
       </div>
       <span className="w-20 shrink-0 text-right tabular-nums text-ink-2" title="accounts">{c.accounts.toLocaleString()} <span className="text-ink-4">acct</span></span>

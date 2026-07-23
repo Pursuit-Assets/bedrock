@@ -5623,7 +5623,9 @@ async def tag_campaigns(user=Depends(require_auth), conn=Depends(get_db)):
         )
         SELECT campaign,
                count(DISTINCT contact_id) AS contacts,
-               count(DISTINCT company)    AS accounts,
+               -- accounts reflect the IN-PIPELINE population only (distinct
+               -- companies among contacts that have a membership)
+               count(DISTINCT company) FILTER (WHERE stage IS NOT NULL) AS accounts,
                count(DISTINCT contact_id) FILTER (WHERE stage IS NOT NULL) AS in_pipeline,
                -- disjoint stage buckets (no double-counting): in-pipeline-no-stage,
                -- contacted = initial_outreach ONLY, converted, on_hold
