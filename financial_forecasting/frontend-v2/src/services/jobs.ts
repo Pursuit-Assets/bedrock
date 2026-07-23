@@ -1381,7 +1381,7 @@ export function useContactTagCatalog() {
 
 export interface TagCampaign {
   key: string; label: string; slugs: string[]; sort_order: number;
-  contacts: number; accounts: number;
+  contacts: number; accounts: number; in_pipeline: number;
 }
 
 /** Tags as prioritizable outreach campaigns (Performance) — counts + order. */

@@ -29,8 +29,9 @@ function Row({ c, rank }: { c: TagCampaign; rank: number }) {
       </button>
       <span className="w-6 text-right font-mono text-[11px] text-ink-4">{rank}</span>
       <span className="min-w-0 flex-1 truncate font-medium text-ink">{c.label}</span>
-      <span className="w-28 text-right tabular-nums text-ink-2">{c.contacts.toLocaleString()} <span className="text-ink-4">contacts</span></span>
-      <span className="w-28 text-right tabular-nums text-ink-2">{c.accounts.toLocaleString()} <span className="text-ink-4">accounts</span></span>
+      <span className="w-24 text-right tabular-nums text-ink-2">{c.contacts.toLocaleString()}</span>
+      <span className="w-24 text-right tabular-nums text-ink-2">{c.in_pipeline.toLocaleString()}</span>
+      <span className="w-24 text-right tabular-nums text-ink-2">{c.accounts.toLocaleString()}</span>
     </div>
   );
 }
@@ -66,8 +67,9 @@ export function TagCampaigns() {
         <div className="flex items-center gap-3 border-b border-border-strong bg-surface-2 px-3 py-1.5 text-[10.5px] font-semibold uppercase tracking-wider text-ink-3">
           <span className="w-[14px]" /><span className="w-6 text-right">#</span>
           <span className="min-w-0 flex-1">Campaign (tag)</span>
-          <span className="w-28 text-right">Contacts</span>
-          <span className="w-28 text-right">Accounts</span>
+          <span className="w-24 text-right">Contacts</span>
+          <span className="w-24 text-right">In pipeline</span>
+          <span className="w-24 text-right">Accounts</span>
         </div>
         {isLoading ? (
           <div className="flex items-center gap-2 px-3 py-6 text-[12.5px] text-ink-3"><Loader2 size={14} className="animate-spin" /> Loading campaigns…</div>

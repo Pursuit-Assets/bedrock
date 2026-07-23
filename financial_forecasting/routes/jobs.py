@@ -5343,16 +5343,18 @@ async def tag_campaigns(user=Depends(require_auth), conn=Depends(get_db)):
         WITH tagged AS (
           SELECT c.contact_id,
                  CASE WHEN t LIKE 'alumni%' THEN 'alumni' ELSE t END AS campaign,
-                 nullif(lower(trim(c.current_company)), '') AS company
+                 nullif(lower(trim(c.current_company)), '') AS company,
+                 EXISTS (SELECT 1 FROM bedrock.jobs_contact_membership m WHERE m.contact_id = c.contact_id) AS in_pipeline
           FROM public.contacts c, unnest(c.tags) t
           WHERE t IN (SELECT slug FROM bedrock.contact_tag_catalog WHERE active)
         )
         SELECT campaign,
                count(DISTINCT contact_id) AS contacts,
-               count(DISTINCT company)    AS accounts
+               count(DISTINCT company)    AS accounts,
+               count(DISTINCT contact_id) FILTER (WHERE in_pipeline) AS in_pipeline
         FROM tagged GROUP BY campaign
     """)
-    counts = {r["campaign"]: (r["contacts"], r["accounts"]) for r in rows}
+    counts = {r["campaign"]: (r["contacts"], r["accounts"], r["in_pipeline"]) for r in rows}
     cat = await conn.fetch(
         "SELECT slug, label, sort_order FROM bedrock.contact_tag_catalog WHERE active")
     camps: dict = {}
@@ -5364,8 +5366,8 @@ async def tag_campaigns(user=Depends(require_auth), conn=Depends(get_db)):
         c["sort_order"] = min(c["sort_order"], r["sort_order"])
     out = []
     for c in camps.values():
-        cnt = counts.get(c["key"], (0, 0))
-        out.append({**c, "contacts": cnt[0], "accounts": cnt[1]})
+        cnt = counts.get(c["key"], (0, 0, 0))
+        out.append({**c, "contacts": cnt[0], "accounts": cnt[1], "in_pipeline": cnt[2]})
     out.sort(key=lambda x: (x["sort_order"], x["label"]))
     return {"success": True, "data": out}
 
