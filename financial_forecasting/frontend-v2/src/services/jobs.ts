@@ -235,7 +235,8 @@ export interface JobContactWithDeal extends JobContact {
 export type MembershipStage = "assigned" | "initial_outreach" | "converted_to_opportunity" | "on_hold" | "not_a_fit";
 export const MEMBERSHIP_STAGES: MembershipStage[] = ["assigned", "initial_outreach", "converted_to_opportunity", "on_hold", "not_a_fit"];
 export const MEMBERSHIP_STAGE_LABELS: Record<MembershipStage, string> = {
-  assigned: "Assigned", initial_outreach: "Initial outreach",
+  // 'assigned' is the entry state = in pipeline, no jobs stage yet (shows blank/grey)
+  assigned: "In pipeline", initial_outreach: "Initial outreach",
   converted_to_opportunity: "Converted to opportunity", on_hold: "On hold", not_a_fit: "Not a fit",
 };
 

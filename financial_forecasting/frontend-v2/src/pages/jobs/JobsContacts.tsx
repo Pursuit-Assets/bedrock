@@ -268,7 +268,10 @@ function ContactRow({ contact, expanded, onOpen, visibleCols, selected, onToggle
     company: <span className="truncate text-[12.5px] text-ink-2">{contact.current_company || "—"}</span>,
     flag: contact.membership_stage
       ? <InlineSelect<string> value={contact.membership_stage} options={MEMBERSHIP_STAGE_OPTIONS}
-          renderValue={(v) => <span className="rounded-full bg-accent-soft px-1.5 py-0.5 text-[10.5px] font-medium text-accent-ink">{MEMBERSHIP_STAGE_LABELS[(v ?? contact.membership_stage) as MembershipStage] ?? v}</span>}
+          renderValue={(v) => { const s = (v ?? contact.membership_stage) as MembershipStage;
+            return s === "assigned"
+              ? <span className="text-[11px] text-ink-4" title="In pipeline — no jobs stage yet">—</span>
+              : <span className="rounded-full bg-accent-soft px-1.5 py-0.5 text-[10.5px] font-medium text-accent-ink">{MEMBERSHIP_STAGE_LABELS[s] ?? v}</span>; }}
           onSave={(v) => new Promise<void>((res, rej) => updateMembership.mutate({ contact_id: contact.contact_id, stage: v || undefined }, { onSuccess: () => res(), onError: rej }))} />
       : <button type="button" onClick={(e) => { e.stopPropagation(); flagOne.mutate({ contact_ids: [contact.contact_id] }); }}
           className="inline-flex items-center gap-1 rounded border border-dashed border-border-strong px-2 py-0.5 text-[11px] text-ink-3 hover:border-accent hover:text-accent"><Zap size={10} /> Assign</button>,
