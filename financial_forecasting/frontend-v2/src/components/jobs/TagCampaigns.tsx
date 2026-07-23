@@ -43,11 +43,13 @@ function FunnelBar({ f }: { f: TagCampaign["funnel"] }) {
   );
 }
 
+const EMPTY_FUNNEL = { untouched: 0, assigned: 0, contacted: 0, converted: 0, on_hold: 0 };
 function Row({ c, rank, staffOptions }: { c: TagCampaign; rank: number; staffOptions: { value: string; label: string }[] }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: c.key });
   const setOwner = useSetCampaignOwner();
   const staffName = (email: string | null) => staffOptions.find((s) => s.value === email)?.label ?? email ?? "—";
-  const contacted = Math.max(0, c.funnel.contacted); // initial_outreach+converted+on_hold
+  const f = c.funnel ?? EMPTY_FUNNEL;   // defensive: stale cache may lack funnel
+  const contacted = Math.max(0, f.contacted); // initial_outreach only
   return (
     <div
       ref={setNodeRef}
@@ -60,7 +62,7 @@ function Row({ c, rank, staffOptions }: { c: TagCampaign; rank: number; staffOpt
       <span className="w-40 shrink-0 truncate font-medium text-ink" title={c.label}>{c.label}</span>
       {/* single funnel bar over the in-pipeline contacts only */}
       <div className="flex min-w-0 flex-1 items-center gap-2">
-        <FunnelBar f={c.funnel} />
+        <FunnelBar f={f} />
         <span className="w-28 shrink-0 text-right tabular-nums text-[10.5px] text-ink-3" title="contacted / in pipeline (of total tagged)">
           {contacted.toLocaleString()}/{c.in_pipeline.toLocaleString()} in pipe
           <span className="text-ink-4"> · {c.contacts.toLocaleString()} tagged</span>
