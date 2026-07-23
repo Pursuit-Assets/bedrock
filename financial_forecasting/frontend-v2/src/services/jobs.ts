@@ -1382,6 +1382,8 @@ export function useContactTagCatalog() {
 export interface TagCampaign {
   key: string; label: string; slugs: string[]; sort_order: number;
   contacts: number; accounts: number; in_pipeline: number;
+  owner_email: string | null;
+  funnel: { untouched: number; assigned: number; contacted: number; converted: number };
 }
 
 /** Tags as prioritizable outreach campaigns (Performance) — counts + order. */
@@ -1410,6 +1412,21 @@ export function useSetTagCampaignOrder() {
       toast.success("Priority saved");
     },
     onError: () => toast.error("Couldn't save priority"),
+  });
+}
+
+export function useSetCampaignOwner() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (body: { key: string; owner_email: string | null }) => {
+      const { data } = await api.put<ApiResponse<{ key: string }>>("/api/jobs/tag-campaigns/owner", body);
+      return data.data;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["jobs", "tag-campaigns"] });
+      toast.success("Campaign owner saved");
+    },
+    onError: () => toast.error("Couldn't save owner"),
   });
 }
 

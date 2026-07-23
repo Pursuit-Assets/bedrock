@@ -5344,30 +5344,46 @@ async def tag_campaigns(user=Depends(require_auth), conn=Depends(get_db)):
           SELECT c.contact_id,
                  CASE WHEN t LIKE 'alumni%' THEN 'alumni' ELSE t END AS campaign,
                  nullif(lower(trim(c.current_company)), '') AS company,
-                 EXISTS (SELECT 1 FROM bedrock.jobs_contact_membership m WHERE m.contact_id = c.contact_id) AS in_pipeline
+                 (SELECT m.stage FROM bedrock.jobs_contact_membership m WHERE m.contact_id = c.contact_id) AS stage
           FROM public.contacts c, unnest(c.tags) t
           WHERE t IN (SELECT slug FROM bedrock.contact_tag_catalog WHERE active)
         )
         SELECT campaign,
                count(DISTINCT contact_id) AS contacts,
                count(DISTINCT company)    AS accounts,
-               count(DISTINCT contact_id) FILTER (WHERE in_pipeline) AS in_pipeline
+               count(DISTINCT contact_id) FILTER (WHERE stage IS NOT NULL) AS in_pipeline,
+               count(DISTINCT contact_id) FILTER (WHERE stage = 'assigned') AS assigned,
+               count(DISTINCT contact_id) FILTER (WHERE stage IN ('initial_outreach','converted_to_opportunity','on_hold')) AS contacted,
+               count(DISTINCT contact_id) FILTER (WHERE stage = 'converted_to_opportunity') AS converted
         FROM tagged GROUP BY campaign
     """)
-    counts = {r["campaign"]: (r["contacts"], r["accounts"], r["in_pipeline"]) for r in rows}
+    counts = {r["campaign"]: r for r in rows}
     cat = await conn.fetch(
-        "SELECT slug, label, sort_order FROM bedrock.contact_tag_catalog WHERE active")
+        "SELECT slug, label, sort_order, owner_email FROM bedrock.contact_tag_catalog WHERE active")
     camps: dict = {}
     for r in cat:
         key = _campaign_key(r["slug"])
         c = camps.setdefault(key, {"key": key, "label": "Fellow Alumni" if key == "alumni" else r["label"],
-                                   "slugs": [], "sort_order": r["sort_order"]})
+                                   "slugs": [], "sort_order": r["sort_order"], "owner_email": r["owner_email"]})
         c["slugs"].append(r["slug"])
         c["sort_order"] = min(c["sort_order"], r["sort_order"])
+        c["owner_email"] = c["owner_email"] or r["owner_email"]
     out = []
     for c in camps.values():
-        cnt = counts.get(c["key"], (0, 0, 0))
-        out.append({**c, "contacts": cnt[0], "accounts": cnt[1], "in_pipeline": cnt[2]})
+        r = counts.get(c["key"])
+        contacts = r["contacts"] if r else 0
+        in_pipeline = r["in_pipeline"] if r else 0
+        out.append({**c,
+                    "contacts": contacts,
+                    "accounts": r["accounts"] if r else 0,
+                    "in_pipeline": in_pipeline,
+                    # funnel buckets (distinct contacts): not-yet-in-pipeline, assigned, contacted, converted
+                    "funnel": {
+                        "untouched": contacts - in_pipeline,
+                        "assigned":  r["assigned"] if r else 0,
+                        "contacted": r["contacted"] if r else 0,
+                        "converted": r["converted"] if r else 0,
+                    }})
     out.sort(key=lambda x: (x["sort_order"], x["label"]))
     return {"success": True, "data": out}
 
@@ -5388,6 +5404,22 @@ async def set_tag_campaign_order(body: CampaignOrder, user=Depends(require_auth)
             else:
                 await conn.execute("UPDATE bedrock.contact_tag_catalog SET sort_order=$1 WHERE slug=$2", so, key)
     return {"success": True, "data": {"updated": len(body.order)}}
+
+
+class CampaignOwner(BaseModel):
+    key: str
+    owner_email: Optional[str] = None   # null/empty clears
+
+
+@router.put("/tag-campaigns/owner")
+async def set_tag_campaign_owner(body: CampaignOwner, user=Depends(require_auth), conn=Depends(get_db)):
+    """Assign (or clear) a staff owner on a campaign. 'alumni' → all alumni_* slugs."""
+    owner = (body.owner_email or "").strip().lower() or None
+    if body.key == "alumni":
+        await conn.execute("UPDATE bedrock.contact_tag_catalog SET owner_email=$1 WHERE slug LIKE 'alumni%'", owner)
+    else:
+        await conn.execute("UPDATE bedrock.contact_tag_catalog SET owner_email=$1 WHERE slug=$2", owner, body.key)
+    return {"success": True, "data": {"key": body.key, "owner_email": owner}}
 
 
 @router.post("/contacts/{contact_id}/add-to-jobs")
