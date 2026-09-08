@@ -1055,11 +1055,17 @@ function RoleBoardRow({ role }: { role: RolesBoardRole }) {
           {role.applications.length === 0 ? (
             <span className="text-[11.5px] text-ink-4">No builder applications matched to this role yet.</span>
           ) : (
+            /* One line per applicant: name left, stage + date + remove right.
+               The name is min-w-0/flex-1/truncate and the actions shrink-0, so a
+               long name ellipsises instead of pushing the controls out of the
+               column. An earlier one-line version let the fixed-width actions
+               squeeze the name away entirely in a narrow column — that's what
+               the two-line stack was working around. */
             <ul className="flex flex-col divide-y divide-border-strong rounded-md border border-border-strong">
               {role.applications.map((a) => (
-                <li key={a.job_application_id} className="flex flex-col gap-1 px-3 py-1.5">
-                  <span className="truncate text-[12px] text-ink">{a.builder}</span>
-                  <div className="flex flex-wrap items-center gap-2">
+                <li key={a.job_application_id} className="flex items-center gap-2 px-3 py-1.5">
+                  <span className="min-w-0 flex-1 truncate text-[12px] text-ink" title={a.builder}>{a.builder}</span>
+                  <div className="flex shrink-0 items-center gap-2">
                     <StageSelect appId={a.job_application_id} stage={a.stage} />
                     <span className="font-mono text-[10.5px] text-ink-4">{fmtDate(a.updated_at)}</span>
                     <button
