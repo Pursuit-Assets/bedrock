@@ -1156,12 +1156,23 @@ export function RolesBoard() {
   // server order on first load or when the set of roles changes (added,
   // removed, or a filter like ft_placed drops one off the board); otherwise
   // keep the current order and just refresh each row's own data.
+  //
+  // Cancelled-ness is part of that comparison, not just row data: the server
+  // sorts closed roles to the bottom (`ORDER BY (r.status = 'cancelled')`), so
+  // closing or reopening a role changes the correct order without changing the
+  // set of ids. Comparing ids alone made "Close role" refresh the badge in
+  // place and leave the row where it was, contradicting the button's own
+  // "it'll sink to the bottom of the list" promise.
   useEffect(() => {
     if (!rolesQ.data) return;
     setItems((prev) => {
-      const prevIds = new Set(prev.map((r) => r.id));
-      const sameSet = prev.length === rolesQ.data!.length && rolesQ.data!.every((r) => prevIds.has(r.id));
-      if (prev.length && sameSet) {
+      const prevClosed = new Map(prev.map((r) => [r.id, r.status === "cancelled"]));
+      const sameOrder =
+        prev.length === rolesQ.data!.length &&
+        rolesQ.data!.every(
+          (r) => prevClosed.has(r.id) && prevClosed.get(r.id) === (r.status === "cancelled"),
+        );
+      if (prev.length && sameOrder) {
         const byId = Object.fromEntries(rolesQ.data!.map((r) => [r.id, r]));
         return prev.map((r) => byId[r.id] ?? r);
       }
