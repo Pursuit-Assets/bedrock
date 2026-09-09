@@ -56,7 +56,7 @@ OPPORTUNITY_STAGES_NEW = [
     "reviewing_builders", "closed_won", "closed_lost",
 ]
 MEMBERSHIP_STAGES_NEW = [
-    "assigned", "initial_outreach", "call_booked",
+    "assigned", "initial_outreach", "scheduling", "call_booked",
     "converted_to_opportunity", "revisit", "not_a_fit",
 ]
 MEMBERSHIP_STAGES_LEGACY = [
@@ -188,6 +188,7 @@ STAGE_LABELS = {
 MEMBERSHIP_STAGE_LABELS = {
     "assigned":                 "Assigned",
     "initial_outreach":         "Initial Outreach",
+    "scheduling":               "Scheduling",
     "call_booked":              "Call Booked",
     "converted_to_opportunity": "Converted to Opportunity",
     "revisit":                  "Revisit",
@@ -2432,6 +2433,7 @@ async def get_funnel(
         stage_order = [
             ("assigned", "Assigned"),
             ("initial_outreach", "Initial Outreach"),
+            ("scheduling", "Scheduling"),
             ("call_booked", "Call Booked"),
             ("converted_to_opportunity", "Converted to Opportunity"),
             ("revisit", "Revisit"),
@@ -5596,7 +5598,15 @@ async def stage_vocabulary(user=Depends(require_auth)):
     mem = await _writable_stages(
         "jobs_contact_membership", "jobs_contact_membership_stage_vals",
         MEMBERSHIP_STAGES_NEW + ["on_hold"],
-        settles_when="call_booked")
+        # 'scheduling', not 'call_booked': settles_when names the value that only
+        # the NEWEST constraint contains, and it is what stops the vocabulary
+        # being cached before that constraint lands. call_booked arrived with the
+        # 2026-08-05 migration and is already present, so leaving it here would
+        # cache a list without 'scheduling' on the first request and keep serving
+        # it for the life of the process — Jac could apply the scheduling
+        # migration and every picker would still hide the stage until someone
+        # restarted the API.
+        settles_when="scheduling")
     # Report the TARGET vocabulary with an `available` flag, not just what's
     # writable. Filtering the unavailable ones out entirely made Call Booked and
     # Revisit simply missing from the dropdown, which reads as "not built" rather
@@ -5606,7 +5616,7 @@ async def stage_vocabulary(user=Depends(require_auth)):
         ok = v in allowed
         return {"value": v, "label": label, "available": ok,
                 "unavailable_reason": None if ok else
-                "Available once the 2026-08-05 stage migration is applied"}
+                "Available once the pending stage migration is applied"}
 
     # on_hold is deliberately NOT appended when the database still accepts it:
     # Revisit replaces it outright (Kwame 2026-08-05), so offering both would let
@@ -6299,7 +6309,7 @@ async def account_prospects(
 # 'call_booked'/'revisit' after. The database CHECK is the real gate — this only
 # catches typos, so being permissive here costs nothing and avoids rejecting a
 # valid stage in whichever direction the schema currently sits.
-_MEMBERSHIP_STAGES = ('assigned', 'initial_outreach', 'call_booked',
+_MEMBERSHIP_STAGES = ('assigned', 'initial_outreach', 'scheduling', 'call_booked',
                       'converted_to_opportunity', 'revisit', 'on_hold', 'not_a_fit')
 
 
@@ -6467,12 +6477,15 @@ async def update_jobs_membership(contact_id: int, body: MembershipPatch,
             res = await conn.execute(
                 f"UPDATE bedrock.jobs_contact_membership SET {', '.join(sets)} WHERE contact_id = $1", *params)
         except asyncpg.exceptions.CheckViolationError:
-            # call_booked / revisit until the 2026-08-05 migration enables them.
-            # The pickers already grey these out, so this is the belt to that
-            # braces — but a raw 500 here told the user nothing.
+            # A stage the CHECK constraint hasn't been widened for yet —
+            # call_booked/revisit before the 2026-08-05 migration, scheduling
+            # before the 2026-09-09 one. The pickers already grey these out, so
+            # this is the belt to that braces — but a raw 500 here told the user
+            # nothing. Deliberately not naming a specific migration: which one is
+            # outstanding depends on the stage, and a stale date reads as a bug.
             raise HTTPException(
                 409, f"'{MEMBERSHIP_STAGE_LABELS.get(body.stage, body.stage)}' isn't accepted by "
-                     "the database yet — it needs the 2026-08-05 pipeline-stage migration.")
+                     "the database yet — it needs a pending pipeline-stage migration.")
         # Row can vanish between the pre-fetch and the UPDATE (unflag race) —
         # bail before recording a phantom transition.
         if res == "UPDATE 0":
